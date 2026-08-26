@@ -429,7 +429,12 @@ def _gather_report_data(
             continue
         label = own_website_domain if r.is_own_site else (r.domain_label or "competitor")
         for row in r.parsed_data.get("rows", []):
-            domain_overview_rows.append({**row, "domain": row.get("domain") or label})
+            # For the own site, always use the client's own domain as the
+            # label — a PDF-parsed row carries its own "domain" field (e.g.
+            # "startek.com") which can disagree with client.website_url on
+            # "www." and break the own-row-sorts-first logic below.
+            domain = label if r.is_own_site else (row.get("domain") or label)
+            domain_overview_rows.append({**row, "domain": domain})
     domain_overview_rows.sort(key=lambda row: row["domain"] != own_website_domain)
 
     competitor_rows_all = domain_overview_rows or _all_rows("organic_competitors")

@@ -1,6 +1,8 @@
 import io
+import re
 
 import pandas as pd
+import pdfplumber
 
 # Semrush export column names vary slightly by report/locale — match case-insensitively
 # on a set of known aliases per field, so a real export loads without manual mapping.
@@ -83,6 +85,84 @@ SITE_AUDIT_PAGES_COLUMN_ALIASES = {
 }
 
 
+def _parse_abbrev_number(text: str) -> float | None:
+    """'12.7K' -> 12700.0, '599.7k' -> 599700.0, '$60.4K' -> 60400.0. Semrush's
+    Domain Overview PDF only ever shows abbreviated figures, never raw counts."""
+    match = re.search(r"([\d,]+(?:\.\d+)?)\s*([KMB])?", text.replace("$", ""), re.IGNORECASE)
+    if not match:
+        return None
+    value = float(match.group(1).replace(",", ""))
+    multiplier = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}.get((match.group(2) or "").upper(), 1)
+    return value * multiplier
+
+
+def _pdf_section(text: str, start_marker: str, end_markers: list[str]) -> str:
+    """Slice out the text between one Domain Overview PDF section heading and
+    whichever of the given following headings comes first."""
+    start = text.find(start_marker)
+    if start == -1:
+        return ""
+    start += len(start_marker)
+    end = len(text)
+    for marker in end_markers:
+        idx = text.find(marker, start)
+        if idx != -1:
+            end = min(end, idx)
+    return text[start:end]
+
+
+def _parse_domain_overview_text(text: str) -> dict | None:
+    if "Domain Overview" not in text:
+        return None
+
+    domain_match = re.search(r"\|\s*Domain\s*\|\s*([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", text)
+    if not domain_match:
+        return None
+    domain = domain_match.group(1)
+
+    organic = _pdf_section(text, "Organic Search: Summary", ["Paid Search: Summary"])
+    paid = _pdf_section(text, "Paid Search: Summary", ["Backlinks: Summary"])
+    backlinks = _pdf_section(text, "Backlinks: Summary", ["Organic Search: Keywords By Country", "Paid Search: Ad Keywords"])
+    branded = _pdf_section(text, "Branded vs Non-Branded", ["Organic Search: Branded Traffic Trend", "Paid search traffic", "Backlinks\n"])
+
+    def _first_number(section: str, pattern: str) -> float | None:
+        m = re.search(pattern, section)
+        return _parse_abbrev_number(m.group(1)) if m else None
+
+    row = {
+        "domain": domain,
+        "organic_traffic": _first_number(organic, r"([\d.,]+[KMB]?)\s*[\d.\-]*%?\s*TRAFFIC"),
+        "organic_keywords": _first_number(organic, r"Keywords\s+([\d.,]+[KMB]?)"),
+        "organic_cost": _first_number(organic, r"Traffic Cost\s+\$?([\d.,]+[KMB]?)"),
+        "paid_traffic": _first_number(paid, r"([\d.,]+[KMB]?)\s*[\d.\-]*%?\s*TRAFFIC"),
+        "paid_keywords": _first_number(paid, r"Keywords\s+([\d.,]+[KMB]?)"),
+        "paid_cost": _first_number(paid, r"Traffic Cost\s+\$?([\d.,]+[KMB]?)"),
+        "backlinks_total": _first_number(backlinks, r"([\d.,]+[KMB]?)\s*TOTAL BACKLINKS"),
+        "referring_domains": _first_number(backlinks, r"Referring Domains\s+([\d.,]+[KMB]?)"),
+    }
+    branded_pct = re.search(r"([\d.]+)\s*%\s*\n?\s*Branded Traffic", branded)
+    nonbranded_pct = re.search(r"([\d.]+)\s*%\s*\n?\s*Non-Branded Traffic", branded)
+    if branded_pct:
+        row["branded_pct"] = f"{branded_pct.group(1)}%"
+    if nonbranded_pct:
+        row["nonbranded_pct"] = f"{nonbranded_pct.group(1)}%"
+    return {k: v for k, v in row.items() if v is not None}
+
+
+def parse_domain_overview_pdf(content: bytes) -> dict | None:
+    """Parses Semrush's "Domain Overview (Desktop)" PDF export — the
+    single-domain report available on every plan (no Bulk Analysis needed).
+    Pulls Organic/Paid Traffic, Keywords, Backlinks, Referring Domains, and
+    Branded/Non-Branded split — the same fields DOMAIN_OVERVIEW_COLUMN_ALIASES
+    expects from a CSV. Authority Score/DR is NOT included in this PDF
+    export at all (confirmed missing even when visible on the live page) —
+    callers must fill that in manually. Returns None if this doesn't look
+    like a Domain Overview PDF."""
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    return _parse_domain_overview_text(text)
+
+
 def _read_table(filename: str, content: bytes) -> pd.DataFrame:
     buffer = io.BytesIO(content)
     if filename.lower().endswith((".xlsx", ".xls")):
@@ -126,6 +206,12 @@ def detect_import_type(df: pd.DataFrame) -> str:
 
 
 def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
+    if filename.lower().endswith(".pdf"):
+        row = parse_domain_overview_pdf(content)
+        if row is None:
+            return "unknown", {"row_count": 0, "rows": []}
+        return "domain_overview", {"row_count": 1, "rows": [row]}
+
     df = _read_table(filename, content)
     import_type = detect_import_type(df)
 
