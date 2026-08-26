@@ -189,6 +189,35 @@ def _parse_domain_overview_text(text: str, page2_left: str = "", page2_right: st
     return {k: v for k, v in row.items() if v is not None}
 
 
+def debug_extract_pdf_text(content: bytes) -> dict:
+    """Temporary diagnostic: exposes exactly what pdfplumber reads from a
+    Domain Overview PDF (full text, plus the left/right crop halves and
+    where the "Paid" word split point landed) so real-world extraction
+    quirks can be inspected without server log access. Remove once the
+    parser is confirmed working against real Semrush exports."""
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        num_pages = len(pdf.pages)
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        page2_left = page2_right = ""
+        paid_word_info = None
+        if num_pages > 1:
+            page2 = pdf.pages[1]
+            words = page2.extract_words()
+            paid_words = [w for w in words if w["text"] == "Paid"]
+            paid_word_info = paid_words[0] if paid_words else None
+            if paid_word_info:
+                boundary = paid_word_info["x0"]
+                page2_left = page2.crop((0, 0, boundary, page2.height)).extract_text() or ""
+                page2_right = page2.crop((boundary, 0, page2.width, page2.height)).extract_text() or ""
+    return {
+        "num_pages": num_pages,
+        "full_text_first_2000": full_text[:2000],
+        "paid_word_info": paid_word_info,
+        "page2_left_first_1000": page2_left[:1000],
+        "page2_right_first_1000": page2_right[:1000],
+    }
+
+
 def parse_domain_overview_pdf(content: bytes) -> dict | None:
     """Parses Semrush's "Domain Overview (Desktop)" PDF export — the
     single-domain report available on every plan (no Bulk Analysis needed).
