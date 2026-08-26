@@ -234,12 +234,17 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
     connection = db.query(GoogleConnection).filter(GoogleConnection.client_id == client_id).first()
     if not connection:
         return None
-    creds = google_oauth.credentials_from_stored(
-        decrypt(connection.encrypted_access_token), decrypt(connection.encrypted_refresh_token)
-    )
-    connection.encrypted_access_token = encrypt(creds.token)
-    db.commit()
-    return creds
+    try:
+        creds = google_oauth.credentials_from_stored(
+            decrypt(connection.encrypted_access_token), decrypt(connection.encrypted_refresh_token)
+        )
+        connection.encrypted_access_token = encrypt(creds.token)
+        db.commit()
+        return creds
+    except Exception:
+        # Stale/revoked/undecryptable tokens shouldn't take down the whole
+        # report — analytics is one optional section among many.
+        return None
 
 
 def _generate_competitor_narratives(client: Client, data: dict, max_competitors: int = 5) -> dict[str, dict]:
@@ -271,11 +276,17 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
     if not domains:
         return {}
 
+    def _as_number(v) -> float:
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     narratives = {}
     for domain in domains:
         row = next((r for r in competitor_rows if r.get("domain") == domain), None)
         top_keywords = sorted(
-            competitor_positions.get(domain, []), key=lambda r: float(r.get("search_volume") or 0), reverse=True
+            competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
         )[:8]
         relevant_gaps = [i["summary"] for i in gap_issues if domain in i.get("summary", "")]
         facts = {
@@ -288,7 +299,12 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         }
         if not row and not top_keywords and not relevant_gaps:
             continue  # nothing grounded to write from — skip rather than let the AI invent
-        narratives[domain] = generate_competitor_narrative(client.name, client_domain, domain, facts)
+        try:
+            narratives[domain] = generate_competitor_narrative(client.name, client_domain, domain, facts)
+        except Exception:
+            # A single competitor's AI narrative failing (rate limit, API
+            # error, timeout) shouldn't take down the whole report.
+            continue
     return narratives
 
 
