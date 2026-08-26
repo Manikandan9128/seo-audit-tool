@@ -1,0 +1,11 @@
+venv/
+backend/venv/
+__pycache__/
+*.pyc
+.env
+client_secret.json
+backend/storage/reports/*
+!backend/storage/reports/.gitkeep
+node_modules/
+frontend/dist/
+.DS_Store
