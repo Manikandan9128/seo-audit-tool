@@ -98,20 +98,43 @@ def _parse_abbrev_number(text: str) -> float | None:
 
 def _pdf_section(text: str, start_marker: str, end_markers: list[str]) -> str:
     """Slice out the text between one Domain Overview PDF section heading and
-    whichever of the given following headings comes first."""
-    start = text.find(start_marker)
-    if start == -1:
+    whichever of the given following headings comes first. Markers are
+    matched with flexible whitespace (\\s+ instead of a literal space) since
+    pdfplumber's text extraction doesn't always preserve exact spacing
+    between words in bold/tight-kerned headings."""
+    start_re = re.compile(re.escape(start_marker).replace(r"\ ", r"\s+"), re.IGNORECASE)
+    start_match = start_re.search(text)
+    if not start_match:
         return ""
-    start += len(start_marker)
+    start = start_match.end()
     end = len(text)
     for marker in end_markers:
-        idx = text.find(marker, start)
-        if idx != -1:
-            end = min(end, idx)
+        end_re = re.compile(re.escape(marker).replace(r"\ ", r"\s+"), re.IGNORECASE)
+        end_match = end_re.search(text, start)
+        if end_match:
+            end = min(end, end_match.start())
     return text[start:end]
 
 
-def _parse_domain_overview_text(text: str) -> dict | None:
+def _first_number(section: str, pattern: str) -> float | None:
+    m = re.search(pattern, section)
+    return _parse_abbrev_number(m.group(1)) if m else None
+
+
+def _parse_traffic_summary_column(text: str) -> dict:
+    """Pulls Traffic/Keywords/Traffic Cost out of one "___ Search: Summary"
+    card's isolated text (already sliced to just that column — see the
+    left/right page crop in _parse_domain_overview_text, which exists
+    because Organic and Paid summary cards sit side by side and a plain
+    top-to-bottom text join can interleave their lines)."""
+    return {
+        "traffic": _first_number(text, r"([\d.,]+[KMB]?)\s*[\d.\-]*\s*%?\s*TRAFFIC"),
+        "keywords": _first_number(text, r"Keywords\s+([\d.,]+[KMB]?)"),
+        "cost": _first_number(text, r"Traffic Cost\s+\$?\s*([\d.,]+[KMB]?)"),
+    }
+
+
+def _parse_domain_overview_text(text: str, page2_left: str = "", page2_right: str = "") -> dict | None:
     if "Domain Overview" not in text:
         return None
 
@@ -120,28 +143,45 @@ def _parse_domain_overview_text(text: str) -> dict | None:
         return None
     domain = domain_match.group(1)
 
-    organic = _pdf_section(text, "Organic Search: Summary", ["Paid Search: Summary"])
-    paid = _pdf_section(text, "Paid Search: Summary", ["Backlinks: Summary"])
+    # Organic and Paid Summary cards render side by side on the page — a
+    # plain top-to-bottom text join can interleave their lines, so prefer
+    # the already-isolated left/right column text when given (real PDF
+    # path). Only trust the crop when it's unambiguous — exactly one side
+    # has "Organic" and the other has "Paid" — otherwise a boundary that
+    # bled into the wrong column could silently swap the two, which is
+    # worse than not cropping at all; fall back to whole-page section
+    # slicing (also what plain sequential-layout tests exercise).
+    left_organic, right_organic = "Organic" in page2_left, "Organic" in page2_right
+    left_paid, right_paid = "Paid" in page2_left, "Paid" in page2_right
+    if left_organic and right_paid and not (left_paid or right_organic):
+        organic_col, paid_col = page2_left, page2_right
+    elif right_organic and left_paid and not (right_paid or left_organic):
+        organic_col, paid_col = page2_right, page2_left
+    else:
+        organic_col = paid_col = ""
+    organic = organic_col or _pdf_section(text, "Organic Search: Summary", ["Paid Search: Summary"])
+    paid = paid_col or _pdf_section(text, "Paid Search: Summary", ["Backlinks: Summary"])
     backlinks = _pdf_section(text, "Backlinks: Summary", ["Organic Search: Keywords By Country", "Paid Search: Ad Keywords"])
-    branded = _pdf_section(text, "Branded vs Non-Branded", ["Organic Search: Branded Traffic Trend", "Paid search traffic", "Backlinks\n"])
+    branded = _pdf_section(
+        text, "Branded vs Non-Branded", ["Organic Search: Branded Traffic Trend", "Paid search traffic", "Backlinks"]
+    )
 
-    def _first_number(section: str, pattern: str) -> float | None:
-        m = re.search(pattern, section)
-        return _parse_abbrev_number(m.group(1)) if m else None
+    organic_fields = _parse_traffic_summary_column(organic)
+    paid_fields = _parse_traffic_summary_column(paid)
 
     row = {
         "domain": domain,
-        "organic_traffic": _first_number(organic, r"([\d.,]+[KMB]?)\s*[\d.\-]*%?\s*TRAFFIC"),
-        "organic_keywords": _first_number(organic, r"Keywords\s+([\d.,]+[KMB]?)"),
-        "organic_cost": _first_number(organic, r"Traffic Cost\s+\$?([\d.,]+[KMB]?)"),
-        "paid_traffic": _first_number(paid, r"([\d.,]+[KMB]?)\s*[\d.\-]*%?\s*TRAFFIC"),
-        "paid_keywords": _first_number(paid, r"Keywords\s+([\d.,]+[KMB]?)"),
-        "paid_cost": _first_number(paid, r"Traffic Cost\s+\$?([\d.,]+[KMB]?)"),
-        "backlinks_total": _first_number(backlinks, r"([\d.,]+[KMB]?)\s*TOTAL BACKLINKS"),
-        "referring_domains": _first_number(backlinks, r"Referring Domains\s+([\d.,]+[KMB]?)"),
+        "organic_traffic": organic_fields["traffic"],
+        "organic_keywords": organic_fields["keywords"],
+        "organic_cost": organic_fields["cost"],
+        "paid_traffic": paid_fields["traffic"],
+        "paid_keywords": paid_fields["keywords"],
+        "paid_cost": paid_fields["cost"],
+        "backlinks_total": _first_number(backlinks, r"([\d.,]+[KMB]?)\s*TOTAL\s*BACKLINKS"),
+        "referring_domains": _first_number(backlinks, r"Referring\s*Domains\s+([\d.,]+[KMB]?)"),
     }
-    branded_pct = re.search(r"([\d.]+)\s*%\s*\n?\s*Branded Traffic", branded)
-    nonbranded_pct = re.search(r"([\d.]+)\s*%\s*\n?\s*Non-Branded Traffic", branded)
+    branded_pct = re.search(r"([\d.]+)\s*%\s*Branded\s*Traffic", branded)
+    nonbranded_pct = re.search(r"([\d.]+)\s*%\s*Non-?Branded\s*Traffic", branded)
     if branded_pct:
         row["branded_pct"] = f"{branded_pct.group(1)}%"
     if nonbranded_pct:
@@ -160,7 +200,20 @@ def parse_domain_overview_pdf(content: bytes) -> dict | None:
     like a Domain Overview PDF."""
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    return _parse_domain_overview_text(text)
+        page2_left = page2_right = ""
+        if len(pdf.pages) > 1:
+            page2 = pdf.pages[1]
+            # Split at the actual x-position of the "Paid" word rather than
+            # an assumed page-width midpoint — page margins mean the true
+            # column boundary rarely sits at width/2, and a fixed guess
+            # either bleeds into the right column or clips its first
+            # characters (confirmed both ways while testing this).
+            paid_word = next((w for w in page2.extract_words() if w["text"] == "Paid"), None)
+            if paid_word:
+                boundary = paid_word["x0"]
+                page2_left = page2.crop((0, 0, boundary, page2.height)).extract_text() or ""
+                page2_right = page2.crop((boundary, 0, page2.width, page2.height)).extract_text() or ""
+    return _parse_domain_overview_text(text, page2_left, page2_right)
 
 
 def _read_table(filename: str, content: bytes) -> pd.DataFrame:
