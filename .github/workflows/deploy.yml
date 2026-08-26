@@ -1,0 +1,14 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - run: ssh -o StrictHostKeyChecking=accept-new root@${{ secrets.DEPLOY_HOST }} '/opt/seo-audit-tool/deploy.sh'
