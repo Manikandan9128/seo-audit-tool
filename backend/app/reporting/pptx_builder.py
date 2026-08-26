@@ -1101,7 +1101,10 @@ def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row
     pct_dofollow = round(100 * dofollow / len(backlink_rows)) if backlink_rows else None
 
     ref_domains = {urlparse(r["source_url"]).netloc for r in backlink_rows if r.get("source_url")}
-    domain_scores = [float(r["domain_score"]) for r in backlink_rows if str(r.get("domain_score", "")).strip() not in ("", "nan")]
+    _MISSING = object()
+    domain_scores = [
+        v for v in (_num(r.get("domain_score"), default=_MISSING) for r in backlink_rows) if v is not _MISSING
+    ]
     avg_score = round(sum(domain_scores) / len(domain_scores)) if domain_scores else None
 
     stats = [

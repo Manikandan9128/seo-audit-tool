@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,7 @@ from app.services.tech_stack_service import detect_tech_stack
 from app.services.technical_seo_service import run_multi_page_audit, run_multi_page_audit_async, run_site_audit
 
 router = APIRouter(prefix="/clients", tags=["site-audit"])
+logger = logging.getLogger(__name__)
 
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
@@ -524,17 +526,24 @@ def generate_report(
     logo_bytes = None
     logo_url = (data.get("site_audit") or {}).get("logo_url")
     if logo_url:
-        logo_bytes = fetch_logo_bytes(logo_url)
+        try:
+            logo_bytes = fetch_logo_bytes(logo_url)
+        except Exception:
+            logger.exception("Logo fetch failed for client %s (%s) — continuing without it", client_id, logo_url)
 
     competitor_narratives = _generate_competitor_narratives(client, data)
 
-    pptx_bytes = build_report(
-        client_name=client.name,
-        website_url=client.website_url,
-        logo_bytes=logo_bytes,
-        competitor_narratives=competitor_narratives,
-        **data,
-    )
+    try:
+        pptx_bytes = build_report(
+            client_name=client.name,
+            website_url=client.website_url,
+            logo_bytes=logo_bytes,
+            competitor_narratives=competitor_narratives,
+            **data,
+        )
+    except Exception:
+        logger.exception("PPTX build failed for client %s", client_id)
+        raise HTTPException(status_code=500, detail="Report generation failed while building the PPTX.")
 
     filename = f"{client.name.replace(' ', '-')}-seo-audit.pptx"
     return Response(

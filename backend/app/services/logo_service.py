@@ -45,7 +45,10 @@ def fetch_logo_bytes(logo_url: str) -> bytes | None:
         return None
     try:
         resp = httpx.get(logo_url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT, follow_redirects=True)
-    except httpx.HTTPError:
+    except Exception:
+        # Any failure (bad URL, DNS, TLS, unsupported scheme, etc.) — not
+        # just httpx.HTTPError, which doesn't cover httpx.InvalidURL — falls
+        # back to text-only, matching this function's documented contract.
         return None
     if resp.status_code >= 400:
         return None
