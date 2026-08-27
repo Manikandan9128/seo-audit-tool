@@ -365,8 +365,13 @@ def _gather_report_data(
     if include_analytics and (client.ga4_property_id or client.gsc_site_url):
         creds = _load_credentials(client_id, db)
         if creds:
+            from datetime import date, timedelta
+
             analytics = {}
+            date_range = {}
             if client.ga4_property_id:
+                ga4_start = (date.today() - timedelta(days=30)).isoformat()
+                ga4_end = date.today().isoformat()
                 try:
                     analytics["traffic_overview"] = ga4_service.get_traffic_overview(
                         creds, client.ga4_property_id, "30daysAgo", "today"
@@ -380,11 +385,10 @@ def _gather_report_data(
                     analytics["page_performance"] = ga4_service.get_page_performance(
                         creds, client.ga4_property_id, "30daysAgo", "today"
                     )
+                    date_range["ga4_start"], date_range["ga4_end"] = ga4_start, ga4_end
                 except HttpError:
                     pass
             if client.gsc_site_url:
-                from datetime import date, timedelta
-
                 # Search Console data lags ~2-3 days behind — a range whose
                 # end date is more recent than that reliably comes back
                 # empty (not partial), so clamp regardless of "today".
@@ -394,8 +398,11 @@ def _gather_report_data(
                     analytics["search_queries"] = gsc_service.get_search_analytics(
                         creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=20
                     )
+                    date_range["gsc_start"], date_range["gsc_end"] = gsc_start, gsc_end
                 except HttpError:
                     pass
+            if date_range:
+                analytics["date_range"] = date_range
 
     all_imports = db.query(SemrushImport).filter(SemrushImport.client_id == client_id).all()
 

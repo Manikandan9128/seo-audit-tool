@@ -194,9 +194,30 @@ def _icon_dot(slide, cx, cy, diameter, color):
     return dot
 
 
+def _format_date_range(date_range: dict) -> str:
+    """GA4 and Search Console are pulled with different windows (GSC lags
+    ~3 days, see _gather_report_data) — when both are present and differ,
+    state each explicitly rather than picking one and implying it covers
+    both, since a reader comparing this slide's numbers against their own
+    Search Console pull would otherwise get a mismatch with no explanation."""
+    from datetime import date as _date
+
+    def _fmt(iso: str) -> str:
+        return _date.fromisoformat(iso).strftime("%b %d, %Y")
+
+    ga4_start, ga4_end = date_range.get("ga4_start"), date_range.get("ga4_end")
+    gsc_start, gsc_end = date_range.get("gsc_start"), date_range.get("gsc_end")
+    parts = []
+    if ga4_start and ga4_end:
+        parts.append(f"Analytics: {_fmt(ga4_start)} – {_fmt(ga4_end)}")
+    if gsc_start and gsc_end and (gsc_start, gsc_end) != (ga4_start, ga4_end):
+        parts.append(f"Search Console: {_fmt(gsc_start)} – {_fmt(gsc_end)}")
+    return "  ·  ".join(parts)
+
+
 def add_title_slide(
     prs: Presentation, client_name: str, website_url: str = "", subtitle: str = "Web and SEO Audit",
-    logo_bytes: bytes | None = None,
+    logo_bytes: bytes | None = None, analytics: dict | None = None,
 ):
     slide = _blank_slide(prs)
     _body_bg(slide)  # not used visually but keeps consistency; overwritten below
@@ -251,9 +272,11 @@ def add_title_slide(
 
     from datetime import date
 
+    date_range_text = _format_date_range(analytics["date_range"]) if analytics and analytics.get("date_range") else ""
+    footer_text = f"{date.today().strftime('%B %Y')}   |   Data window — {date_range_text}" if date_range_text else date.today().strftime("%B %Y")
     _textbox(
         slide, Inches(1.5), Inches(5.15), Inches(10), Inches(0.4),
-        date.today().strftime("%B %Y"), size=13, color=RGBColor(0xE0, 0xE0, 0xE0),
+        footer_text, size=13, color=RGBColor(0xE0, 0xE0, 0xE0),
     )
     return slide
 
@@ -1321,7 +1344,7 @@ def _build_report(
     prs.slide_width = SLIDE_W
     prs.slide_height = SLIDE_H
 
-    add_title_slide(prs, client_name, website_url, logo_bytes=logo_bytes)
+    add_title_slide(prs, client_name, website_url, logo_bytes=logo_bytes, analytics=analytics)
 
     if company_overview:
         add_company_overview_extracted_slide(prs, client_name, company_overview)
