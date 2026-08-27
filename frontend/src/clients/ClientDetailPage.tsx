@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import SiteAuditHistory from "../components/SiteAuditHistory";
@@ -86,6 +86,49 @@ export default function ClientDetailPage() {
   const [techStack, setTechStack] = useState<any>(null);
   const [techStackLoading, setTechStackLoading] = useState(false);
   const [techStackMsg, setTechStackMsg] = useState("");
+
+  const SECTION_OPTIONS = [
+    { key: "overview", label: "Company Overview" },
+    { key: "site_audit", label: "Site Audit" },
+    { key: "all_pages", label: "All Pages" },
+    { key: "pagespeed", label: "PageSpeed Insights" },
+    { key: "tech_stack", label: "Tech Stack & Hosting" },
+    { key: "analytics", label: "Analytics (GA4 / Search Console)" },
+  ] as const;
+  type SectionKey = (typeof SECTION_OPTIONS)[number]["key"];
+
+  const [selectedSections, setSelectedSections] = useState<SectionKey[]>(
+    SECTION_OPTIONS.map((s) => s.key)
+  );
+  const [sectionDropdownOpen, setSectionDropdownOpen] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [hasGenerated, setHasGenerated] = useState(false);
+
+  function toggleSection(key: SectionKey) {
+    setSelectedSections((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+    );
+  }
+
+  async function generateSelectedReport() {
+    setGenerating(true);
+    setError("");
+    try {
+      const tasks: Promise<any>[] = [];
+      if (selectedSections.includes("overview")) tasks.push(loadOverview());
+      if (selectedSections.includes("site_audit")) tasks.push(runSiteAudit());
+      if (selectedSections.includes("all_pages")) tasks.push(runPageAudit());
+      if (selectedSections.includes("pagespeed")) tasks.push(runPageSpeed());
+      if (selectedSections.includes("tech_stack")) tasks.push(loadTechStack());
+      if (selectedSections.includes("analytics") && client?.google_connected) {
+        tasks.push(runAnalyticsReport());
+      }
+      await Promise.all(tasks);
+      setHasGenerated(true);
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   async function loadClient() {
     const res = await api.get(`/clients/${clientId}`);
@@ -300,22 +343,130 @@ export default function ClientDetailPage() {
     downloadReportWithBody(body, true);
   }
 
+  function sectionStatus(key: SectionKey, loading: boolean, hasData: boolean): { label: string; cls: string } {
+    if (!selectedSections.includes(key)) return { label: "Not included", cls: "muted" };
+    if (loading) return { label: "Generating…", cls: "muted" };
+    if (hasData) return { label: "Ready", cls: "success" };
+    return { label: "Pending", cls: "muted" };
+  }
+
+  function SectionCard({
+    sectionKey,
+    title,
+    description,
+    loading,
+    hasData,
+    children,
+  }: {
+    sectionKey: SectionKey;
+    title: string;
+    description: string;
+    loading: boolean;
+    hasData: boolean;
+    children?: ReactNode;
+  }) {
+    const status = sectionStatus(sectionKey, loading, hasData);
+    return (
+      <div
+        className="card"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          borderTop: `3px solid ${hasData ? "var(--success)" : "var(--border-strong)"}`,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 17 }}>{title}</h3>
+          <span className={`badge ${status.cls}`}>{status.label}</span>
+        </div>
+        <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "2px 0 0" }}>{description}</p>
+        {!loading && !hasData && (
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 10, fontStyle: "italic" }}>
+            Not generated yet — check this section and click Generate Report.
+          </p>
+        )}
+        {children}
+      </div>
+    );
+  }
+
   if (!client) return <p>Loading...</p>;
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      <div
+        className="card"
+        style={{
+          position: "sticky",
+          top: 76,
+          zIndex: 20,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          boxShadow: "0 4px 16px rgba(20, 20, 15, 0.06)",
+        }}
+      >
         <div>
-          <h2 style={{ marginBottom: 2 }}>{client.name}</h2>
-          <p style={{ color: "#6b7280", margin: 0 }}>{client.website_url}</p>
+          <p className="eyebrow" style={{ margin: "0 0 4px" }}>
+            Client
+          </p>
+          <h2 style={{ margin: 0 }}>{client.name}</h2>
+          <p style={{ color: "var(--text-muted)", margin: "4px 0 0", fontSize: 13.5 }}>{client.website_url}</p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={openPreview} disabled={previewLoading}>
-            {previewLoading ? "Loading..." : "Preview Report"}
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", position: "relative" }}>
+          <div style={{ position: "relative" }}>
+            <button className="secondary" onClick={() => setSectionDropdownOpen((o) => !o)}>
+              Sections ({selectedSections.length}) ▾
+            </button>
+            {sectionDropdownOpen && (
+              <>
+                <div
+                  onClick={() => setSectionDropdownOpen(false)}
+                  style={{ position: "fixed", inset: 0, zIndex: 10 }}
+                />
+                <div
+                  className="card"
+                  style={{
+                    position: "absolute",
+                    top: "110%",
+                    right: 0,
+                    zIndex: 11,
+                    width: 260,
+                    padding: 12,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    boxShadow: "0 12px 32px rgba(20, 20, 15, 0.14)",
+                  }}
+                >
+                  {SECTION_OPTIONS.map((opt) => (
+                    <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedSections.includes(opt.key)}
+                        onChange={() => toggleSection(opt.key)}
+                      />
+                      {opt.label}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          <button onClick={generateSelectedReport} disabled={generating || selectedSections.length === 0}>
+            {generating ? "Generating..." : "Generate Report"}
           </button>
-          <button onClick={downloadReportDirect} disabled={reportLoading}>
-            {reportLoading ? "Generating..." : "Download Report (PPTX)"}
-          </button>
+          {hasGenerated && (
+            <>
+              <button onClick={openPreview} disabled={previewLoading}>
+                {previewLoading ? "Loading..." : "Preview Report"}
+              </button>
+              <button onClick={downloadReportDirect} disabled={reportLoading}>
+                {reportLoading ? "Generating..." : "Download Report (PPTX)"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -346,138 +497,138 @@ export default function ClientDetailPage() {
         </div>
       )}
 
-      {/* Company Overview — review/edit before generating */}
-      <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 18 }}>Company Overview</h3>
-          <button onClick={loadOverview} disabled={overviewLoading}>
-            {overviewLoading ? "Crawling..." : overview ? "Re-crawl" : "Load Company Overview"}
-          </button>
-        </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
-          Crawls About/Products/legal pages + sitemap for the "About" and "Products &amp; Services" report slides. Edit
-          below, then Download Report uses your edits instead of re-crawling.
-        </p>
-        {overviewMsg && <p style={{ fontSize: 13, color: "#991b1b" }}>{overviewMsg}</p>}
-        {overview && (
-          <div style={{ marginTop: 16 }}>
-            <CompanyOverviewEditor overview={overview} onChange={setOverview} />
-          </div>
-        )}
-      </div>
+      {(selectedSections.includes("overview") ||
+        selectedSections.includes("site_audit") ||
+        selectedSections.includes("pagespeed") ||
+        selectedSections.includes("tech_stack")) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Company Overview — review/edit before generating */}
+          {selectedSections.includes("overview") && (
+            <SectionCard
+              sectionKey="overview"
+              title="Company Overview"
+              description='Crawls About/Products/legal pages + sitemap for the "About" and "Products & Services" report slides. Edit below, then Download Report uses your edits instead of re-crawling.'
+              loading={overviewLoading}
+              hasData={!!overview}
+            >
+              {overviewMsg && <p style={{ fontSize: 13, color: "#991b1b" }}>{overviewMsg}</p>}
+              {overview && (
+                <div style={{ marginTop: 16 }}>
+                  <CompanyOverviewEditor overview={overview} onChange={setOverview} />
+                </div>
+              )}
+            </SectionCard>
+          )}
 
-      {/* Site Audit */}
-      <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 18 }}>Site Audit</h3>
-          <button onClick={runSiteAudit} disabled={auditLoading}>
-            {auditLoading ? "Running..." : "Run Site Audit"}
-          </button>
-        </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
-          Checks HTTPS, robots.txt, sitemap, titles, meta tags — no login required.
-        </p>
-
-        <SiteAuditHistory clientId={clientId!} refreshKey={auditHistoryKey} />
-      </div>
-
-      {/* Multi-page audit */}
-      <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 18 }}>All Pages</h3>
-          <button onClick={runPageAudit} disabled={pageAuditLoading}>
-            {pageAuditLoading ? "Crawling..." : "Check All Pages"}
-          </button>
-        </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
-          Crawls every page listed in the sitemap and checks title/meta description on each — not just the homepage.
-        </p>
-
-        {pageAuditLoading && pageAuditProgress && (
-          <p style={{ fontSize: 13, marginTop: 8, color: "var(--text-muted)" }}>
-            Checked {pageAuditProgress.checked}
-            {pageAuditProgress.total ? ` / ${pageAuditProgress.total}` : ""} pages...
-          </p>
-        )}
-
-        {pageAuditResult && (
-          <div style={{ marginTop: 20 }}>
-            <PageAuditTable result={pageAuditResult} />
-          </div>
-        )}
-      </div>
-
-      {/* PageSpeed Insights */}
-      <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 18 }}>PageSpeed Insights</h3>
-          <button onClick={runPageSpeed} disabled={psiLoading}>
-            {psiLoading ? "Running..." : "Run PageSpeed Insights"}
-          </button>
-        </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
-          Lighthouse scores and Core Web Vitals for mobile and desktop — no login required.
-        </p>
-
-        {psiMobile && (
-          <div style={{ marginTop: 20 }}>
-            <PageSpeedReport mobile={psiMobile} desktop={psiDesktop} />
-          </div>
-        )}
-      </div>
-
-      {/* Tech Stack & Hosting */}
-      <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 18 }}>Tech Stack &amp; Hosting</h3>
-          <button onClick={loadTechStack} disabled={techStackLoading}>
-            {techStackLoading ? "Detecting..." : "Detect Tech Stack"}
-          </button>
-        </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
-          Response headers, DNS/PTR records, and HTML markers — CMS, framework, hosting, CDN, analytics. No login required.
-        </p>
-        {techStackMsg && <p style={{ fontSize: 13, color: "#991b1b" }}>{techStackMsg}</p>}
-        {techStack && (
-          <div style={{ marginTop: 16 }}>
-            <div className="metric-grid">
-              <div className="metric">
-                <div className="label">Hostname</div>
-                <div className="value" style={{ fontSize: 14 }}>{techStack.hostname || "—"}</div>
+          {/* Site Audit */}
+          {selectedSections.includes("site_audit") && (
+            <SectionCard
+              sectionKey="site_audit"
+              title="Site Audit"
+              description="Checks HTTPS, robots.txt, sitemap, titles, meta tags — no login required."
+              loading={auditLoading}
+              hasData={true}
+            >
+              <div style={{ marginTop: 12 }}>
+                <SiteAuditHistory clientId={clientId!} refreshKey={auditHistoryKey} />
               </div>
-              <div className="metric">
-                <div className="label">IP address</div>
-                <div className="value" style={{ fontSize: 14 }}>{techStack.ip || "—"}</div>
-              </div>
-              <div className="metric">
-                <div className="label">Reverse DNS</div>
-                <div className="value" style={{ fontSize: 13 }}>{techStack.reverse_dns || "—"}</div>
-              </div>
-              <div className="metric">
-                <div className="label">HTTPS</div>
-                <div className={`value ${techStack.https ? "good" : "bad"}`}>{techStack.https ? "Yes" : "No"}</div>
-              </div>
+            </SectionCard>
+          )}
+
+          {/* PageSpeed Insights */}
+          {selectedSections.includes("pagespeed") && (
+            <SectionCard
+              sectionKey="pagespeed"
+              title="PageSpeed Insights"
+              description="Lighthouse scores and Core Web Vitals for mobile and desktop — no login required."
+              loading={psiLoading}
+              hasData={!!psiMobile}
+            >
+              {psiMobile && (
+                <div style={{ marginTop: 16 }}>
+                  <PageSpeedReport mobile={psiMobile} desktop={psiDesktop} />
+                </div>
+              )}
+            </SectionCard>
+          )}
+
+          {/* Tech Stack & Hosting */}
+          {selectedSections.includes("tech_stack") && (
+            <SectionCard
+              sectionKey="tech_stack"
+              title="Tech Stack & Hosting"
+              description="Response headers, DNS/PTR records, and HTML markers — CMS, framework, hosting, CDN, analytics. No login required."
+              loading={techStackLoading}
+              hasData={!!techStack}
+            >
+              {techStackMsg && <p style={{ fontSize: 13, color: "#991b1b" }}>{techStackMsg}</p>}
+              {techStack && (
+                <div style={{ marginTop: 16 }}>
+                  <div className="metric-grid">
+                    <div className="metric">
+                      <div className="label">Hostname</div>
+                      <div className="value" style={{ fontSize: 14 }}>{techStack.hostname || "—"}</div>
+                    </div>
+                    <div className="metric">
+                      <div className="label">IP address</div>
+                      <div className="value" style={{ fontSize: 14 }}>{techStack.ip || "—"}</div>
+                    </div>
+                    <div className="metric">
+                      <div className="label">Reverse DNS</div>
+                      <div className="value" style={{ fontSize: 13 }}>{techStack.reverse_dns || "—"}</div>
+                    </div>
+                    <div className="metric">
+                      <div className="label">HTTPS</div>
+                      <div className={`value ${techStack.https ? "good" : "bad"}`}>{techStack.https ? "Yes" : "No"}</div>
+                    </div>
+                  </div>
+                  {techStack.detected?.length > 0 && (
+                    <div className="card" style={{ marginTop: 16 }}>
+                      <table>
+                        <thead>
+                          <tr><th>Technology</th><th>Category</th></tr>
+                        </thead>
+                        <tbody>
+                          {techStack.detected.map((d: any) => (
+                            <tr key={d.name}>
+                              <td>{d.name}</td>
+                              <td style={{ textTransform: "capitalize" }}>{d.category}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </SectionCard>
+          )}
+        </div>
+      )}
+
+      {/* Multi-page audit — full width, has a wide table */}
+      {selectedSections.includes("all_pages") && (
+        <SectionCard
+          sectionKey="all_pages"
+          title="All Pages"
+          description="Crawls every page listed in the sitemap and checks title/meta description on each — not just the homepage."
+          loading={pageAuditLoading}
+          hasData={!!pageAuditResult}
+        >
+          {pageAuditLoading && pageAuditProgress && (
+            <p style={{ fontSize: 13, marginTop: 8, color: "var(--text-muted)" }}>
+              Checked {pageAuditProgress.checked}
+              {pageAuditProgress.total ? ` / ${pageAuditProgress.total}` : ""} pages...
+            </p>
+          )}
+
+          {pageAuditResult && (
+            <div style={{ marginTop: 20 }}>
+              <PageAuditTable result={pageAuditResult} />
             </div>
-            {techStack.detected?.length > 0 && (
-              <div className="card" style={{ marginTop: 16 }}>
-                <table>
-                  <thead>
-                    <tr><th>Technology</th><th>Category</th></tr>
-                  </thead>
-                  <tbody>
-                    {techStack.detected.map((d: any) => (
-                      <tr key={d.name}>
-                        <td>{d.name}</td>
-                        <td style={{ textTransform: "capitalize" }}>{d.category}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+          )}
+        </SectionCard>
+      )}
 
       {/* Semrush uploads — one for our domain, one for competitors */}
       <SemrushImportCard
@@ -576,13 +727,17 @@ export default function ClientDetailPage() {
                     onChange={(e) => setAnalyticsEnd(e.target.value)}
                   />
                 </div>
-                <button onClick={runAnalyticsReport} disabled={analyticsLoading}>
-                  {analyticsLoading ? "Loading..." : "Run GA4 / Search Console Report"}
-                </button>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  Included when "Analytics" is checked in Sections and Generate Report is run.
+                </span>
               </div>
             )}
 
-            {analyticsResult && (
+            {selectedSections.includes("analytics") && analyticsLoading && (
+              <p style={{ fontSize: 13, marginTop: 8 }}>Loading...</p>
+            )}
+
+            {selectedSections.includes("analytics") && analyticsResult && (
               <div style={{ marginTop: 20 }}>
                 <AnalyticsReport data={analyticsResult} />
               </div>
