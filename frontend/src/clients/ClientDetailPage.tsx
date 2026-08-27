@@ -518,82 +518,145 @@ export default function ClientDetailPage() {
         </div>
       </div>
 
-      <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <p className="eyebrow" style={{ margin: 0 }}>Getting started</p>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-          {[
-            {
-              n: 1,
-              label: "Connect Google (GA4 / Search Console)",
-              hint: "Optional — enables the Analytics section",
-              done: client.google_connected && !!(client.ga4_property_id || client.gsc_site_url),
-              onClick: () => document.getElementById("google-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
-            },
-            {
-              n: 2,
-              label: "Upload Semrush data",
-              hint: "Optional — competitor & keyword slides",
-              done: imports.length > 0,
-              onClick: () => document.getElementById("semrush-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
-            },
-            {
-              n: 3,
-              label: "Pick sections & Generate Report",
-              hint: "Runs every checked section above",
-              done: hasGenerated,
-              onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
-            },
-            {
-              n: 4,
-              label: "Preview & Download",
-              hint: "Review, then export the PPTX",
-              done: hasDownloaded,
-              onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
-            },
-          ].map((step) => (
-            <button
-              key={step.n}
-              onClick={step.onClick}
-              style={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 10,
-                textAlign: "left",
-                background: "none",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-                minWidth: 220,
-                flex: "1 1 220px",
-              }}
-            >
-              <span
+      {(() => {
+        const steps = [
+          {
+            n: 1,
+            label: "Connect Google (GA4 / Search Console)",
+            hint: "Optional — enables the Analytics section",
+            done: client.google_connected && !!(client.ga4_property_id || client.gsc_site_url),
+            onClick: () => document.getElementById("google-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+          },
+          {
+            n: 2,
+            label: "Upload Semrush data",
+            hint: "Optional — competitor & keyword slides",
+            done: imports.length > 0,
+            onClick: () => document.getElementById("semrush-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+          },
+          {
+            n: 3,
+            label: "Pick sections & Generate Report",
+            hint: "Runs every checked section above",
+            done: hasGenerated,
+            onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
+          },
+          {
+            n: 4,
+            label: "Preview & Download",
+            hint: "Review, then export the PPTX",
+            done: hasDownloaded,
+            onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
+          },
+        ];
+        const doneCount = steps.filter((s) => s.done).length;
+        return (
+          <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <p className="eyebrow" style={{ margin: 0 }}>Getting started</p>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>
+                {doneCount} of {steps.length} done
+              </span>
+            </div>
+            <div style={{ height: 4, borderRadius: 2, background: "var(--border-strong)", overflow: "hidden" }}>
+              <div
                 style={{
-                  flexShrink: 0,
-                  width: 24,
-                  height: 24,
-                  borderRadius: "50%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: step.done ? "#fff" : "var(--text-muted)",
-                  background: step.done ? "var(--success)" : "var(--border-strong)",
+                  height: "100%",
+                  width: `${(doneCount / steps.length) * 100}%`,
+                  background: "var(--success)",
+                  transition: "width 0.3s ease",
+                }}
+              />
+            </div>
+            <div style={{ position: "relative", overflowX: "auto", paddingBottom: 4 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `repeat(${steps.length}, minmax(140px, 1fr))`,
+                  minWidth: 560,
                 }}
               >
-                {step.done ? "✓" : step.n}
-              </span>
-              <span>
-                <span style={{ display: "block", fontSize: 13.5, fontWeight: 600, color: step.done ? "var(--text-muted)" : "inherit" }}>
-                  {step.label}
-                </span>
-                <span style={{ display: "block", fontSize: 12, color: "var(--text-muted)" }}>{step.hint}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+                <div
+                  style={{
+                    gridColumn: `1 / ${steps.length + 1}`,
+                    gridRow: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    height: 24,
+                    padding: "0 12px",
+                  }}
+                  aria-hidden
+                >
+                  {steps.slice(1).map((step, i) => (
+                    <div
+                      key={step.n}
+                      style={{
+                        flex: 1,
+                        height: 2,
+                        marginLeft: 12,
+                        marginRight: 12,
+                        background: steps[i].done ? "var(--success)" : "var(--border-strong)",
+                      }}
+                    />
+                  ))}
+                </div>
+                {steps.map((step) => (
+                  <div
+                    key={step.n}
+                    style={{
+                      gridRow: 1,
+                      display: "flex",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        width: 24,
+                        height: 24,
+                        borderRadius: "50%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: step.done ? "#fff" : "var(--text-muted)",
+                        background: step.done ? "var(--success)" : "var(--border-strong)",
+                        zIndex: 1,
+                      }}
+                    >
+                      {step.done ? "✓" : step.n}
+                    </span>
+                  </div>
+                ))}
+                {steps.map((step) => (
+                  <button
+                    key={step.n}
+                    onClick={step.onClick}
+                    style={{
+                      gridRow: 2,
+                      marginTop: 8,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      textAlign: "center",
+                      background: "none",
+                      border: "none",
+                      padding: "0 8px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 13.5, fontWeight: 600, color: step.done ? "var(--text-muted)" : "inherit" }}>
+                      {step.label}
+                    </span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{step.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {previewData && (
         <ReportPreviewModal

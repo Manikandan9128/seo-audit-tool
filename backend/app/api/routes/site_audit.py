@@ -438,6 +438,17 @@ def _gather_report_data(
     # which intentionally wants both own + competitor rows).
     keyword_rows_all = _all_rows("keyword_gap", own_only=True)
     own_backlink_rows = _all_rows("backlinks", own_only=True)
+    # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
+    # checks) — a real multi-page crawl result, richer than our own
+    # homepage-only + 20-page checks. When present, the SEO Issues slide
+    # prefers this over site_audit_result["issues"] / page_audit issues.
+    site_audit_issues_rows = _all_rows("site_audit_issues", own_only=True)
+    # Semrush Site Audit's own crawl-health summary (Site Health %, AI Search
+    # Health %, Blocked/Redirect/Have issues/Broken/Healthy page counts) — a
+    # real full-site crawl, replaces our own homepage + 20-page approximation
+    # on the Site Health slide when uploaded.
+    site_audit_overview_rows = _all_rows("site_audit_overview", own_only=True)
+    site_audit_overview = site_audit_overview_rows[-1] if site_audit_overview_rows else None
 
     # Competitor Analysis comparison table: prefer Domain Overview rows (own +
     # competitors) when uploaded — they carry DR/backlinks/top-countries/
@@ -497,6 +508,8 @@ def _gather_report_data(
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
+        "site_audit_issues": site_audit_issues_rows or None,
+        "site_audit_overview": site_audit_overview,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,

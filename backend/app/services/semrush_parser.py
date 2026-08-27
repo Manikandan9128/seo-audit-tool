@@ -84,6 +84,19 @@ SITE_AUDIT_PAGES_COLUMN_ALIASES = {
     "hreflang_issues": ["hreflang issues", "hreflang_issues"],
 }
 
+# Semrush Site Audit "Issues" export (the "Top Issues" overview table, every
+# row not just the top 5 shown on the PDF) — one row per issue TYPE across the
+# whole crawl, not per page. Distinct from SITE_AUDIT_PAGES_COLUMN_ALIASES,
+# which is one row per URL.
+SITE_AUDIT_ISSUES_COLUMN_ALIASES = {
+    "issue_id": ["issue id", "issue_id"],
+    "issue_type": ["issue type", "issue_type"],
+    "issue": ["issue"],
+    "failed_checks": ["failed checks", "failed_checks"],
+    "total_checks": ["total checks", "total_checks"],
+    "changed_from_last_audit": ["changed from last audit", "changed_from_last_audit"],
+}
+
 
 def _parse_abbrev_number(text: str) -> float | None:
     """'12.7K' -> 12700.0, '599.7k' -> 599700.0, '$60.4K' -> 60400.0. Semrush's
@@ -319,6 +332,41 @@ def _parse_domain_overview_text(
     return {k: v for k, v in row.items() if v is not None}
 
 
+_CRAWLED_PAGE_CATEGORIES = ["Blocked", "Redirect", "Have issues", "Broken", "Healthy"]
+
+
+def parse_site_audit_overview_pdf(content: bytes) -> dict | None:
+    """Parses Semrush's "Site Audit: Overview" PDF export — a real full-site
+    crawl's Site Health %, AI Search Health %, and the Blocked/Redirect/Have
+    issues/Broken/Healthy page breakdown. Distinct from the Domain Overview
+    PDF (traffic/backlinks/competitors) and from the Site Audit issues.csv
+    (per-issue-type rollup) — this is the crawl-health summary only. Returns
+    None if this doesn't look like a Site Audit Overview PDF."""
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    health_match = re.search(r"Site Health\s+AI Search Health\s*\n\s*(\d+)%\s+(\d+)%", text)
+    if not health_match:
+        return None
+
+    result = {
+        "site_health_pct": int(health_match.group(1)),
+        "ai_search_health_pct": int(health_match.group(2)),
+    }
+    for category in _CRAWLED_PAGE_CATEGORIES:
+        key = category.lower().replace(" ", "_")
+        match = re.search(rf"{re.escape(category)}\s+([\d.]+)%\s+(\d+)", text)
+        if match:
+            result[f"{key}_pct"] = float(match.group(1))
+            result[f"{key}_count"] = int(match.group(2))
+
+    total_match = re.search(r"Total\s+(\d+)", text)
+    if not total_match:
+        return None
+    result["pages_total"] = int(total_match.group(1))
+    return result
+
+
 def parse_domain_overview_pdf(content: bytes) -> dict | None:
     """Parses Semrush's "Domain Overview (Desktop)" PDF export — the
     single-domain report available on every plan (no Bulk Analysis needed).
@@ -366,8 +414,15 @@ def parse_domain_overview_pdf(content: bytes) -> dict | None:
 
 def _read_table(filename: str, content: bytes) -> pd.DataFrame:
     buffer = io.BytesIO(content)
-    if filename.lower().endswith((".xlsx", ".xls")):
+    name = filename.lower()
+    if name.endswith((".xlsx", ".xls")):
         return pd.read_excel(buffer)
+    if name.endswith(".json"):
+        return pd.read_json(buffer)
+    if name.endswith(".xml"):
+        return pd.read_xml(buffer, parser="etree")
+    if name.endswith(".tsv"):
+        return pd.read_csv(buffer, sep="\t")
     # Semrush CSV exports are typically semicolon or comma separated
     try:
         return pd.read_csv(buffer, sep=None, engine="python")
@@ -403,11 +458,16 @@ def detect_import_type(df: pd.DataFrame) -> str:
         return "domain_overview"
     if {"page url", "page_url"} & cols and ({"http status code", "http_status_code"} & cols):
         return "site_audit_pages"
+    if "issue" in cols and ({"failed checks", "failed_checks"} & cols) and ({"total checks", "total_checks"} & cols):
+        return "site_audit_issues"
     return "unknown"
 
 
 def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
     if filename.lower().endswith(".pdf"):
+        overview_row = parse_site_audit_overview_pdf(content)
+        if overview_row is not None:
+            return "site_audit_overview", {"row_count": 1, "rows": [overview_row]}
         row = parse_domain_overview_pdf(content)
         if row is None:
             return "unknown", {"row_count": 0, "rows": []}
@@ -428,6 +488,8 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
         mapped = _map_columns(df, DOMAIN_OVERVIEW_COLUMN_ALIASES)
     elif import_type == "site_audit_pages":
         mapped = _map_columns(df, SITE_AUDIT_PAGES_COLUMN_ALIASES)
+    elif import_type == "site_audit_issues":
+        mapped = _map_columns(df, SITE_AUDIT_ISSUES_COLUMN_ALIASES)
     else:
         mapped = df
 

@@ -98,7 +98,7 @@ export default function SemrushImportCard({
       <h3 style={{ marginTop: 0 }}>{title}</h3>
       <p style={{ color: "#6b7280", fontSize: 13 }}>{description}</p>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <input type="file" accept=".csv,.xlsx,.xls,.pdf" multiple onChange={onFileChange} />
+        <input type="file" accept=".csv,.xlsx,.xls,.pdf,.json,.xml,.tsv" multiple onChange={onFileChange} />
         {!isOwnSite && (
           <input
             type="text"
@@ -113,6 +113,9 @@ export default function SemrushImportCard({
         </button>
         <button onClick={copyMcpPrompt}>Fetch via Claude (Semrush MCP)</button>
       </div>
+      <p style={{ fontSize: 12, color: "#6b7280", marginTop: 6, marginBottom: 0 }}>
+        Accepted formats: CSV, XLSX, XLS, PDF, JSON, XML, TSV
+      </p>
       {msg && <p style={{ fontSize: 13, marginTop: 8 }}>{msg}</p>}
 
       {rows.length > 0 && (

@@ -410,27 +410,62 @@ def _issue_row(slide, left, top, width, text, severity="warn"):
     _textbox(slide, left + Inches(0.25), top, width - Inches(0.25), Inches(0.35), text, size=13)
 
 
-def add_site_health_slide(prs: Presentation, audit: dict, page_audit: dict | None):
+_CRAWLED_PAGE_CATEGORIES = ["Blocked", "Redirect", "Have issues", "Broken", "Healthy"]
+
+
+def add_site_health_slide(prs: Presentation, audit: dict, page_audit: dict | None, site_audit_overview: dict | None = None):
     slide = _blank_slide(prs)
     _content_header(slide, "Understanding Current Scenario")
 
-    pages_checked = page_audit.get("pages_checked") if page_audit else None
-    pages_with_issues = page_audit.get("pages_with_issues") if page_audit else None
-    healthy = (pages_checked - pages_with_issues) if pages_checked is not None and pages_with_issues is not None else None
-    health_pct = round(100 * healthy / pages_checked) if pages_checked else None
-
     card1 = _card(slide, Inches(0.6), Inches(1.2), Inches(3.6), Inches(2.6))
     _textbox(slide, Inches(0.8), Inches(1.35), Inches(3), Inches(0.4), "Crawled Pages", size=15, bold=True)
-    _textbox(slide, Inches(0.8), Inches(1.8), Inches(2.5), Inches(0.6), str(pages_checked if pages_checked is not None else "—"), size=32, bold=True, color=_accent())
-    _icon_dot(slide, Inches(0.85), Inches(2.58), Inches(0.13), GOOD)
-    _textbox(slide, Inches(1.08), Inches(2.5), Inches(3.0), Inches(0.35), f"Healthy: {healthy if healthy is not None else '—'}", size=13, color=TEXT_DARK)
-    _icon_dot(slide, Inches(0.85), Inches(2.93), Inches(0.13), WARN)
-    _textbox(slide, Inches(1.08), Inches(2.85), Inches(3.0), Inches(0.35), f"With issues: {pages_with_issues if pages_with_issues is not None else '—'}", size=13, color=TEXT_DARK)
+
+    if site_audit_overview:
+        # Real full-site crawl from Semrush Site Audit — strictly more
+        # accurate than our own homepage + 20-page approximation below.
+        health_pct = site_audit_overview.get("site_health_pct")
+        _textbox(
+            slide, Inches(0.8), Inches(1.68), Inches(2.5), Inches(0.5),
+            str(site_audit_overview.get("pages_total", "—")), size=26, bold=True, color=_accent(),
+        )
+        category_colors = {
+            "blocked": TEXT_MUTED,
+            "redirect": RGBColor(0x5B, 0x5F, 0xE0),
+            "have_issues": WARN,
+            "broken": BAD,
+            "healthy": GOOD,
+        }
+        y = Inches(2.18)
+        for category in _CRAWLED_PAGE_CATEGORIES:
+            key = category.lower().replace(" ", "_")
+            count = site_audit_overview.get(f"{key}_count")
+            pct = site_audit_overview.get(f"{key}_pct")
+            if count is None:
+                continue
+            _icon_dot(slide, Inches(0.85), y + Inches(0.06), Inches(0.11), category_colors[key])
+            _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count} ({pct}%)", size=11.5, color=TEXT_DARK)
+            y += Inches(0.29)
+    else:
+        pages_checked = page_audit.get("pages_checked") if page_audit else None
+        pages_with_issues = page_audit.get("pages_with_issues") if page_audit else None
+        healthy = (pages_checked - pages_with_issues) if pages_checked is not None and pages_with_issues is not None else None
+        health_pct = round(100 * healthy / pages_checked) if pages_checked else None
+
+        _textbox(slide, Inches(0.8), Inches(1.8), Inches(2.5), Inches(0.6), str(pages_checked if pages_checked is not None else "—"), size=32, bold=True, color=_accent())
+        _icon_dot(slide, Inches(0.85), Inches(2.58), Inches(0.13), GOOD)
+        _textbox(slide, Inches(1.08), Inches(2.5), Inches(3.0), Inches(0.35), f"Healthy: {healthy if healthy is not None else '—'}", size=13, color=TEXT_DARK)
+        _icon_dot(slide, Inches(0.85), Inches(2.93), Inches(0.13), WARN)
+        _textbox(slide, Inches(1.08), Inches(2.85), Inches(3.0), Inches(0.35), f"With issues: {pages_with_issues if pages_with_issues is not None else '—'}", size=13, color=TEXT_DARK)
 
     card2 = _card(slide, Inches(4.5), Inches(1.2), Inches(3.6), Inches(2.6))
     _textbox(slide, Inches(4.7), Inches(1.35), Inches(3), Inches(0.4), "Site Health", size=15, bold=True)
-    color2 = GOOD if (health_pct or 0) >= 80 else (WARN if (health_pct or 0) >= 50 else BAD)
-    _score_ring(slide, Inches(5.6), Inches(1.85), Inches(1.4), health_pct, "on-page checks")
+    ring_label = "full site crawl" if site_audit_overview else "on-page checks"
+    _score_ring(slide, Inches(5.6), Inches(1.85), Inches(1.4), health_pct, ring_label)
+    if site_audit_overview and site_audit_overview.get("ai_search_health_pct") is not None:
+        _textbox(
+            slide, Inches(4.7), Inches(3.45), Inches(3.2), Inches(0.3),
+            f"AI Search Health: {site_audit_overview['ai_search_health_pct']}%", size=11.5, color=TEXT_MUTED, align=PP_ALIGN.CENTER,
+        )
 
     card3 = _card(slide, Inches(8.4), Inches(1.2), Inches(4.3), Inches(2.6))
     _textbox(slide, Inches(8.6), Inches(1.35), Inches(4), Inches(0.4), "Foundations", size=15, bold=True)
@@ -640,21 +675,34 @@ def add_tech_stack_slide(prs: Presentation, tech_stack: dict):
     return slide
 
 
-def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None):
+def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None, site_audit_issues: list[dict] | None = None):
     slide = _blank_slide(prs)
     _content_header(slide, "SEO Issues")
 
-    issues = list(audit.get("issues", []))
-    if page_audit:
-        for page in page_audit.get("pages", []):
-            for issue in page.get("issues", []):
-                issues.append(f"{issue} — {page['url']}")
-    errors = [i for i in issues if any(k in i.lower() for k in ["not reachable", "https", "robots", "sitemap"])]
-    warnings = [i for i in issues if i not in errors]
+    if site_audit_issues:
+        # Semrush Site Audit's own issue-type rollup — a real full-site crawl
+        # result (hundreds of pages, ~95 issue categories), strictly richer
+        # than our own homepage + 20-page checks below. Prefer it when uploaded.
+        ranked = sorted(site_audit_issues, key=lambda r: r.get("failed_checks") or 0, reverse=True)
+        errors, warnings = [], []
+        for row in ranked:
+            label = f"{row.get('issue', 'Issue')} ({row.get('failed_checks', 0)} pages)"
+            if str(row.get("issue_type", "")).strip().upper() == "ERROR":
+                errors.append(label)
+            else:
+                warnings.append(label)
+    else:
+        issues = list(audit.get("issues", []))
+        if page_audit:
+            for page in page_audit.get("pages", []):
+                for issue in page.get("issues", []):
+                    issues.append(f"{issue} — {page['url']}")
+        errors = [i for i in issues if any(k in i.lower() for k in ["not reachable", "https", "robots", "sitemap"])]
+        warnings = [i for i in issues if i not in errors]
 
     card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
     y = Inches(1.3)
-    if not issues:
+    if not errors and not warnings:
         _textbox(slide, Inches(0.9), y, Inches(10), Inches(0.4), "No issues found on the checked pages.", size=14, color=GOOD)
         return slide
 
@@ -1426,6 +1474,8 @@ def build_report(
     competitor_analysis: dict | None = None,
     domain_strategy: dict | None = None,
     ux_findings: dict | None = None,
+    site_audit_issues: list[dict] | None = None,
+    site_audit_overview: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -1443,7 +1493,7 @@ def build_report(
             client_name, website_url, site_audit, page_audit, psi_mobile, psi_desktop,
             analytics, competitor_rows, keyword_rows, backlink_rows, backlink_row_count,
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
-            competitor_narratives, domain_strategy, ux_findings,
+            competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
         )
     finally:
         _theme["footer"] = ""
@@ -1470,6 +1520,8 @@ def _build_report(
     competitor_narratives: dict[str, dict] | None = None,
     domain_strategy: dict | None = None,
     ux_findings: dict | None = None,
+    site_audit_issues: list[dict] | None = None,
+    site_audit_overview: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -1492,8 +1544,8 @@ def _build_report(
     if site_audit or page_audit:
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if site_audit:
-            add_site_health_slide(prs, site_audit, page_audit)
-            add_seo_issues_slide(prs, site_audit, page_audit)
+            add_site_health_slide(prs, site_audit, page_audit, site_audit_overview)
+            add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
 
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
