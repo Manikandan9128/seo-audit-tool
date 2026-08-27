@@ -23,21 +23,23 @@ def _try_gemini(prompt: str) -> str:
     return (response.text or "").strip()
 
 
-def _try_claude(prompt: str) -> str:
+def _try_claude(prompt: str, max_tokens: int) -> str:
     client = Anthropic(api_key=settings.claude_api_key)
     response = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=4096,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
     return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
-def generate_text(prompt: str) -> tuple[str, str]:
+def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
     """Returns (text, provider_used) — 'gemini' or 'claude'. Tries Gemini
     first when configured, falls back to Claude if Gemini isn't configured
     or its call fails. Raises NoAIProviderConfigured if neither key is set,
-    or if both are set but both calls failed (message includes both errors)."""
+    or if both are set but both calls failed (message includes both errors).
+    max_tokens only affects the Claude path — Gemini has no equivalent cap
+    exposed here and just returns whatever it generates."""
     if not settings.gemini_api_key and not settings.claude_api_key:
         raise NoAIProviderConfigured("No Gemini or Claude API key configured — add one in Settings")
 
@@ -54,7 +56,7 @@ def generate_text(prompt: str) -> tuple[str, str]:
 
     if settings.claude_api_key:
         try:
-            text = _try_claude(prompt)
+            text = _try_claude(prompt, max_tokens)
             if text:
                 return text, "claude"
             errors.append("Claude returned an empty response")
