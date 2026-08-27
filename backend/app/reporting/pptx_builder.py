@@ -1376,8 +1376,13 @@ def _derive_roadmap(
     if domain_strategy:
         roadmap.append(("Foundational", f"Decide the domain strategy first — {domain_strategy['open_question']}"))
 
+    # Every distinct technical issue gets its own line — not just the top 3 —
+    # so a technically-heavy site doesn't lose specific fixes (canonical
+    # tags, viewport meta, sitemap, etc.) just to make room for the newer
+    # Content/AEO-GEO/Authority categories below. The slide itself splits
+    # into two columns if this makes the full list too long for one.
     technical_items = _derive_next_steps(site_audit, page_audit)
-    for item in technical_items[:3]:
+    for item in technical_items:
         roadmap.append(("Technical", item))
     if tech_stack and tech_stack.get("https") is False and not any("HTTPS" in t for _, t in roadmap):
         roadmap.append(("Technical", "Move the site fully to HTTPS before any further SEO work — it's a baseline ranking and trust signal."))
@@ -1408,7 +1413,7 @@ def _derive_roadmap(
     elif competitor_analysis and competitor_analysis.get("issues"):
         roadmap.append(("Authority", "Build referring-domain authority to close the gap the competitor comparison surfaced."))
 
-    return roadmap[:8]
+    return roadmap
 
 
 def add_next_steps_detail_slide(
@@ -1427,21 +1432,38 @@ def add_next_steps_detail_slide(
     roadmap = _derive_roadmap(
         site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy
     )
-    card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
+    card_top, card_height = Inches(1.1), Inches(5.6)
     if not roadmap:
+        _card(slide, Inches(0.6), card_top, Inches(12.1), card_height)
         _textbox(slide, Inches(0.9), Inches(1.3), Inches(10), Inches(0.4), "No outstanding technical issues found.", size=14, color=GOOD)
         return slide
-    for i, (category, step) in enumerate(roadmap):
-        y = Inches(1.3) + Emu(i * Inches(0.65))
-        num = slide.shapes.add_textbox(Inches(0.9), y, Inches(0.4), Inches(0.35))
-        p = num.text_frame.paragraphs[0]
-        r = p.add_run()
-        r.text = f"{i+1}."
-        r.font.bold = True
-        r.font.size = Pt(13)
-        r.font.color.rgb = _accent()
-        _textbox(slide, Inches(1.3), y, Inches(2.0), Inches(0.3), category.upper(), size=9.5, bold=True, color=_accent())
-        _textbox(slide, Inches(1.3), y + Inches(0.24), Inches(11.2), Inches(0.4), step, size=12.5)
+
+    # Two side-by-side containers once the list is too long for one column
+    # (same pattern as the SEO Issues slide) — every distinct fix gets a
+    # slot instead of being truncated to make the list fit one column.
+    if len(roadmap) > 9:
+        half = -(-len(roadmap) // 2)
+        columns = [(roadmap[:half], 0, Inches(0.6), Inches(5.85)), (roadmap[half:], half, Inches(6.85), Inches(5.85))]
+    else:
+        columns = [(roadmap, 0, Inches(0.6), Inches(12.1))]
+
+    for items, offset, left, col_width in columns:
+        _card(slide, left, card_top, col_width, card_height)
+        y = card_top + Inches(0.2)
+        for i, (category, step) in enumerate(items, start=offset):
+            lines = _wrap_lines(step, col_width - Inches(0.9), size_pt=12.5)
+            line_h = Inches(12.5 * 0.02)
+            desc_h = line_h * lines
+            num = slide.shapes.add_textbox(left + Inches(0.3), y, Inches(0.4), Inches(0.3))
+            p = num.text_frame.paragraphs[0]
+            r = p.add_run()
+            r.text = f"{i + 1}."
+            r.font.bold = True
+            r.font.size = Pt(12.5)
+            r.font.color.rgb = _accent()
+            _textbox(slide, left + Inches(0.7), y, col_width - Inches(0.9), Inches(0.22), category.upper(), size=9, bold=True, color=_accent())
+            _textbox(slide, left + Inches(0.7), y + Inches(0.22), col_width - Inches(0.9), desc_h, step, size=12.5)
+            y += Inches(0.22) + desc_h + Inches(0.14)
     return slide
 
 
