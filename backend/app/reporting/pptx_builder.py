@@ -215,6 +215,28 @@ def _format_date_range(date_range: dict) -> str:
     return "  ·  ".join(parts)
 
 
+def _ga4_date_span(date_range: dict | None) -> str:
+    """'Aug 01, 2026 – Aug 27, 2026' for the GA4 window in analytics["date_range"],
+    or '' if unavailable — used so each Analytics slide states which dates its
+    own numbers cover, not just the title slide."""
+    if not date_range or not (date_range.get("ga4_start") and date_range.get("ga4_end")):
+        return ""
+    from datetime import date as _date
+
+    fmt = lambda iso: _date.fromisoformat(iso).strftime("%b %d, %Y")
+    return f"{fmt(date_range['ga4_start'])} – {fmt(date_range['ga4_end'])}"
+
+
+def _gsc_date_span(date_range: dict | None) -> str:
+    """Same as _ga4_date_span but for the Search Console window."""
+    if not date_range or not (date_range.get("gsc_start") and date_range.get("gsc_end")):
+        return ""
+    from datetime import date as _date
+
+    fmt = lambda iso: _date.fromisoformat(iso).strftime("%b %d, %Y")
+    return f"{fmt(date_range['gsc_start'])} – {fmt(date_range['gsc_end'])}"
+
+
 def add_title_slide(
     prs: Presentation, client_name: str, website_url: str = "", subtitle: str = "Web and SEO Audit",
     logo_bytes: bytes | None = None, analytics: dict | None = None,
@@ -682,8 +704,12 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
     if site_audit_issues:
         # Semrush Site Audit's own issue-type rollup — a real full-site crawl
         # result (hundreds of pages, ~95 issue categories), strictly richer
-        # than our own homepage + 20-page checks below. Prefer it when uploaded.
-        ranked = sorted(site_audit_issues, key=lambda r: r.get("failed_checks") or 0, reverse=True)
+        # than our own homepage + 20-page checks below. Prefer it when
+        # uploaded. Rows with 0 failed checks are noise (the issue TYPE was
+        # checked for but never triggered) — drop them so real problems
+        # aren't crowded out by "X (0 pages)" lines.
+        nonzero = [r for r in site_audit_issues if (r.get("failed_checks") or 0) > 0]
+        ranked = sorted(nonzero, key=lambda r: r.get("failed_checks") or 0, reverse=True)
         errors, warnings = [], []
         for row in ranked:
             label = f"{row.get('issue', 'Issue')} ({row.get('failed_checks', 0)} pages)"
@@ -700,24 +726,37 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
         errors = [i for i in issues if any(k in i.lower() for k in ["not reachable", "https", "robots", "sitemap"])]
         warnings = [i for i in issues if i not in errors]
 
-    card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
-    y = Inches(1.3)
     if not errors and not warnings:
-        _textbox(slide, Inches(0.9), y, Inches(10), Inches(0.4), "No issues found on the checked pages.", size=14, color=GOOD)
+        card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
+        _textbox(slide, Inches(0.9), Inches(1.3), Inches(10), Inches(0.4), "No issues found on the checked pages.", size=14, color=GOOD)
         return slide
 
-    for group_label, group_issues, color in [("Errors", errors, BAD), ("Warnings", warnings, WARN)]:
+    # Errors and Warnings each get their own full-height container, side by
+    # side, rather than stacking in one shared card — stacked lists with 10
+    # items per group could run past the bottom of the slide.
+    col_top, col_height = Inches(1.1), Inches(5.6)
+    col_width = Inches(5.85)
+    columns = [("Errors", errors, BAD, Inches(0.6)), ("Warnings", warnings, WARN, Inches(6.85))]
+    row_h = Inches(0.32)
+    max_rows = int((col_height - Inches(0.75)) / row_h)
+
+    for group_label, group_issues, color, col_left in columns:
         if not group_issues:
             continue
-        _textbox(slide, Inches(0.9), y, Inches(4), Inches(0.35), f"{group_label} ({len(group_issues)})", size=14, bold=True, color=color)
-        rule = slide.shapes.add_shape(1, Inches(0.9), y + Inches(0.36), Inches(11.3), Pt(1.5))
+        _card(slide, col_left, col_top, col_width, col_height)
+        y = col_top + Inches(0.2)
+        _textbox(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), Inches(0.35), f"{group_label} ({len(group_issues)})", size=14, bold=True, color=color)
+        rule = slide.shapes.add_shape(1, col_left + Inches(0.3), y + Inches(0.36), col_width - Inches(0.6), Pt(1.5))
         _fill(rule, color)
         rule.shadow.inherit = False
         y += Inches(0.55)
-        for issue in group_issues[:10]:
-            _issue_row(slide, Inches(0.9), y, Inches(11.3), issue, severity=("error" if color == BAD else "warn"))
-            y += Inches(0.38)
-        y += Inches(0.15)
+        shown = group_issues[:max_rows]
+        for issue in shown:
+            _issue_row(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), issue, severity=("error" if color == BAD else "warn"))
+            y += row_h
+        remaining = len(group_issues) - len(shown)
+        if remaining > 0:
+            _textbox(slide, col_left + Inches(0.3), y + Inches(0.05), col_width - Inches(0.6), Inches(0.3), f"+ {remaining} more", size=11, color=TEXT_MUTED)
     return slide
 
 
@@ -748,7 +787,7 @@ def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insigh
     slide = _blank_slide(prs)
     _content_header(slide, title)
     if source:
-        _textbox(slide, Inches(9.5), Inches(0.3), Inches(3.3), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
+        _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
 
     row_cap = 9 if insights else 14
     n_cols = len(headers)
@@ -790,7 +829,9 @@ def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insigh
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Overview")
-    _textbox(slide, Inches(9.5), Inches(0.3), Inches(3.3), Inches(0.4), "Source: Google Analytics 4", size=11, color=TEXT_MUTED)
+    span = _ga4_date_span(analytics.get("date_range"))
+    source_text = f"Source: Google Analytics 4 ({span})" if span else "Source: Google Analytics 4"
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), source_text, size=11, color=TEXT_MUTED)
 
     traffic = (analytics.get("traffic_overview") or {}).get("rows", [])
     if not traffic:
@@ -838,7 +879,7 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     return slide
 
 
-def add_page_performance_slide(prs: Presentation, page_performance: dict):
+def add_page_performance_slide(prs: Presentation, page_performance: dict, date_range: dict | None = None):
     """Top vs. poor performing pages, side by side, with each page's % share
     of total pageviews and how many pages contributed traffic in the period."""
     top_pages = page_performance.get("top_pages") or []
@@ -848,7 +889,9 @@ def add_page_performance_slide(prs: Presentation, page_performance: dict):
 
     slide = _blank_slide(prs)
     _content_header(slide, "Top vs. Poor Performing Pages")
-    _textbox(slide, Inches(9.5), Inches(0.3), Inches(3.3), Inches(0.4), "Source: Google Analytics 4", size=11, color=TEXT_MUTED)
+    span = _ga4_date_span(date_range)
+    source_text = f"Source: Google Analytics 4 ({span})" if span else "Source: Google Analytics 4"
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), source_text, size=11, color=TEXT_MUTED)
 
     total_pages = page_performance.get("total_pages", 0)
     total_views = page_performance.get("total_page_views", 0)
@@ -891,6 +934,18 @@ def add_page_performance_slide(prs: Presentation, page_performance: dict):
     return slide
 
 
+def _fmt_num(v):
+    """Domain Overview numeric fields come back as floats (2400.0, 616.0)
+    even for whole-number counts — strip the trailing '.0' for display."""
+    if v in (None, ""):
+        return ""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return str(int(n)) if n == int(n) else f"{n:.1f}"
+
+
 def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
     """Matches the reference deck's Competitor Analysis table. Renders the
     full DR/Backlinks/Top Countries/Branded-split columns when the rows come
@@ -905,11 +960,11 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
         rows = [
             (
                 r.get("domain", ""),
-                r.get("organic_traffic", ""),
-                r.get("organic_keywords", ""),
-                r.get("paid_traffic", ""),
-                r.get("authority_score", ""),
-                r.get("backlinks_total", ""),
+                _fmt_num(r.get("organic_traffic")),
+                _fmt_num(r.get("organic_keywords")),
+                _fmt_num(r.get("paid_traffic")),
+                _fmt_num(r.get("authority_score")),
+                _fmt_num(r.get("backlinks_total")),
                 r.get("top_countries", ""),
                 r.get("branded_pct", ""),
                 r.get("nonbranded_pct", ""),
@@ -922,9 +977,9 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
         rows = [
             (
                 r.get("domain", ""),
-                r.get("organic_traffic", ""),
-                r.get("organic_keywords", ""),
-                r.get("common_keywords", ""),
+                _fmt_num(r.get("organic_traffic")),
+                _fmt_num(r.get("organic_keywords")),
+                _fmt_num(r.get("common_keywords")),
             )
             for r in competitor_rows[:14]
         ]
@@ -1555,6 +1610,10 @@ def _build_report(
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
+        ga4_span = _ga4_date_span(analytics.get("date_range"))
+        gsc_span = _gsc_date_span(analytics.get("date_range"))
+        ga4_source = f"Google Analytics 4 ({ga4_span})" if ga4_span else "Google Analytics 4"
+        gsc_source = f"Google Search Console ({gsc_span})" if gsc_span else "Google Search Console"
         if analytics.get("traffic_overview"):
             add_traffic_overview_slide(prs, analytics)
         top_pages = (analytics.get("top_pages") or {}).get("rows", [])
@@ -1573,10 +1632,10 @@ def _build_report(
             insights = [i for i in insights if i]
             _table_slide(
                 prs, "Top Pages", ["Page", "Pageviews", "Users"], rows,
-                col_widths=[7.0, 2.5, 2.6], source="Google Analytics 4", insights=insights,
+                col_widths=[7.0, 2.5, 2.6], source=ga4_source, insights=insights,
             )
         if analytics.get("page_performance"):
-            add_page_performance_slide(prs, analytics["page_performance"])
+            add_page_performance_slide(prs, analytics["page_performance"], analytics.get("date_range"))
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
             total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
@@ -1600,7 +1659,7 @@ def _build_report(
                 insights.append("No Organic Search sessions in this period — SEO isn't driving measurable traffic yet.")
             _table_slide(
                 prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "Users"], rows,
-                col_widths=[4.6, 2.5, 2.5, 2.5], source="Google Analytics 4", insights=insights,
+                col_widths=[4.6, 2.5, 2.5, 2.5], source=ga4_source, insights=insights,
             )
         queries = (analytics.get("search_queries") or {}).get("rows", [])
         if queries:
@@ -1615,7 +1674,7 @@ def _build_report(
                 insights.append(f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}.")
             _table_slide(
                 prs, "Search Queries", ["Query", "Clicks", "Impressions", "CTR", "Avg. position"], rows,
-                col_widths=[5.5, 1.5, 1.9, 1.5, 1.7], source="Google Search Console", insights=insights,
+                col_widths=[5.5, 1.5, 1.9, 1.5, 1.7], source=gsc_source, insights=insights,
             )
 
     if competitor_rows or keyword_rows or backlink_rows or competitor_positions or competitor_narratives:

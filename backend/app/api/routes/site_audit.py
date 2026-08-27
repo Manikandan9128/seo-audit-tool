@@ -369,10 +369,12 @@ def _gather_report_data(
             try:
                 psi_mobile = mobile_future.result()
             except Exception:
+                logger.exception("PageSpeed Insights mobile run failed for %s", client.website_url)
                 psi_mobile = None
             try:
                 psi_desktop = desktop_future.result()
             except Exception:
+                logger.exception("PageSpeed Insights desktop run failed for %s", client.website_url)
                 psi_desktop = None
 
     analytics = None

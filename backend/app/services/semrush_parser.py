@@ -341,17 +341,45 @@ def parse_site_audit_overview_pdf(content: bytes) -> dict | None:
     issues/Broken/Healthy page breakdown. Distinct from the Domain Overview
     PDF (traffic/backlinks/competitors) and from the Site Audit issues.csv
     (per-issue-type rollup) — this is the crawl-health summary only. Returns
-    None if this doesn't look like a Site Audit Overview PDF."""
+    None if this doesn't look like a Site Audit Overview PDF.
+
+    "Site Health" and "AI Search Health" render as two side-by-side stat
+    cards — the same layout that caused the Domain Overview PDF's Organic/
+    Paid summary interleaving bug (see parse_domain_overview_pdf). A plain
+    joined-text regex assuming a fixed line order broke in production even
+    though it matched locally, so this splits the page at the x-position
+    between the two "Health" words (proven technique, same as the "Paid"
+    word split below) instead of trusting text-extraction row order."""
+    site_health_pct = ai_search_health_pct = None
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        if "Site Health" not in text or "Crawled Pages" not in text:
+            return None
 
-    health_match = re.search(r"Site Health\s+AI Search Health\s*\n\s*(\d+)%\s+(\d+)%", text)
-    if not health_match:
+        for page in pdf.pages:
+            health_words = sorted((w for w in page.extract_words() if w["text"] == "Health"), key=lambda w: w["top"])
+            if len(health_words) < 2:
+                continue
+            row_top = health_words[0]["top"]
+            row_words = sorted((w for w in health_words if abs(w["top"] - row_top) < 3), key=lambda w: w["x0"])
+            if len(row_words) < 2:
+                continue
+            boundary = (row_words[0]["x1"] + row_words[1]["x0"]) / 2
+            left_text = page.within_bbox((0, 0, boundary, page.height)).extract_text() or ""
+            right_text = page.within_bbox((boundary, 0, page.width, page.height)).extract_text() or ""
+            left_pct = re.search(r"(\d+)%", left_text)
+            right_pct = re.search(r"(\d+)%", right_text)
+            if left_pct and right_pct:
+                site_health_pct = int(left_pct.group(1))
+                ai_search_health_pct = int(right_pct.group(1))
+            break
+
+    if site_health_pct is None:
         return None
 
     result = {
-        "site_health_pct": int(health_match.group(1)),
-        "ai_search_health_pct": int(health_match.group(2)),
+        "site_health_pct": site_health_pct,
+        "ai_search_health_pct": ai_search_health_pct,
     }
     for category in _CRAWLED_PAGE_CATEGORIES:
         key = category.lower().replace(" ", "_")
