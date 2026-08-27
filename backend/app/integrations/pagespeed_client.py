@@ -3,10 +3,14 @@ import httpx
 from app.config import settings
 
 PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-TIMEOUT = 90.0
+# Mobile Lighthouse runs simulate network/CPU throttling and routinely take
+# noticeably longer than desktop — 90s was tight enough that mobile timed out
+# far more often than desktop even with a retry, silently dropping the Mobile
+# card on the Website Performance slide.
+TIMEOUT = 150.0
 
 
-def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1) -> dict:
+def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 2) -> dict:
     """strategy: 'mobile' or 'desktop'. Retries once on timeout — PSI's own
     Lighthouse run is slow enough that transient timeouts aren't unusual."""
     params = {
