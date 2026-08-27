@@ -145,8 +145,97 @@ def _parse_traffic_summary_column(text: str) -> dict:
     }
 
 
+def _detriple(word_text: str) -> str | None:
+    """Semrush's donut-chart legend labels (country codes, Branded/
+    Non-Branded) render each character 3x in a row — e.g. "uuusss" for
+    "us", "888...777777" for "8.77" — a bold-synthesis artifact, not an
+    extraction bug. Strip stray NUL bytes then collapse triples; returns
+    None (not just the stripped text) when the input isn't actually
+    triple-encoded, so normal single-rendered words (headings, "US |
+    Domain | ...") are never mistaken for chart-label fragments."""
+    cleaned = word_text.replace("\x00", "")
+    if not cleaned or len(cleaned) % 3 != 0:
+        return None
+    chunks = [cleaned[i : i + 3] for i in range(0, len(cleaned), 3)]
+    if all(len(set(chunk)) == 1 for chunk in chunks):
+        return "".join(chunk[0] for chunk in chunks)
+    return None
+
+
+def _extract_top_countries(pdf: "pdfplumber.PDF") -> str:
+    """Semrush's Domain Overview PDF has no clean "top countries" table —
+    only the "Organic Search: Keywords By Country" donut, whose slice
+    labels/values render as separate triple-encoded word fragments (see
+    _detriple) positioned around the chart. Pairs each country-code label
+    with the percentage directly below it at the same x-position (label
+    order around the donut isn't reliable — confirmed two countries can
+    render label-before-label, value-after-value on real exports — so
+    pairing must go by column position, not text order), keeps only the
+    Organic-side donut (left of the Paid donut's column boundary), and
+    returns the top 3 by share as "US, PH, IN" to match the manual report's
+    column format."""
+    for page in pdf.pages:
+        page_text = page.extract_text() or ""
+        if "Keywords By Country" not in page_text:
+            continue
+        words = page.extract_words()
+        # Two "Country" words sit on this page's heading row — the Organic
+        # side ("Keywords By Country", capital B) and the Paid side
+        # ("Ad Keywords by Country", lowercase b). Anchor on the one with a
+        # same-row "By" so the boundary/cutoff below are computed from the
+        # Organic heading specifically.
+        by_tops = {w["top"] for w in words if w["text"] == "By"}
+        heading = next(
+            (w for w in words if w["text"] == "Country" and any(abs(w["top"] - t) < 1 for t in by_tops)), None
+        )
+        if not heading:
+            continue
+        paid_word = next((w for w in words if w["text"] == "Paid" and abs(w["top"] - heading["top"]) < 1), None)
+        if not paid_word:
+            continue
+        boundary_x = paid_word["x0"]
+        cutoff = next(
+            (w["top"] for w in words if w["text"] == "Traffic:" and w["top"] > heading["top"]),
+            page.height,
+        )
+
+        labels: list[tuple[float, float, str]] = []
+        values: list[tuple[float, float, float]] = []
+        for w in words:
+            if not (heading["top"] + 25 < w["top"] < cutoff):
+                continue
+            decoded = _detriple(w["text"])
+            if decoded is None:
+                continue
+            if re.fullmatch(r"[a-z-]+", decoded) and 2 <= len(decoded) <= 12:
+                labels.append((w["top"], w["x0"], decoded))
+            elif re.fullmatch(r"[\d.]+", decoded):
+                try:
+                    values.append((w["top"], w["x0"], float(decoded)))
+                except ValueError:
+                    pass
+
+        organic: list[tuple[str, float]] = []
+        for label_top, label_x, code in labels:
+            if label_x >= boundary_x or code == "others":
+                continue
+            candidates = [
+                (v_top - label_top, pct)
+                for v_top, v_x, pct in values
+                if abs(v_x - label_x) < 3 and v_top > label_top
+            ]
+            if candidates:
+                candidates.sort(key=lambda c: c[0])
+                organic.append((code, candidates[0][1]))
+
+        if organic:
+            organic.sort(key=lambda c: c[1], reverse=True)
+            return ", ".join(code.upper() for code, _ in organic[:3])
+    return ""
+
+
 def _parse_domain_overview_text(
-    text: str, page2_left: str = "", page2_right: str = "", branded_col: str = ""
+    text: str, page2_left: str = "", page2_right: str = "", branded_col: str = "", top_countries: str = ""
 ) -> dict | None:
     if "Domain Overview" not in text:
         return None
@@ -204,13 +293,29 @@ def _parse_domain_overview_text(
         "paid_cost": paid_fields["cost"],
         "backlinks_total": _first_number(backlinks, r"(\d[\d.,]*[KMB]?)\s*TOTAL\s*BACKLINKS"),
         "referring_domains": _first_number(backlinks, r"Referring\s*Domains\s+(\d[\d.,]*[KMB]?)"),
+        "top_countries": top_countries or None,
     }
-    branded_pct = re.search(r"([\d.]+)\s*%\s*Branded\s*Traffic", branded)
-    nonbranded_pct = re.search(r"([\d.]+)\s*%\s*Non-?Branded\s*Traffic", branded)
-    if branded_pct:
-        row["branded_pct"] = f"{branded_pct.group(1)}%"
-    if nonbranded_pct:
-        row["nonbranded_pct"] = f"{nonbranded_pct.group(1)}%"
+    # The two percentages sit on their own line, followed by their labels
+    # on the next line — "14.57% 85.43%\nBranded Traffic Non-Branded
+    # Traffic" — positionally paired (1st number <-> 1st label), not each
+    # number immediately preceding its own label. A lookback like
+    # "<number>% Branded Traffic" grabs whichever number sits directly
+    # before that text, which is the *second* (Non-Branded) value, and
+    # leaves Non-Branded's own lookback with nothing but a label word
+    # ("Traffic") in front of it — always blank.
+    paired_pct = re.search(
+        r"([\d.]+)\s*%\s+([\d.]+)\s*%\s*\n?\s*Branded\s*Traffic\s+Non-?Branded\s*Traffic", branded
+    )
+    if paired_pct:
+        row["branded_pct"] = f"{paired_pct.group(1)}%"
+        row["nonbranded_pct"] = f"{paired_pct.group(2)}%"
+    else:
+        branded_pct = re.search(r"([\d.]+)\s*%\s*Branded\s*Traffic", branded)
+        nonbranded_pct = re.search(r"([\d.]+)\s*%\s*Non-?Branded\s*Traffic", branded)
+        if branded_pct:
+            row["branded_pct"] = f"{branded_pct.group(1)}%"
+        if nonbranded_pct:
+            row["nonbranded_pct"] = f"{nonbranded_pct.group(1)}%"
     return {k: v for k, v in row.items() if v is not None}
 
 
@@ -254,7 +359,9 @@ def parse_domain_overview_pdf(content: bytes) -> dict | None:
                 boundary = branded_words[1]["x0"]
                 branded_col = page.within_bbox((boundary, 0, page.width, page.height)).extract_text() or ""
                 break
-    return _parse_domain_overview_text(text, page2_left, page2_right, branded_col)
+
+        top_countries = _extract_top_countries(pdf)
+    return _parse_domain_overview_text(text, page2_left, page2_right, branded_col, top_countries)
 
 
 def _read_table(filename: str, content: bytes) -> pd.DataFrame:
