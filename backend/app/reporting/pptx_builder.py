@@ -899,8 +899,8 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
 def add_page_performance_slide(prs: Presentation, page_performance: dict, date_range: dict | None = None):
     """Top vs. poor performing pages, side by side, with each page's % share
     of total pageviews and how many pages contributed traffic in the period."""
-    top_pages = page_performance.get("top_pages") or []
-    bottom_pages = page_performance.get("bottom_pages") or []
+    top_pages = [p for p in (page_performance.get("top_pages") or []) if "career" not in (p.get("path") or "").lower()]
+    bottom_pages = [p for p in (page_performance.get("bottom_pages") or []) if "career" not in (p.get("path") or "").lower()]
     if not top_pages and not bottom_pages:
         return None
 
