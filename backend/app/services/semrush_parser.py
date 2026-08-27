@@ -145,7 +145,9 @@ def _parse_traffic_summary_column(text: str) -> dict:
     }
 
 
-def _parse_domain_overview_text(text: str, page2_left: str = "", page2_right: str = "") -> dict | None:
+def _parse_domain_overview_text(
+    text: str, page2_left: str = "", page2_right: str = "", branded_col: str = ""
+) -> dict | None:
     if "Domain Overview" not in text:
         return None
 
@@ -180,7 +182,12 @@ def _parse_domain_overview_text(text: str, page2_left: str = "", page2_right: st
     organic = organic_col or _pdf_section(text, "Organic Search: Summary", ["Paid Search: Summary"])
     paid = paid_col or _pdf_section(text, "Paid Search: Summary", ["Backlinks: Summary"])
     backlinks = _pdf_section(text, "Backlinks: Summary", ["Organic Search: Keywords By Country", "Paid Search: Ad Keywords"])
-    branded = _pdf_section(
+    # "Organic Branded Search" (left) and "Branded vs Non-Branded" (right)
+    # sit side by side too, same as the Organic/Paid Summary cards — prefer
+    # the isolated right-column text when given, else fall back to
+    # whole-page slicing (works for non-interleaved/synthetic text, where
+    # there's nothing to disambiguate).
+    branded = branded_col or _pdf_section(
         text, "Branded vs Non-Branded", ["Organic Search: Branded Traffic Trend", "Paid search traffic", "Backlinks"]
     )
 
@@ -231,7 +238,23 @@ def parse_domain_overview_pdf(content: bytes) -> dict | None:
                 boundary = paid_word["x0"]
                 page2_left = page2.within_bbox((0, 0, boundary, page2.height)).extract_text() or ""
                 page2_right = page2.within_bbox((boundary, 0, page2.width, page2.height)).extract_text() or ""
-    return _parse_domain_overview_text(text, page2_left, page2_right)
+
+        # "Organic Branded Search" (left) and "Branded vs Non-Branded"
+        # (right) sit side by side on their own page, same interleaving
+        # risk as the Organic/Paid Summary cards. Find whichever page has
+        # both "Branded" occurrences (the heading row) and split at the
+        # second one's x-position — the first "Branded" belongs to the left
+        # card's own heading, so it can't be used as the boundary itself.
+        branded_col = ""
+        for page in pdf.pages:
+            branded_words = sorted(
+                (w for w in page.extract_words() if w["text"] == "Branded"), key=lambda w: (w["top"], w["x0"])
+            )
+            if len(branded_words) >= 2 and abs(branded_words[0]["top"] - branded_words[1]["top"]) < 2:
+                boundary = branded_words[1]["x0"]
+                branded_col = page.within_bbox((boundary, 0, page.width, page.height)).extract_text() or ""
+                break
+    return _parse_domain_overview_text(text, page2_left, page2_right, branded_col)
 
 
 def _read_table(filename: str, content: bytes) -> pd.DataFrame:
