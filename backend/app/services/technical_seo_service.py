@@ -17,10 +17,17 @@ USER_AGENT = "SEOAuditTool/1.0 (+https://seoaudittool.local/bot-info)"
 TIMEOUT = 8.0
 
 
-def _fetch(url: str) -> httpx.Response | None:
+def _fetch(url: str, retries: int = 1) -> httpx.Response | None:
+    """One retry on any transport-level failure (timeout, connection reset,
+    etc.) — a single momentary blip on this call used to cascade into
+    robots.txt/sitemap checks, homepage-reachable, and the Company Overview/
+    Solutions slides all failing together, since they all depend on this
+    same fetch succeeding."""
     try:
         return httpx.get(url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT, follow_redirects=True)
     except httpx.HTTPError:
+        if retries > 0:
+            return _fetch(url, retries=retries - 1)
         return None
 
 

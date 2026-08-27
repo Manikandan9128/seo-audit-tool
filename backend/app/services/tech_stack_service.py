@@ -91,10 +91,18 @@ def detect_tech_stack(website_url: str) -> dict:
     parsed = urlparse(website_url)
     hostname = parsed.hostname or ""
 
-    try:
-        resp = httpx.get(website_url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT, follow_redirects=True)
-    except httpx.HTTPError as e:
-        return {"error": f"Could not reach site: {e}"}
+    # One retry on transport failure — a single transient blip used to drop
+    # the whole Tech Stack & Hosting slide with no second chance.
+    resp = None
+    last_error: httpx.HTTPError | None = None
+    for _ in range(2):
+        try:
+            resp = httpx.get(website_url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT, follow_redirects=True)
+            break
+        except httpx.HTTPError as e:
+            last_error = e
+    if resp is None:
+        return {"error": f"Could not reach site: {last_error}"}
 
     headers_lower = {k.lower(): v for k, v in resp.headers.items()}
     html = resp.text or ""

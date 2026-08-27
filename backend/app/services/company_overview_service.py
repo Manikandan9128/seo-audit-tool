@@ -65,10 +65,15 @@ WEBSITE TEXT:
 """
 
 
-def _fetch(url: str) -> httpx.Response | None:
+def _fetch(url: str, retries: int = 1) -> httpx.Response | None:
+    """One retry on transport failure — this fetch feeding Company Overview
+    extraction had no retry at all, so a single transient blip dropped the
+    Company Overview and Solutions/Products slides from the report entirely."""
     try:
         return httpx.get(url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT, follow_redirects=True)
     except httpx.HTTPError:
+        if retries > 0:
+            return _fetch(url, retries=retries - 1)
         return None
 
 
