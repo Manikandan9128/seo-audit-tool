@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import SiteAuditHistory from "../components/SiteAuditHistory";
@@ -566,33 +566,45 @@ export default function ClientDetailPage() {
                 }}
               />
             </div>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 0, overflowX: "auto", paddingBottom: 4 }}>
-              {steps.map((step, i) => (
-                <Fragment key={step.n}>
-                  {i > 0 && (
+            <div style={{ position: "relative", overflowX: "auto", paddingBottom: 4 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `repeat(${steps.length}, minmax(140px, 1fr))`,
+                  minWidth: 560,
+                }}
+              >
+                <div
+                  style={{
+                    gridColumn: `1 / ${steps.length + 1}`,
+                    gridRow: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    height: 24,
+                    padding: "0 12px",
+                  }}
+                  aria-hidden
+                >
+                  {steps.slice(1).map((step, i) => (
                     <div
+                      key={step.n}
                       style={{
-                        flexShrink: 0,
-                        width: 32,
+                        flex: 1,
                         height: 2,
-                        marginTop: 11,
-                        background: steps[i - 1].done ? "var(--success)" : "var(--border-strong)",
+                        marginLeft: 12,
+                        marginRight: 12,
+                        background: steps[i].done ? "var(--success)" : "var(--border-strong)",
                       }}
                     />
-                  )}
-                  <button
-                    onClick={step.onClick}
+                  ))}
+                </div>
+                {steps.map((step) => (
+                  <div
+                    key={step.n}
                     style={{
+                      gridRow: 1,
                       display: "flex",
-                      alignItems: "flex-start",
-                      gap: 10,
-                      textAlign: "left",
-                      background: "none",
-                      border: "none",
-                      padding: 0,
-                      cursor: "pointer",
-                      minWidth: 200,
-                      flex: "1 1 200px",
+                      justifyContent: "center",
                     }}
                   >
                     <span
@@ -608,19 +620,37 @@ export default function ClientDetailPage() {
                         fontWeight: 700,
                         color: step.done ? "#fff" : "var(--text-muted)",
                         background: step.done ? "var(--success)" : "var(--border-strong)",
+                        zIndex: 1,
                       }}
                     >
                       {step.done ? "✓" : step.n}
                     </span>
-                    <span>
-                      <span style={{ display: "block", fontSize: 13.5, fontWeight: 600, color: step.done ? "var(--text-muted)" : "inherit" }}>
-                        {step.label}
-                      </span>
-                      <span style={{ display: "block", fontSize: 12, color: "var(--text-muted)" }}>{step.hint}</span>
+                  </div>
+                ))}
+                {steps.map((step) => (
+                  <button
+                    key={step.n}
+                    onClick={step.onClick}
+                    style={{
+                      gridRow: 2,
+                      marginTop: 8,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      textAlign: "center",
+                      background: "none",
+                      border: "none",
+                      padding: "0 8px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 13.5, fontWeight: 600, color: step.done ? "var(--text-muted)" : "inherit" }}>
+                      {step.label}
                     </span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{step.hint}</span>
                   </button>
-                </Fragment>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         );
