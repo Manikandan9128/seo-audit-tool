@@ -1195,17 +1195,81 @@ def _derive_next_steps(site_audit: dict | None, page_audit: dict | None) -> list
     return unique
 
 
-def add_next_steps_detail_slide(prs: Presentation, site_audit: dict | None, page_audit: dict | None):
+def _derive_roadmap(
+    site_audit: dict | None,
+    page_audit: dict | None,
+    tech_stack: dict | None = None,
+    keyword_rows: list[dict] | None = None,
+    backlink_row_count: int = 0,
+    competitor_analysis: dict | None = None,
+    domain_strategy: dict | None = None,
+) -> list[tuple[str, str]]:
+    """5-8 prioritized, ordered (category, step) recommendations spanning
+    foundational/domain decisions -> technical -> on-page SEO -> content ->
+    AEO/GEO -> authority/links — the order the client should tackle them in,
+    since each category roughly unblocks the next."""
+    roadmap: list[tuple[str, str]] = []
+
+    if domain_strategy:
+        roadmap.append(("Foundational", f"Decide the domain strategy first — {domain_strategy['open_question']}"))
+
+    technical_items = _derive_next_steps(site_audit, page_audit)
+    for item in technical_items[:3]:
+        roadmap.append(("Technical", item))
+    if tech_stack and tech_stack.get("https") is False and not any("HTTPS" in t for _, t in roadmap):
+        roadmap.append(("Technical", "Move the site fully to HTTPS before any further SEO work — it's a baseline ranking and trust signal."))
+
+    if page_audit and page_audit.get("pages_with_issues"):
+        roadmap.append((
+            "On-Page SEO",
+            f"Fix titles and meta descriptions on the {page_audit['pages_with_issues']} of "
+            f"{page_audit['pages_checked']} crawled pages flagged with issues.",
+        ))
+
+    if keyword_rows:
+        cluster_counts: dict[str, int] = {}
+        for r in keyword_rows:
+            label = (r.get("cluster") or "").strip()
+            if label:
+                cluster_counts[label] = cluster_counts.get(label, 0) + 1
+        if cluster_counts:
+            top_cluster = max(cluster_counts, key=cluster_counts.get)
+            roadmap.append(("Content", f"Build out content for the \"{top_cluster}\" keyword cluster — the largest opportunity in the keyword research."))
+        else:
+            roadmap.append(("Content", "Build content targeting the keyword opportunities identified in the Target Keywords research."))
+
+    roadmap.append(("AEO/GEO", "Add FAQ schema and concise, extractable answer blocks to key pages so AI Overviews and answer engines can cite the site directly."))
+
+    if backlink_row_count:
+        roadmap.append(("Authority", f"Grow referring domains beyond the current {backlink_row_count:,} tracked backlinks with targeted outreach in the site's core category."))
+    elif competitor_analysis and competitor_analysis.get("issues"):
+        roadmap.append(("Authority", "Build referring-domain authority to close the gap the competitor comparison surfaced."))
+
+    return roadmap[:8]
+
+
+def add_next_steps_detail_slide(
+    prs: Presentation,
+    site_audit: dict | None,
+    page_audit: dict | None,
+    tech_stack: dict | None = None,
+    keyword_rows: list[dict] | None = None,
+    backlink_row_count: int = 0,
+    competitor_analysis: dict | None = None,
+    domain_strategy: dict | None = None,
+):
     slide = _blank_slide(prs)
     _content_header(slide, "Recommended Next Steps")
 
-    steps = _derive_next_steps(site_audit, page_audit)
+    roadmap = _derive_roadmap(
+        site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy
+    )
     card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
-    if not steps:
+    if not roadmap:
         _textbox(slide, Inches(0.9), Inches(1.3), Inches(10), Inches(0.4), "No outstanding technical issues found.", size=14, color=GOOD)
         return slide
-    for i, step in enumerate(steps[:12]):
-        y = Inches(1.3) + Emu(i * Inches(0.42))
+    for i, (category, step) in enumerate(roadmap):
+        y = Inches(1.3) + Emu(i * Inches(0.65))
         num = slide.shapes.add_textbox(Inches(0.9), y, Inches(0.4), Inches(0.35))
         p = num.text_frame.paragraphs[0]
         r = p.add_run()
@@ -1213,8 +1277,67 @@ def add_next_steps_detail_slide(prs: Presentation, site_audit: dict | None, page
         r.font.bold = True
         r.font.size = Pt(13)
         r.font.color.rgb = _accent()
-        _textbox(slide, Inches(1.3), y, Inches(11.2), Inches(0.4), step, size=13)
+        _textbox(slide, Inches(1.3), y, Inches(2.0), Inches(0.3), category.upper(), size=9.5, bold=True, color=_accent())
+        _textbox(slide, Inches(1.3), y + Inches(0.24), Inches(11.2), Inches(0.4), step, size=12.5)
     return slide
+
+
+def add_domain_strategy_slide(prs: Presentation, domain_strategy: dict):
+    """Domain Strategy finding — generic-TLD vs. single-target-country
+    mismatch. Framed as a tradeoff explainer plus an open question, since
+    whether to migrate depends on the client's expansion plans, which a
+    crawl has no way to know."""
+    slide = _blank_slide(prs)
+    _content_header(slide, "Domain Strategy")
+    card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
+
+    _textbox(slide, Inches(0.9), Inches(1.35), Inches(11.4), Inches(0.3), "Finding", size=13, bold=True, color=_accent())
+    _textbox(slide, Inches(0.9), Inches(1.7), Inches(11.4), Inches(2.0), domain_strategy["finding"], size=12.5)
+
+    _textbox(slide, Inches(0.9), Inches(4.0), Inches(11.4), Inches(0.3), "Open Question for the Client", size=13, bold=True, color=_accent())
+    _textbox(slide, Inches(0.9), Inches(4.35), Inches(11.4), Inches(2.0), domain_strategy["open_question"], size=12.5)
+    return slide
+
+
+def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
+    """UI-Level Fixes (Issue/Where/Fix/Severity) + Conversion Opportunities —
+    or, when no manual UX pass was done, a single slide saying so explicitly
+    rather than silently skipping the dimension (report spec Rule 8)."""
+    if ux_findings.get("no_ux_pass_done"):
+        slide = _blank_slide(prs)
+        _content_header(slide, "UI-Level Fixes & Conversion Opportunities")
+        _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(2.0))
+        _textbox(slide, Inches(0.9), Inches(1.4), Inches(11.4), Inches(1.4), ux_findings["note"], size=13)
+        return [slide]
+
+    if ux_findings.get("error"):
+        return []
+
+    slides = []
+    fixes = ux_findings.get("ui_fixes") or []
+    if fixes:
+        rows = [(f.get("issue", ""), f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
+        critical = sum(1 for f in fixes if (f.get("severity") or "").lower() == "critical")
+        insights = [f"{len(fixes)} UI issue(s) found from the manual walkthrough."]
+        if critical:
+            insights.append(f"{critical} flagged Critical — these block a purchase or signup and should be fixed first.")
+        slides.append(_table_slide(
+            prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
+            col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
+        ))
+
+    opportunities = ux_findings.get("conversion_opportunities") or []
+    if opportunities:
+        slide = _blank_slide(prs)
+        _content_header(slide, "Conversion Opportunities")
+        _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
+        y = Inches(1.4)
+        for item in opportunities[:8]:
+            _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), _accent())
+            _textbox(slide, Inches(1.15), y, Inches(11.3), Inches(0.4), item, size=13)
+            y += Inches(0.5)
+        slides.append(slide)
+    return slides
 
 
 def add_aeo_geo_slide(prs: Presentation, site_audit: dict | None, page_audit: dict | None):
@@ -1297,6 +1420,8 @@ def build_report(
     company_overview: dict | None = None,
     tech_stack: dict | None = None,
     competitor_analysis: dict | None = None,
+    domain_strategy: dict | None = None,
+    ux_findings: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -1314,7 +1439,7 @@ def build_report(
             client_name, website_url, site_audit, page_audit, psi_mobile, psi_desktop,
             analytics, competitor_rows, keyword_rows, backlink_rows, backlink_row_count,
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
-            competitor_narratives,
+            competitor_narratives, domain_strategy, ux_findings,
         )
     finally:
         _theme["footer"] = ""
@@ -1339,6 +1464,8 @@ def _build_report(
     competitor_positions: dict[str, list[dict]] | None = None,
     logo_bytes: bytes | None = None,
     competitor_narratives: dict[str, dict] | None = None,
+    domain_strategy: dict | None = None,
+    ux_findings: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -1352,6 +1479,9 @@ def _build_report(
     elif site_audit and site_audit.get("company_summary"):
         add_company_overview_slide(prs, client_name, site_audit["company_summary"])
 
+    if domain_strategy:
+        add_domain_strategy_slide(prs, domain_strategy)
+
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
 
@@ -1360,6 +1490,9 @@ def _build_report(
         if site_audit:
             add_site_health_slide(prs, site_audit, page_audit)
             add_seo_issues_slide(prs, site_audit, page_audit)
+
+    if ux_findings:
+        add_ux_findings_slides(prs, ux_findings)
 
     if psi_mobile or psi_desktop:
         add_pagespeed_slide(prs, psi_mobile, psi_desktop)
@@ -1442,7 +1575,9 @@ def _build_report(
             add_competitive_gaps_slide(prs, competitor_analysis)
 
     add_section_slide(prs, client_name, "Next Steps")
-    add_next_steps_detail_slide(prs, site_audit, page_audit)
+    add_next_steps_detail_slide(
+        prs, site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy
+    )
     add_aeo_geo_slide(prs, site_audit, page_audit)
 
     buf = BytesIO()

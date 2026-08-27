@@ -35,6 +35,11 @@ these are rarely spelled out verbatim, so infer them from context — pricing ti
 currency/region cues, "built for X teams" phrasing, etc. Keep every inference grounded in something actually implied \
 by the text; use null rather than guessing if there's truly nothing to go on.
 
+Write the "description" field in plain, confident agency language, as the agency's own analysis — never mention \
+that you are an AI, a language model, or any tool by name. Every sentence must be complete, with terminal \
+punctuation; if you're about to run out of room, drop a less-important detail entirely rather than truncate a \
+sentence mid-way.
+
 Return ONLY valid JSON matching this shape, no markdown fences, no commentary:
 {
   "company_name": string or null,
@@ -65,6 +70,17 @@ def _fetch(url: str) -> httpx.Response | None:
         return httpx.get(url, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT, follow_redirects=True)
     except httpx.HTTPError:
         return None
+
+
+def fetch_homepage_text(website_url: str, max_chars: int = 3000) -> str | None:
+    """Light single-page fetch used to ground the competitor on-site-tactics
+    narrative in something more than Semrush metrics — homepage only, capped,
+    best-effort (returns None on any fetch failure rather than raising)."""
+    url = website_url if website_url.startswith("http") else f"https://{website_url}"
+    resp = _fetch(url)
+    if not resp or resp.status_code >= 400:
+        return None
+    return _strip_html(resp.text)[:max_chars]
 
 
 def _strip_html(html: str) -> str:

@@ -23,7 +23,9 @@ from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import build_report
 from app.services import ga4_service, gsc_service
-from app.services.company_overview_service import extract_company_overview
+from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
+from app.services.domain_strategy_service import check_domain_strategy
+from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.competitor_narrative_service import generate_competitor_narrative
 from app.services.logo_service import fetch_logo_bytes
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -291,6 +293,15 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
             competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
         )[:8]
         relevant_gaps = [i["summary"] for i in gap_issues if domain in i.get("summary", "")]
+        # Best-effort homepage fetch so the narrative can name concrete
+        # on-site tactics (page architecture, trust signals, content
+        # formats) instead of only comparing Semrush metrics — failures
+        # here are silent, the narrative just falls back to metrics-only.
+        homepage_text = None
+        try:
+            homepage_text = fetch_homepage_text(domain)
+        except Exception:
+            homepage_text = None
         facts = {
             "domain_stats": row,
             "top_ranking_keywords": [
@@ -298,8 +309,10 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
                 for r in top_keywords
             ],
             "gaps_vs_this_competitor": relevant_gaps,
+            "homepage_url": f"https://{domain}",
+            "homepage_text": homepage_text,
         }
-        if not row and not top_keywords and not relevant_gaps:
+        if not row and not top_keywords and not relevant_gaps and not homepage_text:
             continue  # nothing grounded to write from — skip rather than let the AI invent
         try:
             narratives[domain] = generate_competitor_narrative(client.name, client_domain, domain, facts)
@@ -319,6 +332,7 @@ def _gather_report_data(
     include_company_overview: bool,
     company_overview_override: dict | None,
     competitor_analysis_override: dict | None,
+    ux_notes: str | None = None,
 ) -> dict:
     """Runs every check for this client and returns the plain-dict payload
     that build_report() consumes — shared by the preview (JSON, for the user
@@ -471,6 +485,15 @@ def _gather_report_data(
             for r in all_imports
         ])
 
+    domain_strategy_result = check_domain_strategy(
+        client.website_url, (company_overview_result or {}).get("target_country")
+    )
+
+    if ux_notes and ux_notes.strip() and (settings.gemini_api_key or settings.claude_api_key):
+        ux_findings_result = generate_ux_findings(client.name, client.website_url, ux_notes)
+    else:
+        ux_findings_result = static_no_ux_pass()
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
@@ -486,6 +509,8 @@ def _gather_report_data(
         "company_overview": company_overview_result,
         "tech_stack": tech_stack_result,
         "competitor_analysis": competitor_analysis_result,
+        "domain_strategy": domain_strategy_result,
+        "ux_findings": ux_findings_result,
     }
 
 
@@ -497,6 +522,7 @@ def report_preview(
     include_company_overview: bool = True,
     company_overview_override: dict | None = Body(default=None),
     competitor_analysis_override: dict | None = Body(default=None),
+    ux_notes: str | None = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -507,7 +533,7 @@ def report_preview(
     client = _get_owned_client(client_id, db, current_user)
     data = _gather_report_data(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-        company_overview_override, competitor_analysis_override,
+        company_overview_override, competitor_analysis_override, ux_notes,
     )
     return {"client_name": client.name, "website_url": client.website_url, **data}
 
@@ -520,6 +546,7 @@ def generate_report(
     include_company_overview: bool = True,
     company_overview_override: dict | None = Body(default=None),
     competitor_analysis_override: dict | None = Body(default=None),
+    ux_notes: str | None = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -532,7 +559,7 @@ def generate_report(
     client = _get_owned_client(client_id, db, current_user)
     data = _gather_report_data(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-        company_overview_override, competitor_analysis_override,
+        company_overview_override, competitor_analysis_override, ux_notes,
     )
 
     logo_bytes = None
