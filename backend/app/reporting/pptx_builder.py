@@ -560,10 +560,13 @@ def add_company_overview_extracted_slide(prs: Presentation, client_name: str, ov
     if kpis:
         _textbox(slide, Inches(0.6) + pad, y, left_width - pad * 2, Inches(0.26), "KEY PERFORMANCE INDICATORS", size=9.5, bold=True, color=_accent())
         y += Inches(0.3)
+        kpi_width = left_width - pad * 2 - Inches(0.18)
+        line_h = Inches(11.5 * 0.02)
         for k in kpis[:6]:
+            lines = _wrap_lines(k, kpi_width, size_pt=11.5)
             _icon_dot(slide, Inches(0.6) + pad, y + Inches(0.07), Inches(0.08), _accent())
-            _textbox(slide, Inches(0.6) + pad + Inches(0.18), y, left_width - pad * 2 - Inches(0.18), Inches(0.28), k, size=11.5)
-            y += Inches(0.28)
+            _textbox(slide, Inches(0.6) + pad + Inches(0.18), y, kpi_width, line_h * lines, k, size=11.5)
+            y += line_h * lines + Inches(0.06)
         y += Inches(0.1)
 
     industries = overview.get("industries") or []
@@ -622,15 +625,18 @@ def add_solutions_products_slide(prs: Presentation, overview: dict):
         _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Solutions", size=15, bold=True, color=_accent())
         y += Inches(0.4)
         for s in solutions[:8]:
-            box = slide.shapes.add_textbox(Inches(1.1), y, Inches(11.1), Inches(0.5))
+            text = f"•  {s}"
+            lines = _wrap_lines(text, Inches(11.1), size_pt=12)
+            line_h = Inches(12 * 0.02)
+            box = slide.shapes.add_textbox(Inches(1.1), y, Inches(11.1), line_h * lines)
             tf = box.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
             run = p.add_run()
-            run.text = f"•  {s}"
+            run.text = text
             run.font.size = Pt(12)
             run.font.color.rgb = TEXT_DARK
-            y += Inches(0.32)
+            y += line_h * lines + Inches(0.06)
         y += Inches(0.15)
 
     if products_by_category:
@@ -641,15 +647,18 @@ def add_solutions_products_slide(prs: Presentation, overview: dict):
                 break
             _textbox(slide, Inches(0.9), y, Inches(11.1), Inches(0.3), category, size=13, bold=True)
             y += Inches(0.32)
-            box = slide.shapes.add_textbox(Inches(1.0), y, Inches(11.3), Inches(0.6))
+            joined = ", ".join(items)
+            lines = _wrap_lines(joined, Inches(11.3), size_pt=11)
+            line_h = Inches(11 * 0.02)
+            box = slide.shapes.add_textbox(Inches(1.0), y, Inches(11.3), line_h * lines)
             tf = box.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
             run = p.add_run()
-            run.text = ", ".join(items)
+            run.text = joined
             run.font.size = Pt(11)
             run.font.color.rgb = TEXT_MUTED
-            y += Inches(0.55)
+            y += line_h * lines + Inches(0.2)
 
     if industries and y < Inches(6.7):
         _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Industries", size=15, bold=True, color=_accent())
@@ -738,26 +747,34 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
     col_width = Inches(5.85)
     columns = [("Errors", errors, BAD, Inches(0.6)), ("Warnings", warnings, WARN, Inches(6.85))]
     row_h = Inches(0.32)
-    max_rows = int((col_height - Inches(0.75)) / row_h)
+    max_rows = 10
 
     for group_label, group_issues, color, col_left in columns:
         if not group_issues:
             continue
+        shown = group_issues[:max_rows]
         _card(slide, col_left, col_top, col_width, col_height)
         y = col_top + Inches(0.2)
-        _textbox(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), Inches(0.35), f"{group_label} ({len(group_issues)})", size=14, bold=True, color=color)
+        _textbox(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), Inches(0.35), f"{group_label} ({len(shown)})", size=14, bold=True, color=color)
         rule = slide.shapes.add_shape(1, col_left + Inches(0.3), y + Inches(0.36), col_width - Inches(0.6), Pt(1.5))
         _fill(rule, color)
         rule.shadow.inherit = False
         y += Inches(0.55)
-        shown = group_issues[:max_rows]
         for issue in shown:
             _issue_row(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), issue, severity=("error" if color == BAD else "warn"))
             y += row_h
-        remaining = len(group_issues) - len(shown)
-        if remaining > 0:
-            _textbox(slide, col_left + Inches(0.3), y + Inches(0.05), col_width - Inches(0.6), Inches(0.3), f"+ {remaining} more", size=11, color=TEXT_MUTED)
     return slide
+
+
+def _wrap_lines(text: str, width_emu, size_pt: float = 12) -> int:
+    """Estimate how many lines `text` wraps to in a box of this width/font
+    size — advancing y by this (instead of a fixed single-line guess) is
+    what keeps a wrapped second line from rendering on top of the next
+    item. 154 chars-per-inch-at-size-11 matches the calibration already
+    proven in _insights_strip below."""
+    width_in = max(width_emu / 914400, 0.3)
+    chars_per_line = max(10, int(width_in * (154 / size_pt)))
+    return max(1, -(-len(text) // chars_per_line))
 
 
 def _insights_strip(slide, left, top, width, insights, title="Key Insights"):
@@ -1080,13 +1097,20 @@ def add_competitive_gaps_slide(prs: Presentation, competitor_analysis: dict):
         if y > Inches(6.6):
             break
         color = severity_color.get(issue["severity"], WARN)
+        summary_lines = _wrap_lines(issue["summary"], Inches(11.4), size_pt=13)
+        summary_h = Inches(13 * 0.02) * summary_lines
+        detail_lines = _wrap_lines(issue["detail"], Inches(11.4), size_pt=11.5)
+        detail_h = Inches(11.5 * 0.02) * detail_lines
+        do_lines = _wrap_lines(f"Do: {issue['recommendation']}", Inches(11.4), size_pt=11.5)
+        do_h = Inches(11.5 * 0.02) * do_lines
+
         _icon_dot(slide, Inches(0.9), y + Inches(0.09), Inches(0.13), color)
         _textbox(slide, Inches(1.15), y, Inches(2.0), Inches(0.3), severity_label.get(issue["severity"], ""), size=10, bold=True, color=color)
-        _textbox(slide, Inches(0.9), y + Inches(0.28), Inches(11.4), Inches(0.35), issue["summary"], size=13, bold=True)
-        y += Inches(0.62)
-        _textbox(slide, Inches(0.9), y, Inches(11.4), Inches(0.35), issue["detail"], size=11.5, color=TEXT_MUTED)
-        y += Inches(0.32)
-        do_box = slide.shapes.add_textbox(Inches(0.9), y, Inches(11.4), Inches(0.5))
+        _textbox(slide, Inches(0.9), y + Inches(0.28), Inches(11.4), summary_h, issue["summary"], size=13, bold=True)
+        y += Inches(0.28) + summary_h + Inches(0.06)
+        _textbox(slide, Inches(0.9), y, Inches(11.4), detail_h, issue["detail"], size=11.5, color=TEXT_MUTED)
+        y += detail_h + Inches(0.06)
+        do_box = slide.shapes.add_textbox(Inches(0.9), y, Inches(11.4), do_h)
         tf = do_box.text_frame
         tf.word_wrap = True
         p = tf.paragraphs[0]
@@ -1099,7 +1123,7 @@ def add_competitive_gaps_slide(prs: Presentation, competitor_analysis: dict):
         r2.text = issue["recommendation"]
         r2.font.size = Pt(11.5)
         r2.font.color.rgb = TEXT_DARK
-        y += Inches(0.5)
+        y += do_h + Inches(0.2)
     return slide
 
 
@@ -1219,28 +1243,37 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
     return slides
 
 
-def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row_count: int):
+def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row_count: int, backlink_summary: dict | None = None):
     """Ahrefs/Semrush-widget-style summary — Backlinks, Referring Domains,
-    Avg. Domain Score, % dofollow — computed from the uploaded backlink rows,
-    no separate API call needed."""
+    Authority Score, % dofollow, plus a Link Attributes breakdown when a
+    Semrush Backlink List PDF summary was uploaded (backlink_summary). That
+    export's aggregate stats are a real site-wide count, more authoritative
+    than what's computed from a possibly-partial backlinks CSV, so they're
+    preferred wherever both are available."""
     slide = _blank_slide(prs)
     _content_header(slide, "Backlink Profile")
-    _card(slide, Inches(0.6), Inches(1.2), Inches(12.1), Inches(2.4))
 
     dofollow = sum(1 for r in backlink_rows if str(r.get("nofollow", "")).strip().lower() not in ("1", "true", "yes"))
-    pct_dofollow = round(100 * dofollow / len(backlink_rows)) if backlink_rows else None
+    csv_pct_dofollow = round(100 * dofollow / len(backlink_rows)) if backlink_rows else None
 
     ref_domains = {urlparse(r["source_url"]).netloc for r in backlink_rows if r.get("source_url")}
     _MISSING = object()
     domain_scores = [
         v for v in (_num(r.get("domain_score"), default=_MISSING) for r in backlink_rows) if v is not _MISSING
     ]
-    avg_score = round(sum(domain_scores) / len(domain_scores)) if domain_scores else None
+    csv_avg_score = round(sum(domain_scores) / len(domain_scores)) if domain_scores else None
 
+    total_backlinks = backlink_summary["backlinks_total"] if backlink_summary else (row_count or None)
+    total_referring_domains = backlink_summary["referring_domains"] if backlink_summary else (len(ref_domains) or None)
+    pct_dofollow = backlink_summary.get("follow_pct") if backlink_summary and backlink_summary.get("follow_pct") is not None else csv_pct_dofollow
+    authority_score = backlink_summary.get("authority_score") if backlink_summary else csv_avg_score
+    authority_label = "Authority Score" if backlink_summary else "Avg. domain score"
+
+    _card(slide, Inches(0.6), Inches(1.2), Inches(12.1), Inches(2.2))
     stats = [
-        ("Backlinks", f"{row_count:,}", f"{pct_dofollow}% dofollow" if pct_dofollow is not None else None),
-        ("Referring domains", f"{len(ref_domains):,}", None),
-        ("Avg. domain score", str(avg_score) if avg_score is not None else "—", None),
+        ("Backlinks", f"{int(total_backlinks):,}" if total_backlinks is not None else "—", f"{pct_dofollow:.0f}% dofollow" if pct_dofollow is not None else None),
+        ("Referring domains", f"{int(total_referring_domains):,}" if total_referring_domains is not None else "—", None),
+        (authority_label, str(int(authority_score)) if authority_score is not None else "—", None),
     ]
     for i, (label, value, sub) in enumerate(stats):
         left = Inches(0.9) + Emu(i * Inches(4.0))
@@ -1249,21 +1282,44 @@ def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row
         if sub:
             _textbox(slide, left, Inches(2.65), Inches(3.6), Inches(0.3), sub, size=12, color=TEXT_MUTED)
 
+    y = Inches(3.65)
+    attr_labels = ["Follow", "Nofollow", "Sponsored", "UGC"]
+    has_attrs = backlink_summary and any(backlink_summary.get(f"{label.lower()}_count") is not None for label in attr_labels)
+    if has_attrs:
+        _card(slide, Inches(0.6), y, Inches(12.1), Inches(1.1))
+        _textbox(slide, Inches(0.9), y + Inches(0.15), Inches(4), Inches(0.3), "Link Attributes", size=13, bold=True, color=_accent())
+        attr_colors = {"follow": GOOD, "nofollow": WARN, "sponsored": TEXT_MUTED, "ugc": TEXT_MUTED}
+        for i, label in enumerate(attr_labels):
+            key = label.lower()
+            count = backlink_summary.get(f"{key}_count")
+            pct = backlink_summary.get(f"{key}_pct")
+            if count is None:
+                continue
+            left = Inches(0.9) + Emu(i * Inches(2.9))
+            _icon_dot(slide, left, y + Inches(0.62), Inches(0.11), attr_colors.get(key, TEXT_MUTED))
+            _textbox(slide, left + Inches(0.22), y + Inches(0.5), Inches(2.6), Inches(0.3), f"{label}: {int(count):,} ({pct}%)", size=12, color=TEXT_DARK)
+        y += Inches(1.35)
+    else:
+        y += Inches(0.2)
+
     insights = []
-    if row_count and ref_domains:
-        links_per_domain = row_count / len(ref_domains)
+    if total_backlinks and total_referring_domains:
+        links_per_domain = total_backlinks / total_referring_domains
         if links_per_domain > 5:
             insights.append(f"{links_per_domain:.1f} backlinks per referring domain — link profile is concentrated in a few sources, worth diversifying.")
         else:
-            insights.append(f"{len(ref_domains)} distinct referring domains behind {row_count} backlinks — reasonably diverse source spread.")
+            insights.append(f"{int(total_referring_domains)} distinct referring domains behind {int(total_backlinks)} backlinks — reasonably diverse source spread.")
     if pct_dofollow is not None:
         if pct_dofollow < 50:
-            insights.append(f"Only {pct_dofollow}% of backlinks are dofollow — most links here aren't passing ranking authority.")
+            insights.append(f"Only {pct_dofollow:.0f}% of backlinks are dofollow — most links here aren't passing ranking authority.")
         else:
-            insights.append(f"{pct_dofollow}% of backlinks are dofollow — the majority are passing ranking authority.")
-    if avg_score is not None:
-        insights.append(f"Average domain score of referring sites is {avg_score} — {'strong-authority sources' if avg_score >= 40 else 'low-authority sources, prioritize outreach to higher-DR sites'}.")
-    _insights_strip(slide, Inches(0.6), Inches(3.85), Inches(11.9), insights)
+            insights.append(f"{pct_dofollow:.0f}% of backlinks are dofollow — the majority are passing ranking authority.")
+    if authority_score is not None:
+        if backlink_summary:
+            insights.append(f"Authority Score is {int(authority_score)} — {'a strong, established domain' if authority_score >= 40 else 'still building authority, prioritize link acquisition'}.")
+        else:
+            insights.append(f"Average domain score of referring sites is {int(authority_score)} — {'strong-authority sources' if authority_score >= 40 else 'low-authority sources, prioritize outreach to higher-DR sites'}.")
+    _insights_strip(slide, Inches(0.6), y, Inches(11.9), insights)
     return slide
 
 
@@ -1440,9 +1496,11 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
         _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
         y = Inches(1.4)
         for item in opportunities[:8]:
+            lines = _wrap_lines(item, Inches(11.3), size_pt=13)
+            line_h = Inches(13 * 0.02)
             _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), _accent())
-            _textbox(slide, Inches(1.15), y, Inches(11.3), Inches(0.4), item, size=13)
-            y += Inches(0.5)
+            _textbox(slide, Inches(1.15), y, Inches(11.3), line_h * lines, item, size=13)
+            y += line_h * lines + Inches(0.14)
         slides.append(slide)
     return slides
 
@@ -1531,6 +1589,7 @@ def build_report(
     ux_findings: dict | None = None,
     site_audit_issues: list[dict] | None = None,
     site_audit_overview: dict | None = None,
+    backlink_summary: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -1549,6 +1608,7 @@ def build_report(
             analytics, competitor_rows, keyword_rows, backlink_rows, backlink_row_count,
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
+            backlink_summary,
         )
     finally:
         _theme["footer"] = ""
@@ -1577,6 +1637,7 @@ def _build_report(
     ux_findings: dict | None = None,
     site_audit_issues: list[dict] | None = None,
     site_audit_overview: dict | None = None,
+    backlink_summary: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -1617,6 +1678,7 @@ def _build_report(
         if analytics.get("traffic_overview"):
             add_traffic_overview_slide(prs, analytics)
         top_pages = (analytics.get("top_pages") or {}).get("rows", [])
+        top_pages = [p for p in top_pages if "career" not in (p.get("path") or "").lower()]
         if top_pages:
             total_views = sum(int(float(p.get("page_views", 0) or 0)) for p in top_pages)
             rows = [
@@ -1677,7 +1739,7 @@ def _build_report(
                 col_widths=[5.5, 1.5, 1.9, 1.5, 1.7], source=gsc_source, insights=insights,
             )
 
-    if competitor_rows or keyword_rows or backlink_rows or competitor_positions or competitor_narratives:
+    if competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions or competitor_narratives:
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
         if competitor_rows:
             add_competitor_table_slide(prs, competitor_rows)
@@ -1689,8 +1751,8 @@ def _build_report(
                     add_competitor_narrative_slide(prs, client_name, domain, narrative)
         if keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
-        if backlink_rows:
-            add_backlink_profile_slide(prs, backlink_rows, backlink_row_count)
+        if backlink_rows or backlink_summary:
+            add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary)
         if competitor_analysis:
             add_competitive_gaps_slide(prs, competitor_analysis)
 

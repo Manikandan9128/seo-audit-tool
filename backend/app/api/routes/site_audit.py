@@ -451,6 +451,12 @@ def _gather_report_data(
     # on the Site Health slide when uploaded.
     site_audit_overview_rows = _all_rows("site_audit_overview", own_only=True)
     site_audit_overview = site_audit_overview_rows[-1] if site_audit_overview_rows else None
+    # Semrush Backlink List PDF's summary stats (Authority Score, Referring
+    # Domains, Total Backlinks, Referring IPs, Follow/Nofollow/Sponsored/UGC
+    # link attributes) — richer/more authoritative than what the Backlink
+    # Profile slide otherwise computes from a possibly-partial backlinks CSV.
+    backlink_summary_rows = _all_rows("backlink_summary", own_only=True)
+    backlink_summary = backlink_summary_rows[-1] if backlink_summary_rows else None
 
     # Competitor Analysis comparison table: prefer Domain Overview rows (own +
     # competitors) when uploaded — they carry DR/backlinks/top-countries/
@@ -512,6 +518,7 @@ def _gather_report_data(
         "page_audit": page_audit_result,
         "site_audit_issues": site_audit_issues_rows or None,
         "site_audit_overview": site_audit_overview,
+        "backlink_summary": backlink_summary,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,

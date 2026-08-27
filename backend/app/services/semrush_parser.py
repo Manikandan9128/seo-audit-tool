@@ -395,6 +395,61 @@ def parse_site_audit_overview_pdf(content: bytes) -> dict | None:
     return result
 
 
+_LINK_ATTRIBUTE_LABELS = ["Follow", "Nofollow", "Sponsored", "UGC"]
+
+
+def parse_backlink_list_pdf(content: bytes) -> dict | None:
+    """Parses Semrush's "Backlink List" PDF export — the summary stat row
+    (Authority Score, Referring Domains, Total Backlinks, Referring IPs) and
+    the Link Attributes breakdown (Follow/Nofollow/Sponsored/UGC). Does NOT
+    parse the per-backlink table itself (page 3+) — that page's text layer
+    is a garbled mess of embedded template source, not real link data; the
+    summary stats are the only clean, reliably-parseable numbers in this
+    export. Returns None if this doesn't look like a Backlink List PDF.
+
+    The 4 summary stats render as side-by-side cards — same layout risk
+    that broke the Site Health PDF's line-order regex in production — so
+    this locates them by word position (the value row's x-position, sorted
+    left to right) instead of trusting extract_text()'s line order."""
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        if "Backlink List" not in text or "Referring Domains" not in text:
+            return None
+
+        result = {}
+        for page in pdf.pages:
+            words = page.extract_words()
+            authority_word = next((w for w in words if w["text"] == "Authority"), None)
+            if not authority_word:
+                continue
+            label_top = authority_word["top"]
+            value_words = sorted(
+                (w for w in words if re.match(r"^[\d.,]+[KMB]?$", w["text"]) and label_top < w["top"] < label_top + 40),
+                key=lambda w: w["x0"],
+            )
+            if len(value_words) >= 4:
+                result["authority_score"] = _parse_abbrev_number(value_words[0]["text"])
+                result["referring_domains"] = _parse_abbrev_number(value_words[1]["text"])
+                result["backlinks_total"] = _parse_abbrev_number(value_words[2]["text"])
+                result["referring_ips"] = _parse_abbrev_number(value_words[3]["text"])
+            break
+
+        if "backlinks_total" not in result:
+            return None
+
+        # Link Attributes is a plain single-column list (Follow/Nofollow/
+        # Sponsored/UGC each its own line) — no side-by-side ambiguity here,
+        # a joined-text regex is safe.
+        for label in _LINK_ATTRIBUTE_LABELS:
+            key = label.lower()
+            match = re.search(rf"\b{label}\s+([\d.]+)%\s+([\d.,]+[KMB]?)", text)
+            if match:
+                result[f"{key}_pct"] = float(match.group(1))
+                result[f"{key}_count"] = _parse_abbrev_number(match.group(2))
+
+    return result
+
+
 def parse_domain_overview_pdf(content: bytes) -> dict | None:
     """Parses Semrush's "Domain Overview (Desktop)" PDF export — the
     single-domain report available on every plan (no Bulk Analysis needed).
@@ -496,6 +551,9 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
         overview_row = parse_site_audit_overview_pdf(content)
         if overview_row is not None:
             return "site_audit_overview", {"row_count": 1, "rows": [overview_row]}
+        backlink_row = parse_backlink_list_pdf(content)
+        if backlink_row is not None:
+            return "backlink_summary", {"row_count": 1, "rows": [backlink_row]}
         row = parse_domain_overview_pdf(content)
         if row is None:
             return "unknown", {"row_count": 0, "rows": []}
