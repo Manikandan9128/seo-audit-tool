@@ -366,8 +366,15 @@ def parse_domain_overview_pdf(content: bytes) -> dict | None:
 
 def _read_table(filename: str, content: bytes) -> pd.DataFrame:
     buffer = io.BytesIO(content)
-    if filename.lower().endswith((".xlsx", ".xls")):
+    name = filename.lower()
+    if name.endswith((".xlsx", ".xls")):
         return pd.read_excel(buffer)
+    if name.endswith(".json"):
+        return pd.read_json(buffer)
+    if name.endswith(".xml"):
+        return pd.read_xml(buffer, parser="etree")
+    if name.endswith(".tsv"):
+        return pd.read_csv(buffer, sep="\t")
     # Semrush CSV exports are typically semicolon or comma separated
     try:
         return pd.read_csv(buffer, sep=None, engine="python")
