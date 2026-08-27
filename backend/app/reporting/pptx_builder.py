@@ -640,21 +640,34 @@ def add_tech_stack_slide(prs: Presentation, tech_stack: dict):
     return slide
 
 
-def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None):
+def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None, site_audit_issues: list[dict] | None = None):
     slide = _blank_slide(prs)
     _content_header(slide, "SEO Issues")
 
-    issues = list(audit.get("issues", []))
-    if page_audit:
-        for page in page_audit.get("pages", []):
-            for issue in page.get("issues", []):
-                issues.append(f"{issue} — {page['url']}")
-    errors = [i for i in issues if any(k in i.lower() for k in ["not reachable", "https", "robots", "sitemap"])]
-    warnings = [i for i in issues if i not in errors]
+    if site_audit_issues:
+        # Semrush Site Audit's own issue-type rollup — a real full-site crawl
+        # result (hundreds of pages, ~95 issue categories), strictly richer
+        # than our own homepage + 20-page checks below. Prefer it when uploaded.
+        ranked = sorted(site_audit_issues, key=lambda r: r.get("failed_checks") or 0, reverse=True)
+        errors, warnings = [], []
+        for row in ranked:
+            label = f"{row.get('issue', 'Issue')} ({row.get('failed_checks', 0)} pages)"
+            if str(row.get("issue_type", "")).strip().upper() == "ERROR":
+                errors.append(label)
+            else:
+                warnings.append(label)
+    else:
+        issues = list(audit.get("issues", []))
+        if page_audit:
+            for page in page_audit.get("pages", []):
+                for issue in page.get("issues", []):
+                    issues.append(f"{issue} — {page['url']}")
+        errors = [i for i in issues if any(k in i.lower() for k in ["not reachable", "https", "robots", "sitemap"])]
+        warnings = [i for i in issues if i not in errors]
 
     card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
     y = Inches(1.3)
-    if not issues:
+    if not errors and not warnings:
         _textbox(slide, Inches(0.9), y, Inches(10), Inches(0.4), "No issues found on the checked pages.", size=14, color=GOOD)
         return slide
 
@@ -1426,6 +1439,7 @@ def build_report(
     competitor_analysis: dict | None = None,
     domain_strategy: dict | None = None,
     ux_findings: dict | None = None,
+    site_audit_issues: list[dict] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -1443,7 +1457,7 @@ def build_report(
             client_name, website_url, site_audit, page_audit, psi_mobile, psi_desktop,
             analytics, competitor_rows, keyword_rows, backlink_rows, backlink_row_count,
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
-            competitor_narratives, domain_strategy, ux_findings,
+            competitor_narratives, domain_strategy, ux_findings, site_audit_issues,
         )
     finally:
         _theme["footer"] = ""
@@ -1470,6 +1484,7 @@ def _build_report(
     competitor_narratives: dict[str, dict] | None = None,
     domain_strategy: dict | None = None,
     ux_findings: dict | None = None,
+    site_audit_issues: list[dict] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -1493,7 +1508,7 @@ def _build_report(
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if site_audit:
             add_site_health_slide(prs, site_audit, page_audit)
-            add_seo_issues_slide(prs, site_audit, page_audit)
+            add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
 
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)

@@ -84,6 +84,19 @@ SITE_AUDIT_PAGES_COLUMN_ALIASES = {
     "hreflang_issues": ["hreflang issues", "hreflang_issues"],
 }
 
+# Semrush Site Audit "Issues" export (the "Top Issues" overview table, every
+# row not just the top 5 shown on the PDF) — one row per issue TYPE across the
+# whole crawl, not per page. Distinct from SITE_AUDIT_PAGES_COLUMN_ALIASES,
+# which is one row per URL.
+SITE_AUDIT_ISSUES_COLUMN_ALIASES = {
+    "issue_id": ["issue id", "issue_id"],
+    "issue_type": ["issue type", "issue_type"],
+    "issue": ["issue"],
+    "failed_checks": ["failed checks", "failed_checks"],
+    "total_checks": ["total checks", "total_checks"],
+    "changed_from_last_audit": ["changed from last audit", "changed_from_last_audit"],
+}
+
 
 def _parse_abbrev_number(text: str) -> float | None:
     """'12.7K' -> 12700.0, '599.7k' -> 599700.0, '$60.4K' -> 60400.0. Semrush's
@@ -410,6 +423,8 @@ def detect_import_type(df: pd.DataFrame) -> str:
         return "domain_overview"
     if {"page url", "page_url"} & cols and ({"http status code", "http_status_code"} & cols):
         return "site_audit_pages"
+    if "issue" in cols and ({"failed checks", "failed_checks"} & cols) and ({"total checks", "total_checks"} & cols):
+        return "site_audit_issues"
     return "unknown"
 
 
@@ -435,6 +450,8 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
         mapped = _map_columns(df, DOMAIN_OVERVIEW_COLUMN_ALIASES)
     elif import_type == "site_audit_pages":
         mapped = _map_columns(df, SITE_AUDIT_PAGES_COLUMN_ALIASES)
+    elif import_type == "site_audit_issues":
+        mapped = _map_columns(df, SITE_AUDIT_ISSUES_COLUMN_ALIASES)
     else:
         mapped = df
 
