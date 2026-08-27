@@ -355,7 +355,9 @@ export default function ClientDetailPage() {
     downloadReportWithBody(body, true);
   }
 
-  const [collapsedSections, setCollapsedSections] = useState<SectionKey[]>([]);
+  const [collapsedSections, setCollapsedSections] = useState<SectionKey[]>(
+    SECTION_OPTIONS.map((s) => s.key)
+  );
 
   function toggleCollapsed(key: SectionKey) {
     setCollapsedSections((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
