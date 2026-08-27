@@ -355,6 +355,45 @@ export default function ClientDetailPage() {
     downloadReportWithBody(body, true);
   }
 
+  const [aiNarrative, setAiNarrative] = useState<string | null>(null);
+  const [aiNarrativeLoading, setAiNarrativeLoading] = useState(false);
+  const [aiNarrativeError, setAiNarrativeError] = useState("");
+
+  async function generateAiNarrative() {
+    setAiNarrativeLoading(true);
+    setAiNarrativeError("");
+    setAiNarrative(null);
+    try {
+      const body = {
+        ...(overview ? { company_overview_override: overview } : {}),
+        ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
+      };
+      const res = await api.post(`/clients/${clientId}/ai-report-narrative`, Object.keys(body).length ? body : null);
+      if (res.data.error) {
+        setAiNarrativeError(res.data.error);
+      } else {
+        setAiNarrative(res.data.text);
+      }
+    } catch (err: any) {
+      setAiNarrativeError(err?.response?.data?.detail || "AI narrative generation failed");
+    } finally {
+      setAiNarrativeLoading(false);
+    }
+  }
+
+  function downloadAiNarrative() {
+    if (!aiNarrative) return;
+    const blob = new Blob([aiNarrative], { type: "text/plain" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `${client?.name || "client"}-ai-report-narrative.txt`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
   const [collapsedSections, setCollapsedSections] = useState<SectionKey[]>(
     SECTION_OPTIONS.map((s) => s.key)
   );
@@ -513,10 +552,52 @@ export default function ClientDetailPage() {
               <button onClick={downloadReportDirect} disabled={reportLoading}>
                 {reportLoading ? "Generating..." : "Download Report (PPTX)"}
               </button>
+              <button className="secondary" onClick={generateAiNarrative} disabled={aiNarrativeLoading}>
+                {aiNarrativeLoading ? "Writing..." : "AI Narrative Report"}
+              </button>
             </>
           )}
         </div>
       </div>
+
+      {aiNarrativeError && (
+        <div className="card" style={{ borderColor: "#fca5a5", background: "#fef2f2", color: "#991b1b" }}>
+          {aiNarrativeError}
+        </div>
+      )}
+
+      {aiNarrative && (
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0, fontSize: 17 }}>AI Narrative Report</h3>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="secondary" onClick={() => navigator.clipboard.writeText(aiNarrative)}>
+                Copy
+              </button>
+              <button className="secondary" onClick={downloadAiNarrative}>
+                Download .txt
+              </button>
+              <button className="secondary" onClick={() => setAiNarrative(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontFamily: "inherit",
+              fontSize: 13.5,
+              lineHeight: 1.6,
+              marginTop: 12,
+              maxHeight: 600,
+              overflowY: "auto",
+            }}
+          >
+            {aiNarrative}
+          </pre>
+        </div>
+      )}
 
       {(() => {
         const steps = [

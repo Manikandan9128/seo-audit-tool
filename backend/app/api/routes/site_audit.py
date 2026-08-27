@@ -26,6 +26,7 @@ from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
+from app.services.master_narrative_service import generate_master_narrative
 from app.services.competitor_narrative_service import generate_competitor_narrative
 from app.services.logo_service import fetch_logo_bytes
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -603,3 +604,54 @@ def generate_report(
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/{client_id}/ai-report-narrative")
+def ai_report_narrative(
+    client_id: uuid.UUID,
+    include_analytics: bool = True,
+    include_pagespeed: bool = True,
+    include_company_overview: bool = True,
+    company_overview_override: dict | None = Body(default=None),
+    competitor_analysis_override: dict | None = Body(default=None),
+    ux_notes: str | None = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Runs the same data-gathering as /report-preview, then a single AI
+    call against the full 13-section report spec (global rules + section
+    spec), returning the raw narrative text as a text-first companion view
+    alongside the PPTX — does not replace it."""
+    client = _get_owned_client(client_id, db, current_user)
+    data = _gather_report_data(
+        client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
+        company_overview_override, competitor_analysis_override, ux_notes,
+    )
+
+    competitor_domains = list((data.get("competitor_positions") or {}).keys())
+    if not competitor_domains:
+        competitor_domains = [
+            r.get("domain") for r in (data.get("competitor_rows") or []) if r.get("domain")
+        ]
+
+    result = generate_master_narrative(
+        company_name=client.name,
+        domain=client.website_url,
+        target_country=(data.get("company_overview") or {}).get("target_country"),
+        competitors=competitor_domains,
+        crawl_output={
+            "site_audit": data.get("site_audit"),
+            "page_audit": data.get("page_audit"),
+            "tech_stack": data.get("tech_stack"),
+        },
+        ga4_data=data.get("analytics"),
+        gsc_data=(data.get("analytics") or {}).get("search_queries"),
+        pagespeed_data={"mobile": data.get("psi_mobile"), "desktop": data.get("psi_desktop")},
+        semrush_data={
+            "competitor_rows": data.get("competitor_rows"),
+            "keyword_rows": data.get("keyword_rows"),
+            "backlink_rows": data.get("backlink_rows"),
+        },
+        ux_notes=ux_notes,
+    )
+    return result
