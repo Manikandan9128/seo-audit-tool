@@ -130,10 +130,16 @@ def _parse_traffic_summary_column(text: str) -> dict:
     return {
         # The gap between the traffic number and "TRAFFIC" holds a %-change
         # badge whose minus sign (for a negative change) extracts as a NUL
-        # byte rather than "-" — a character-class gap pattern can't span
-        # that, so match ANY non-newline characters instead (bounded and
-        # non-greedy, so it still stops at the nearest "TRAFFIC").
-        "traffic": _first_number(text, r"(\d[\d.,]*[KMB]?)[\s\S]{0,20}?TRAFFIC"),
+        # byte rather than "-", so the gap can't be a plain [\d.\-]* class —
+        # but it must stay restricted to badge-only characters (digit, dot,
+        # dash, NUL, whitespace, percent). A permissive "any character" gap
+        # was tried and is NOT safe: on non-cropped (interleaved) text it
+        # bridged clean over an entire neighboring card's own number+K/M/B
+        # suffix to latch onto that OTHER card's "TRAFFIC" label, silently
+        # reporting one domain's organic traffic as its paid traffic. This
+        # class can't cross a letter, so it can never skip over another
+        # card's number (which always ends in a K/M/B letter) this way.
+        "traffic": _first_number(text, r"(\d[\d.,]*[KMB]?)[\d.\-\x00\s%]{0,15}TRAFFIC"),
         "keywords": _first_number(text, r"Keywords\s+(\d[\d.,]*[KMB]?)"),
         "cost": _first_number(text, r"Traffic Cost\s+\$?\s*(\d[\d.,]*[KMB]?)"),
     }
@@ -156,8 +162,15 @@ def _parse_domain_overview_text(text: str, page2_left: str = "", page2_right: st
     # bled into the wrong column could silently swap the two, which is
     # worse than not cropping at all; fall back to whole-page section
     # slicing (also what plain sequential-layout tests exercise).
-    left_organic, right_organic = "Organic" in page2_left, "Organic" in page2_right
-    left_paid, right_paid = "Paid" in page2_left, "Paid" in page2_right
+    #
+    # Limited to the first ~300 chars of each column (roughly the Summary
+    # card itself) rather than the whole column — further down the page a
+    # shared, centered chart caption ("Traffic: Organic vs Paid") spans
+    # both columns and would otherwise poison this check on every real PDF,
+    # forcing the unreliable fallback path every time.
+    left_head, right_head = page2_left[:300], page2_right[:300]
+    left_organic, right_organic = "Organic" in left_head, "Organic" in right_head
+    left_paid, right_paid = "Paid" in left_head, "Paid" in right_head
     if left_organic and right_paid and not (left_paid or right_organic):
         organic_col, paid_col = page2_left, page2_right
     elif right_organic and left_paid and not (right_paid or left_organic):
