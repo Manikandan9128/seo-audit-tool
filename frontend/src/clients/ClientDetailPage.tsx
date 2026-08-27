@@ -113,6 +113,7 @@ export default function ClientDetailPage() {
   async function generateSelectedReport() {
     setGenerating(true);
     setError("");
+    setCollapsedSections((prev) => prev.filter((k) => !selectedSections.includes(k)));
     try {
       const tasks: Promise<any>[] = [];
       if (selectedSections.includes("overview")) tasks.push(loadOverview());
@@ -343,6 +344,12 @@ export default function ClientDetailPage() {
     downloadReportWithBody(body, true);
   }
 
+  const [collapsedSections, setCollapsedSections] = useState<SectionKey[]>([]);
+
+  function toggleCollapsed(key: SectionKey) {
+    setCollapsedSections((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  }
+
   function sectionStatus(key: SectionKey, loading: boolean, hasData: boolean): { label: string; cls: string } {
     if (!selectedSections.includes(key)) return { label: "Not included", cls: "muted" };
     if (loading) return { label: "Generating…", cls: "muted" };
@@ -366,6 +373,7 @@ export default function ClientDetailPage() {
     children?: ReactNode;
   }) {
     const status = sectionStatus(sectionKey, loading, hasData);
+    const collapsed = collapsedSections.includes(sectionKey);
     return (
       <div
         className="card"
@@ -376,17 +384,44 @@ export default function ClientDetailPage() {
           borderTop: `3px solid ${hasData ? "var(--success)" : "var(--border-strong)"}`,
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-          <h3 style={{ margin: 0, fontSize: 17 }}>{title}</h3>
+        <div
+          onClick={() => toggleCollapsed(sectionKey)}
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              style={{
+                display: "inline-block",
+                transition: "transform 0.15s ease",
+                transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                color: "var(--text-muted)",
+                fontSize: 12,
+              }}
+            >
+              ▾
+            </span>
+            <h3 style={{ margin: 0, fontSize: 17 }}>{title}</h3>
+          </div>
           <span className={`badge ${status.cls}`}>{status.label}</span>
         </div>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "2px 0 0" }}>{description}</p>
-        {!loading && !hasData && (
-          <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 10, fontStyle: "italic" }}>
-            Not generated yet — check this section and click Generate Report.
-          </p>
+        {!collapsed && (
+          <>
+            <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "2px 0 0" }}>{description}</p>
+            {!loading && !hasData && (
+              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 10, fontStyle: "italic" }}>
+                Not generated yet — check this section and click Generate Report.
+              </p>
+            )}
+            {children}
+          </>
         )}
-        {children}
       </div>
     );
   }
