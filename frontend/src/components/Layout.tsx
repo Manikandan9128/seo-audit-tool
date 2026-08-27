@@ -16,12 +16,25 @@ export default function Layout({ children }: { children: ReactNode }) {
             padding: "14px 32px",
             background: "#fff",
             borderBottom: "1px solid #e3e6ea",
+            boxShadow: "0 1px 4px rgba(20, 20, 15, 0.04)",
+            position: "sticky",
+            top: 0,
+            zIndex: 30,
           }}
         >
-          <Link to="/clients" style={{ fontWeight: 700, fontSize: 16, color: "#1a1d21" }}>
+          <Link
+            to="/clients"
+            style={{
+              fontWeight: 700,
+              fontSize: 16,
+              color: "#1a1d21",
+              fontFamily: "var(--font-display)",
+              letterSpacing: "-0.01em",
+            }}
+          >
             SEO Audit Tool
           </Link>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
             <Link to="/settings" style={{ fontSize: 14, color: "#1a1d21" }}>
               Settings
             </Link>
