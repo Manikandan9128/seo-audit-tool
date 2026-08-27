@@ -113,6 +113,9 @@ export default function SemrushImportCard({
         </button>
         <button onClick={copyMcpPrompt}>Fetch via Claude (Semrush MCP)</button>
       </div>
+      <p style={{ fontSize: 12, color: "#6b7280", marginTop: 6, marginBottom: 0 }}>
+        Accepted formats: CSV, XLSX, XLS, PDF, JSON, XML, TSV
+      </p>
       {msg && <p style={{ fontSize: 13, marginTop: 8 }}>{msg}</p>}
 
       {rows.length > 0 && (
