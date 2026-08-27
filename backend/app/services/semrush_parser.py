@@ -332,6 +332,41 @@ def _parse_domain_overview_text(
     return {k: v for k, v in row.items() if v is not None}
 
 
+_CRAWLED_PAGE_CATEGORIES = ["Blocked", "Redirect", "Have issues", "Broken", "Healthy"]
+
+
+def parse_site_audit_overview_pdf(content: bytes) -> dict | None:
+    """Parses Semrush's "Site Audit: Overview" PDF export — a real full-site
+    crawl's Site Health %, AI Search Health %, and the Blocked/Redirect/Have
+    issues/Broken/Healthy page breakdown. Distinct from the Domain Overview
+    PDF (traffic/backlinks/competitors) and from the Site Audit issues.csv
+    (per-issue-type rollup) — this is the crawl-health summary only. Returns
+    None if this doesn't look like a Site Audit Overview PDF."""
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    health_match = re.search(r"Site Health\s+AI Search Health\s*\n\s*(\d+)%\s+(\d+)%", text)
+    if not health_match:
+        return None
+
+    result = {
+        "site_health_pct": int(health_match.group(1)),
+        "ai_search_health_pct": int(health_match.group(2)),
+    }
+    for category in _CRAWLED_PAGE_CATEGORIES:
+        key = category.lower().replace(" ", "_")
+        match = re.search(rf"{re.escape(category)}\s+([\d.]+)%\s+(\d+)", text)
+        if match:
+            result[f"{key}_pct"] = float(match.group(1))
+            result[f"{key}_count"] = int(match.group(2))
+
+    total_match = re.search(r"Total\s+(\d+)", text)
+    if not total_match:
+        return None
+    result["pages_total"] = int(total_match.group(1))
+    return result
+
+
 def parse_domain_overview_pdf(content: bytes) -> dict | None:
     """Parses Semrush's "Domain Overview (Desktop)" PDF export — the
     single-domain report available on every plan (no Bulk Analysis needed).
@@ -430,6 +465,9 @@ def detect_import_type(df: pd.DataFrame) -> str:
 
 def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
     if filename.lower().endswith(".pdf"):
+        overview_row = parse_site_audit_overview_pdf(content)
+        if overview_row is not None:
+            return "site_audit_overview", {"row_count": 1, "rows": [overview_row]}
         row = parse_domain_overview_pdf(content)
         if row is None:
             return "unknown", {"row_count": 0, "rows": []}
