@@ -128,9 +128,14 @@ def _parse_traffic_summary_column(text: str) -> dict:
     because Organic and Paid summary cards sit side by side and a plain
     top-to-bottom text join can interleave their lines)."""
     return {
-        "traffic": _first_number(text, r"([\d.,]+[KMB]?)\s*[\d.\-]*\s*%?\s*TRAFFIC"),
-        "keywords": _first_number(text, r"Keywords\s+([\d.,]+[KMB]?)"),
-        "cost": _first_number(text, r"Traffic Cost\s+\$?\s*([\d.,]+[KMB]?)"),
+        # The gap between the traffic number and "TRAFFIC" holds a %-change
+        # badge whose minus sign (for a negative change) extracts as a NUL
+        # byte rather than "-" — a character-class gap pattern can't span
+        # that, so match ANY non-newline characters instead (bounded and
+        # non-greedy, so it still stops at the nearest "TRAFFIC").
+        "traffic": _first_number(text, r"(\d[\d.,]*[KMB]?)[\s\S]{0,20}?TRAFFIC"),
+        "keywords": _first_number(text, r"Keywords\s+(\d[\d.,]*[KMB]?)"),
+        "cost": _first_number(text, r"Traffic Cost\s+\$?\s*(\d[\d.,]*[KMB]?)"),
     }
 
 
@@ -177,8 +182,8 @@ def _parse_domain_overview_text(text: str, page2_left: str = "", page2_right: st
         "paid_traffic": paid_fields["traffic"],
         "paid_keywords": paid_fields["keywords"],
         "paid_cost": paid_fields["cost"],
-        "backlinks_total": _first_number(backlinks, r"([\d.,]+[KMB]?)\s*TOTAL\s*BACKLINKS"),
-        "referring_domains": _first_number(backlinks, r"Referring\s*Domains\s+([\d.,]+[KMB]?)"),
+        "backlinks_total": _first_number(backlinks, r"(\d[\d.,]*[KMB]?)\s*TOTAL\s*BACKLINKS"),
+        "referring_domains": _first_number(backlinks, r"Referring\s*Domains\s+(\d[\d.,]*[KMB]?)"),
     }
     branded_pct = re.search(r"([\d.]+)\s*%\s*Branded\s*Traffic", branded)
     nonbranded_pct = re.search(r"([\d.]+)\s*%\s*Non-?Branded\s*Traffic", branded)
@@ -187,35 +192,6 @@ def _parse_domain_overview_text(text: str, page2_left: str = "", page2_right: st
     if nonbranded_pct:
         row["nonbranded_pct"] = f"{nonbranded_pct.group(1)}%"
     return {k: v for k, v in row.items() if v is not None}
-
-
-def debug_extract_pdf_text(content: bytes) -> dict:
-    """Temporary diagnostic: exposes exactly what pdfplumber reads from a
-    Domain Overview PDF (full text, plus the left/right crop halves and
-    where the "Paid" word split point landed) so real-world extraction
-    quirks can be inspected without server log access. Remove once the
-    parser is confirmed working against real Semrush exports."""
-    with pdfplumber.open(io.BytesIO(content)) as pdf:
-        num_pages = len(pdf.pages)
-        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        page2_left = page2_right = ""
-        paid_word_info = None
-        if num_pages > 1:
-            page2 = pdf.pages[1]
-            words = page2.extract_words()
-            paid_words = [w for w in words if w["text"] == "Paid"]
-            paid_word_info = paid_words[0] if paid_words else None
-            if paid_word_info:
-                boundary = paid_word_info["x0"]
-                page2_left = page2.crop((0, 0, boundary, page2.height)).extract_text() or ""
-                page2_right = page2.crop((boundary, 0, page2.width, page2.height)).extract_text() or ""
-    return {
-        "num_pages": num_pages,
-        "full_text_first_2000": full_text[:2000],
-        "paid_word_info": paid_word_info,
-        "page2_left_first_1000": page2_left[:1000],
-        "page2_right_first_1000": page2_right[:1000],
-    }
 
 
 def parse_domain_overview_pdf(content: bytes) -> dict | None:
@@ -240,8 +216,8 @@ def parse_domain_overview_pdf(content: bytes) -> dict | None:
             paid_word = next((w for w in page2.extract_words() if w["text"] == "Paid"), None)
             if paid_word:
                 boundary = paid_word["x0"]
-                page2_left = page2.crop((0, 0, boundary, page2.height)).extract_text() or ""
-                page2_right = page2.crop((boundary, 0, page2.width, page2.height)).extract_text() or ""
+                page2_left = page2.within_bbox((0, 0, boundary, page2.height)).extract_text() or ""
+                page2_right = page2.within_bbox((boundary, 0, page2.width, page2.height)).extract_text() or ""
     return _parse_domain_overview_text(text, page2_left, page2_right)
 
 

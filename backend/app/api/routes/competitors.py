@@ -37,12 +37,6 @@ async def upload_semrush_file(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
 
-    debug_text = None
-    if (file.filename or "").lower().endswith(".pdf"):
-        from app.services.semrush_parser import debug_extract_pdf_text
-
-        debug_text = debug_extract_pdf_text(content)
-
     record = SemrushImport(
         client_id=client_id,
         uploaded_by_user_id=current_user.id,
@@ -62,7 +56,6 @@ async def upload_semrush_file(
         "original_filename": record.original_filename,
         "is_own_site": record.is_own_site,
         "domain_label": record.domain_label,
-        "_debug": debug_text,
     }
 
 
