@@ -105,6 +105,7 @@ export default function ClientDetailPage() {
   const [sectionDropdownOpen, setSectionDropdownOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [hasGenerated, setHasGenerated] = useState(false);
+  const [hasDownloaded, setHasDownloaded] = useState(false);
 
   function toggleSection(key: SectionKey) {
     setSelectedSections((prev) =>
@@ -328,6 +329,7 @@ export default function ClientDetailPage() {
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
+      setHasDownloaded(true);
       if (closePreviewAfter) setPreviewData(null);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Report generation failed");
@@ -514,6 +516,83 @@ export default function ClientDetailPage() {
         </div>
       </div>
 
+      <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <p className="eyebrow" style={{ margin: 0 }}>Getting started</p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+          {[
+            {
+              n: 1,
+              label: "Connect Google (GA4 / Search Console)",
+              hint: "Optional — enables the Analytics section",
+              done: client.google_connected && !!(client.ga4_property_id || client.gsc_site_url),
+              onClick: () => document.getElementById("google-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+            },
+            {
+              n: 2,
+              label: "Upload Semrush data",
+              hint: "Optional — competitor & keyword slides",
+              done: imports.length > 0,
+              onClick: () => document.getElementById("semrush-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+            },
+            {
+              n: 3,
+              label: "Pick sections & Generate Report",
+              hint: "Runs every checked section above",
+              done: hasGenerated,
+              onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
+            },
+            {
+              n: 4,
+              label: "Preview & Download",
+              hint: "Review, then export the PPTX",
+              done: hasDownloaded,
+              onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
+            },
+          ].map((step) => (
+            <button
+              key={step.n}
+              onClick={step.onClick}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                textAlign: "left",
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                minWidth: 220,
+                flex: "1 1 220px",
+              }}
+            >
+              <span
+                style={{
+                  flexShrink: 0,
+                  width: 24,
+                  height: 24,
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: step.done ? "#fff" : "var(--text-muted)",
+                  background: step.done ? "var(--success)" : "var(--border-strong)",
+                }}
+              >
+                {step.done ? "✓" : step.n}
+              </span>
+              <span>
+                <span style={{ display: "block", fontSize: 13.5, fontWeight: 600, color: step.done ? "var(--text-muted)" : "inherit" }}>
+                  {step.label}
+                </span>
+                <span style={{ display: "block", fontSize: 12, color: "var(--text-muted)" }}>{step.hint}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
       {previewData && (
         <ReportPreviewModal
           data={previewData}
@@ -691,29 +770,31 @@ export default function ClientDetailPage() {
       )}
 
       {/* Semrush uploads — one for our domain, one for competitors */}
-      <SemrushImportCard
-        clientId={clientId!}
-        title="Our Website Data"
-        description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, or domain overview. Type is auto-detected; select multiple files to bulk-upload.`}
-        isOwnSite={true}
-        mcpHint={`Use the Semrush MCP tools to pull backlinks, keyword data, and domain overview data for our own site, ${client.website_url}.`}
-        imports={imports}
-        onChanged={loadImports}
-      />
-      <SemrushImportCard
-        clientId={clientId!}
-        title="Competitor Data"
-        description="Semrush exports for competitor domains — backlinks, organic competitors, or keyword gap. Type is auto-detected; select multiple files to bulk-upload."
-        isOwnSite={false}
-        mcpHint={`Use the Semrush MCP tools to pull competitor data (backlinks, organic competitors, keyword gap) for competitors of ${client.website_url}.`}
-        imports={imports}
-        onChanged={loadImports}
-      />
+      <div id="semrush-section" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <SemrushImportCard
+          clientId={clientId!}
+          title="Our Website Data"
+          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, or domain overview. Type is auto-detected; select multiple files to bulk-upload.`}
+          isOwnSite={true}
+          mcpHint={`Use the Semrush MCP tools to pull backlinks, keyword data, and domain overview data for our own site, ${client.website_url}.`}
+          imports={imports}
+          onChanged={loadImports}
+        />
+        <SemrushImportCard
+          clientId={clientId!}
+          title="Competitor Data"
+          description="Semrush exports for competitor domains — backlinks, organic competitors, or keyword gap. Type is auto-detected; select multiple files to bulk-upload."
+          isOwnSite={false}
+          mcpHint={`Use the Semrush MCP tools to pull competitor data (backlinks, organic competitors, keyword gap) for competitors of ${client.website_url}.`}
+          imports={imports}
+          onChanged={loadImports}
+        />
+      </div>
 
       <SemrushAnalysis clientId={clientId!} />
 
       {/* Google Analytics / Search Console */}
-      <div className="card">
+      <div id="google-section" className="card">
         <h3 style={{ marginTop: 0 }}>Google Analytics &amp; Search Console</h3>
         {!client.google_connected ? (
           <button onClick={connectGoogle}>Connect Google</button>

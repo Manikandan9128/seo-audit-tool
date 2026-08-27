@@ -645,13 +645,17 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
     _content_header(slide, "SEO Issues")
 
     issues = list(audit.get("issues", []))
+    if page_audit:
+        for page in page_audit.get("pages", []):
+            for issue in page.get("issues", []):
+                issues.append(f"{issue} — {page['url']}")
     errors = [i for i in issues if any(k in i.lower() for k in ["not reachable", "https", "robots", "sitemap"])]
     warnings = [i for i in issues if i not in errors]
 
     card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
     y = Inches(1.3)
     if not issues:
-        _textbox(slide, Inches(0.9), y, Inches(10), Inches(0.4), "No issues found on the homepage checks.", size=14, color=GOOD)
+        _textbox(slide, Inches(0.9), y, Inches(10), Inches(0.4), "No issues found on the checked pages.", size=14, color=GOOD)
         return slide
 
     for group_label, group_issues, color in [("Errors", errors, BAD), ("Warnings", warnings, WARN)]:
@@ -1525,7 +1529,12 @@ def _build_report(
         if sources:
             total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
             rows = [
-                (s["channel"], f"{int(float(s['sessions'])):,}", f"{int(float(s.get('users', 0) or 0)):,}")
+                (
+                    s["channel"],
+                    f"{int(float(s['sessions'])):,}",
+                    f"{(float(s['sessions']) / total_sessions * 100 if total_sessions else 0):.1f}%",
+                    f"{int(float(s.get('users', 0) or 0)):,}",
+                )
                 for s in sources[:14]
             ]
             top_channel = max(sources, key=lambda s: float(s.get("sessions", 0) or 0))
@@ -1538,8 +1547,8 @@ def _build_report(
             else:
                 insights.append("No Organic Search sessions in this period — SEO isn't driving measurable traffic yet.")
             _table_slide(
-                prs, "Traffic Sources", ["Channel", "Sessions", "Users"], rows,
-                col_widths=[6.0, 3.05, 3.05], source="Google Analytics 4", insights=insights,
+                prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "Users"], rows,
+                col_widths=[4.6, 2.5, 2.5, 2.5], source="Google Analytics 4", insights=insights,
             )
         queries = (analytics.get("search_queries") or {}).get("rows", [])
         if queries:
