@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,7 @@ from app.services.tech_stack_service import detect_tech_stack
 from app.services.technical_seo_service import run_multi_page_audit, run_multi_page_audit_async, run_site_audit
 
 router = APIRouter(prefix="/clients", tags=["site-audit"])
+logger = logging.getLogger(__name__)
 
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
@@ -234,12 +236,17 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
     connection = db.query(GoogleConnection).filter(GoogleConnection.client_id == client_id).first()
     if not connection:
         return None
-    creds = google_oauth.credentials_from_stored(
-        decrypt(connection.encrypted_access_token), decrypt(connection.encrypted_refresh_token)
-    )
-    connection.encrypted_access_token = encrypt(creds.token)
-    db.commit()
-    return creds
+    try:
+        creds = google_oauth.credentials_from_stored(
+            decrypt(connection.encrypted_access_token), decrypt(connection.encrypted_refresh_token)
+        )
+        connection.encrypted_access_token = encrypt(creds.token)
+        db.commit()
+        return creds
+    except Exception:
+        # Stale/revoked/undecryptable tokens shouldn't take down the whole
+        # report — analytics is one optional section among many.
+        return None
 
 
 def _generate_competitor_narratives(client: Client, data: dict, max_competitors: int = 5) -> dict[str, dict]:
@@ -271,11 +278,17 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
     if not domains:
         return {}
 
+    def _as_number(v) -> float:
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     narratives = {}
     for domain in domains:
         row = next((r for r in competitor_rows if r.get("domain") == domain), None)
         top_keywords = sorted(
-            competitor_positions.get(domain, []), key=lambda r: float(r.get("search_volume") or 0), reverse=True
+            competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
         )[:8]
         relevant_gaps = [i["summary"] for i in gap_issues if domain in i.get("summary", "")]
         facts = {
@@ -288,7 +301,12 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         }
         if not row and not top_keywords and not relevant_gaps:
             continue  # nothing grounded to write from — skip rather than let the AI invent
-        narratives[domain] = generate_competitor_narrative(client.name, client_domain, domain, facts)
+        try:
+            narratives[domain] = generate_competitor_narrative(client.name, client_domain, domain, facts)
+        except Exception:
+            # A single competitor's AI narrative failing (rate limit, API
+            # error, timeout) shouldn't take down the whole report.
+            continue
     return narratives
 
 
@@ -411,7 +429,12 @@ def _gather_report_data(
             continue
         label = own_website_domain if r.is_own_site else (r.domain_label or "competitor")
         for row in r.parsed_data.get("rows", []):
-            domain_overview_rows.append({**row, "domain": row.get("domain") or label})
+            # For the own site, always use the client's own domain as the
+            # label — a PDF-parsed row carries its own "domain" field (e.g.
+            # "startek.com") which can disagree with client.website_url on
+            # "www." and break the own-row-sorts-first logic below.
+            domain = label if r.is_own_site else (row.get("domain") or label)
+            domain_overview_rows.append({**row, "domain": domain})
     domain_overview_rows.sort(key=lambda row: row["domain"] != own_website_domain)
 
     competitor_rows_all = domain_overview_rows or _all_rows("organic_competitors")
@@ -508,17 +531,24 @@ def generate_report(
     logo_bytes = None
     logo_url = (data.get("site_audit") or {}).get("logo_url")
     if logo_url:
-        logo_bytes = fetch_logo_bytes(logo_url)
+        try:
+            logo_bytes = fetch_logo_bytes(logo_url)
+        except Exception:
+            logger.exception("Logo fetch failed for client %s (%s) — continuing without it", client_id, logo_url)
 
     competitor_narratives = _generate_competitor_narratives(client, data)
 
-    pptx_bytes = build_report(
-        client_name=client.name,
-        website_url=client.website_url,
-        logo_bytes=logo_bytes,
-        competitor_narratives=competitor_narratives,
-        **data,
-    )
+    try:
+        pptx_bytes = build_report(
+            client_name=client.name,
+            website_url=client.website_url,
+            logo_bytes=logo_bytes,
+            competitor_narratives=competitor_narratives,
+            **data,
+        )
+    except Exception:
+        logger.exception("PPTX build failed for client %s", client_id)
+        raise HTTPException(status_code=500, detail="Report generation failed while building the PPTX.")
 
     filename = f"{client.name.replace(' ', '-')}-seo-audit.pptx"
     return Response(

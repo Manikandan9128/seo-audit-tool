@@ -98,7 +98,7 @@ export default function SemrushImportCard({
       <h3 style={{ marginTop: 0 }}>{title}</h3>
       <p style={{ color: "#6b7280", fontSize: 13 }}>{description}</p>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <input type="file" accept=".csv,.xlsx,.xls" multiple onChange={onFileChange} />
+        <input type="file" accept=".csv,.xlsx,.xls,.pdf" multiple onChange={onFileChange} />
         {!isOwnSite && (
           <input
             type="text"
