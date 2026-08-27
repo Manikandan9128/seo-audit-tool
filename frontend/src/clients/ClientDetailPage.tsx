@@ -87,6 +87,8 @@ export default function ClientDetailPage() {
   const [techStackLoading, setTechStackLoading] = useState(false);
   const [techStackMsg, setTechStackMsg] = useState("");
 
+  const [uxNotes, setUxNotes] = useState("");
+
   const SECTION_OPTIONS = [
     { key: "overview", label: "Company Overview" },
     { key: "site_audit", label: "Site Audit" },
@@ -299,8 +301,11 @@ export default function ClientDetailPage() {
     setPreviewLoading(true);
     setError("");
     try {
-      const body = overview ? { company_overview_override: overview } : null;
-      const res = await api.post(`/clients/${clientId}/report-preview`, body);
+      const body = {
+        ...(overview ? { company_overview_override: overview } : {}),
+        ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
+      };
+      const res = await api.post(`/clients/${clientId}/report-preview`, Object.keys(body).length ? body : null);
       setPreviewData(res.data);
       setPreviewOverview(res.data.company_overview);
       setPreviewCompetitorAnalysis(res.data.competitor_analysis);
@@ -334,14 +339,18 @@ export default function ClientDetailPage() {
   }
 
   function downloadReportDirect() {
-    const body = overview ? { company_overview_override: overview } : null;
-    downloadReportWithBody(body, false);
+    const body = {
+      ...(overview ? { company_overview_override: overview } : {}),
+      ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
+    };
+    downloadReportWithBody(Object.keys(body).length ? body : null, false);
   }
 
   function downloadReportFromPreview() {
     const body = {
       company_overview_override: previewOverview,
       competitor_analysis_override: previewCompetitorAnalysis,
+      ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
     };
     downloadReportWithBody(body, true);
   }
@@ -610,6 +619,22 @@ export default function ClientDetailPage() {
           {error}
         </div>
       )}
+
+      <div className="card">
+        <h3 style={{ margin: 0, fontSize: 17 }}>Manual UX / QA Notes</h3>
+        <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "4px 0 10px" }}>
+          Optional — paste notes from a manual walkthrough (broken checkout, dead CTAs, missing trust signals,
+          etc.). Included in Preview/Download as UI-Level Fixes and Conversion Opportunities. Left blank, the
+          report states plainly that a manual UX pass hasn't been done yet.
+        </p>
+        <textarea
+          value={uxNotes}
+          onChange={(e) => setUxNotes(e.target.value)}
+          placeholder="e.g. Checkout page's 'Apply Coupon' button does nothing on click. No customer reviews shown on product pages. ..."
+          rows={4}
+          style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
+        />
+      </div>
 
       {(selectedSections.includes("overview") ||
         selectedSections.includes("site_audit") ||

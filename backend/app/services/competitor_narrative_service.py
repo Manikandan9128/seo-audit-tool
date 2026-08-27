@@ -16,7 +16,20 @@ PROMPT_TEMPLATE = """You are an SEO/growth consultant writing one slide of a com
 
 Base every claim ONLY on the data below — never invent traffic numbers, rankings, keywords, or product \
 features that aren't stated. If the data is thin, write fewer, more general (but still grounded) bullets \
-rather than inventing specifics.
+rather than inventing specifics. If "homepage_text" is present in the data, read it and pull out 3-6 concrete \
+on-site tactics the competitor actually uses — page architecture, content formats, subscription/loyalty \
+mechanics, trust-signal placement, companion content like guides or apps — and write each as its own bullet \
+naming the tactic and citing "homepage_url" as the source, e.g. "Leads with a 30-day money-back badge above \
+the fold (homepage_url) — {client_name} has no equivalent trust signal on its own homepage." Metrics alone \
+are not a substitute for what the competitor is actually doing on-site — prioritize these page-grounded \
+bullets over pure metric comparisons whenever homepage_text gives you something to work with.
+
+Write in plain, confident agency language — this is client-facing content, not an AI-generated draft. \
+Never mention that you are an AI, a language model, or any tool by name; write as the agency's own analysis. \
+Avoid hedging ("may," "could potentially") where the data supports a direct statement — flag genuine \
+uncertainty explicitly instead of hedging every sentence. Every bullet and sentence must be complete, with \
+terminal punctuation — if you're about to run out of room, drop a less-important point entirely rather than \
+truncate one mid-sentence.
 
 Data on {competitor_domain} vs {client_name}:
 {data_json}
@@ -35,7 +48,7 @@ def generate_competitor_narrative(client_name: str, client_domain: str, competit
         client_name=client_name,
         client_domain=client_domain,
         competitor_domain=competitor_domain,
-        data_json=json.dumps(data, indent=2, default=str)[:4000],
+        data_json=json.dumps(data, indent=2, default=str)[:8000],
     )
     try:
         raw, _provider = generate_text(prompt)
