@@ -891,6 +891,62 @@ def _wrap_lines(text: str, width_emu, size_pt: float = 12) -> int:
     return max(1, -(-len(text) // chars_per_line))
 
 
+def add_core_problem_slide(prs: Presentation, core_problem: dict):
+    """The report's single diagnostic thesis — everything else gathered
+    synthesized into one root-cause statement plus a category breakdown
+    (On-page SEO / Off-page SEO / Content & Keyword Strategy), matching
+    the real manual-report "Core Problem" slide format confirmed from a
+    SPOTONIX audit. AI-generated (core_problem_service.py) from
+    already-gathered findings, not invented — only called when a real
+    thesis was returned; a category with no points is dropped entirely
+    rather than padded with generic advice."""
+    thesis = core_problem.get("thesis")
+    if not thesis:
+        return None
+    categories = [c for c in (core_problem.get("categories") or []) if c.get("points")]
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Core Problem")
+
+    _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(1.3))
+    _textbox(
+        slide, Inches(0.9), Inches(1.3), Inches(11.5), Inches(0.9), thesis,
+        size=16, bold=True, color=_accent(),
+    )
+
+    if not categories:
+        return slide
+
+    col_top, col_height = Inches(2.65), Inches(4.0)
+    gap = Inches(0.2)
+    total_width = Inches(12.1)
+    col_width = Emu(int((total_width - gap * (len(categories) - 1)) / len(categories)))
+    left = Inches(0.6)
+    for cat in categories:
+        _card(slide, left, col_top, col_width, col_height)
+        y = col_top + Inches(0.2)
+        _textbox(slide, left + Inches(0.25), y, col_width - Inches(0.5), Inches(0.35), cat.get("name", ""), size=14, bold=True, color=_accent())
+        rule = slide.shapes.add_shape(1, left + Inches(0.25), y + Inches(0.36), col_width - Inches(0.5), Pt(1.5))
+        _fill(rule, _accent())
+        rule.shadow.inherit = False
+        y += Inches(0.55)
+        for point in cat["points"][:5]:
+            text = f"•  {point}"
+            lines = _wrap_lines(text, col_width - Inches(0.5), size_pt=11.5)
+            line_h = Inches(0.24)
+            box = slide.shapes.add_textbox(left + Inches(0.25), y, col_width - Inches(0.5), line_h * lines)
+            tf = box.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            run = p.add_run()
+            run.text = text
+            run.font.size = Pt(11.5)
+            run.font.color.rgb = TEXT_DARK
+            y += line_h * lines + Inches(0.08)
+        left += col_width + gap
+    return slide
+
+
 def _insights_strip(slide, left, top, width, insights, title="Key Insights"):
     """2-4 bullet takeaways mechanically derived from the slide's own data —
     no free-text generation, every line traces back to a number on the same
@@ -1843,6 +1899,7 @@ def build_report(
     site_audit_overview: dict | None = None,
     backlink_summary: dict | None = None,
     own_domain_rating: int | None = None,
+    core_problem: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -1861,7 +1918,7 @@ def build_report(
             analytics, competitor_rows, keyword_rows, backlink_rows, backlink_row_count,
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
-            backlink_summary, structured_data_rows, own_domain_rating,
+            backlink_summary, structured_data_rows, own_domain_rating, core_problem,
         )
     finally:
         _theme["footer"] = ""
@@ -1893,6 +1950,7 @@ def _build_report(
     backlink_summary: dict | None = None,
     structured_data_rows: list[dict] | None = None,
     own_domain_rating: int | None = None,
+    core_problem: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -2015,6 +2073,9 @@ def _build_report(
             add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
         if competitor_analysis:
             add_competitive_gaps_slide(prs, competitor_analysis)
+
+    if core_problem:
+        add_core_problem_slide(prs, core_problem)
 
     add_section_slide(prs, client_name, "Next Steps")
     add_next_steps_detail_slide(

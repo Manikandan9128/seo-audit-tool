@@ -26,6 +26,7 @@ from app.models.user import User
 from app.reporting.pptx_builder import build_report
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
+from app.services.core_problem_service import generate_core_problem
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.master_narrative_service import generate_master_narrative
@@ -611,6 +612,30 @@ def _gather_report_data(
     else:
         ux_findings_result = static_no_ux_pass()
 
+    # One diagnostic thesis synthesizing everything else already gathered —
+    # deliberately NOT cached (unlike Company Overview): this reflects
+    # current metrics/issues, and a stale cached diagnosis would be
+    # actively wrong once a client fixes something.
+    core_problem_result = None
+    if settings.gemini_api_key or settings.claude_api_key:
+        core_problem_findings = {
+            "homepage_issues": site_audit_result.get("issues", []),
+            "pages_checked": (page_audit_result or {}).get("pages_checked"),
+            "pages_with_issues": (page_audit_result or {}).get("pages_with_issues"),
+            "sample_page_level_issues": [
+                {"url": p.get("url"), "issues": p.get("issues")}
+                for p in (page_audit_result or {}).get("pages", [])
+                if p.get("issues")
+            ][:15],
+            "backlink_summary": backlink_summary,
+            "own_backlink_row_count": own_backlink_row_count,
+            "competitor_gap_findings": (competitor_analysis_result or {}).get("issues", []),
+            "target_keyword_count": len(keyword_rows_all) if keyword_rows_all else 0,
+        }
+        core_problem_candidate = generate_core_problem(core_problem_findings)
+        if "error" not in core_problem_candidate:
+            core_problem_result = core_problem_candidate
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
@@ -619,6 +644,7 @@ def _gather_report_data(
         "site_audit_overview": site_audit_overview,
         "backlink_summary": backlink_summary,
         "own_domain_rating": own_domain_rating,
+        "core_problem": core_problem_result,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,
