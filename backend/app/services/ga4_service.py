@@ -156,16 +156,49 @@ def get_page_performance(
 _DEMOGRAPHIC_IGNORE = {"(not set)", "unknown", ""}
 
 
+def _single_dimension_breakdown(client, property_id: str, iso_date: str, dimension: str, n: int) -> list[dict]:
+    """One day's sessions broken down by a single GA4 dimension, top n by
+    share. Queried alone (not cross-tabbed with other dimensions) — GA4
+    applies data-thresholding to protect privacy, suppressing any row whose
+    segment is too small. Cross-tabbing age+gender+country in one query was
+    tried first and confirmed to fragment a single day's sessions into
+    combinations nearly all below that threshold — even country, which
+    needs no Google Signals and should almost always report something on
+    its own, came back empty when bundled with the others. One dimension
+    per query keeps each bucket coarse enough to usually clear it."""
+    body = {
+        "dimensions": [{"name": dimension}],
+        "metrics": [{"name": "sessions"}],
+        "dateRanges": [{"startDate": iso_date, "endDate": iso_date}],
+        "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
+    }
+    response = client.properties().runReport(property=property_id, body=body).execute()
+    totals: dict[str, int] = {}
+    for row in response.get("rows", []):
+        value = row["dimensionValues"][0]["value"]
+        if value in _DEMOGRAPHIC_IGNORE:
+            continue
+        sessions = int(row["metricValues"][0]["value"])
+        totals[value] = totals.get(value, 0) + sessions
+    total_all = sum(totals.values())
+    top = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:n]
+    return [
+        {"label": label, "sessions": s, "pct": round(100 * s / total_all, 1) if total_all else 0}
+        for label, s in top
+    ]
+
+
 def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows: list[dict]) -> dict | None:
     """Finds the single biggest single-day traffic spike in the period (a day
     well above the period average — not just the highest day, since every
     period has *a* highest day even with near-zero real variance) and breaks
-    down who drove it: age bracket, gender, country. Returns None when
-    there's no real spike (flat traffic) or too few days to judge against.
+    down who drove it: age bracket, gender, country, and acquisition
+    channel. Returns None when there's no real spike (flat traffic) or too
+    few days to judge against.
 
     Age/gender need Google Signals / demographics enabled on the GA4
     property — on a property without it those two come back empty and are
-    dropped, but country (always available) still shows."""
+    dropped, but country and channel (neither needs Signals) still show."""
     days = [
         (r["date"], int(float(r["sessions"])))
         for r in daily_rows
@@ -187,34 +220,7 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
         return None
 
     iso_date = f"{spike_date[0:4]}-{spike_date[4:6]}-{spike_date[6:8]}"
-
     client = _data_client(creds)
-    body = {
-        "dimensions": [{"name": "userAgeBracket"}, {"name": "userGender"}, {"name": "country"}],
-        "metrics": [{"name": "sessions"}],
-        "dateRanges": [{"startDate": iso_date, "endDate": iso_date}],
-    }
-    response = client.properties().runReport(property=property_id, body=body).execute()
-
-    age_totals, gender_totals, country_totals = {}, {}, {}
-    for row in response.get("rows", []):
-        dv = row["dimensionValues"]
-        row_sessions = int(row["metricValues"][0]["value"])
-        age, gender, country = dv[0]["value"], dv[1]["value"], dv[2]["value"]
-        if age not in _DEMOGRAPHIC_IGNORE:
-            age_totals[age] = age_totals.get(age, 0) + row_sessions
-        if gender not in _DEMOGRAPHIC_IGNORE:
-            gender_totals[gender] = gender_totals.get(gender, 0) + row_sessions
-        if country not in _DEMOGRAPHIC_IGNORE:
-            country_totals[country] = country_totals.get(country, 0) + row_sessions
-
-    def _ranked(totals: dict, n: int) -> list[dict]:
-        total_all = sum(totals.values())
-        top = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:n]
-        return [
-            {"label": label, "sessions": s, "pct": round(100 * s / total_all, 1) if total_all else 0}
-            for label, s in top
-        ]
 
     return {
         "date": iso_date,
@@ -222,9 +228,10 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
         "sessions": spike_sessions,
         "avg_sessions": round(mean),
         "pct_above_avg": round(100 * (spike_sessions - mean) / mean, 1) if mean else 0,
-        "by_age": _ranked(age_totals, 5),
-        "by_gender": _ranked(gender_totals, 3),
-        "by_country": _ranked(country_totals, 5),
+        "by_age": _single_dimension_breakdown(client, property_id, iso_date, "userAgeBracket", 5),
+        "by_gender": _single_dimension_breakdown(client, property_id, iso_date, "userGender", 3),
+        "by_country": _single_dimension_breakdown(client, property_id, iso_date, "country", 5),
+        "by_channel": _single_dimension_breakdown(client, property_id, iso_date, "sessionDefaultChannelGroup", 5),
     }
 
 

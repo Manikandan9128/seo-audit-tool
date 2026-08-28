@@ -958,10 +958,10 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
 
 def add_traffic_spike_slide(prs: Presentation, spike: dict):
     """One slide: the single biggest single-day traffic spike in the period,
-    and which age/gender/country segments drove it — mechanically detected
-    in ga4_service.get_traffic_spike_breakdown, not a canned template
-    section. Only called when a real spike was found (see that function's
-    threshold)."""
+    and which age/gender/country/channel segments drove it — mechanically
+    detected in ga4_service.get_traffic_spike_breakdown, not a canned
+    template section. Only called when a real spike was found (see that
+    function's threshold)."""
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Spike Analysis")
 
@@ -986,15 +986,21 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
             ("Age", spike.get("by_age") or []),
             ("Gender", spike.get("by_gender") or []),
             ("Top Countries", spike.get("by_country") or []),
+            ("Channel", spike.get("by_channel") or []),
         ]
         if rows
     ]
     if not columns:
         return slide
 
+    # Width is divided evenly across however many columns actually have
+    # data (2-4 in practice) rather than a fixed per-column width, so a
+    # 4th column (Channel) fits without redesigning the layout, and a
+    # client with only 2 populated columns still fills the row width.
     col_top, col_height = Inches(2.55), Inches(4.1)
-    col_width = Inches(3.87)
     gap = Inches(0.2)
+    total_width = Inches(12.1)
+    col_width = Emu(int((total_width - gap * (len(columns) - 1)) / len(columns)))
     left = Inches(0.6)
     for label, rows in columns:
         _card(slide, left, col_top, col_width, col_height)
