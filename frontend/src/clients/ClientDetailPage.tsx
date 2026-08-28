@@ -252,12 +252,12 @@ export default function ClientDetailPage() {
     }
   }
 
-  async function loadOverview() {
+  async function loadOverview(force = false) {
     setOverviewLoading(true);
     setOverviewMsg("");
     try {
       const [overviewRes, catalogueRes] = await Promise.all([
-        api.get(`/clients/${clientId}/company-overview`),
+        api.get(`/clients/${clientId}/company-overview`, force ? { params: { force: true } } : undefined),
         api.get(`/clients/${clientId}/product-catalogue`).catch(() => ({ data: { products: [] } })),
       ]);
       const catalogueNames: string[] = (catalogueRes.data.products || []).map((p: any) => p.name);
@@ -800,6 +800,19 @@ export default function ClientDetailPage() {
               {overviewMsg && <p style={{ fontSize: 13, color: "#991b1b" }}>{overviewMsg}</p>}
               {overview && (
                 <div style={{ marginTop: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                    <button
+                      className="secondary"
+                      disabled={overviewLoading}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        loadOverview(true);
+                      }}
+                      title="Cached after the first extraction — re-crawls the site and calls Gemini/Claude again, only if the site's content has actually changed."
+                    >
+                      {overviewLoading ? "Refreshing..." : "Refresh from site"}
+                    </button>
+                  </div>
                   <CompanyOverviewEditor overview={overview} onChange={setOverview} />
                 </div>
               )}

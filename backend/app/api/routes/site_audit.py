@@ -3,6 +3,7 @@ import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
@@ -202,14 +203,31 @@ def pagespeed(
 
 
 @router.get("/{client_id}/company-overview")
-def company_overview(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def company_overview(
+    client_id: uuid.UUID,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Crawls the client's About/Products/legal pages and asks Gemini to
     extract a structured overview (name, description, products, KPIs,
-    registration info) for the report's client-overview slide."""
+    registration info) for the report's client-overview slide.
+
+    Cached on the client after the first successful extraction and reused
+    on every later call (this endpoint is hit both by the preview/edit UI
+    and, via the cache, effectively backs report generation too) — this
+    content rarely changes and repeated Gemini calls were burning through
+    the free-tier quota for no benefit. Pass force=true (the UI's "Refresh"
+    button) to bypass the cache, re-crawl, and overwrite it."""
     client = _get_owned_client(client_id, db, current_user)
+    if not force and client.company_overview_cache:
+        return client.company_overview_cache
     result = extract_company_overview(client.website_url)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
+    client.company_overview_cache = result
+    client.company_overview_cached_at = datetime.now(timezone.utc)
+    db.commit()
     return result
 
 
@@ -346,6 +364,15 @@ def _gather_report_data(
     company_overview_result = None
     if company_overview_override is not None:
         company_overview_result = company_overview_override
+        client.company_overview_cache = company_overview_result
+        client.company_overview_cached_at = datetime.now(timezone.utc)
+        db.commit()
+    elif include_company_overview and client.company_overview_cache:
+        # Reuses the cached extraction instead of calling Gemini/Claude
+        # again on every report regeneration — this content rarely changes,
+        # and repeated calls were burning through Gemini's free-tier quota
+        # for no benefit. Only refreshed via the explicit refresh endpoint.
+        company_overview_result = client.company_overview_cache
     elif include_company_overview and (settings.gemini_api_key or settings.claude_api_key):
         result = extract_company_overview(client.website_url)
         if "error" not in result:
@@ -354,6 +381,9 @@ def _gather_report_data(
             catalogue_names = [p["name"] for p in catalogue.get("products", [])]
             if catalogue_names and not company_overview_result.get("products"):
                 company_overview_result["products"] = catalogue_names
+            client.company_overview_cache = company_overview_result
+            client.company_overview_cached_at = datetime.now(timezone.utc)
+            db.commit()
 
     site_audit_result = run_site_audit(client.website_url)
     page_audit_result = run_multi_page_audit(client.website_url, page_limit=20)
