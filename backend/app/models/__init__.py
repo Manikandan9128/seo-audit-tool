@@ -7,6 +7,7 @@ from app.models.semrush_import import SemrushImport
 from app.models.page_audit_job import PageAuditJob
 from app.models.site_audit_run import SiteAuditRun
 from app.models.app_setting import AppSetting
+from app.models.domain_rating import DomainRating
 
 __all__ = [
     "User",
@@ -18,4 +19,5 @@ __all__ = [
     "PageAuditJob",
     "SiteAuditRun",
     "AppSetting",
+    "DomainRating",
 ]

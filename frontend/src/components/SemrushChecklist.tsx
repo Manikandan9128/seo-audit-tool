@@ -16,7 +16,7 @@ interface ChecklistItem {
 // skip a file type for one domain.
 const OWN_SITE_TYPES: ChecklistItem[] = [
   { type: "domain_overview", label: "Domain Overview" },
-  { type: "backlink_summary", label: "Backlink List (DR)" },
+  { type: "backlink_summary", label: "Backlink List" },
   { type: "overview_trend", label: "Overview Trend (Global)" },
   { type: "keyword_gap", label: "Target Keywords / Keyword Gap" },
   { type: "site_audit_overview", label: "Site Audit Overview" },
@@ -26,7 +26,7 @@ const OWN_SITE_TYPES: ChecklistItem[] = [
 
 const COMPETITOR_TYPES: ChecklistItem[] = [
   { type: "domain_overview", label: "Domain Overview", altType: "organic_competitors" },
-  { type: "backlink_summary", label: "Backlink List (DR)" },
+  { type: "backlink_summary", label: "Backlink List" },
   { type: "overview_trend", label: "Overview Trend (Global)" },
   { type: "organic_positions", label: "Keyword Positions" },
 ];

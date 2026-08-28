@@ -17,6 +17,7 @@ from app.integrations import google_oauth
 from app.integrations.crypto import decrypt, encrypt
 from app.integrations.pagespeed_client import run_pagespeed
 from app.models.client import Client
+from app.models.domain_rating import DomainRating
 from app.models.google_connection import GoogleConnection
 from app.models.page_audit_job import PageAuditJob
 from app.models.semrush_import import SemrushImport
@@ -527,36 +528,23 @@ def _gather_report_data(
             domain_overview_rows.append({**row, "domain": domain})
     domain_overview_rows.sort(key=lambda row: row["domain"] != own_website_domain)
 
-    # A Backlink List PDF's Authority Score is Domain Rating (DR) — the
-    # Domain Overview PDF never carries DR at all (confirmed: it only has
-    # "Semrush Rank", an unrelated traffic-rank metric on a different
-    # scale). When a Backlink List PDF is uploaded for a domain — own site
-    # or a competitor, matched by domain_label the same way Domain Overview
-    # rows are above — fold its Authority Score in as that domain's DR.
-    # Additive only: never overwrites a DR a CSV-sourced row already has.
-    #
-    # Matched via _normalize_domain (strips "www.", lowercases) rather than
-    # exact string equality — confirmed bug: a competitor's Domain Overview
-    # row's "domain" comes from text PARSED OUT OF that PDF (e.g. "tp.com"),
-    # while this dict's key comes from whatever the user typed into the
-    # domain_label box on a *different* upload (e.g. "TP.com" or
-    # "www.tp.com") — those only need to refer to the same domain, not be
-    # byte-identical, and exact matching silently dropped every competitor
-    # match even when both files were genuinely uploaded.
-    authority_by_domain: dict[str, float] = {}
-    for r in all_imports:
-        if r.import_type != "backlink_summary":
-            continue
-        label = own_website_domain if r.is_own_site else (r.domain_label or "")
-        for row in r.parsed_data.get("rows", []):
-            score = row.get("authority_score")
-            if label and score is not None:
-                authority_by_domain[_normalize_domain(label)] = score
+    # DR column in the Competitor Analysis table comes ONLY from manually
+    # entered Domain Rating (see DomainRating model) — user decision
+    # 2026-08-28: Semrush's Authority Score is no longer used to fill this
+    # column at all, even as a fallback. Ahrefs has no free bulk/API access
+    # (only a free single-domain manual lookup), so this is typed in by
+    # hand per domain rather than pulled automatically. Explicitly clear
+    # any authority_score a domain_overview CSV row might already carry
+    # (DOMAIN_OVERVIEW_COLUMN_ALIASES maps an "authority score" column on
+    # bulk exports) so no Semrush-sourced value can leak through.
     for row in domain_overview_rows:
-        if row.get("authority_score") is None:
-            match = authority_by_domain.get(_normalize_domain(row["domain"]))
-            if match is not None:
-                row["authority_score"] = match
+        row["authority_score"] = None
+    manual_dr_rows = db.query(DomainRating).filter(DomainRating.client_id == client_id).all()
+    manual_dr_by_domain = {_normalize_domain(r.domain): r.dr for r in manual_dr_rows}
+    for row in domain_overview_rows:
+        match = manual_dr_by_domain.get(_normalize_domain(row["domain"]))
+        if match is not None:
+            row["authority_score"] = match
 
     # Domain Overview PDF is always pulled against a single country's
     # database (confirmed: every section headed "US | Domain | ..."), never

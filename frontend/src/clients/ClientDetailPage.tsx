@@ -9,6 +9,7 @@ import CompanyOverviewEditor from "../components/CompanyOverviewEditor";
 import type { CompanyOverview } from "../components/CompanyOverviewEditor";
 import SemrushImportCard from "../components/SemrushImportCard";
 import SemrushChecklist from "../components/SemrushChecklist";
+import DomainRatingEditor from "../components/DomainRatingEditor";
 import SemrushAnalysis from "../components/SemrushAnalysis";
 import ReportPreviewModal from "../components/ReportPreviewModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
@@ -942,11 +943,12 @@ export default function ClientDetailPage() {
 
       {/* Semrush uploads — one for our domain, one for competitors */}
       <div id="semrush-section" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <DomainRatingEditor clientId={clientId!} />
         <SemrushChecklist imports={imports} />
         <SemrushImportCard
           clientId={clientId!}
           title="Our Website Data"
-          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, domain overview, a Backlink List PDF (Authority Score/DR — Domain Overview PDF doesn't have it), an Overview Trend CSV exported with Database set to Worldwide (Domain Overview alone is always a single country), or a Site Audit "Pages > Structured Data" CSV (schema markup coverage, e.g. missing FAQ/Product schema). Type is auto-detected; select multiple files to bulk-upload.`}
+          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, domain overview, a Backlink List PDF, an Overview Trend CSV exported with Database set to Worldwide (Domain Overview alone is always a single country), or a Site Audit "Pages > Structured Data" CSV (schema markup coverage, e.g. missing FAQ/Product schema). DR comes from manual entry above, not Semrush. Type is auto-detected; select multiple files to bulk-upload.`}
           isOwnSite={true}
           mcpHint={`Use the Semrush MCP tools to pull backlinks, keyword data, and domain overview data for our own site, ${client.website_url}.`}
           imports={imports}
@@ -955,7 +957,7 @@ export default function ClientDetailPage() {
         <SemrushImportCard
           clientId={clientId!}
           title="Competitor Data"
-          description="Semrush exports for competitor domains — backlinks, organic competitors, domain overview, a Backlink List PDF (fills in that competitor's DR), or an Overview Trend CSV with Database set to Worldwide (fills in that competitor's Worldwide traffic/keywords columns). Keyword Gap does NOT go here — it's a single combined file comparing your domain and competitors together, upload it once under 'Our Website Data' instead. Type is auto-detected; select multiple files to bulk-upload, enter the competitor's domain first."
+          description="Semrush exports for competitor domains — backlinks, organic competitors, domain overview, a Backlink List PDF, or an Overview Trend CSV with Database set to Worldwide (fills in that competitor's Worldwide traffic/keywords columns). DR comes from the manual Domain Rating entry above, not from these files. Keyword Gap does NOT go here — it's a single combined file comparing your domain and competitors together, upload it once under 'Our Website Data' instead. Type is auto-detected; select multiple files to bulk-upload, enter the competitor's domain first."
           isOwnSite={false}
           mcpHint={`Use the Semrush MCP tools to pull competitor data (backlinks, organic competitors) for competitors of ${client.website_url}.`}
           imports={imports}

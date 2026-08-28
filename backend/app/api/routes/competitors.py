@@ -1,13 +1,14 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
 from app.models.client import Client
+from app.models.domain_rating import DomainRating
 from app.models.semrush_import import SemrushImport
 from app.models.user import User
-from app.services.semrush_analysis_service import analyze as analyze_semrush_data
+from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.semrush_ai_summary_service import generate_ai_summary
 from app.services.semrush_parser import parse_semrush_file
 
@@ -158,5 +159,74 @@ def delete_semrush_import(
     if not record or record.client_id != client_id:
         raise HTTPException(status_code=404, detail="Import not found")
     db.delete(record)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/{client_id}/domain-ratings")
+def list_domain_ratings(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Manually-entered DR (e.g. from Ahrefs' free Authority Checker) per
+    domain — own site or a competitor. Overrides Semrush's Authority Score
+    in the Competitor Analysis table for any domain listed here."""
+    _get_owned_client(client_id, db, current_user)
+    rows = (
+        db.query(DomainRating)
+        .filter(DomainRating.client_id == client_id)
+        .order_by(DomainRating.domain)
+        .all()
+    )
+    return [{"id": r.id, "domain": r.domain, "dr": r.dr} for r in rows]
+
+
+@router.put("/{client_id}/domain-ratings")
+def upsert_domain_rating(
+    client_id: uuid.UUID,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Body: {"domain": "example.com", "dr": 42}. Upserts by normalized
+    domain (www./case/trailing-slash insensitive, same matching as the
+    Semrush DR/Worldwide merges) so re-saving the same domain updates it
+    in place instead of creating a duplicate row."""
+    _get_owned_client(client_id, db, current_user)
+    domain = str(payload.get("domain", "")).strip()
+    if not domain:
+        raise HTTPException(status_code=400, detail="Domain is required")
+    try:
+        dr = int(payload.get("dr"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="DR must be a number")
+
+    target = _normalize_domain(domain)
+    existing = (
+        db.query(DomainRating)
+        .filter(DomainRating.client_id == client_id)
+        .all()
+    )
+    match = next((r for r in existing if _normalize_domain(r.domain) == target), None)
+    if match:
+        match.domain = domain
+        match.dr = dr
+    else:
+        match = DomainRating(client_id=client_id, domain=domain, dr=dr)
+        db.add(match)
+    db.commit()
+    db.refresh(match)
+    return {"id": match.id, "domain": match.domain, "dr": match.dr}
+
+
+@router.delete("/{client_id}/domain-ratings/{rating_id}")
+def delete_domain_rating(
+    client_id: uuid.UUID,
+    rating_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_owned_client(client_id, db, current_user)
+    row = db.get(DomainRating, rating_id)
+    if not row or row.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Domain rating not found")
+    db.delete(row)
     db.commit()
     return {"ok": True}
