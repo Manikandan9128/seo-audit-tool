@@ -826,6 +826,60 @@ def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict
     )
 
 
+# Canned fix per page-level issue string from technical_seo_service.py's
+# crawler (see _meta_issues() and run_multi_page_audit) — (fix text,
+# severity). Matches the real manual-report "Tech Fixes" slide format
+# (ISSUE | WHERE | FIX), confirmed from an EJTOY audit — more actionable
+# than the SEO Issues slide's issue-type rollup, which says how many pages
+# but not which ones or what to do about it.
+_PAGE_ISSUE_FIXES = {
+    "Page not reachable": ("Fix the broken link/redirect, or add a 301 redirect to a working page.", "error"),
+    "Missing <title> tag": ("Add a unique, keyword-relevant <title> tag (50-60 characters).", "error"),
+    "Missing meta description": ("Write a unique meta description (150-160 characters) summarizing the page.", "warn"),
+    "No <h1> tag found": ("Add a single <h1> heading stating the page's main topic.", "warn"),
+    "Multiple <h1> tags found": ("Keep only one <h1> per page — demote extra ones to <h2>/<h3>.", "warn"),
+    "Missing mobile viewport meta tag": ("Add a viewport meta tag so the page renders correctly on mobile.", "warn"),
+    "Missing canonical tag": ("Add a self-referencing canonical tag to prevent duplicate-content issues.", "info"),
+    "Title tag longer than 60 characters": ("Shorten the title tag so it isn't truncated in search results.", "info"),
+}
+_ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
+
+
+def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None):
+    """Flattens page_audit's per-page issues (up to 20 crawled pages) into
+    one Issue/Where/Fix row per (page, issue) pair, worst-severity first.
+    Sourced from our own crawl, not Semrush — Semrush's per-page x
+    per-issue-type matrix export (mega_export.csv) isn't parsed at all
+    currently (parked deliberately), would give a richer full-site version
+    of this same idea later if ever built."""
+    if not page_audit:
+        return None
+    scored_rows = []
+    for page in page_audit.get("pages", []):
+        path = urlparse(page.get("url", "")).path or "/"
+        for issue in page.get("issues", []):
+            fix = _PAGE_ISSUE_FIXES.get(issue)
+            if not fix:
+                continue
+            fix_text, severity = fix
+            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], issue, path, fix_text))
+    if not scored_rows:
+        return None
+    scored_rows.sort(key=lambda r: r[0])
+
+    shown = scored_rows[:9]
+    rows = [(issue, path, fix_text) for _, issue, path, fix_text in shown]
+    unreachable_count = sum(1 for _, issue, _, _ in scored_rows if issue == "Page not reachable")
+    insights = [f"{len(scored_rows)} page-level issue(s) found across the crawled pages, {unreachable_count} unreachable."]
+    if len(scored_rows) > len(shown):
+        insights.append(f"Showing the {len(shown)} highest-priority — see SEO Issues for the full breakdown by type.")
+
+    return _table_slide(
+        prs, "Tech Fixes", ["Issue", "Where", "Fix"], rows,
+        col_widths=[2.7, 2.3, 7.1], source="Site crawl", insights=insights,
+    )
+
+
 def _wrap_lines(text: str, width_emu, size_pt: float = 12) -> int:
     """Estimate how many lines `text` wraps to in a box of this width/font
     size — advancing y by this (instead of a fixed single-line guess) is
@@ -1863,6 +1917,7 @@ def _build_report(
         if site_audit:
             add_site_health_slide(prs, site_audit, page_audit, site_audit_overview)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
+            add_tech_fixes_slide(prs, page_audit)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
 
