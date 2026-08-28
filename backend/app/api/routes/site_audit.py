@@ -30,7 +30,7 @@ from app.services.master_narrative_service import generate_master_narrative
 from app.services.competitor_narrative_service import generate_competitor_narrative
 from app.services.logo_service import fetch_logo_bytes
 from app.services.product_catalogue_service import crawl_product_catalogue
-from app.services.semrush_analysis_service import analyze as analyze_semrush_data
+from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.tech_stack_service import detect_tech_stack
 from app.services.technical_seo_service import run_multi_page_audit, run_multi_page_audit_async, run_site_audit
 
@@ -504,6 +504,15 @@ def _gather_report_data(
     # or a competitor, matched by domain_label the same way Domain Overview
     # rows are above — fold its Authority Score in as that domain's DR.
     # Additive only: never overwrites a DR a CSV-sourced row already has.
+    #
+    # Matched via _normalize_domain (strips "www.", lowercases) rather than
+    # exact string equality — confirmed bug: a competitor's Domain Overview
+    # row's "domain" comes from text PARSED OUT OF that PDF (e.g. "tp.com"),
+    # while this dict's key comes from whatever the user typed into the
+    # domain_label box on a *different* upload (e.g. "TP.com" or
+    # "www.tp.com") — those only need to refer to the same domain, not be
+    # byte-identical, and exact matching silently dropped every competitor
+    # match even when both files were genuinely uploaded.
     authority_by_domain: dict[str, float] = {}
     for r in all_imports:
         if r.import_type != "backlink_summary":
@@ -512,10 +521,12 @@ def _gather_report_data(
         for row in r.parsed_data.get("rows", []):
             score = row.get("authority_score")
             if label and score is not None:
-                authority_by_domain[label] = score
+                authority_by_domain[_normalize_domain(label)] = score
     for row in domain_overview_rows:
-        if row.get("authority_score") is None and row["domain"] in authority_by_domain:
-            row["authority_score"] = authority_by_domain[row["domain"]]
+        if row.get("authority_score") is None:
+            match = authority_by_domain.get(_normalize_domain(row["domain"]))
+            if match is not None:
+                row["authority_score"] = match
 
     # Domain Overview PDF is always pulled against a single country's
     # database (confirmed: every section headed "US | Domain | ..."), never
@@ -523,9 +534,10 @@ def _gather_report_data(
     # explicit Database column, so when a domain's Overview Trend was
     # uploaded with Database=Worldwide, fold its most-recent-day traffic/
     # keywords in as that domain's Worldwide figures — matched by domain
-    # the same way DR is above. Other databases in that export type (e.g. a
-    # second Overview Trend pulled for a specific country) are ignored for
-    # now — only Worldwide is consumed.
+    # the same way DR is above (same _normalize_domain fix applies here).
+    # Other databases in that export type (e.g. a second Overview Trend
+    # pulled for a specific country) are ignored for now — only Worldwide
+    # is consumed.
     worldwide_by_domain: dict[str, dict] = {}
     for r in all_imports:
         if r.import_type != "overview_trend":
@@ -534,9 +546,9 @@ def _gather_report_data(
         for row in r.parsed_data.get("rows", []):
             if not label or str(row.get("database", "")).strip().lower() != "worldwide":
                 continue
-            worldwide_by_domain[label] = row
+            worldwide_by_domain[_normalize_domain(label)] = row
     for row in domain_overview_rows:
-        wd = worldwide_by_domain.get(row["domain"])
+        wd = worldwide_by_domain.get(_normalize_domain(row["domain"]))
         if wd:
             row["organic_traffic_worldwide"] = wd.get("organic_traffic")
             row["organic_keywords_worldwide"] = wd.get("organic_keywords")
