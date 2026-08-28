@@ -231,40 +231,6 @@ def company_overview(
     return result
 
 
-@router.put("/{client_id}/company-overview")
-def save_company_overview(
-    client_id: uuid.UUID,
-    overview: dict = Body(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Saves a company overview directly to the cache with no AI call and no
-    crawling — the manual-entry path for when Gemini/Claude extraction
-    isn't available (quota exhausted, no key configured) or the user just
-    wants to type it in by hand instead of waiting on a crawl."""
-    client = _get_owned_client(client_id, db, current_user)
-    client.company_overview_cache = overview
-    client.company_overview_cached_at = datetime.now(timezone.utc)
-    db.commit()
-    return overview
-
-
-@router.delete("/{client_id}/company-overview")
-def clear_company_overview_cache(
-    client_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Clears the cache without crawling or saving anything — the next
-    report generation (or preview load) will fall through to a real
-    Gemini/Claude extraction on its own, no manual "Refresh" click needed."""
-    client = _get_owned_client(client_id, db, current_user)
-    client.company_overview_cache = None
-    client.company_overview_cached_at = None
-    db.commit()
-    return {"cleared": True}
-
-
 @router.get("/{client_id}/product-catalogue")
 def product_catalogue(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Crawls nav menus, sitemap.xml, and product/collection pages to list
