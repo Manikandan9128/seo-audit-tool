@@ -545,6 +545,9 @@ def _gather_report_data(
         match = manual_dr_by_domain.get(_normalize_domain(row["domain"]))
         if match is not None:
             row["authority_score"] = match
+    # Same manual DR, for the Backlink Profile slide's own stat card (that
+    # slide is about the client's own site only, not a comparison table).
+    own_domain_rating = manual_dr_by_domain.get(_normalize_domain(own_website_domain))
 
     # Domain Overview PDF is always pulled against a single country's
     # database (confirmed: every section headed "US | Domain | ..."), never
@@ -615,6 +618,7 @@ def _gather_report_data(
         "structured_data_rows": structured_data_rows or None,
         "site_audit_overview": site_audit_overview,
         "backlink_summary": backlink_summary,
+        "own_domain_rating": own_domain_rating,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,

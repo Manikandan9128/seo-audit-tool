@@ -1406,13 +1406,22 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
     return slides
 
 
-def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row_count: int, backlink_summary: dict | None = None):
+def add_backlink_profile_slide(
+    prs: Presentation, backlink_rows: list[dict], row_count: int, backlink_summary: dict | None = None,
+    own_domain_rating: int | None = None,
+):
     """Ahrefs/Semrush-widget-style summary — Backlinks, Referring Domains,
-    Authority Score, % dofollow, plus a Link Attributes breakdown when a
+    Domain Rating, % dofollow, plus a Link Attributes breakdown when a
     Semrush Backlink List PDF summary was uploaded (backlink_summary). That
     export's aggregate stats are a real site-wide count, more authoritative
     than what's computed from a possibly-partial backlinks CSV, so they're
-    preferred wherever both are available."""
+    preferred wherever both are available.
+
+    Domain Rating itself is NOT sourced from Semrush at all (2026-08-28
+    decision) — the manual report uses Ahrefs DR, a different metric on a
+    different scale than Semrush's Authority Score, and Ahrefs has no free
+    bulk/API access, so own_domain_rating comes from the user's manually
+    entered DomainRating table, same as the Competitor Analysis DR column."""
     slide = _blank_slide(prs)
     _content_header(slide, "Backlink Profile")
     if backlink_summary and backlink_summary.get("export_date"):
@@ -1425,17 +1434,12 @@ def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row
     csv_pct_dofollow = round(100 * dofollow / len(backlink_rows)) if backlink_rows else None
 
     ref_domains = {urlparse(r["source_url"]).netloc for r in backlink_rows if r.get("source_url")}
-    _MISSING = object()
-    domain_scores = [
-        v for v in (_num(r.get("domain_score"), default=_MISSING) for r in backlink_rows) if v is not _MISSING
-    ]
-    csv_avg_score = round(sum(domain_scores) / len(domain_scores)) if domain_scores else None
 
     total_backlinks = backlink_summary["backlinks_total"] if backlink_summary else (row_count or None)
     total_referring_domains = backlink_summary["referring_domains"] if backlink_summary else (len(ref_domains) or None)
     pct_dofollow = backlink_summary.get("follow_pct") if backlink_summary and backlink_summary.get("follow_pct") is not None else csv_pct_dofollow
-    authority_score = backlink_summary.get("authority_score") if backlink_summary else csv_avg_score
-    authority_label = "Authority Score" if backlink_summary else "Avg. domain score"
+    authority_score = own_domain_rating
+    authority_label = "Domain Rating"
 
     _card(slide, Inches(0.6), Inches(1.2), Inches(12.1), Inches(2.2))
     stats = [
@@ -1483,10 +1487,7 @@ def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row
         else:
             insights.append(f"{pct_dofollow:.0f}% of backlinks are dofollow — the majority are passing ranking authority.")
     if authority_score is not None:
-        if backlink_summary:
-            insights.append(f"Authority Score is {int(authority_score)} — {'a strong, established domain' if authority_score >= 40 else 'still building authority, prioritize link acquisition'}.")
-        else:
-            insights.append(f"Average domain score of referring sites is {int(authority_score)} — {'strong-authority sources' if authority_score >= 40 else 'low-authority sources, prioritize outreach to higher-DR sites'}.")
+        insights.append(f"Domain Rating is {int(authority_score)} — {'a strong, established domain' if authority_score >= 40 else 'still building authority, prioritize link acquisition'}.")
     _insights_strip(slide, Inches(0.6), y, Inches(11.9), insights)
     return slide
 
@@ -1781,6 +1782,7 @@ def build_report(
     structured_data_rows: list[dict] | None = None,
     site_audit_overview: dict | None = None,
     backlink_summary: dict | None = None,
+    own_domain_rating: int | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -1799,7 +1801,7 @@ def build_report(
             analytics, competitor_rows, keyword_rows, backlink_rows, backlink_row_count,
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
-            backlink_summary, structured_data_rows,
+            backlink_summary, structured_data_rows, own_domain_rating,
         )
     finally:
         _theme["footer"] = ""
@@ -1830,6 +1832,7 @@ def _build_report(
     site_audit_overview: dict | None = None,
     backlink_summary: dict | None = None,
     structured_data_rows: list[dict] | None = None,
+    own_domain_rating: int | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -1947,8 +1950,8 @@ def _build_report(
                     add_competitor_narrative_slide(prs, client_name, domain, narrative)
         if keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
-        if backlink_rows or backlink_summary:
-            add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary)
+        if backlink_rows or backlink_summary or own_domain_rating is not None:
+            add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
         if competitor_analysis:
             add_competitive_gaps_slide(prs, competitor_analysis)
 
