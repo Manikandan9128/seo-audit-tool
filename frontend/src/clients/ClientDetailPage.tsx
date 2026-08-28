@@ -285,6 +285,40 @@ export default function ClientDetailPage() {
     }
   }
 
+  function startManualOverview() {
+    setOverviewMsg("");
+    setOverview({
+      company_name: null,
+      description: null,
+      products: [],
+      solutions: [],
+      industries: [],
+      kpis: [],
+      registration_info: null,
+      contact: null,
+      products_by_category: {},
+      target_country: null,
+      primary_buyers: [],
+      daily_users: [],
+      beneficiaries: [],
+      target_market: null,
+    });
+  }
+
+  async function saveOverviewManually() {
+    if (!overview) return;
+    setOverviewLoading(true);
+    setOverviewMsg("");
+    try {
+      await api.put(`/clients/${clientId}/company-overview`, overview);
+      setOverviewMsg("Saved — this is now cached and will be used for report generation.");
+    } catch (err: any) {
+      setOverviewMsg(err?.response?.data?.detail || "Couldn't save");
+    } finally {
+      setOverviewLoading(false);
+    }
+  }
+
   async function loadTechStack() {
     setTechStackLoading(true);
     setTechStackMsg("");
@@ -797,10 +831,23 @@ export default function ClientDetailPage() {
               loading={overviewLoading}
               hasData={!!overview}
             >
-              {overviewMsg && <p style={{ fontSize: 13, color: "#991b1b" }}>{overviewMsg}</p>}
+              {overviewMsg && <p style={{ fontSize: 13, color: overview ? "#166534" : "#991b1b" }}>{overviewMsg}</p>}
+              {!overview && !overviewLoading && (
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    className="secondary"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      startManualOverview();
+                    }}
+                  >
+                    Fill in manually
+                  </button>
+                </div>
+              )}
               {overview && (
                 <div style={{ marginTop: 16 }}>
-                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 8 }}>
                     <button
                       className="secondary"
                       disabled={overviewLoading}
@@ -811,6 +858,16 @@ export default function ClientDetailPage() {
                       title="Cached after the first extraction — re-crawls the site and calls Gemini/Claude again, only if the site's content has actually changed."
                     >
                       {overviewLoading ? "Refreshing..." : "Refresh from site"}
+                    </button>
+                    <button
+                      disabled={overviewLoading}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        saveOverviewManually();
+                      }}
+                      title="Saves this directly to the cache — no AI call, takes effect immediately for report generation."
+                    >
+                      {overviewLoading ? "Saving..." : "Save"}
                     </button>
                   </div>
                   <CompanyOverviewEditor overview={overview} onChange={setOverview} />
