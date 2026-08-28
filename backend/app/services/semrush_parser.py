@@ -578,6 +578,54 @@ def _map_columns(df: pd.DataFrame, aliases: dict[str, list[str]]) -> pd.DataFram
     return mapped[keep_cols]
 
 
+_OVERVIEW_TREND_METRICS = {
+    "organic traffic": "organic_traffic",
+    "organic keywords": "organic_keywords",
+    "paid traffic": "paid_traffic",
+    "paid keywords": "paid_keywords",
+}
+
+
+def _parse_overview_trend_df(df: pd.DataFrame) -> dict | None:
+    """Semrush's "Overview Trend" CSV export — same core metrics as Domain
+    Overview, but with an explicit Database column per metric row (e.g.
+    "Worldwide", "US") plus a daily trend, one column per date. Only
+    Worldwide-database exports are used for now (the Worldwide gap this was
+    built for — Domain Overview PDF is always a single country's database,
+    never Worldwide).
+
+    Uses the most recent day's value per metric as the "current" figure —
+    NOT the Summary column, which is the SUM across every day in the trend
+    window and isn't a comparable snapshot (confirmed against a real
+    export: Summary ran ~30x a single day's value, while manual-report
+    reference numbers for other domains were snapshot-scale, matching a
+    single day's figure, not a monthly sum)."""
+    cols = {c.lower().strip(): c for c in df.columns}
+    if not {"target", "metric", "database"} <= set(cols):
+        return None
+    date_cols = [c for c in df.columns if re.match(r"^\d{4}-\d{2}-\d{2}$", str(c).strip())]
+    if not date_cols:
+        return None
+    latest_col = sorted(date_cols)[-1]
+
+    target_col, metric_col, database_col = cols["target"], cols["metric"], cols["database"]
+    if df.empty:
+        return None
+    domain = str(df[target_col].iloc[0]).strip()
+    database = str(df[database_col].iloc[0]).strip()
+
+    result = {"domain": domain, "database": database, "trend_date": str(latest_col).strip()}
+    for _, row in df.iterrows():
+        field = _OVERVIEW_TREND_METRICS.get(str(row[metric_col]).strip().lower())
+        if not field:
+            continue
+        try:
+            result[field] = float(row[latest_col])
+        except (TypeError, ValueError):
+            continue
+    return result if "organic_traffic" in result else None
+
+
 def detect_import_type(df: pd.DataFrame) -> str:
     cols = {c.lower().strip() for c in df.columns}
     if {"source url", "target url", "source_url", "target_url"} & cols or "anchor" in cols:
@@ -611,6 +659,11 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
         return "domain_overview", {"row_count": 1, "rows": [row]}
 
     df = _read_table(filename, content)
+
+    trend_row = _parse_overview_trend_df(df)
+    if trend_row is not None:
+        return "overview_trend", {"row_count": 1, "rows": [trend_row]}
+
     import_type = detect_import_type(df)
 
     if import_type == "backlinks":

@@ -922,7 +922,7 @@ export default function ClientDetailPage() {
         <SemrushImportCard
           clientId={clientId!}
           title="Our Website Data"
-          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, domain overview, or a Backlink List PDF (Authority Score/DR — the Domain Overview PDF doesn't have it). Type is auto-detected; select multiple files to bulk-upload.`}
+          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, domain overview, a Backlink List PDF (Authority Score/DR — Domain Overview PDF doesn't have it), or an Overview Trend CSV exported with Database set to Worldwide (Domain Overview alone is always a single country). Type is auto-detected; select multiple files to bulk-upload.`}
           isOwnSite={true}
           mcpHint={`Use the Semrush MCP tools to pull backlinks, keyword data, and domain overview data for our own site, ${client.website_url}.`}
           imports={imports}
@@ -931,7 +931,7 @@ export default function ClientDetailPage() {
         <SemrushImportCard
           clientId={clientId!}
           title="Competitor Data"
-          description="Semrush exports for competitor domains — backlinks, organic competitors, keyword gap, domain overview, or a Backlink List PDF (fills in that competitor's DR on the Competitor Analysis table). Type is auto-detected; select multiple files to bulk-upload, enter the competitor's domain first."
+          description="Semrush exports for competitor domains — backlinks, organic competitors, keyword gap, domain overview, a Backlink List PDF (fills in that competitor's DR), or an Overview Trend CSV with Database set to Worldwide (fills in that competitor's Worldwide traffic/keywords columns). Type is auto-detected; select multiple files to bulk-upload, enter the competitor's domain first."
           isOwnSite={false}
           mcpHint={`Use the Semrush MCP tools to pull competitor data (backlinks, organic competitors, keyword gap) for competitors of ${client.website_url}.`}
           imports={imports}

@@ -1034,8 +1034,38 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
     common-keywords table when only an Organic Competitors export is available
     (that file type has no DR, backlinks, or branded-split data at all)."""
     has_rich_data = any(r.get("authority_score") or r.get("backlinks_total") for r in competitor_rows)
+    # Domain Overview PDF's Organic Traffic/Keywords are always a single
+    # country's database (confirmed: every export headed "US | Domain |
+    # ..."), never Worldwide. When a domain's separate "Overview Trend" CSV
+    # was uploaded with Database=Worldwide (see site_audit.py's
+    # worldwide_by_domain merge), add the extra Worldwide columns — only
+    # when at least one row actually has the data, so a client where nobody
+    # uploaded that file yet doesn't get two permanently-blank columns.
+    has_worldwide_data = any(r.get("organic_traffic_worldwide") is not None for r in competitor_rows)
 
-    if has_rich_data:
+    if has_rich_data and has_worldwide_data:
+        headers = [
+            "Domain", "Organic Traffic", "Organic Traffic (Global)", "Organic Keywords", "Organic Keywords (Global)",
+            "Paid Traffic", "DR", "Backlinks", "Top Countries", "Branded", "Non-Branded",
+        ]
+        col_widths = [1.9, 1.0, 1.15, 1.0, 1.2, 0.95, 0.7, 1.0, 1.1, 0.9, 1.0]
+        rows = [
+            (
+                r.get("domain", ""),
+                _fmt_num(r.get("organic_traffic")),
+                _fmt_num(r.get("organic_traffic_worldwide")),
+                _fmt_num(r.get("organic_keywords")),
+                _fmt_num(r.get("organic_keywords_worldwide")),
+                _fmt_num(r.get("paid_traffic")),
+                _fmt_num(r.get("authority_score")),
+                _fmt_num(r.get("backlinks_total")),
+                r.get("top_countries", ""),
+                r.get("branded_pct", ""),
+                r.get("nonbranded_pct", ""),
+            )
+            for r in competitor_rows[:14]
+        ]
+    elif has_rich_data:
         headers = ["Domain", "Organic Traffic", "Organic Keywords", "Paid Traffic", "DR", "Backlinks", "Top Countries", "Branded", "Non-Branded"]
         col_widths = [2.6, 1.3, 1.3, 1.2, 0.9, 1.2, 1.3, 1.1, 1.2]
         rows = [
@@ -1093,7 +1123,19 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
             insights.append(f"{kw_leader.get('domain')} ranks for {_num(kw_leader.get('organic_keywords')) - own_kw:,.0f} more organic keywords than you.")
 
     own_export_date = own_row.get("export_date") if own_row else None
-    source = f"Semrush export ({own_export_date})" if own_export_date else "Semrush export"
+    own_worldwide_date_raw = own_row.get("worldwide_as_of_date") if own_row else None
+    own_worldwide_date = None
+    if own_worldwide_date_raw:
+        from datetime import date as _date
+
+        try:
+            own_worldwide_date = _date.fromisoformat(own_worldwide_date_raw).strftime("%b %d, %Y")
+        except ValueError:
+            own_worldwide_date = own_worldwide_date_raw
+    date_bits = [d for d in [own_export_date] if d]
+    if own_worldwide_date and own_worldwide_date != own_export_date:
+        date_bits.append(f"Worldwide as of {own_worldwide_date}")
+    source = f"Semrush export ({'; '.join(date_bits)})" if date_bits else "Semrush export"
     return _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source=source, insights=insights)
 
 

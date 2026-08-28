@@ -511,6 +511,31 @@ def _gather_report_data(
         if row.get("authority_score") is None and row["domain"] in authority_by_domain:
             row["authority_score"] = authority_by_domain[row["domain"]]
 
+    # Domain Overview PDF is always pulled against a single country's
+    # database (confirmed: every section headed "US | Domain | ..."), never
+    # Worldwide. Semrush's separate "Overview Trend" CSV export carries an
+    # explicit Database column, so when a domain's Overview Trend was
+    # uploaded with Database=Worldwide, fold its most-recent-day traffic/
+    # keywords in as that domain's Worldwide figures — matched by domain
+    # the same way DR is above. Other databases in that export type (e.g. a
+    # second Overview Trend pulled for a specific country) are ignored for
+    # now — only Worldwide is consumed.
+    worldwide_by_domain: dict[str, dict] = {}
+    for r in all_imports:
+        if r.import_type != "overview_trend":
+            continue
+        label = own_website_domain if r.is_own_site else (r.domain_label or "")
+        for row in r.parsed_data.get("rows", []):
+            if not label or str(row.get("database", "")).strip().lower() != "worldwide":
+                continue
+            worldwide_by_domain[label] = row
+    for row in domain_overview_rows:
+        wd = worldwide_by_domain.get(row["domain"])
+        if wd:
+            row["organic_traffic_worldwide"] = wd.get("organic_traffic")
+            row["organic_keywords_worldwide"] = wd.get("organic_keywords")
+            row["worldwide_as_of_date"] = wd.get("trend_date")
+
     competitor_rows_all = domain_overview_rows or _all_rows("organic_competitors")
 
     # Organic Research > Positions export, per competitor domain — feeds the

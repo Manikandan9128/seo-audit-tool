@@ -17,6 +17,7 @@ interface ChecklistItem {
 const OWN_SITE_TYPES: ChecklistItem[] = [
   { type: "domain_overview", label: "Domain Overview" },
   { type: "backlink_summary", label: "Backlink List (DR)" },
+  { type: "overview_trend", label: "Overview Trend (Global)" },
   { type: "keyword_gap", label: "Target Keywords" },
   { type: "site_audit_overview", label: "Site Audit Overview" },
   { type: "site_audit_issues", label: "Site Audit Issues" },
@@ -25,6 +26,7 @@ const OWN_SITE_TYPES: ChecklistItem[] = [
 const COMPETITOR_TYPES: ChecklistItem[] = [
   { type: "domain_overview", label: "Domain Overview", altType: "organic_competitors" },
   { type: "backlink_summary", label: "Backlink List (DR)" },
+  { type: "overview_trend", label: "Overview Trend (Global)" },
   { type: "organic_positions", label: "Keyword Positions" },
 ];
 
@@ -82,9 +84,10 @@ export default function SemrushChecklist({ imports }: { imports: SemrushImportSu
     <div className="card" style={{ marginBottom: 4 }}>
       <h4 style={{ marginTop: 0, marginBottom: 8, fontSize: 14 }}>Upload checklist</h4>
       <p style={{ color: "#6b7280", fontSize: 12, marginTop: 0, marginBottom: 12 }}>
-        Reminder only — a missing item just means that slide/column stays blank, nothing is blocked. Domain Overview
-        and Backlink List apply per domain — upload one for your own site <em>and</em> one for each competitor.
-        Target Keywords / Site Audit Overview / Site Audit Issues are own-site only; Keyword Positions is
+        Reminder only — a missing item just means that slide/column stays blank, nothing is blocked. Domain Overview,
+        Backlink List, and Overview Trend apply per domain — upload one for your own site <em>and</em> one for each
+        competitor (export Overview Trend with Database set to Worldwide — Domain Overview alone is always a single
+        country). Target Keywords / Site Audit Overview / Site Audit Issues are own-site only; Keyword Positions is
         competitor-only.
       </p>
       <ChecklistTable rows={[{ label: "Own site", types: ownTypes, bold: true }]} columns={OWN_SITE_TYPES} />
