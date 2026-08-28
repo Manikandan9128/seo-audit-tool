@@ -307,6 +307,7 @@ def _parse_domain_overview_text(
         "backlinks_total": _first_number(backlinks, r"(\d[\d.,]*[KMB]?)\s*TOTAL\s*BACKLINKS"),
         "referring_domains": _first_number(backlinks, r"Referring\s*Domains\s+(\d[\d.,]*[KMB]?)"),
         "top_countries": top_countries or None,
+        "export_date": _extract_export_date(text),
     }
     # The two percentages sit on their own line, followed by their labels
     # on the next line — "14.57% 85.43%\nBranded Traffic Non-Branded
@@ -330,6 +331,53 @@ def _parse_domain_overview_text(
         if nonbranded_pct:
             row["nonbranded_pct"] = f"{nonbranded_pct.group(1)}%"
     return {k: v for k, v in row.items() if v is not None}
+
+
+_MONTHS = (
+    "January|February|March|April|May|June|July|August|September|October|November|December"
+    "|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+)
+# Matches "Aug 25, 2026", "August 25 2026", or ISO "2026-08-25" — Semrush PDF
+# exports print a generation/data-as-of date somewhere on the page (exact
+# wording/position varies by report type), so this scans the whole page text
+# rather than anchoring to a label. UNVERIFIED against a real export as of
+# 2026-08-28 (no sample file on hand) — first match wins, so if a report ever
+# prints an unrelated date earlier in the text than the real one, this will
+# need a label-anchored rewrite once a real sample surfaces the actual format.
+_DATE_PATTERN = re.compile(
+    rf"\b(?:({_MONTHS})\s+(\d{{1,2}}),?\s+(\d{{4}})|(\d{{4}})-(\d{{2}})-(\d{{2}}))\b"
+)
+_MONTH_ABBREV = {
+    "january": "Jan", "jan": "Jan", "february": "Feb", "feb": "Feb", "march": "Mar", "mar": "Mar",
+    "april": "Apr", "apr": "Apr", "may": "May", "june": "Jun", "jun": "Jun", "july": "Jul", "jul": "Jul",
+    "august": "Aug", "aug": "Aug", "september": "Sep", "sep": "Sep", "sept": "Sep",
+    "october": "Oct", "oct": "Oct", "november": "Nov", "nov": "Nov", "december": "Dec", "dec": "Dec",
+}
+
+
+def _extract_export_date(text: str) -> str | None:
+    """Best-effort scan for a report-generation / data-as-of date printed
+    somewhere in a Semrush PDF export's text layer. Returns 'Aug 25, 2026'
+    style, or None if nothing date-shaped is found. See _DATE_PATTERN note —
+    unverified against a real export."""
+    match = _DATE_PATTERN.search(text)
+    if not match:
+        return None
+    month_name, day, year, iso_year, iso_month, iso_day = match.groups()
+    if month_name:
+        try:
+            day_i, year_i = int(day), int(year)
+        except ValueError:
+            return None
+        if not (1 <= day_i <= 31 and 2015 <= year_i <= 2035):
+            return None
+        return f"{_MONTH_ABBREV.get(month_name.lower(), month_name[:3].title())} {day_i}, {year_i}"
+    try:
+        from datetime import date as _date
+
+        return _date(int(iso_year), int(iso_month), int(iso_day)).strftime("%b %d, %Y")
+    except ValueError:
+        return None
 
 
 _CRAWLED_PAGE_CATEGORIES = ["Blocked", "Redirect", "Have issues", "Broken", "Healthy"]
@@ -380,6 +428,7 @@ def parse_site_audit_overview_pdf(content: bytes) -> dict | None:
     result = {
         "site_health_pct": site_health_pct,
         "ai_search_health_pct": ai_search_health_pct,
+        "export_date": _extract_export_date(text),
     }
     for category in _CRAWLED_PAGE_CATEGORIES:
         key = category.lower().replace(" ", "_")
@@ -436,6 +485,8 @@ def parse_backlink_list_pdf(content: bytes) -> dict | None:
 
         if "backlinks_total" not in result:
             return None
+
+        result["export_date"] = _extract_export_date(text)
 
         # Link Attributes is a plain single-column list (Follow/Nofollow/
         # Sponsored/UGC each its own line) — no side-by-side ambiguity here,

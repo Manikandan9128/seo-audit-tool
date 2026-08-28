@@ -8,6 +8,7 @@ import AnalyticsReport from "../components/AnalyticsReport";
 import CompanyOverviewEditor from "../components/CompanyOverviewEditor";
 import type { CompanyOverview } from "../components/CompanyOverviewEditor";
 import SemrushImportCard from "../components/SemrushImportCard";
+import SemrushChecklist from "../components/SemrushChecklist";
 import SemrushAnalysis from "../components/SemrushAnalysis";
 import ReportPreviewModal from "../components/ReportPreviewModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
@@ -917,10 +918,11 @@ export default function ClientDetailPage() {
 
       {/* Semrush uploads — one for our domain, one for competitors */}
       <div id="semrush-section" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <SemrushChecklist imports={imports} />
         <SemrushImportCard
           clientId={clientId!}
           title="Our Website Data"
-          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, or domain overview. Type is auto-detected; select multiple files to bulk-upload.`}
+          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, domain overview, or a Backlink List PDF (Authority Score/DR — the Domain Overview PDF doesn't have it). Type is auto-detected; select multiple files to bulk-upload.`}
           isOwnSite={true}
           mcpHint={`Use the Semrush MCP tools to pull backlinks, keyword data, and domain overview data for our own site, ${client.website_url}.`}
           imports={imports}
@@ -929,7 +931,7 @@ export default function ClientDetailPage() {
         <SemrushImportCard
           clientId={clientId!}
           title="Competitor Data"
-          description="Semrush exports for competitor domains — backlinks, organic competitors, or keyword gap. Type is auto-detected; select multiple files to bulk-upload."
+          description="Semrush exports for competitor domains — backlinks, organic competitors, keyword gap, domain overview, or a Backlink List PDF (fills in that competitor's DR on the Competitor Analysis table). Type is auto-detected; select multiple files to bulk-upload, enter the competitor's domain first."
           isOwnSite={false}
           mcpHint={`Use the Semrush MCP tools to pull competitor data (backlinks, organic competitors, keyword gap) for competitors of ${client.website_url}.`}
           imports={imports}

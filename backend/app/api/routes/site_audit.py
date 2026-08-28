@@ -405,6 +405,19 @@ def _gather_report_data(
                     date_range["ga4_start"], date_range["ga4_end"] = ga4_start, ga4_end
                 except HttpError:
                     pass
+                # Separate try: needs Google Signals/demographics enabled on
+                # the property (age/gender), which the calls above don't —
+                # a permission/config error here shouldn't wipe out the
+                # traffic_overview/top_pages/etc that already succeeded.
+                try:
+                    if analytics.get("traffic_overview"):
+                        spike = ga4_service.get_traffic_spike_breakdown(
+                            creds, client.ga4_property_id, analytics["traffic_overview"]["rows"]
+                        )
+                        if spike:
+                            analytics["traffic_spike"] = spike
+                except HttpError:
+                    pass
             if client.gsc_site_url:
                 # Search Console data lags ~2-3 days behind — a range whose
                 # end date is more recent than that reliably comes back
@@ -477,6 +490,26 @@ def _gather_report_data(
             domain = label if r.is_own_site else (row.get("domain") or label)
             domain_overview_rows.append({**row, "domain": domain})
     domain_overview_rows.sort(key=lambda row: row["domain"] != own_website_domain)
+
+    # A Backlink List PDF's Authority Score is Domain Rating (DR) — the
+    # Domain Overview PDF never carries DR at all (confirmed: it only has
+    # "Semrush Rank", an unrelated traffic-rank metric on a different
+    # scale). When a Backlink List PDF is uploaded for a domain — own site
+    # or a competitor, matched by domain_label the same way Domain Overview
+    # rows are above — fold its Authority Score in as that domain's DR.
+    # Additive only: never overwrites a DR a CSV-sourced row already has.
+    authority_by_domain: dict[str, float] = {}
+    for r in all_imports:
+        if r.import_type != "backlink_summary":
+            continue
+        label = own_website_domain if r.is_own_site else (r.domain_label or "")
+        for row in r.parsed_data.get("rows", []):
+            score = row.get("authority_score")
+            if label and score is not None:
+                authority_by_domain[label] = score
+    for row in domain_overview_rows:
+        if row.get("authority_score") is None and row["domain"] in authority_by_domain:
+            row["authority_score"] = authority_by_domain[row["domain"]]
 
     competitor_rows_all = domain_overview_rows or _all_rows("organic_competitors")
 

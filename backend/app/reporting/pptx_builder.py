@@ -438,6 +438,11 @@ _CRAWLED_PAGE_CATEGORIES = ["Blocked", "Redirect", "Have issues", "Broken", "Hea
 def add_site_health_slide(prs: Presentation, audit: dict, page_audit: dict | None, site_audit_overview: dict | None = None):
     slide = _blank_slide(prs)
     _content_header(slide, "Understanding Current Scenario")
+    if site_audit_overview and site_audit_overview.get("export_date"):
+        _textbox(
+            slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4),
+            f"Source: Semrush Site Audit ({site_audit_overview['export_date']})", size=11, color=TEXT_MUTED,
+        )
 
     card1 = _card(slide, Inches(0.6), Inches(1.2), Inches(3.6), Inches(2.6))
     _textbox(slide, Inches(0.8), Inches(1.35), Inches(3), Inches(0.4), "Crawled Pages", size=15, bold=True)
@@ -896,11 +901,70 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     return slide
 
 
+def add_traffic_spike_slide(prs: Presentation, spike: dict):
+    """One slide: the single biggest single-day traffic spike in the period,
+    and which age/gender/country segments drove it — mechanically detected
+    in ga4_service.get_traffic_spike_breakdown, not a canned template
+    section. Only called when a real spike was found (see that function's
+    threshold)."""
+    slide = _blank_slide(prs)
+    _content_header(slide, "Traffic Spike Analysis")
+
+    from datetime import date as _date
+
+    fmt_date = _date.fromisoformat(spike["date"]).strftime("%b %d, %Y")
+
+    _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(1.15))
+    _textbox(
+        slide, Inches(0.9), Inches(1.25), Inches(11.5), Inches(0.4),
+        f"{fmt_date} ({spike['day_of_week']}) — {spike['sessions']:,} sessions", size=17, bold=True, color=_accent(),
+    )
+    _textbox(
+        slide, Inches(0.9), Inches(1.65), Inches(11.5), Inches(0.4),
+        f"{spike['pct_above_avg']:.0f}% above the period average of {spike['avg_sessions']:,} sessions/day.",
+        size=12.5, color=TEXT_MUTED,
+    )
+
+    columns = [
+        (label, rows)
+        for label, rows in [
+            ("Age", spike.get("by_age") or []),
+            ("Gender", spike.get("by_gender") or []),
+            ("Top Countries", spike.get("by_country") or []),
+        ]
+        if rows
+    ]
+    if not columns:
+        return slide
+
+    col_top, col_height = Inches(2.55), Inches(4.1)
+    col_width = Inches(3.87)
+    gap = Inches(0.2)
+    left = Inches(0.6)
+    for label, rows in columns:
+        _card(slide, left, col_top, col_width, col_height)
+        y = col_top + Inches(0.2)
+        _textbox(slide, left + Inches(0.25), y, col_width - Inches(0.5), Inches(0.35), label, size=14, bold=True, color=_accent())
+        rule = slide.shapes.add_shape(1, left + Inches(0.25), y + Inches(0.36), col_width - Inches(0.5), Pt(1.5))
+        _fill(rule, _accent())
+        rule.shadow.inherit = False
+        y += Inches(0.55)
+        for row in rows:
+            _textbox(slide, left + Inches(0.25), y, col_width - Inches(1.1), Inches(0.3), row["label"], size=12, color=TEXT_DARK)
+            _textbox(
+                slide, left + col_width - Inches(1.05), y, Inches(0.8), Inches(0.3),
+                f"{row['pct']:.0f}%", size=12, bold=True, color=TEXT_MUTED, align=PP_ALIGN.RIGHT,
+            )
+            y += Inches(0.36)
+        left += col_width + gap
+    return slide
+
+
 def add_page_performance_slide(prs: Presentation, page_performance: dict, date_range: dict | None = None):
     """Top vs. poor performing pages, side by side, with each page's % share
     of total pageviews and how many pages contributed traffic in the period."""
-    top_pages = [p for p in (page_performance.get("top_pages") or []) if "career" not in (p.get("path") or "").lower()]
-    bottom_pages = [p for p in (page_performance.get("bottom_pages") or []) if "career" not in (p.get("path") or "").lower()]
+    top_pages = page_performance.get("top_pages") or []
+    bottom_pages = page_performance.get("bottom_pages") or []
     if not top_pages and not bottom_pages:
         return None
 
@@ -1028,7 +1092,9 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
         if _num(kw_leader.get("organic_keywords")) > own_kw:
             insights.append(f"{kw_leader.get('domain')} ranks for {_num(kw_leader.get('organic_keywords')) - own_kw:,.0f} more organic keywords than you.")
 
-    return _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source="Semrush export", insights=insights)
+    own_export_date = own_row.get("export_date") if own_row else None
+    source = f"Semrush export ({own_export_date})" if own_export_date else "Semrush export"
+    return _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source=source, insights=insights)
 
 
 def add_competitor_positions_slides(prs: Presentation, competitor_positions: dict[str, list[dict]]):
@@ -1252,6 +1318,11 @@ def add_backlink_profile_slide(prs: Presentation, backlink_rows: list[dict], row
     preferred wherever both are available."""
     slide = _blank_slide(prs)
     _content_header(slide, "Backlink Profile")
+    if backlink_summary and backlink_summary.get("export_date"):
+        _textbox(
+            slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4),
+            f"Source: Semrush Backlink List ({backlink_summary['export_date']})", size=11, color=TEXT_MUTED,
+        )
 
     dofollow = sum(1 for r in backlink_rows if str(r.get("nofollow", "")).strip().lower() not in ("1", "true", "yes"))
     csv_pct_dofollow = round(100 * dofollow / len(backlink_rows)) if backlink_rows else None
@@ -1699,6 +1770,8 @@ def _build_report(
         gsc_source = f"Google Search Console ({gsc_span})" if gsc_span else "Google Search Console"
         if analytics.get("traffic_overview"):
             add_traffic_overview_slide(prs, analytics)
+        if analytics.get("traffic_spike"):
+            add_traffic_spike_slide(prs, analytics["traffic_spike"])
         top_pages = (analytics.get("top_pages") or {}).get("rows", [])
         top_pages = [p for p in top_pages if "career" not in (p.get("path") or "").lower()]
         if top_pages:
