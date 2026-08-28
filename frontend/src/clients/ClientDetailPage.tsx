@@ -798,6 +798,17 @@ export default function ClientDetailPage() {
               hasData={!!overview}
             >
               {overviewMsg && <p style={{ fontSize: 13, color: "#991b1b" }}>{overviewMsg}</p>}
+              {!overview && overviewMsg && !overviewLoading && (
+                <button
+                  className="secondary"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    loadOverview(true);
+                  }}
+                >
+                  Retry
+                </button>
+              )}
               {overview && (
                 <div style={{ marginTop: 16 }}>
                   <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
