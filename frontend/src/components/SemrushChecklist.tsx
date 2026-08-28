@@ -21,6 +21,7 @@ const OWN_SITE_TYPES: ChecklistItem[] = [
   { type: "keyword_gap", label: "Target Keywords" },
   { type: "site_audit_overview", label: "Site Audit Overview" },
   { type: "site_audit_issues", label: "Site Audit Issues" },
+  { type: "structured_data", label: "Structured Data" },
 ];
 
 const COMPETITOR_TYPES: ChecklistItem[] = [

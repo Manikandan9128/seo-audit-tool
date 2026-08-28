@@ -90,6 +90,48 @@ SITE_AUDIT_PAGES_COLUMN_ALIASES = {
     "hreflang_issues": ["hreflang issues", "hreflang_issues"],
 }
 
+# Semrush Site Audit "Pages > Structured Data" export — one row per crawled
+# URL, presence flags for the 4 markup formats plus a count column per rich-
+# result type Google recognizes (FAQ, Product, Review, etc). Distinct from
+# SITE_AUDIT_PAGES_COLUMN_ALIASES (that export's own schema columns are just
+# presence flags, no per-rich-result-type breakdown).
+STRUCTURED_DATA_COLUMN_ALIASES = {
+    "page_url": ["page url", "page_url"],
+    "schema_jsonld": ["schema.org (json-ld)", "schema_jsonld"],
+    "schema_microdata": ["schema.org (microdata)", "schema_microdata"],
+    "open_graph": ["open graph", "open_graph"],
+    "twitter_cards": ["twitter cards", "twitter_cards"],
+    "microformats": ["microformats"],
+    "article_items": ["article items", "article_items"],
+    "book_items": ["book items", "book_items"],
+    "breadcrumb_items": ["breadcrumb items", "breadcrumb_items"],
+    "carousel_items": ["carousel items", "carousel_items"],
+    "course_items": ["course items", "course_items"],
+    "dataset_items": ["dataset items", "dataset_items"],
+    "employer_rating_items": ["employer aggregate rating items", "employer_rating_items"],
+    "estimated_salary_items": ["estimated salary items", "estimated_salary_items"],
+    "event_items": ["event items", "event_items"],
+    "fact_check_items": ["fact check items", "fact_check_items"],
+    "faq_items": ["faq items", "faq_items"],
+    "guided_recipe_items": ["guided recipe items", "guided_recipe_items"],
+    "howto_items": ["how-to items", "howto_items"],
+    "job_posting_items": ["job posting items", "job_posting_items"],
+    "local_business_items": ["local business items", "local_business_items"],
+    "logo_items": ["logo items", "logo_items"],
+    "merchant_listing_items": ["merchant listing items", "merchant_listing_items"],
+    "movie_items": ["movie items", "movie_items"],
+    "product_items": ["product snippet items", "product_items"],
+    "product_group_items": ["product group items", "product_group_items"],
+    "qa_items": ["q&a items", "qa_items"],
+    "recipe_items": ["recipe on search items", "recipe_items"],
+    "review_items": ["review snippet items", "review_items"],
+    "sitelinks_searchbox_items": ["sitelinks search box items", "sitelinks_searchbox_items"],
+    "site_names_items": ["site names items", "site_names_items"],
+    "software_app_items": ["software app items", "software_app_items"],
+    "vehicle_listing_items": ["vehicle listing items", "vehicle_listing_items"],
+    "video_items": ["video items", "video_items"],
+}
+
 # Semrush Site Audit "Issues" export (the "Top Issues" overview table, every
 # row not just the top 5 shown on the PDF) — one row per issue TYPE across the
 # whole crawl, not per page. Distinct from SITE_AUDIT_PAGES_COLUMN_ALIASES,
@@ -562,13 +604,20 @@ def _read_table(filename: str, content: bytes) -> pd.DataFrame:
     if name.endswith(".xml"):
         return pd.read_xml(buffer, parser="etree")
     if name.endswith(".tsv"):
-        return pd.read_csv(buffer, sep="\t")
-    # Semrush CSV exports are typically semicolon or comma separated
+        return pd.read_csv(buffer, sep="\t", index_col=False)
+    # Semrush CSV exports are typically semicolon or comma separated.
+    # index_col=False is required: some real Semrush exports (confirmed on
+    # a Structured Data export) have one more field per data row than the
+    # header has names (a trailing unlabeled column) — pandas' default
+    # behavior in that case silently treats the first column as a row
+    # index instead of real data, which shifts every OTHER column's values
+    # one slot away from their header, corrupting the whole row rather
+    # than just dropping the one extra trailing field.
     try:
-        return pd.read_csv(buffer, sep=None, engine="python")
+        return pd.read_csv(buffer, sep=None, engine="python", index_col=False)
     except Exception:
         buffer.seek(0)
-        return pd.read_csv(buffer)
+        return pd.read_csv(buffer, index_col=False)
 
 
 def _map_columns(df: pd.DataFrame, aliases: dict[str, list[str]]) -> pd.DataFrame:
@@ -648,6 +697,11 @@ def detect_import_type(df: pd.DataFrame) -> str:
         return "site_audit_pages"
     if "issue" in cols and ({"failed checks", "failed_checks"} & cols) and ({"total checks", "total_checks"} & cols):
         return "site_audit_issues"
+    # Structured Data export has no "http status code" column (unlike
+    # site_audit_pages above) — instead it's "page url" plus at least 2 of
+    # the ~29 "<type> items" rich-result-count columns.
+    if {"page url", "page_url"} & cols and sum(1 for c in cols if c.endswith(" items")) >= 2:
+        return "structured_data"
     return "unknown"
 
 
@@ -686,6 +740,8 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
         mapped = _map_columns(df, SITE_AUDIT_PAGES_COLUMN_ALIASES)
     elif import_type == "site_audit_issues":
         mapped = _map_columns(df, SITE_AUDIT_ISSUES_COLUMN_ALIASES)
+    elif import_type == "structured_data":
+        mapped = _map_columns(df, STRUCTURED_DATA_COLUMN_ALIASES)
     else:
         mapped = df
 

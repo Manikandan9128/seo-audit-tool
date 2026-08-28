@@ -459,6 +459,12 @@ def _gather_report_data(
     # homepage-only + 20-page checks. When present, the SEO Issues slide
     # prefers this over site_audit_result["issues"] / page_audit issues.
     site_audit_issues_rows = _all_rows("site_audit_issues", own_only=True)
+    # Semrush Site Audit's own per-page structured-data (schema markup)
+    # export — feeds the Structured Data slide's "which rich-result types
+    # are missing site-wide" findings. Own-site only, same as the other
+    # Site Audit family exports above — structured data isn't something we
+    # compare against competitors anywhere in the report.
+    structured_data_rows = _all_rows("structured_data", own_only=True)
     # Semrush Site Audit's own crawl-health summary (Site Health %, AI Search
     # Health %, Blocked/Redirect/Have issues/Broken/Healthy page counts) — a
     # real full-site crawl, replaces our own homepage + 20-page approximation
@@ -576,6 +582,7 @@ def _gather_report_data(
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
         "site_audit_issues": site_audit_issues_rows or None,
+        "structured_data_rows": structured_data_rows or None,
         "site_audit_overview": site_audit_overview,
         "backlink_summary": backlink_summary,
         "psi_mobile": psi_mobile,

@@ -922,7 +922,7 @@ export default function ClientDetailPage() {
         <SemrushImportCard
           clientId={clientId!}
           title="Our Website Data"
-          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, domain overview, a Backlink List PDF (Authority Score/DR — Domain Overview PDF doesn't have it), or an Overview Trend CSV exported with Database set to Worldwide (Domain Overview alone is always a single country). Type is auto-detected; select multiple files to bulk-upload.`}
+          description={`Semrush exports for ${client.website_url} — backlinks, keyword gap, domain overview, a Backlink List PDF (Authority Score/DR — Domain Overview PDF doesn't have it), an Overview Trend CSV exported with Database set to Worldwide (Domain Overview alone is always a single country), or a Site Audit "Pages > Structured Data" CSV (schema markup coverage, e.g. missing FAQ/Product schema). Type is auto-detected; select multiple files to bulk-upload.`}
           isOwnSite={true}
           mcpHint={`Use the Semrush MCP tools to pull backlinks, keyword data, and domain overview data for our own site, ${client.website_url}.`}
           imports={imports}

@@ -771,6 +771,61 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
     return slide
 
 
+# Semrush Site Audit's per-page Structured Data export has ~29 schema.org
+# rich-result-type columns — this is the curated, business-relevant subset
+# actually surfaced on the slide (nothing is lost on import, see
+# STRUCTURED_DATA_COLUMN_ALIASES in semrush_parser.py; this is a display
+# choice, not a parsing limit). Matches the style of real manual-report
+# findings, e.g. "No Product schema (JSON-LD) on the 5 product pages"
+# (confirmed from an EJTOY audit).
+_STRUCTURED_DATA_TYPES = [
+    ("Article", "article_items", "improves how blog/news content can appear in search"),
+    ("FAQ", "faq_items", "enables expandable FAQ dropdowns directly in search results"),
+    ("Product", "product_items", "enables price/availability rich results on product pages"),
+    ("Review", "review_items", "enables star-rating rich results"),
+    ("Local Business", "local_business_items", "enables map/business-info rich results"),
+    ("How-to", "howto_items", "enables step-by-step rich results"),
+    ("Breadcrumb", "breadcrumb_items", "shows the page's site hierarchy in search results"),
+    ("Job Posting", "job_posting_items", "enables Google's dedicated job-search rich results"),
+    ("Event", "event_items", "enables event date/venue rich results"),
+]
+
+
+def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict]):
+    """Site-wide coverage of the curated schema types above, worst-coverage
+    first — schema types missing on every page become an explicit
+    actionable insight rather than just a 0% table row."""
+    total_pages = len(structured_data_rows)
+    if not total_pages:
+        return None
+
+    coverage = []
+    for label, field, benefit in _STRUCTURED_DATA_TYPES:
+        pages_with = sum(1 for r in structured_data_rows if _num(r.get(field)) > 0)
+        coverage.append((label, field, benefit, pages_with))
+    coverage.sort(key=lambda c: c[3])
+
+    headers = ["Schema Type", "Pages With It", "Coverage"]
+    col_widths = [4.0, 2.5, 2.5]
+    rows = [
+        (label, f"{pages_with:,} / {total_pages:,}", f"{100 * pages_with / total_pages:.0f}%")
+        for label, _field, _benefit, pages_with in coverage
+    ]
+
+    missing = [c for c in coverage if c[3] == 0]
+    insights = [
+        f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}."
+        for label, _field, benefit, _pages_with in missing[:4]
+    ]
+    if not insights:
+        best = max(coverage, key=lambda c: c[3])
+        insights = [f"{best[0]} schema is your best-covered type — present on {best[3]} of {total_pages} pages."]
+
+    return _table_slide(
+        prs, "Structured Data", headers, rows, col_widths=col_widths, source="Semrush Site Audit", insights=insights
+    )
+
+
 def _wrap_lines(text: str, width_emu, size_pt: float = 12) -> int:
     """Estimate how many lines `text` wraps to in a box of this width/font
     size — advancing y by this (instead of a fixed single-line guess) is
@@ -1723,6 +1778,7 @@ def build_report(
     domain_strategy: dict | None = None,
     ux_findings: dict | None = None,
     site_audit_issues: list[dict] | None = None,
+    structured_data_rows: list[dict] | None = None,
     site_audit_overview: dict | None = None,
     backlink_summary: dict | None = None,
 ) -> bytes:
@@ -1743,7 +1799,7 @@ def build_report(
             analytics, competitor_rows, keyword_rows, backlink_rows, backlink_row_count,
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
-            backlink_summary,
+            backlink_summary, structured_data_rows,
         )
     finally:
         _theme["footer"] = ""
@@ -1773,6 +1829,7 @@ def _build_report(
     site_audit_issues: list[dict] | None = None,
     site_audit_overview: dict | None = None,
     backlink_summary: dict | None = None,
+    structured_data_rows: list[dict] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -1797,6 +1854,8 @@ def _build_report(
         if site_audit:
             add_site_health_slide(prs, site_audit, page_audit, site_audit_overview)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
+            if structured_data_rows:
+                add_structured_data_slide(prs, structured_data_rows)
 
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
