@@ -86,7 +86,7 @@ def list_semrush_imports(client_id: uuid.UUID, db: Session = Depends(get_db), cu
 def semrush_analysis(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Compares uploaded own-site vs. competitor Semrush data and returns
     concrete gaps (traffic, keywords, backlinks) with recommendations."""
-    _get_owned_client(client_id, db, current_user)
+    client = _get_owned_client(client_id, db, current_user)
     records = (
         db.query(SemrushImport)
         .filter(SemrushImport.client_id == client_id)
@@ -96,13 +96,15 @@ def semrush_analysis(client_id: uuid.UUID, db: Session = Depends(get_db), curren
     payload = [
         {
             "import_type": r.import_type,
+            "is_own_site": r.is_own_site,
             "domain_label": r.domain_label,
             "created_at": r.created_at,
             "parsed_data": r.parsed_data,
         }
         for r in records
     ]
-    return analyze_semrush_data(payload)
+    own_domain = (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
+    return analyze_semrush_data(payload, own_domain=own_domain)
 
 
 @router.get("/{client_id}/semrush-ai-summary")
@@ -126,7 +128,8 @@ def semrush_ai_summary(client_id: uuid.UUID, db: Session = Depends(get_db), curr
         }
         for r in records
     ]
-    analysis = analyze_semrush_data(payload)
+    own_domain = (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
+    analysis = analyze_semrush_data(payload, own_domain=own_domain)
     return generate_ai_summary(client.name, client.website_url, analysis)
 
 

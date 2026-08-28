@@ -41,10 +41,18 @@ def _all_rows(records: list[dict], import_type: str, own: bool | None = None) ->
     return rows
 
 
-def analyze(records: list[dict]) -> dict:
+def _normalize_domain(d: str) -> str:
+    return (d or "").strip().lower().removeprefix("www.").rstrip("/")
+
+
+def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     """records: list of {import_type, is_own_site, domain_label, created_at, parsed_data}
-    (parsed_data has "rows" and "row_count"). Returns {issues: [...], has_data: bool, coverage: {...}}
-    where each issue is {summary, detail, recommendation, severity}."""
+    (parsed_data has "rows" and "row_count"). own_domain: the client's own
+    website domain (e.g. "startek.com") — needed to tell which column in a
+    real multi-domain Keyword Gap export (see semrush_parser.py's
+    domain_positions) is "you" vs a competitor. Returns {issues: [...],
+    has_data: bool, coverage: {...}} where each issue is {summary, detail,
+    recommendation, severity}."""
     issues = []
 
     own_overview = _latest(records, "domain_overview", own=True)
@@ -136,8 +144,54 @@ def analyze(records: list[dict]) -> dict:
             "severity": "info",
         })
 
-    # Keyword gap opportunities (deduped across every Keyword Gap upload)
-    if keyword_gap_rows:
+    # Keyword gap opportunities (deduped across every Keyword Gap upload).
+    # A real Semrush Keyword Gap export compares several domains in one
+    # file (see semrush_parser.py's domain_positions: {domain: SERP
+    # position, 0 = not ranking}) — when that's present and we know the
+    # client's own domain, a real gap is "you don't rank (0) but at least
+    # one competitor does (>0)", not just "any keyword with volume".
+    matrix_rows = [r for r in keyword_gap_rows if r.get("domain_positions")]
+    own_col = None
+    if matrix_rows and own_domain:
+        own_norm = _normalize_domain(own_domain)
+        own_col = next(
+            (d for d in matrix_rows[0]["domain_positions"] if _normalize_domain(d) == own_norm), None
+        )
+
+    if matrix_rows and own_col:
+        seen_keywords = set()
+        real_gaps = []
+        for r in matrix_rows:
+            kw = r.get("keyword")
+            if not kw or kw in seen_keywords:
+                continue
+            positions = r.get("domain_positions") or {}
+            if _num(positions.get(own_col)) > 0:
+                continue  # you already rank for this one
+            competitor_ranks = {d: _num(p) for d, p in positions.items() if d != own_col and _num(p) > 0}
+            if not competitor_ranks:
+                continue  # nobody ranks for it either — not a real gap
+            seen_keywords.add(kw)
+            best_domain, best_pos = min(competitor_ranks.items(), key=lambda kv: kv[1])
+            real_gaps.append((r, best_domain, best_pos))
+        if real_gaps:
+            real_gaps.sort(key=lambda g: -_num(g[0].get("search_volume")))
+            total_volume = sum(_num(g[0].get("search_volume")) for g in real_gaps)
+            top_row, top_domain, top_pos = real_gaps[0]
+            issues.append({
+                "summary": f"{len(real_gaps)} keywords a competitor ranks for and you don't, {int(total_volume):,} combined monthly searches",
+                "detail": (
+                    f"Highest-volume gap: \"{top_row.get('keyword')}\" — {top_domain} ranks #{int(top_pos)}, "
+                    f"you don't rank at all ({int(_num(top_row.get('search_volume'))):,} monthly searches)."
+                ),
+                "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
+                "severity": "opportunity",
+            })
+    elif keyword_gap_rows:
+        # Fallback: a simple (non-matrix) Keyword Gap upload, or we don't
+        # know the client's own domain — can't tell who ranks for what, so
+        # fall back to the old "any keyword with real search volume" signal
+        # rather than silently producing nothing.
         seen_keywords = set()
         opportunities = []
         for r in keyword_gap_rows:

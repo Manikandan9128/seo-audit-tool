@@ -931,9 +931,9 @@ export default function ClientDetailPage() {
         <SemrushImportCard
           clientId={clientId!}
           title="Competitor Data"
-          description="Semrush exports for competitor domains — backlinks, organic competitors, keyword gap, domain overview, a Backlink List PDF (fills in that competitor's DR), or an Overview Trend CSV with Database set to Worldwide (fills in that competitor's Worldwide traffic/keywords columns). Type is auto-detected; select multiple files to bulk-upload, enter the competitor's domain first."
+          description="Semrush exports for competitor domains — backlinks, organic competitors, domain overview, a Backlink List PDF (fills in that competitor's DR), or an Overview Trend CSV with Database set to Worldwide (fills in that competitor's Worldwide traffic/keywords columns). Keyword Gap does NOT go here — it's a single combined file comparing your domain and competitors together, upload it once under 'Our Website Data' instead. Type is auto-detected; select multiple files to bulk-upload, enter the competitor's domain first."
           isOwnSite={false}
-          mcpHint={`Use the Semrush MCP tools to pull competitor data (backlinks, organic competitors, keyword gap) for competitors of ${client.website_url}.`}
+          mcpHint={`Use the Semrush MCP tools to pull competitor data (backlinks, organic competitors) for competitors of ${client.website_url}.`}
           imports={imports}
           onChanged={loadImports}
         />

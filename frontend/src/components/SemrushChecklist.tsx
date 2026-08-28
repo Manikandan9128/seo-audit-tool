@@ -18,7 +18,7 @@ const OWN_SITE_TYPES: ChecklistItem[] = [
   { type: "domain_overview", label: "Domain Overview" },
   { type: "backlink_summary", label: "Backlink List (DR)" },
   { type: "overview_trend", label: "Overview Trend (Global)" },
-  { type: "keyword_gap", label: "Target Keywords" },
+  { type: "keyword_gap", label: "Target Keywords / Keyword Gap" },
   { type: "site_audit_overview", label: "Site Audit Overview" },
   { type: "site_audit_issues", label: "Site Audit Issues" },
   { type: "structured_data", label: "Structured Data" },
@@ -84,13 +84,37 @@ export default function SemrushChecklist({ imports }: { imports: SemrushImportSu
   return (
     <div className="card" style={{ marginBottom: 4 }}>
       <h4 style={{ marginTop: 0, marginBottom: 8, fontSize: 14 }}>Upload checklist</h4>
-      <p style={{ color: "#6b7280", fontSize: 12, marginTop: 0, marginBottom: 12 }}>
-        Reminder only — a missing item just means that slide/column stays blank, nothing is blocked. Domain Overview,
-        Backlink List, and Overview Trend apply per domain — upload one for your own site <em>and</em> one for each
-        competitor (export Overview Trend with Database set to Worldwide — Domain Overview alone is always a single
-        country). Target Keywords / Site Audit Overview / Site Audit Issues are own-site only; Keyword Positions is
-        competitor-only.
+      <p style={{ color: "#6b7280", fontSize: 12, marginTop: 0, marginBottom: 10 }}>
+        Reminder only — a missing item just means that slide/column stays blank, nothing is blocked.
       </p>
+      <details style={{ marginBottom: 12 }}>
+        <summary style={{ fontSize: 12, color: "#6b7280", cursor: "pointer" }}>Which file goes where?</summary>
+        <table style={{ fontSize: 12, marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left" }}>File</th>
+              <th style={{ textAlign: "left" }}>Upload under</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              ["Backlink_List...pdf", "Either — per domain"],
+              ["...-backlinks.csv", "Either — per domain"],
+              ["Domain_Overview...pdf", "Either — per domain"],
+              ["overview-trend...csv (Database = Worldwide)", "Either — per domain"],
+              ["gap.keywords...csv", "Our Website Data — one file, covers everyone"],
+              ["Site_Audit__Overview...pdf", "Our Website Data only"],
+              ["...issues...csv", "Our Website Data only"],
+              ["...structured_data...csv", "Our Website Data only"],
+            ].map(([file, where]) => (
+              <tr key={file}>
+                <td style={{ textAlign: "left" }}>{file}</td>
+                <td style={{ textAlign: "left", color: "#6b7280" }}>{where}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
       <ChecklistTable rows={[{ label: "Own site", types: ownTypes, bold: true }]} columns={OWN_SITE_TYPES} />
       {competitorDomains.length > 0 && (
         <div style={{ marginTop: 14 }}>

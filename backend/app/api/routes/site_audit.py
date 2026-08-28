@@ -567,7 +567,7 @@ def _gather_report_data(
                 "parsed_data": r.parsed_data,
             }
             for r in all_imports
-        ])
+        ], own_domain=own_website_domain)
 
     domain_strategy_result = check_domain_strategy(
         client.website_url, (company_overview_result or {}).get("target_country")

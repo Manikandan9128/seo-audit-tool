@@ -40,6 +40,33 @@ KEYWORD_GAP_COLUMN_ALIASES = {
     "cpc": ["cpc"],
 }
 
+# Semrush's real Keyword Gap tool export compares several domains (your own
+# + up to a handful of competitors) side by side in ONE file — a column per
+# domain holding its SERP position for that keyword (0 = not ranking), plus
+# a same-named "<domain> (pages)" companion column holding the ranking URL.
+# Column names are the actual domains compared, so they can't be a fixed
+# alias like the fields above — confirmed against a real 8,044-keyword,
+# 4-domain export. KEYWORD_GAP_COLUMN_ALIASES alone silently drops every
+# one of these columns (not in its keep-list), losing the entire point of
+# a Keyword Gap file (who ranks where) and keeping only a generic keyword
+# list — _detect_keyword_gap_domain_columns recovers them.
+_KEYWORD_GAP_NON_DOMAIN_COLS = {
+    "keyword", "intents", "volume", "search volume", "keyword difficulty", "kd", "kd%",
+    "cpc", "competition density", "results", "cluster", "topic", "group",
+}
+_DOMAIN_LIKE = re.compile(r"^[a-z0-9][a-z0-9-]*(\.[a-z0-9-]+)+$", re.IGNORECASE)
+
+
+def _detect_keyword_gap_domain_columns(df: pd.DataFrame) -> list[str]:
+    domain_cols = []
+    for c in df.columns:
+        name = str(c).strip()
+        if name.lower().endswith(" (pages)") or name.lower() in _KEYWORD_GAP_NON_DOMAIN_COLS:
+            continue
+        if _DOMAIN_LIKE.match(name):
+            domain_cols.append(name)
+    return domain_cols
+
 # Semrush Organic Research > Positions export for a single domain — what that
 # domain currently ranks for, and where. Distinct from Keyword Gap (which
 # compares keyword coverage across multiple domains): this always carries a
@@ -746,6 +773,31 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
         mapped = df
 
     mapped = mapped.head(500)  # cap rows stored to keep JSONB payload reasonable
+
+    if import_type == "keyword_gap":
+        domain_cols = _detect_keyword_gap_domain_columns(df)
+        if domain_cols:
+            # .item() converts numpy scalars (int64/float64) to native
+            # Python types — without it these values fail to JSON-encode
+            # when the parsed row gets stored to the JSONB column (pandas'
+            # own .to_dict() does this conversion automatically for the
+            # aliased columns above; this per-cell lookup does not).
+            def _cell(v):
+                if pd.isna(v):
+                    return None
+                return v.item() if hasattr(v, "item") else v
+
+            mapped = mapped.copy()
+            pages_cols = {d: f"{d} (pages)" for d in domain_cols if f"{d} (pages)" in df.columns}
+            positions, urls = [], []
+            for idx in mapped.index:
+                row = df.loc[idx]
+                positions.append({d: _cell(row[d]) for d in domain_cols})
+                urls.append({d: _cell(row[c]) for d, c in pages_cols.items()})
+            mapped["domain_positions"] = positions
+            if pages_cols:
+                mapped["domain_ranking_urls"] = urls
+
     parsed_data = {
         "row_count": len(df),
         "rows": mapped.fillna("").to_dict(orient="records"),
