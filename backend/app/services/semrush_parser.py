@@ -11,7 +11,13 @@ BACKLINKS_COLUMN_ALIASES = {
     "source_url": ["source url", "page ascii url", "source", "source_url"],
     "target_url": ["target url", "target", "target_url"],
     "anchor": ["anchor", "anchor text"],
-    "domain_score": ["source title", "page score", "domain score", "authority score", "page_score", "source_title"],
+    # "Source title" was wrongly listed here in the past — that's the
+    # linking page's article/title text, not a number, and mapping it into
+    # domain_score silently produced garbage (str, never float) while the
+    # export's real per-backlink score column ("Page ascore" in Semrush's
+    # raw Backlinks CSV) went unmapped and got dropped. Confirmed against a
+    # real 10,000-row export.
+    "domain_score": ["page ascore", "page score", "domain score", "authority score", "page_score", "page_ascore"],
     "first_seen": ["first seen", "first_seen"],
     "last_seen": ["last seen", "last_seen"],
     "nofollow": ["nofollow"],
