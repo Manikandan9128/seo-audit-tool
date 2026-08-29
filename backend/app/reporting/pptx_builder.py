@@ -998,34 +998,53 @@ _PAGE_ISSUE_FIXES = {
 _ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
 
 
-def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None):
+def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None, analytics: dict | None = None):
     """Flattens page_audit's per-page issues (up to 20 crawled pages) into
-    one Issue/Where/Fix row per (page, issue) pair, worst-severity first.
+    one Issue/Where/Fix row per (page, issue) pair, worst-severity first
+    (severity stays the primary sort — an error is still an error regardless
+    of traffic). When real GA4 pageview data is available, ties within the
+    same severity are broken by traffic — a fix on a page real visitors
+    hit sorts above the same-severity fix on a page nobody visits — and the
+    single highest-traffic affected page gets called out as an insight.
     Sourced from our own crawl, not Semrush — Semrush's per-page x
     per-issue-type matrix export (mega_export.csv) isn't parsed at all
     currently (parked deliberately), would give a richer full-site version
     of this same idea later if ever built."""
     if not page_audit:
         return None
+
+    top_pages_by_path: dict[str, int] = {}
+    for p in (analytics or {}).get("top_pages", {}).get("rows", []) if analytics else []:
+        path = (p.get("path") or "").rstrip("/")
+        top_pages_by_path[path] = int(float(p.get("page_views", 0) or 0))
+
     scored_rows = []
     for page in page_audit.get("pages", []):
         path = urlparse(page.get("url", "")).path or "/"
+        page_views = top_pages_by_path.get(path.rstrip("/"), 0)
         for issue in page.get("issues", []):
             fix = _PAGE_ISSUE_FIXES.get(issue)
             if not fix:
                 continue
             fix_text, severity = fix
-            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], issue, path, fix_text))
+            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -page_views, issue, path, fix_text, page_views))
     if not scored_rows:
         return None
-    scored_rows.sort(key=lambda r: r[0])
+    scored_rows.sort(key=lambda r: (r[0], r[1]))
 
     shown = scored_rows[:9]
-    rows = [(issue, path, fix_text) for _, issue, path, fix_text in shown]
-    unreachable_count = sum(1 for _, issue, _, _ in scored_rows if issue == "Page not reachable")
+    rows = [(issue, path, fix_text) for _, _, issue, path, fix_text, _ in shown]
+    unreachable_count = sum(1 for _, _, issue, _, _, _ in scored_rows if issue == "Page not reachable")
     insights = [f"{len(scored_rows)} page-level issue(s) found across the crawled pages, {unreachable_count} unreachable."]
     if len(scored_rows) > len(shown):
         insights.append(f"Showing the {len(shown)} highest-priority — see SEO Issues for the full breakdown by type.")
+    traffic_matched = [r for r in scored_rows if r[5] > 0]
+    if traffic_matched:
+        top_traffic = max(traffic_matched, key=lambda r: r[5])
+        insights.append(
+            f"\"{top_traffic[3]}\" gets real traffic ({top_traffic[5]:,} pageviews in the reporting window) "
+            f"and has a \"{top_traffic[2]}\" issue — fixing this one affects real visitors, not just crawl health."
+        )
 
     return _table_slide(
         prs, "Tech Fixes", ["Issue", "Where", "Fix"], rows,
@@ -2377,7 +2396,7 @@ def _build_report(
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
             add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
-            add_tech_fixes_slide(prs, page_audit)
+            add_tech_fixes_slide(prs, page_audit, analytics)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
 
