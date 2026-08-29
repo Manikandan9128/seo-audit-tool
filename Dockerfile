@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/pyproject.toml ./backend/pyproject.toml
 COPY backend/app ./backend/app
 RUN pip install --no-cache-dir ./backend
+RUN playwright install --with-deps chromium
 
 COPY backend/alembic.ini ./backend/alembic.ini
 COPY backend/alembic ./backend/alembic

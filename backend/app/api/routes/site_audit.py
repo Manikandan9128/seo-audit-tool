@@ -16,6 +16,7 @@ from app.db.session import SessionLocal
 from app.integrations import google_oauth
 from app.integrations.crypto import decrypt, encrypt
 from app.integrations.pagespeed_client import run_pagespeed
+from app.integrations.screenshot_client import capture_homepage_screenshots
 from app.models.client import Client
 from app.models.domain_rating import DomainRating
 from app.models.google_connection import GoogleConnection
@@ -357,6 +358,24 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         for domain, narrative in pool.map(_build_one, domains):
             if narrative is not None:
                 narratives[domain] = narrative
+
+    # Best-effort homepage screenshot per competitor, for visual grounding
+    # on the narrative slide (matches the manual reference deck). Run
+    # sequentially, in this thread, deliberately NOT inside the ThreadPool-
+    # Executor above — Playwright's sync API isn't reliably safe to invoke
+    # from multiple worker threads at once, and a single browser instance
+    # reused across domains here is already cheap relative to the AI calls
+    # above. A screenshot that fails (bot-blocked, timeout, unreachable)
+    # just means that competitor's slide renders without one — never an
+    # error surfaced anywhere in the report.
+    try:
+        screenshots = capture_homepage_screenshots(list(narratives.keys()))
+    except Exception:
+        screenshots = {}
+    for domain, shot in screenshots.items():
+        if domain in narratives:
+            narratives[domain]["screenshot"] = shot
+
     return narratives
 
 

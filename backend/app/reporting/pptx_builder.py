@@ -1609,22 +1609,38 @@ def add_competitor_narrative_slide(prs: Presentation, client_name: str, competit
     agency-authored strategic content, not the client-branded data slides.
     Height-budgeted so long AI-generated bullets can't overflow into the
     footer: bullets stop once the budget is spent, and the closing
-    paragraph is truncated with an ellipsis rather than overflowing."""
+    paragraph is truncated with an ellipsis rather than overflowing.
+    When narrative["screenshot"] (best-effort PNG bytes, may be absent if
+    capture failed/was blocked) is present, narrows the text card to make
+    room for the competitor's homepage screenshot on the right — matches
+    the manual reference deck's visual grounding for this slide."""
     areas = narrative.get("areas_of_focus") or []
     opportunity = narrative.get("growth_opportunity")
     if not areas and not opportunity:
         return None
+    screenshot = narrative.get("screenshot")
 
     slide = _blank_slide(prs)
     _content_header(slide, f"Areas of Focus for {client_name} (vs {competitor_domain})")
     card_top, card_height = Inches(1.1), Inches(5.9)
-    _card(slide, Inches(0.6), card_top, Inches(12.1), card_height)
+    card_width = Inches(7.8) if screenshot else Inches(12.1)
+    text_width = card_width - Inches(0.75)
+    _card(slide, Inches(0.6), card_top, card_width, card_height)
     y = Inches(1.35)
+
+    if screenshot:
+        img_left, img_width = Inches(8.7), Inches(3.9)
+        try:
+            slide.shapes.add_picture(BytesIO(screenshot), img_left, card_top, width=img_width)
+        except Exception:
+            pass  # corrupt/unreadable capture — skip the image, text side is unaffected
+        else:
+            _textbox(slide, img_left, card_top + Inches(2.6), img_width, Inches(0.3), competitor_domain, size=10.5, color=TEXT_MUTED, align=PP_ALIGN.CENTER)
 
     # Reserve room for the heading + at least 2 lines of the closing
     # paragraph before bullets are allowed to eat into that space.
     bullets_max_y = card_top + card_height - (Inches(0.7) if opportunity else Inches(0.15))
-    chars_per_line = 120
+    chars_per_line = max(20, int(text_width / 914400 * 14))
     line_h = Inches(0.24)
     for item in areas[:9]:
         lines = max(1, -(-len(item) // chars_per_line))
@@ -1632,20 +1648,20 @@ def add_competitor_narrative_slide(prs: Presentation, client_name: str, competit
         if y + item_h > bullets_max_y:
             break
         _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), DEFAULT_ACCENT)
-        _textbox(slide, Inches(1.15), y, Inches(11.35), line_h * lines, item, size=12.5)
+        _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, item, size=12.5)
         y += item_h
 
     if opportunity:
         y += Inches(0.15)
-        _textbox(slide, Inches(0.9), y, Inches(11.4), Inches(0.3), "Strategic Growth Opportunity:", size=13, bold=True, color=DEFAULT_ACCENT)
+        _textbox(slide, Inches(0.9), y, text_width, Inches(0.3), "Strategic Growth Opportunity:", size=13, bold=True, color=DEFAULT_ACCENT)
         y += Inches(0.34)
-        chars_per_line = 130
+        chars_per_line = max(20, int(text_width / 914400 * 15))
         available_h = (card_top + card_height) - y - Inches(0.1)
         max_lines = max(1, int(available_h / Inches(0.24)))
         max_chars = max_lines * chars_per_line
         text = opportunity if len(opportunity) <= max_chars else opportunity[: max(0, max_chars - 1)].rsplit(" ", 1)[0] + "…"
         lines = max(1, -(-len(text) // chars_per_line))
-        _textbox(slide, Inches(0.9), y, Inches(11.4), Inches(0.24) * lines, text, size=12, color=TEXT_DARK)
+        _textbox(slide, Inches(0.9), y, text_width, Inches(0.24) * lines, text, size=12, color=TEXT_DARK)
     return slide
 
 
