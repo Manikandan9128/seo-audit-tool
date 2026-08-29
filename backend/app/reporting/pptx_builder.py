@@ -3,6 +3,7 @@ dark top bar, blue section-title band, light-gray body, white content cards."""
 
 from __future__ import annotations
 
+import threading
 from io import BytesIO
 from urllib.parse import urlparse
 
@@ -36,8 +37,27 @@ CHIP_BG = RGBColor(0xEA, 0xF4, 0xF8)
 
 # Mutable so build_report can theme a single generation run with the client's
 # own brand color (scraped from their site) without threading a param through
-# every slide-drawing function. Reset to the default after each build.
-_theme = {"accent": DEFAULT_ACCENT, "footer": ""}
+# every slide-drawing function. Thread-local (not a plain dict) because
+# report requests run concurrently in Starlette's thread pool — a shared
+# global here let one in-flight build's accent color/footer bleed into
+# another's slides mid-build, producing a deck with mismatched colors
+# per slide whenever two reports were generated around the same time.
+class _ThemeStore(threading.local):
+    def __init__(self):
+        self.accent = DEFAULT_ACCENT
+        self.footer = ""
+
+
+class _ThemeProxy:
+    def __getitem__(self, key):
+        return getattr(_theme_store, key)
+
+    def __setitem__(self, key, value):
+        setattr(_theme_store, key, value)
+
+
+_theme_store = _ThemeStore()
+_theme = _ThemeProxy()
 
 
 def _accent() -> RGBColor:
