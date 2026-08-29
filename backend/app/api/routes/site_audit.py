@@ -513,6 +513,12 @@ def _gather_report_data(
     # Site Audit family exports above — structured data isn't something we
     # compare against competitors anywhere in the report.
     structured_data_rows = _all_rows("structured_data", own_only=True)
+    # Semrush Site Audit's own per-page export — same rows semrush_analysis_
+    # service already reads for the non-200/canonical/sitemap findings, but
+    # threaded through directly here too so the Website Structure slide can
+    # roll them up by top-level directory (Directory/URLs/Issues), matching
+    # the manual report's "Site Structure" table.
+    site_audit_pages_rows = _all_rows("site_audit_pages", own_only=True)
     # Semrush Site Audit's own crawl-health summary (Site Health %, AI Search
     # Health %, Blocked/Redirect/Have issues/Broken/Healthy page counts) — a
     # real full-site crawl, replaces our own homepage + 20-page approximation
@@ -687,6 +693,7 @@ def _gather_report_data(
         "page_audit": page_audit_result,
         "site_audit_issues": site_audit_issues_rows or None,
         "structured_data_rows": structured_data_rows or None,
+        "site_audit_pages_rows": site_audit_pages_rows or None,
         "site_audit_overview": site_audit_overview,
         "backlink_summary": backlink_summary,
         "own_domain_rating": own_domain_rating,

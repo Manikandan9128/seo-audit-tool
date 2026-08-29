@@ -572,6 +572,39 @@ def add_site_health_slide(prs: Presentation, audit: dict, page_audit: dict | Non
     return slide
 
 
+def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict] | None):
+    """Directory-level rollup of the full-site crawl — matches the manual
+    report's "Site Structure" table (Directory | URLs | Issues). Derived
+    entirely from Semrush Site Audit's per-page export (page_url + issues
+    count) we already parse for the SEO Issues / Tech Fixes slides — no new
+    Semrush upload needed, just a grouping we weren't doing yet."""
+    if not site_audit_pages_rows:
+        return None
+
+    dirs: dict[str, dict] = {}
+    for r in site_audit_pages_rows:
+        path = urlparse(r.get("page_url") or "").path
+        segments = [s for s in path.split("/") if s]
+        directory = f"/{segments[0]}" if segments else "/ (root)"
+        entry = dirs.setdefault(directory, {"urls": 0, "issues": 0})
+        entry["urls"] += 1
+        entry["issues"] += int(_num(r.get("issues")))
+
+    ranked = sorted(dirs.items(), key=lambda kv: -kv[1]["urls"])
+    rows = [(d, info["urls"], info["issues"]) for d, info in ranked]
+    total_urls = sum(info["urls"] for _, info in ranked)
+    total_issues = sum(info["issues"] for _, info in ranked)
+    insights = [f"{total_urls} crawled URLs across {len(ranked)} top-level section(s), {total_issues} total flagged issues."]
+    worst = max(ranked, key=lambda kv: kv[1]["issues"]) if ranked else None
+    if worst and worst[1]["issues"] > 0:
+        insights.append(f"\"{worst[0]}\" has the most issues ({worst[1]['issues']}) across {worst[1]['urls']} URLs — highest-leverage section to fix first.")
+
+    return _table_slide(
+        prs, "Website Structure", ["Directory", "URLs", "Issues"], rows,
+        col_widths=[7.0, 2.5, 2.6], source="Semrush Site Audit", insights=insights,
+    )
+
+
 def add_company_overview_slide(prs: Presentation, client_name: str, summary: str):
     slide = _blank_slide(prs)
     _content_header(slide, "Company Overview")
@@ -2097,6 +2130,7 @@ def build_report(
     backlink_summary: dict | None = None,
     own_domain_rating: int | None = None,
     core_problem: dict | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -2116,6 +2150,7 @@ def build_report(
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
+            site_audit_pages_rows,
         )
     finally:
         _theme["footer"] = ""
@@ -2148,6 +2183,7 @@ def _build_report(
     structured_data_rows: list[dict] | None = None,
     own_domain_rating: int | None = None,
     core_problem: dict | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -2171,6 +2207,8 @@ def _build_report(
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if site_audit:
             add_site_health_slide(prs, site_audit, page_audit, site_audit_overview)
+            if site_audit_pages_rows:
+                add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
             add_tech_fixes_slide(prs, page_audit)
             if structured_data_rows:
