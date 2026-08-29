@@ -9,6 +9,40 @@ PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 # card on the Website Performance slide.
 TIMEOUT = 150.0
 
+# Already surfaced separately as core_web_vitals — excluded from the generic
+# issue list below so a slow LCP/CLS doesn't also show up as a duplicate
+# "diagnostic" row with no extra information.
+_METRIC_AUDIT_IDS = {
+    "largest-contentful-paint", "cumulative-layout-shift", "interaction-to-next-paint",
+    "total-blocking-time", "first-contentful-paint", "speed-index",
+}
+
+
+def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
+    """Real Lighthouse audits.<id> the PSI dashboard itself lists under
+    "Opportunities"/"Diagnostics" — failing (score < 0.9), scored
+    (scoreDisplayMode binary/numeric, not the purely-informative ones like
+    screenshots), non-metric audits. Sorted worst-impact first: real
+    millisecond savings when Lighthouse reports one, else by score."""
+    issues = []
+    for audit_id, audit in audits.items():
+        if audit_id in _METRIC_AUDIT_IDS:
+            continue
+        score = audit.get("score")
+        if score is None or score >= 0.9:
+            continue
+        if audit.get("scoreDisplayMode") not in ("binary", "numeric"):
+            continue
+        savings_ms = ((audit.get("details") or {}).get("overallSavingsMs")) or 0
+        issues.append({
+            "title": audit.get("title", audit_id),
+            "impact": audit.get("displayValue") or audit.get("description", "")[:140],
+            "savings_ms": savings_ms,
+            "score": score,
+        })
+    issues.sort(key=lambda x: (-x["savings_ms"], x["score"]))
+    return issues[:limit]
+
 
 def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 2) -> dict:
     """strategy: 'mobile' or 'desktop'. Retries once on timeout — PSI's own
@@ -56,4 +90,5 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 2) -> dict:
             "interaction_to_next_paint": metric("interaction-to-next-paint") or metric("total-blocking-time"),
             "first_contentful_paint": metric("first-contentful-paint"),
         },
+        "issues": _extract_issues(audits),
     }

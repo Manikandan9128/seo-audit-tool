@@ -455,6 +455,34 @@ def add_pagespeed_slide(prs: Presentation, mobile: dict | None, desktop: dict | 
     return slide
 
 
+def add_pagespeed_issues_slide(prs: Presentation, mobile: dict | None, desktop: dict | None):
+    """The score-ring slide above says *how bad* PageSpeed is; this says
+    *why* — the actual Lighthouse audit failures (render-blocking resources,
+    unoptimized images, unused JS, etc), same ones PSI's own dashboard lists
+    under "Opportunities"/"Diagnostics", instead of just a bare score."""
+    rows = []
+    for label, result in (("Mobile", mobile), ("Desktop", desktop)):
+        for issue in (result or {}).get("issues", []):
+            rows.append((issue["title"], label, issue.get("impact") or "—"))
+    if not rows:
+        return None
+
+    rows.sort(key=lambda r: r[1])  # group by strategy so Mobile/Desktop aren't interleaved
+    insights = []
+    worst = max(
+        (issue for result in (mobile, desktop) if result for issue in result.get("issues", [])),
+        key=lambda i: i["savings_ms"], default=None,
+    )
+    if worst and worst["savings_ms"]:
+        insights.append(f"Biggest opportunity: \"{worst['title']}\" — {worst['impact']}.")
+    insights.append(f"{len(rows)} PageSpeed issue(s) found across Mobile/Desktop Lighthouse audits.")
+
+    return _table_slide(
+        prs, "Website Performance — Issue Details", ["Issue", "Where", "Impact"], rows,
+        col_widths=[5.3, 1.3, 5.5], source="Google PageSpeed Insights", insights=insights,
+    )
+
+
 def _issue_row(slide, left, top, width, text, severity="warn"):
     color = BAD if severity == "error" else WARN
     dot = slide.shapes.add_shape(9, left, top + Inches(0.06), Inches(0.12), Inches(0.12))
@@ -1437,6 +1465,40 @@ def add_competitive_gaps_slide(prs: Presentation, competitor_analysis: dict):
     return slide
 
 
+def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
+    """Table version of semrush_analysis_service's keyword-gap detection —
+    the "issues" list only surfaces one summary sentence + a single top
+    example; this renders the full ranked list of keywords a competitor
+    ranks for that the client doesn't, so it reads like the manual report's
+    keyword tables instead of one line of prose."""
+    rows = competitor_analysis.get("keyword_gap_rows") or []
+    if not rows:
+        return None
+
+    table_rows = [
+        (
+            r["keyword"],
+            r["competitor_domain"] or "—",
+            f"#{r['competitor_position']}" if r.get("competitor_position") else "—",
+            f"{r['search_volume']:,}",
+            r["keyword_difficulty"] if r.get("keyword_difficulty") not in (None, "") else "—",
+        )
+        for r in rows
+    ]
+    total_volume = sum(r["search_volume"] for r in rows)
+    top = rows[0]
+    insights = [f"{len(rows)} keyword gap(s) found, {total_volume:,} combined monthly searches."]
+    if top.get("competitor_domain"):
+        insights.append(f"Highest-volume gap: \"{top['keyword']}\" ({top['search_volume']:,} searches) — {top['competitor_domain']} ranks #{top['competitor_position']}, you don't rank at all.")
+    else:
+        insights.append(f"Highest-volume gap: \"{top['keyword']}\" ({top['search_volume']:,} searches).")
+
+    return _table_slide(
+        prs, "Competitor Keyword Gap Analysis", ["Keyword", "Competitor", "Their Position", "Search Volume", "Difficulty"], table_rows,
+        col_widths=[4.2, 3.0, 1.8, 1.9, 1.2], source="Semrush Keyword Gap export", insights=insights,
+    )
+
+
 def add_competitor_narrative_slide(prs: Presentation, client_name: str, competitor_domain: str, narrative: dict):
     """Matches the reference deck's "Areas of Focus for {Client} (vs
     {Competitor})" slide — a bulleted recommendation list followed by a
@@ -2015,6 +2077,7 @@ def _build_report(
 
     if psi_mobile or psi_desktop:
         add_pagespeed_slide(prs, psi_mobile, psi_desktop)
+        add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
@@ -2100,6 +2163,8 @@ def _build_report(
                     add_competitor_narrative_slide(prs, client_name, domain, narrative)
         if keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
+        if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
+            add_keyword_gap_slide(prs, competitor_analysis)
         if backlink_rows or backlink_summary or own_domain_rating is not None:
             add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
         if competitor_analysis:

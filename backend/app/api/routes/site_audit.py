@@ -336,11 +336,16 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         if not row and not top_keywords and not relevant_gaps and not homepage_text:
             return domain, None  # nothing grounded to write from — skip rather than let the AI invent
         try:
-            return domain, generate_competitor_narrative(client.name, client_domain, domain, facts)
-        except Exception:
+            result = generate_competitor_narrative(client.name, client_domain, domain, facts)
+        except Exception as e:
             # A single competitor's AI narrative failing (rate limit, API
             # error, timeout) shouldn't take down the whole report.
+            logger.warning("Competitor narrative failed for %s (client %s): %s", domain, client.id, e)
             return domain, None
+        if "error" in result:
+            logger.warning("Competitor narrative failed for %s (client %s): %s", domain, client.id, result["error"])
+            return domain, None
+        return domain, result
 
     narratives = {}
     # Each competitor needs its own homepage fetch + AI call — running them

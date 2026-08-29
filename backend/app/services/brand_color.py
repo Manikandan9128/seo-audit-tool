@@ -23,9 +23,17 @@ def _normalize_hex(hex_value: str) -> str:
     return hex_value.upper()
 
 
-def _is_grayscale(hex6: str, tolerance: int = 12) -> bool:
+def _is_grayscale(hex6: str, tolerance: int = 30) -> bool:
+    """True for plain neutrals (grays) AND near-black/near-white UI colors
+    (borders, dividers, text) — both are ubiquitous in compiled site CSS and
+    render as an invisible/washed-out accent if picked as the report's theme
+    color. tolerance=30 catches near-grays like D0D5DD (a Tailwind-style
+    border gray, RGB spread only 13) that the old tolerance=12 let through."""
     r, g, b = int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16)
-    return max(r, g, b) - min(r, g, b) <= tolerance
+    if max(r, g, b) - min(r, g, b) <= tolerance:
+        return True
+    lightness = (max(r, g, b) + min(r, g, b)) / 2 / 255
+    return lightness < 0.15 or lightness > 0.92
 
 
 def extract_brand_color(html_source: str) -> str | None:

@@ -158,6 +158,12 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
             (d for d in matrix_rows[0]["domain_positions"] if _normalize_domain(d) == own_norm), None
         )
 
+    # Full ranked gap list (not just the single top-example sentence in the
+    # "issues" summary above) — lets the report render an actual table
+    # instead of one line of prose, matching the manual deck's keyword
+    # tables. Capped at 20 rows, same "highest volume first" ordering.
+    keyword_gap_result_rows: list[dict] = []
+
     if matrix_rows and own_col:
         seen_keywords = set()
         real_gaps = []
@@ -187,6 +193,16 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
             })
+            keyword_gap_result_rows = [
+                {
+                    "keyword": r.get("keyword"),
+                    "competitor_domain": best_domain,
+                    "competitor_position": int(best_pos),
+                    "search_volume": int(_num(r.get("search_volume"))),
+                    "keyword_difficulty": r.get("keyword_difficulty"),
+                }
+                for r, best_domain, best_pos in real_gaps[:20]
+            ]
     elif keyword_gap_rows:
         # Fallback: a simple (non-matrix) Keyword Gap upload, or we don't
         # know the client's own domain — can't tell who ranks for what, so
@@ -208,6 +224,17 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
             })
+            opportunities.sort(key=lambda r: -_num(r.get("search_volume")))
+            keyword_gap_result_rows = [
+                {
+                    "keyword": r.get("keyword"),
+                    "competitor_domain": None,
+                    "competitor_position": None,
+                    "search_volume": int(_num(r.get("search_volume"))),
+                    "keyword_difficulty": r.get("keyword_difficulty"),
+                }
+                for r in opportunities[:20]
+            ]
 
     # Technical/on-page issues from a Semrush Site Audit "crawled pages" export of our own site
     if own_site_audit_rows:
@@ -265,4 +292,4 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     severity_order = {"warn": 0, "opportunity": 1, "info": 2}
     issues.sort(key=lambda i: severity_order[i["severity"]])
 
-    return {"has_data": has_data, "issues": issues, "coverage": coverage}
+    return {"has_data": has_data, "issues": issues, "coverage": coverage, "keyword_gap_rows": keyword_gap_result_rows}
