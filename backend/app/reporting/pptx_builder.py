@@ -2233,11 +2233,16 @@ def _build_report(
     if domain_strategy:
         add_domain_strategy_slide(prs, domain_strategy)
 
-    if tech_stack:
-        add_tech_stack_slide(prs, tech_stack)
-
-    if site_audit or page_audit:
+    # Understanding Current Scenario section — template order: Website
+    # Performance (PageSpeed) first, then the rest of the crawl-based
+    # findings. Tech Stack & Hosting now renders AFTER this whole section
+    # (was previously rendered before it started) — moved per the client
+    # template's specified order.
+    if site_audit or page_audit or psi_mobile or psi_desktop:
         add_section_slide(prs, client_name, "Understanding Current Scenario")
+        if psi_mobile or psi_desktop:
+            add_pagespeed_slide(prs, psi_mobile, psi_desktop)
+            add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
             add_site_health_slide(prs, site_audit, page_audit, site_audit_overview)
             if site_audit_pages_rows:
@@ -2248,12 +2253,11 @@ def _build_report(
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
 
+    if tech_stack:
+        add_tech_stack_slide(prs, tech_stack)
+
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
-
-    if psi_mobile or psi_desktop:
-        add_pagespeed_slide(prs, psi_mobile, psi_desktop)
-        add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
