@@ -307,8 +307,7 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         except (TypeError, ValueError):
             return 0.0
 
-    narratives = {}
-    for domain in domains:
+    def _build_one(domain: str) -> tuple[str, dict | None]:
         row = next((r for r in competitor_rows if r.get("domain") == domain), None)
         top_keywords = sorted(
             competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
@@ -334,13 +333,24 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
             "homepage_text": homepage_text,
         }
         if not row and not top_keywords and not relevant_gaps and not homepage_text:
-            continue  # nothing grounded to write from — skip rather than let the AI invent
+            return domain, None  # nothing grounded to write from — skip rather than let the AI invent
         try:
-            narratives[domain] = generate_competitor_narrative(client.name, client_domain, domain, facts)
+            return domain, generate_competitor_narrative(client.name, client_domain, domain, facts)
         except Exception:
             # A single competitor's AI narrative failing (rate limit, API
             # error, timeout) shouldn't take down the whole report.
-            continue
+            return domain, None
+
+    narratives = {}
+    # Each competitor needs its own homepage fetch + AI call — running them
+    # one at a time made total report-generation time scale with competitor
+    # count, which pushed slower/bigger clients past the hosting gateway's
+    # request timeout (504) even though nothing had actually failed. Same
+    # concurrent pattern as the PageSpeed calls above.
+    with ThreadPoolExecutor(max_workers=max(1, len(domains))) as pool:
+        for domain, narrative in pool.map(_build_one, domains):
+            if narrative is not None:
+                narratives[domain] = narrative
     return narratives
 
 
