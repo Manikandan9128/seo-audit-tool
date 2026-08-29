@@ -863,6 +863,39 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
     return slide
 
 
+def add_critical_issues_slide(prs: Presentation, site_audit_issues: list[dict] | None):
+    """Standalone Critical Issues slide — ERROR-severity items only from
+    Semrush Site Audit's issue rollup (issue_type == "ERROR"), matching the
+    manual report's dedicated Critical Issues page. Distinct from the
+    combined SEO Issues slide above, which mixes Errors + Warnings in one
+    2-column layout — this is Errors alone, full width, so the most severe
+    findings aren't sharing space with lower-priority warnings."""
+    if not site_audit_issues:
+        return None
+    errors = [
+        r for r in site_audit_issues
+        if str(r.get("issue_type", "")).strip().upper() == "ERROR" and (r.get("failed_checks") or 0) > 0
+    ]
+    if not errors:
+        return None
+
+    ranked = sorted(errors, key=lambda r: r.get("failed_checks") or 0, reverse=True)
+    rows = [
+        (r.get("issue", "Issue"), f"{r.get('failed_checks', 0):,}", f"{r.get('total_checks', 0):,}" if r.get("total_checks") else "—")
+        for r in ranked
+    ]
+    total_affected = sum(r.get("failed_checks") or 0 for r in errors)
+    top = ranked[0]
+    insights = [
+        f"{len(errors)} distinct critical error type(s), {total_affected:,} total affected page-checks.",
+        f"Most widespread: \"{top.get('issue')}\" — {top.get('failed_checks', 0):,} pages affected.",
+    ]
+    return _table_slide(
+        prs, "Critical Issues", ["Issue", "Affected Pages", "Total Checked"], rows,
+        col_widths=[7.0, 2.5, 2.6], source="Semrush Site Audit", insights=insights,
+    )
+
+
 # Semrush Site Audit's per-page Structured Data export has ~29 schema.org
 # rich-result-type columns — this is the curated, business-relevant subset
 # actually surfaced on the slide (nothing is lost on import, see
@@ -2210,6 +2243,7 @@ def _build_report(
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
+            add_critical_issues_slide(prs, site_audit_issues)
             add_tech_fixes_slide(prs, page_audit)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
