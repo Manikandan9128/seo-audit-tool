@@ -2033,6 +2033,103 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     return slides
 
 
+def _top_critical_and_opportunities(competitor_analysis: dict | None) -> tuple[list[str], list[str]]:
+    """Shared by the opening At a Glance slide and the closing Summary
+    slide, so a reader who compares the first and last slide sees the same
+    top items, not two different picks. Critical issues from the
+    competitor-gap analysis (warn severity); opportunities prefer the
+    keyword-gap table, falling back to the analysis's own opportunity-
+    severity issues when no keyword gap data exists."""
+    issues = (competitor_analysis or {}).get("issues") or []
+    critical = [i["summary"] for i in issues if i.get("severity") == "warn"][:3]
+    gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
+    if gap_rows:
+        opportunities = [
+            (
+                f"\"{r['keyword']}\" — {r['competitor_domain']} ranks #{r['competitor_position']}, "
+                + (f"you're at #{r['your_position']}" if r.get("your_position") else "you don't rank")
+                + f", {r['search_volume']:,} searches/mo."
+            )
+            if r.get("competitor_domain") else f"\"{r['keyword']}\" — {r['search_volume']:,} searches/mo opportunity."
+            for r in gap_rows[:3]
+        ]
+    else:
+        opportunities = [i["summary"] for i in issues if i.get("severity") == "opportunity"][:3]
+    return critical, opportunities
+
+
+def _overall_health_score(
+    site_audit_overview: dict | None, psi_mobile: dict | None, psi_desktop: dict | None,
+) -> int | None:
+    """Best real signal available, preferring the full-site Semrush crawl's
+    Site Health % over our own PageSpeed performance-score average — never
+    a made-up composite formula blending unrelated metrics."""
+    if site_audit_overview and site_audit_overview.get("site_health_pct") is not None:
+        return round(site_audit_overview["site_health_pct"])
+    perf_scores = [
+        s["scores"]["performance"] for s in (psi_mobile, psi_desktop)
+        if s and s.get("scores", {}).get("performance") is not None
+    ]
+    if perf_scores:
+        return round(sum(perf_scores) / len(perf_scores))
+    return None
+
+
+def add_at_a_glance_slide(
+    prs: Presentation,
+    core_problem: dict | None,
+    competitor_analysis: dict | None,
+    site_audit_overview: dict | None,
+    psi_mobile: dict | None,
+    psi_desktop: dict | None,
+):
+    """Opening scorecard — right after the title slide, before any detailed
+    findings. A reader who only sees the first 2 slides still gets the
+    verdict: one health-score gauge, the diagnostic thesis (if the AI
+    synthesis succeeded), top critical issues, top opportunities. The full
+    Core Problem slide and detailed findings still follow later — this is
+    a fast preview, not a replacement. Self-guards when literally nothing
+    real is available yet (e.g. very first report before most data
+    sources are gathered)."""
+    critical, opportunities = _top_critical_and_opportunities(competitor_analysis)
+    score = _overall_health_score(site_audit_overview, psi_mobile, psi_desktop)
+    thesis = (core_problem or {}).get("thesis")
+    if score is None and not critical and not opportunities and not thesis:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "At a Glance")
+
+    _score_ring(slide, Inches(0.9), Inches(1.5), Inches(1.7), score, "Overall Health")
+
+    if thesis:
+        _card(slide, Inches(3.0), Inches(1.5), Inches(9.7), Inches(1.7))
+        _textbox(slide, Inches(3.25), Inches(1.7), Inches(9.2), Inches(1.3), thesis, size=13.5, bold=True, color=_accent())
+
+    col_top = Inches(3.75)  # clears the score ring's "Overall Health" label, which bottoms out at 3.6"
+    col_bottom = Inches(6.9)
+    col_width = Inches(5.9)
+    gap = Inches(0.3)
+    columns = [("Top Critical Issues", critical, BAD), ("Top Opportunities", opportunities, GOOD)]
+    for i, (label, items, color) in enumerate(columns):
+        if not items:
+            continue
+        left = Inches(0.6) + Emu(i * (col_width + gap))
+        _card(slide, left, col_top, col_width, col_bottom - col_top)
+        cy = col_top + Inches(0.2)
+        _textbox(slide, left + Inches(0.25), cy, col_width - Inches(0.5), Inches(0.3), label.upper(), size=12, bold=True, color=color)
+        cy += Inches(0.45)
+        for item in items:
+            lines = _wrap_lines(item, col_width - Inches(0.55), size_pt=12)
+            line_h = Inches(0.24) * lines
+            if cy + line_h > col_bottom - Inches(0.15):
+                break
+            _icon_dot(slide, left + Inches(0.28), cy + Inches(0.07), Inches(0.09), color)
+            _textbox(slide, left + Inches(0.5), cy, col_width - Inches(0.75), line_h, item, size=12)
+            cy += line_h + Inches(0.14)
+    return slide
+
+
 def add_final_summary_slide(
     prs: Presentation,
     core_problem: dict | None,
@@ -2066,21 +2163,7 @@ def add_final_summary_slide(
     col_width = Inches(3.9)
     gap = Inches(0.2)
 
-    issues = (competitor_analysis or {}).get("issues") or []
-    critical = [i["summary"] for i in issues if i.get("severity") == "warn"][:3]
-    gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
-    if gap_rows:
-        opportunities = [
-            (
-                f"\"{r['keyword']}\" — {r['competitor_domain']} ranks #{r['competitor_position']}, "
-                + (f"you're at #{r['your_position']}" if r.get("your_position") else "you don't rank")
-                + f", {r['search_volume']:,} searches/mo."
-            )
-            if r.get("competitor_domain") else f"\"{r['keyword']}\" — {r['search_volume']:,} searches/mo opportunity."
-            for r in gap_rows[:3]
-        ]
-    else:
-        opportunities = [i["summary"] for i in issues if i.get("severity") == "opportunity"][:3]
+    critical, opportunities = _top_critical_and_opportunities(competitor_analysis)
 
     roadmap = _derive_roadmap(site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy)
     seen_categories = set()
@@ -2267,6 +2350,7 @@ def _build_report(
     prs.slide_height = SLIDE_H
 
     add_title_slide(prs, client_name, website_url, logo_bytes=logo_bytes, analytics=analytics)
+    add_at_a_glance_slide(prs, core_problem, competitor_analysis, site_audit_overview, psi_mobile, psi_desktop)
 
     if company_overview:
         add_company_overview_extracted_slide(prs, client_name, company_overview)
