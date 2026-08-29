@@ -147,10 +147,21 @@ def _card(slide, left, top, width, height):
 
 def _soft_shadow(shape):
     """Subtle drop shadow via the raw XML shadow effect — python-pptx has no
-    high-level API for outer shadows."""
+    high-level API for outer shadows.
+
+    `shape.shadow.inherit = False` (set by callers before this) already
+    inserts its own empty <a:effectLst/> to suppress the theme's inherited
+    shadow. Appending a second one on top of it is invalid per the OOXML
+    schema (effectLst may appear at most once) — PowerPoint silently
+    "repaired" every file built this way by stripping the invalid element,
+    taking that shape's fill/shadow styling down with it. Removing any
+    existing effectLst first keeps this to the one populated element the
+    schema allows."""
     from pptx.oxml.ns import qn
 
     sp_pr = shape._element.spPr
+    for existing in sp_pr.findall(qn("a:effectLst")):
+        sp_pr.remove(existing)
     effect_lst = sp_pr.makeelement(qn("a:effectLst"), {})
     outer_shdw = sp_pr.makeelement(
         qn("a:outerShdw"),
