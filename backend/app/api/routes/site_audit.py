@@ -29,6 +29,7 @@ from app.reporting.pptx_builder import build_report
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
+from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.master_narrative_service import generate_master_narrative
@@ -520,6 +521,40 @@ def _gather_report_data(
     # "keyword gap opportunities" finding in semrush_analysis_service instead,
     # which intentionally wants both own + competitor rows).
     keyword_rows_all = _all_rows("keyword_gap", own_only=True)
+    # Real Semrush Keyword Gap exports carry no Cluster/Topic column at all
+    # (confirmed against a real client file) — the manual reference decks'
+    # grouped-by-topic keyword tables come from a different, clustered
+    # Semrush export nobody's uploaded here. When no row already has a real
+    # cluster value, cluster them ourselves via AI — pure classification of
+    # keywords that are already there, nothing invented — so Target
+    # Keywords still renders grouped instead of one flat table. Capped at
+    # the 100 highest-volume keywords to keep the prompt bounded; any
+    # keyword beyond that just renders without a cluster label, same as
+    # when no clustering happens at all.
+    if keyword_rows_all and not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
+        def _kw_volume(r: dict) -> float:
+            try:
+                return float(r.get("search_volume") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        seen_kw = set()
+        unique_keywords = []
+        for r in sorted(keyword_rows_all, key=_kw_volume, reverse=True):
+            kw = r.get("keyword")
+            if kw and kw not in seen_kw:
+                seen_kw.add(kw)
+                unique_keywords.append(kw)
+        try:
+            cluster_map = generate_keyword_clusters(unique_keywords[:100])
+        except Exception as e:
+            logger.warning("Keyword clustering failed for client %s: %s", client_id, e)
+            cluster_map = {}
+        for r in keyword_rows_all:
+            label = cluster_map.get(r.get("keyword"))
+            if label:
+                r["cluster"] = label
+
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
     # checks) — a real multi-page crawl result, richer than our own
