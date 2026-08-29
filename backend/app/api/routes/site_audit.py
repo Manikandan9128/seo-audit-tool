@@ -20,6 +20,7 @@ from app.models.client import Client
 from app.models.domain_rating import DomainRating
 from app.models.google_connection import GoogleConnection
 from app.models.page_audit_job import PageAuditJob
+from app.models.report_generation_job import ReportGenerationJob
 from app.models.semrush_import import SemrushImport
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
@@ -696,25 +697,20 @@ def report_preview(
     return {"client_name": client.name, "website_url": client.website_url, **data}
 
 
-@router.post("/{client_id}/generate-report")
-def generate_report(
+def _build_pptx_for_client(
+    client: Client,
+    db: Session,
     client_id: uuid.UUID,
-    include_analytics: bool = True,
-    include_pagespeed: bool = True,
-    include_company_overview: bool = True,
-    company_overview_override: dict | None = Body(default=None),
-    competitor_analysis_override: dict | None = Body(default=None),
-    ux_notes: str | None = Body(default=None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Runs the available checks for this client and assembles a PPTX audit
-    deck styled like the agency sample report — one call, one download.
-
-    If company_overview_override / competitor_analysis_override are given
-    (the user's edited version of what /report-preview returned), they're
-    used as-is instead of re-crawling/re-analyzing."""
-    client = _get_owned_client(client_id, db, current_user)
+    include_analytics: bool,
+    include_pagespeed: bool,
+    include_company_overview: bool,
+    company_overview_override: dict | None,
+    competitor_analysis_override: dict | None,
+    ux_notes: str | None,
+) -> tuple[bytes, str]:
+    """Runs the available checks for this client and assembles the PPTX
+    bytes — shared by the synchronous /generate-report endpoint and the
+    background job runner below."""
     data = _gather_report_data(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
         company_overview_override, competitor_analysis_override, ux_notes,
@@ -743,10 +739,139 @@ def generate_report(
         raise HTTPException(status_code=500, detail="Report generation failed while building the PPTX.")
 
     filename = f"{client.name.replace(' ', '-')}-seo-audit.pptx"
+    return pptx_bytes, filename
+
+
+@router.post("/{client_id}/generate-report")
+def generate_report(
+    client_id: uuid.UUID,
+    include_analytics: bool = True,
+    include_pagespeed: bool = True,
+    include_company_overview: bool = True,
+    company_overview_override: dict | None = Body(default=None),
+    competitor_analysis_override: dict | None = Body(default=None),
+    ux_notes: str | None = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Synchronous PPTX download — one call, one response. Kept for backward
+    compatibility; slow enough runs (PageSpeed Insights, AI narratives) can
+    outlast the hosting gateway's request timeout, so prefer
+    /generate-report/start for new callers."""
+    client = _get_owned_client(client_id, db, current_user)
+    pptx_bytes, filename = _build_pptx_for_client(
+        client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
+        company_overview_override, competitor_analysis_override, ux_notes,
+    )
     return Response(
         content=pptx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _run_generate_report_job(
+    job_id: uuid.UUID,
+    client_id: uuid.UUID,
+    include_analytics: bool,
+    include_pagespeed: bool,
+    include_company_overview: bool,
+    company_overview_override: dict | None,
+    competitor_analysis_override: dict | None,
+    ux_notes: str | None,
+):
+    """Builds the PPTX in a background thread with its own DB session, so a
+    slow build (PageSpeed Insights, AI narratives, crawls) never has an HTTP
+    request waiting on it past a gateway's timeout."""
+    db = SessionLocal()
+    try:
+        job = db.get(ReportGenerationJob, job_id)
+        job.status = "running"
+        db.commit()
+
+        client = db.get(Client, client_id)
+        pptx_bytes, filename = _build_pptx_for_client(
+            client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
+            company_overview_override, competitor_analysis_override, ux_notes,
+        )
+
+        job = db.get(ReportGenerationJob, job_id)
+        job.status = "done"
+        job.filename = filename
+        job.pptx_bytes = pptx_bytes
+        db.commit()
+    except Exception as e:
+        job = db.get(ReportGenerationJob, job_id)
+        if job:
+            job.status = "failed"
+            job.error = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/{client_id}/generate-report/start")
+def start_generate_report_job(
+    client_id: uuid.UUID,
+    include_analytics: bool = True,
+    include_pagespeed: bool = True,
+    include_company_overview: bool = True,
+    company_overview_override: dict | None = Body(default=None),
+    competitor_analysis_override: dict | None = Body(default=None),
+    ux_notes: str | None = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Kicks off a background PPTX build and returns a job id to poll —
+    avoids blocking on a single long request that could outlast the hosting
+    gateway's timeout."""
+    _get_owned_client(client_id, db, current_user)
+    job = ReportGenerationJob(client_id=client_id, status="pending")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    threading.Thread(
+        target=_run_generate_report_job,
+        args=(
+            job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
+            company_overview_override, competitor_analysis_override, ux_notes,
+        ),
+        daemon=True,
+    ).start()
+    return {"job_id": job.id}
+
+
+@router.get("/{client_id}/generate-report/{job_id}")
+def get_generate_report_job(
+    client_id: uuid.UUID,
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_owned_client(client_id, db, current_user)
+    job = db.get(ReportGenerationJob, job_id)
+    if not job or job.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"id": job.id, "status": job.status, "error": job.error}
+
+
+@router.get("/{client_id}/generate-report/{job_id}/download")
+def download_generate_report_job(
+    client_id: uuid.UUID,
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_owned_client(client_id, db, current_user)
+    job = db.get(ReportGenerationJob, job_id)
+    if not job or job.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail=f"Report not ready yet (status: {job.status})")
+    return Response(
+        content=job.pptx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{job.filename}"'},
     )
 
 

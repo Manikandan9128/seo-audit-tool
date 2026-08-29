@@ -76,6 +76,7 @@ export default function ClientDetailPage() {
   const [imports, setImports] = useState<SemrushImportSummary[]>([]);
 
   const [reportLoading, setReportLoading] = useState(false);
+  const [reportStatusMsg, setReportStatusMsg] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewData, setPreviewData] = useState<ReportPreviewData | null>(null);
   const [previewOverview, setPreviewOverview] = useState<CompanyOverview | null>(null);
@@ -320,23 +321,51 @@ export default function ClientDetailPage() {
 
   async function downloadReportWithBody(body: any, closePreviewAfter: boolean) {
     setReportLoading(true);
+    setReportStatusMsg("Starting report build…");
     setError("");
     try {
-      const res = await api.post(`/clients/${clientId}/generate-report`, body, { responseType: "blob" });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
-      const link = document.createElement("a");
-      link.href = url;
-      link.setAttribute("download", `${client?.name || "client"}-seo-audit.pptx`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-      setHasDownloaded(true);
-      if (closePreviewAfter) setPreviewData(null);
+      const startRes = await api.post(`/clients/${clientId}/generate-report/start`, body);
+      const jobId = startRes.data.job_id;
+      await pollGenerateReportJob(jobId, closePreviewAfter);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Report generation failed");
-    } finally {
       setReportLoading(false);
+      setReportStatusMsg("");
+    }
+  }
+
+  async function pollGenerateReportJob(jobId: string, closePreviewAfter: boolean) {
+    const res = await api.get(`/clients/${clientId}/generate-report/${jobId}`);
+    const job = res.data;
+    if (job.status === "done") {
+      setReportStatusMsg("Downloading…");
+      try {
+        const fileRes = await api.get(`/clients/${clientId}/generate-report/${jobId}/download`, { responseType: "blob" });
+        const url = window.URL.createObjectURL(new Blob([fileRes.data]));
+        const link = document.createElement("a");
+        link.href = url;
+        link.setAttribute("download", `${client?.name || "client"}-seo-audit.pptx`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+        setHasDownloaded(true);
+        if (closePreviewAfter) setPreviewData(null);
+      } catch (err: any) {
+        setError(err?.response?.data?.detail || "Report download failed");
+      } finally {
+        setReportLoading(false);
+        setReportStatusMsg("");
+      }
+    } else if (job.status === "failed") {
+      setError(job.error || "Report generation failed");
+      setReportLoading(false);
+      setReportStatusMsg("");
+    } else {
+      setReportStatusMsg(
+        job.status === "running" ? "Building report… PageSpeed/AI steps can take a couple minutes" : "Queued…"
+      );
+      setTimeout(() => pollGenerateReportJob(jobId, closePreviewAfter), 2000);
     }
   }
 
@@ -554,6 +583,9 @@ export default function ClientDetailPage() {
               <button onClick={downloadReportDirect} disabled={reportLoading}>
                 {reportLoading ? "Generating..." : "Download Report (PPTX)"}
               </button>
+              {reportLoading && reportStatusMsg && (
+                <span className="muted" style={{ fontSize: 12 }}>{reportStatusMsg}</span>
+              )}
               <button className="secondary" onClick={generateAiNarrative} disabled={aiNarrativeLoading}>
                 {aiNarrativeLoading ? "Writing..." : "AI Narrative Report"}
               </button>
