@@ -1007,7 +1007,7 @@ def add_core_problem_slide(prs: Presentation, core_problem: dict):
 
 
 def _insights_strip(slide, left, top, width, insights, title="Key Insights"):
-    """2-4 bullet takeaways mechanically derived from the slide's own data —
+    """2-5 bullet takeaways mechanically derived from the slide's own data —
     no free-text generation, every line traces back to a number on the same
     slide. Returns the bottom y (Emu) after the strip."""
     if not insights:
@@ -1020,7 +1020,7 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights"):
     # overlap the next bullet.
     text_width_in = max(width - Inches(0.18), Inches(0.5)) / 914400
     chars_per_line = max(20, int(text_width_in * 14))
-    for item in insights[:4]:
+    for item in insights[:5]:
         _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
         lines = max(1, -(-len(item) // chars_per_line))
         line_h = Inches(0.22)
@@ -1469,8 +1469,10 @@ def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
     """Table version of semrush_analysis_service's keyword-gap detection —
     the "issues" list only surfaces one summary sentence + a single top
     example; this renders the full ranked list of keywords a competitor
-    ranks for that the client doesn't, so it reads like the manual report's
-    keyword tables instead of one line of prose."""
+    ranks for that the client doesn't (or ranks far ahead on), so it reads
+    like the manual report's keyword tables instead of one line of prose.
+    Includes both gap types the analysis surfaces: not ranking at all, and
+    ranking so far behind a page-1 competitor it's effectively invisible."""
     rows = competitor_analysis.get("keyword_gap_rows") or []
     if not rows:
         return None
@@ -1480,6 +1482,7 @@ def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
             r["keyword"],
             r["competitor_domain"] or "—",
             f"#{r['competitor_position']}" if r.get("competitor_position") else "—",
+            f"#{r['your_position']}" if r.get("your_position") else "Not ranking",
             f"{r['search_volume']:,}",
             r["keyword_difficulty"] if r.get("keyword_difficulty") not in (None, "") else "—",
         )
@@ -1489,13 +1492,18 @@ def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
     top = rows[0]
     insights = [f"{len(rows)} keyword gap(s) found, {total_volume:,} combined monthly searches."]
     if top.get("competitor_domain"):
-        insights.append(f"Highest-volume gap: \"{top['keyword']}\" ({top['search_volume']:,} searches) — {top['competitor_domain']} ranks #{top['competitor_position']}, you don't rank at all.")
+        your_pos_text = f"you're at #{top['your_position']}" if top.get("your_position") else "you don't rank at all"
+        insights.append(f"Highest-volume gap: \"{top['keyword']}\" ({top['search_volume']:,} searches) — {top['competitor_domain']} ranks #{top['competitor_position']}, {your_pos_text}.")
     else:
         insights.append(f"Highest-volume gap: \"{top['keyword']}\" ({top['search_volume']:,} searches).")
+    cpcs = [r["cpc"] for r in rows if r.get("cpc") not in (None, "")]
+    if cpcs:
+        avg_cpc = sum(cpcs) / len(cpcs)
+        insights.append(f"Avg. CPC across these gaps is ${avg_cpc:.2f} — {'strong commercial intent, worth prioritizing' if avg_cpc > 10 else 'moderate commercial intent'}.")
 
     return _table_slide(
-        prs, "Competitor Keyword Gap Analysis", ["Keyword", "Competitor", "Their Position", "Search Volume", "Difficulty"], table_rows,
-        col_widths=[4.2, 3.0, 1.8, 1.9, 1.2], source="Semrush Keyword Gap export", insights=insights,
+        prs, "Competitor Keyword Gap Analysis", ["Keyword", "Competitor", "Their Position", "Your Position", "Search Volume", "Difficulty"], table_rows,
+        col_widths=[3.7, 2.4, 1.5, 1.5, 1.7, 1.1], source="Semrush Keyword Gap export", insights=insights,
     )
 
 
@@ -1573,6 +1581,16 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             out.append(f"Avg. keyword difficulty {sum(kds) / len(kds):.0f} — {'competitive cluster, prioritize content depth over volume' if sum(kds) / len(kds) > 40 else 'low-competition cluster, faster to rank in'}.")
         if easy_wins:
             out.append(f"{len(easy_wins)} low-difficulty (KD<20) keyword(s) with real search volume — quick-win content targets.")
+        cpcs = [_num(r.get("cpc")) for r in rows_for_group if r.get("cpc") not in (None, "")]
+        commercial = [r for r in rows_for_group if "commercial" in str(r.get("intent", "")).lower() or "transactional" in str(r.get("intent", "")).lower()]
+        if cpcs and commercial:
+            avg_cpc = sum(cpcs) / len(cpcs)
+            out.append(f"Avg. CPC ${avg_cpc:.2f}, {len(commercial)} of {len(rows_for_group)} keyword(s) show commercial intent — prioritize these for conversion-focused pages.")
+        elif cpcs:
+            avg_cpc = sum(cpcs) / len(cpcs)
+            out.append(f"Avg. CPC ${avg_cpc:.2f} — {'high commercial value, worth ranking organically for' if avg_cpc > 10 else 'moderate commercial value'}.")
+        elif commercial:
+            out.append(f"{len(commercial)} of {len(rows_for_group)} keyword(s) show commercial/transactional intent — prioritize these for conversion-focused pages.")
         return out
 
     if not clusters or set(clusters.keys()) == {""}:
@@ -1943,7 +1961,11 @@ def add_final_summary_slide(
     gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
     if gap_rows:
         opportunities = [
-            f"\"{r['keyword']}\" — {r['competitor_domain']} ranks #{r['competitor_position']}, {r['search_volume']:,} searches/mo, you don't rank."
+            (
+                f"\"{r['keyword']}\" — {r['competitor_domain']} ranks #{r['competitor_position']}, "
+                + (f"you're at #{r['your_position']}" if r.get("your_position") else "you don't rank")
+                + f", {r['search_volume']:,} searches/mo."
+            )
             if r.get("competitor_domain") else f"\"{r['keyword']}\" — {r['search_volume']:,} searches/mo opportunity."
             for r in gap_rows[:3]
         ]

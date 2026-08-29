@@ -545,6 +545,50 @@ def _gather_report_data(
             domain_overview_rows.append({**row, "domain": domain})
     domain_overview_rows.sort(key=lambda row: row["domain"] != own_website_domain)
 
+    # Domain Overview PDF is always pulled against a single country's
+    # database (confirmed: every export headed "US | Domain | ..."), never
+    # Worldwide. Semrush's separate "Overview Trend" CSV export carries an
+    # explicit Database column — built here (before the synthetic-row
+    # fallback below, which needs it) instead of down where it's consumed.
+    worldwide_by_domain: dict[str, tuple[str, dict]] = {}
+    for r in all_imports:
+        if r.import_type != "overview_trend":
+            continue
+        label = own_website_domain if r.is_own_site else (r.domain_label or "")
+        for row in r.parsed_data.get("rows", []):
+            if not label or str(row.get("database", "")).strip().lower() != "worldwide":
+                continue
+            worldwide_by_domain[_normalize_domain(label)] = (label, row)
+
+    # Fallback for a competitor whose Domain Overview PDF can't be
+    # downloaded (Semrush free-tier export limits) but who DOES have an
+    # Overview Trend (Worldwide) upload and/or a raw Backlinks CSV — those
+    # alone are enough for a partial Competitor Analysis row (Global
+    # traffic/keywords, paid traffic, backlink count) instead of no row at
+    # all. Real per-country traffic, Top Countries, and Branded/Non-Branded
+    # split genuinely aren't in either file — those columns just stay blank
+    # for a synthesized row, same as any other missing field elsewhere in
+    # this table.
+    covered_domains = {_normalize_domain(row["domain"]) for row in domain_overview_rows}
+    backlinks_total_by_domain: dict[str, int] = {}
+    for r in all_imports:
+        if r.import_type != "backlinks" or r.is_own_site or not r.domain_label:
+            continue
+        norm = _normalize_domain(r.domain_label)
+        backlinks_total_by_domain[norm] = backlinks_total_by_domain.get(norm, 0) + r.parsed_data.get("row_count", 0)
+
+    for norm_domain, (label, wd_row) in worldwide_by_domain.items():
+        if norm_domain in covered_domains:
+            continue
+        synthetic_row: dict = {"domain": label}
+        if wd_row.get("paid_traffic") is not None:
+            synthetic_row["paid_traffic"] = wd_row["paid_traffic"]
+        if norm_domain in backlinks_total_by_domain:
+            synthetic_row["backlinks_total"] = backlinks_total_by_domain[norm_domain]
+        domain_overview_rows.append(synthetic_row)
+        covered_domains.add(norm_domain)
+    domain_overview_rows.sort(key=lambda row: row["domain"] != own_website_domain)
+
     # DR column in the Competitor Analysis table comes ONLY from manually
     # entered Domain Rating (see DomainRating model) — user decision
     # 2026-08-28: Semrush's Authority Score is no longer used to fill this
@@ -566,28 +610,14 @@ def _gather_report_data(
     # slide is about the client's own site only, not a comparison table).
     own_domain_rating = manual_dr_by_domain.get(_normalize_domain(own_website_domain))
 
-    # Domain Overview PDF is always pulled against a single country's
-    # database (confirmed: every section headed "US | Domain | ..."), never
-    # Worldwide. Semrush's separate "Overview Trend" CSV export carries an
-    # explicit Database column, so when a domain's Overview Trend was
-    # uploaded with Database=Worldwide, fold its most-recent-day traffic/
-    # keywords in as that domain's Worldwide figures — matched by domain
-    # the same way DR is above (same _normalize_domain fix applies here).
-    # Other databases in that export type (e.g. a second Overview Trend
-    # pulled for a specific country) are ignored for now — only Worldwide
-    # is consumed.
-    worldwide_by_domain: dict[str, dict] = {}
-    for r in all_imports:
-        if r.import_type != "overview_trend":
-            continue
-        label = own_website_domain if r.is_own_site else (r.domain_label or "")
-        for row in r.parsed_data.get("rows", []):
-            if not label or str(row.get("database", "")).strip().lower() != "worldwide":
-                continue
-            worldwide_by_domain[_normalize_domain(label)] = row
+    # Fold Worldwide traffic/keywords onto every row — matched by domain,
+    # same way DR is above — using the worldwide_by_domain dict already
+    # built earlier (before the synthetic-row fallback). Covers real
+    # Domain Overview rows and the synthetic fallback rows alike.
     for row in domain_overview_rows:
-        wd = worldwide_by_domain.get(_normalize_domain(row["domain"]))
-        if wd:
+        match = worldwide_by_domain.get(_normalize_domain(row["domain"]))
+        if match:
+            _, wd = match
             row["organic_traffic_worldwide"] = wd.get("organic_traffic")
             row["organic_keywords_worldwide"] = wd.get("organic_keywords")
             row["worldwide_as_of_date"] = wd.get("trend_date")

@@ -38,6 +38,7 @@ KEYWORD_GAP_COLUMN_ALIASES = {
     "search_volume": ["search volume", "volume", "search_volume"],
     "keyword_difficulty": ["keyword difficulty", "kd", "kd%", "keyword_difficulty"],
     "cpc": ["cpc"],
+    "intent": ["intents", "intent"],
 }
 
 # Semrush's real Keyword Gap tool export compares several domains (your own

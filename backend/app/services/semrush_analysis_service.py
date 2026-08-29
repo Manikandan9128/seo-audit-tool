@@ -164,6 +164,14 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     # tables. Capped at 20 rows, same "highest volume first" ordering.
     keyword_gap_result_rows: list[dict] = []
 
+    # A keyword only counts as a gap if you're literally invisible for it —
+    # position 0 (not ranking) — OR a competitor is on page 1 (top 10) while
+    # you're buried past position 20. Position-0-only missed real cases like
+    # ranking #56 against a competitor's #7 for a 1,600/mo keyword — still
+    # ranking "something" but effectively as invisible as not ranking at all.
+    _RANKING_BEHIND_COMPETITOR_MAX = 10
+    _RANKING_BEHIND_OWN_MIN = 20
+
     if matrix_rows and own_col:
         seen_keywords = set()
         real_gaps = []
@@ -172,23 +180,39 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
             if not kw or kw in seen_keywords:
                 continue
             positions = r.get("domain_positions") or {}
-            if _num(positions.get(own_col)) > 0:
-                continue  # you already rank for this one
+            own_pos = _num(positions.get(own_col))
             competitor_ranks = {d: _num(p) for d, p in positions.items() if d != own_col and _num(p) > 0}
             if not competitor_ranks:
                 continue  # nobody ranks for it either — not a real gap
-            seen_keywords.add(kw)
             best_domain, best_pos = min(competitor_ranks.items(), key=lambda kv: kv[1])
-            real_gaps.append((r, best_domain, best_pos))
+            if own_pos <= 0:
+                gap_type = "not_ranking"
+            elif best_pos <= _RANKING_BEHIND_COMPETITOR_MAX and own_pos > _RANKING_BEHIND_OWN_MIN:
+                gap_type = "ranking_behind"
+            else:
+                continue  # you're competitive enough here — not a real gap
+            seen_keywords.add(kw)
+            real_gaps.append((r, best_domain, best_pos, own_pos, gap_type))
         if real_gaps:
             real_gaps.sort(key=lambda g: -_num(g[0].get("search_volume")))
             total_volume = sum(_num(g[0].get("search_volume")) for g in real_gaps)
-            top_row, top_domain, top_pos = real_gaps[0]
+            not_ranking_count = sum(1 for g in real_gaps if g[4] == "not_ranking")
+            ranking_behind_count = len(real_gaps) - not_ranking_count
+            top_row, top_domain, top_pos, top_own_pos, top_type = real_gaps[0]
+            if top_type == "not_ranking":
+                top_detail = f"{top_domain} ranks #{int(top_pos)}, you don't rank at all"
+            else:
+                top_detail = f"{top_domain} ranks #{int(top_pos)}, you're at #{int(top_own_pos)} — effectively invisible by comparison"
+            summary_bits = []
+            if not_ranking_count:
+                summary_bits.append(f"{not_ranking_count} not ranking at all")
+            if ranking_behind_count:
+                summary_bits.append(f"{ranking_behind_count} ranking far behind a page-1 competitor")
             issues.append({
-                "summary": f"{len(real_gaps)} keywords a competitor ranks for and you don't, {int(total_volume):,} combined monthly searches",
+                "summary": f"{len(real_gaps)} keyword gap(s) ({', '.join(summary_bits)}), {int(total_volume):,} combined monthly searches",
                 "detail": (
-                    f"Highest-volume gap: \"{top_row.get('keyword')}\" — {top_domain} ranks #{int(top_pos)}, "
-                    f"you don't rank at all ({int(_num(top_row.get('search_volume'))):,} monthly searches)."
+                    f"Highest-volume gap: \"{top_row.get('keyword')}\" — {top_detail} "
+                    f"({int(_num(top_row.get('search_volume'))):,} monthly searches)."
                 ),
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
@@ -198,10 +222,13 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                     "keyword": r.get("keyword"),
                     "competitor_domain": best_domain,
                     "competitor_position": int(best_pos),
+                    "your_position": int(own_pos) if own_pos > 0 else None,
                     "search_volume": int(_num(r.get("search_volume"))),
                     "keyword_difficulty": r.get("keyword_difficulty"),
+                    "cpc": r.get("cpc"),
+                    "gap_type": gap_type,
                 }
-                for r, best_domain, best_pos in real_gaps[:20]
+                for r, best_domain, best_pos, own_pos, gap_type in real_gaps[:20]
             ]
     elif keyword_gap_rows:
         # Fallback: a simple (non-matrix) Keyword Gap upload, or we don't
@@ -230,8 +257,11 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                     "keyword": r.get("keyword"),
                     "competitor_domain": None,
                     "competitor_position": None,
+                    "your_position": None,
                     "search_volume": int(_num(r.get("search_volume"))),
                     "keyword_difficulty": r.get("keyword_difficulty"),
+                    "cpc": r.get("cpc"),
+                    "gap_type": None,
                 }
                 for r in opportunities[:20]
             ]
