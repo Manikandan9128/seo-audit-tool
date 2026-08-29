@@ -863,7 +863,12 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
     return slide
 
 
-def add_critical_issues_slide(prs: Presentation, site_audit_issues: list[dict] | None):
+def add_critical_issues_slide(
+    prs: Presentation,
+    site_audit_issues: list[dict] | None,
+    site_audit_pages_rows: list[dict] | None = None,
+    analytics: dict | None = None,
+):
     """Standalone Critical Issues slide — ERROR-severity items only from
     Semrush Site Audit's issue rollup (issue_type == "ERROR"), matching the
     manual report's dedicated Critical Issues page. Distinct from the
@@ -890,6 +895,29 @@ def add_critical_issues_slide(prs: Presentation, site_audit_issues: list[dict] |
         f"{len(errors)} distinct critical error type(s), {total_affected:,} total affected page-checks.",
         f"Most widespread: \"{top.get('issue')}\" — {top.get('failed_checks', 0):,} pages affected.",
     ]
+
+    # Business-impact cross-reference: real GA4 pageviews that landed on
+    # pages which are now broken/non-200, per the same Site Audit per-page
+    # export the Website Structure slide uses. Only added when BOTH real
+    # datasets are present and actually overlap — never estimated.
+    if site_audit_pages_rows and analytics:
+        broken_paths = {
+            urlparse(r.get("page_url") or "").path.rstrip("/")
+            for r in site_audit_pages_rows
+            if str(r.get("http_status_code", "200")).strip() not in ("200", "")
+        }
+        top_pages = (analytics.get("top_pages") or {}).get("rows", [])
+        matched_views = sum(
+            int(float(p.get("page_views", 0) or 0))
+            for p in top_pages
+            if (p.get("path") or "").rstrip("/") in broken_paths
+        )
+        if matched_views > 0:
+            insights.append(
+                f"These broken/non-200 pages received {matched_views:,} real pageviews in the reporting window — "
+                "that traffic (and any ranking credit) is being lost right now."
+            )
+
     return _table_slide(
         prs, "Critical Issues", ["Issue", "Affected Pages", "Total Checked"], rows,
         col_widths=[7.0, 2.5, 2.6], source="Semrush Site Audit", insights=insights,
@@ -2248,7 +2276,7 @@ def _build_report(
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
-            add_critical_issues_slide(prs, site_audit_issues)
+            add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
             add_tech_fixes_slide(prs, page_audit)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
