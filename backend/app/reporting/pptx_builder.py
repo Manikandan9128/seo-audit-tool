@@ -1905,6 +1905,88 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     return slides
 
 
+def add_final_summary_slide(
+    prs: Presentation,
+    core_problem: dict | None,
+    competitor_analysis: dict | None,
+    site_audit: dict | None,
+    page_audit: dict | None,
+    tech_stack: dict | None,
+    keyword_rows: list[dict] | None,
+    backlink_row_count: int,
+    domain_strategy: dict | None,
+):
+    """The deck's true closing slide — a dense, single-page recap (diagnosis,
+    top issues, top opportunity, immediate next steps, a closing prompt) so
+    a reader who only opens the first and last slide still gets the whole
+    picture. Pulled entirely from data already computed elsewhere in the
+    report (Core Problem, competitor-gap analysis, the roadmap builder
+    behind Next Steps) — no new AI call, no invented numbers."""
+    slide = _blank_slide(prs)
+    _content_header(slide, "Summary & Next Steps")
+
+    y = Inches(1.15)
+    thesis = (core_problem or {}).get("thesis")
+    if thesis:
+        _card(slide, Inches(0.6), y, Inches(12.1), Inches(0.85))
+        _textbox(slide, Inches(0.85), y + Inches(0.13), Inches(11.6), Inches(0.6), thesis, size=13, bold=True, color=_accent())
+        y += Inches(1.0)
+
+    col_top = y
+    col_bottom = Inches(6.6)  # leaves room above the footer band (starts at SLIDE_H - 0.4 = 7.1") for the CTA line below
+    col_height = col_bottom - y
+    col_width = Inches(3.9)
+    gap = Inches(0.2)
+
+    issues = (competitor_analysis or {}).get("issues") or []
+    critical = [i["summary"] for i in issues if i.get("severity") == "warn"][:3]
+    gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
+    if gap_rows:
+        opportunities = [
+            f"\"{r['keyword']}\" — {r['competitor_domain']} ranks #{r['competitor_position']}, {r['search_volume']:,} searches/mo, you don't rank."
+            if r.get("competitor_domain") else f"\"{r['keyword']}\" — {r['search_volume']:,} searches/mo opportunity."
+            for r in gap_rows[:3]
+        ]
+    else:
+        opportunities = [i["summary"] for i in issues if i.get("severity") == "opportunity"][:3]
+
+    roadmap = _derive_roadmap(site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy)
+    seen_categories = set()
+    next_steps = []
+    for category, step in roadmap:
+        if category in seen_categories:
+            continue
+        seen_categories.add(category)
+        next_steps.append(f"{category}: {step}")
+        if len(next_steps) == 4:
+            break
+
+    columns = [("Critical Issues", critical, BAD), ("Top Opportunity", opportunities, GOOD), ("Immediate Next Steps", next_steps, _accent())]
+    for i, (label, items, color) in enumerate(columns):
+        if not items:
+            continue
+        left = Inches(0.6) + Emu(i * (col_width + gap))
+        _card(slide, left, col_top, col_width, col_height)
+        cy = col_top + Inches(0.18)
+        _textbox(slide, left + Inches(0.22), cy, col_width - Inches(0.44), Inches(0.28), label.upper(), size=11, bold=True, color=color)
+        cy += Inches(0.4)
+        for item in items:
+            lines = _wrap_lines(item, col_width - Inches(0.5), size_pt=11)
+            line_h = Inches(0.22) * lines
+            if cy + line_h > col_bottom - Inches(0.1):
+                break
+            _icon_dot(slide, left + Inches(0.25), cy + Inches(0.06), Inches(0.08), color)
+            _textbox(slide, left + Inches(0.44), cy, col_width - Inches(0.66), line_h, item, size=11)
+            cy += line_h + Inches(0.12)
+
+    _textbox(
+        slide, Inches(0.6), Inches(6.75), Inches(12.1), Inches(0.3),
+        "Ready to act on these findings? Reach out to plan implementation of these recommendations.",
+        size=12, bold=True, color=TEXT_DARK, align=PP_ALIGN.CENTER,
+    )
+    return slide
+
+
 def add_aeo_geo_slide(prs: Presentation, site_audit: dict | None, page_audit: dict | None):
     """AEO (Answer Engine Optimization) / GEO (Generative Engine Optimization)
     Opportunities — matches the reference deck's dedicated AEO & GEO slide.
@@ -2178,6 +2260,9 @@ def _build_report(
         prs, site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy
     )
     add_aeo_geo_slide(prs, site_audit, page_audit)
+    add_final_summary_slide(
+        prs, core_problem, competitor_analysis, site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, domain_strategy
+    )
 
     buf = BytesIO()
     prs.save(buf)
