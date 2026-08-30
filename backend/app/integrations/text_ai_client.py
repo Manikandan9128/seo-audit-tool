@@ -18,7 +18,7 @@ from app.integrations.gemini_errors import friendly_gemini_error
 RATE_LIMIT_RETRY_DELAY_SECONDS = 20
 
 GEMINI_MODEL = "gemini-3.6-flash"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 CLAUDE_MODEL = "claude-sonnet-5"
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -81,10 +81,12 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
             errors.append("Gemini returned an empty response")
         except Exception as e:
             error_text = str(e)
+            is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
             # A burst of concurrent calls (e.g. one per competitor) can all hit
             # Gemini's per-minute cap in the same instant — one short wait and
             # retry is often enough since the window is per-minute, not daily.
-            if "RESOURCE_EXHAUSTED" in error_text or "429" in error_text:
+            # A daily-quota exhaustion won't clear in 20s, so don't bother.
+            if not is_daily_quota and ("RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
                 time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
                 try:
                     text = _try_gemini(prompt)
