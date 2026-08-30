@@ -1,19 +1,22 @@
-"""Runtime-editable settings (Gemini + Claude API keys) backed by the
+"""Runtime-editable settings (Gemini + Groq + Claude API keys) backed by the
 app_settings table, so the user can change them from the UI without editing
-.env or restarting the server. Either key alone is enough — see
+.env or restarting the server. Any one key alone is enough — see
 app.integrations.text_ai_client for the fallback logic that picks whichever
 is configured."""
 
+import httpx
 from anthropic import Anthropic
 from google import genai
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.integrations.gemini_errors import friendly_gemini_error
+from app.integrations.text_ai_client import GROQ_API_URL, GROQ_MODEL
 from app.models.app_setting import AppSetting
 
 GEMINI_API_KEY = "gemini_api_key"
 GEMINI_MODEL = "gemini-3.6-flash"
+GROQ_API_KEY = "groq_api_key"
 CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
 
@@ -24,6 +27,9 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, GEMINI_API_KEY)
     if row and row.value:
         settings.gemini_api_key = row.value
+    row = db.get(AppSetting, GROQ_API_KEY)
+    if row and row.value:
+        settings.groq_api_key = row.value
     row = db.get(AppSetting, CLAUDE_API_KEY)
     if row and row.value:
         settings.claude_api_key = row.value
@@ -69,6 +75,43 @@ def test_gemini_key() -> dict:
 
 def masked_gemini_api_key() -> str | None:
     return _mask(settings.gemini_api_key)
+
+
+def set_groq_api_key(db: Session, value: str) -> None:
+    settings.groq_api_key = _set_key(db, GROQ_API_KEY, value)
+
+
+def test_groq_key() -> dict:
+    """Makes one minimal real call to confirm the currently-configured key
+    actually works — not just that it was saved. Returns {ok, message}."""
+    if not settings.groq_api_key:
+        return {"ok": False, "message": "No Groq API key configured"}
+    try:
+        response = httpx.post(
+            GROQ_API_URL,
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            json={
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": "Reply with just: OK"}],
+                "max_tokens": 20,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        text = (response.json()["choices"][0]["message"]["content"] or "").strip()
+        return {"ok": True, "message": f"Key works — model replied: {text[:80] or '(empty)'}"}
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return {"ok": False, "message": "Groq rejected this API key — check it was copied correctly and hasn't been revoked."}
+        if e.response.status_code == 429:
+            return {"ok": False, "message": "Groq rate limit hit — wait a bit and try again."}
+        return {"ok": False, "message": f"Groq request failed: {str(e)[:300]}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Groq request failed: {str(e)[:300]}"}
+
+
+def masked_groq_api_key() -> str | None:
+    return _mask(settings.groq_api_key)
 
 
 def set_claude_api_key(db: Session, value: str) -> None:

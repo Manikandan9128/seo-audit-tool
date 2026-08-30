@@ -102,6 +102,8 @@ function ApiKeyCard({ title, description, keySet, masked, loading, saveUrl, test
 export default function SettingsPage() {
   const [geminiSet, setGeminiSet] = useState(false);
   const [geminiMasked, setGeminiMasked] = useState<string | null>(null);
+  const [groqSet, setGroqSet] = useState(false);
+  const [groqMasked, setGroqMasked] = useState<string | null>(null);
   const [claudeSet, setClaudeSet] = useState(false);
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -114,6 +116,8 @@ export default function SettingsPage() {
       const res = await api.get("/settings");
       setGeminiSet(res.data.gemini_api_key_set);
       setGeminiMasked(res.data.gemini_api_key_masked);
+      setGroqSet(res.data.groq_api_key_set);
+      setGroqMasked(res.data.groq_api_key_masked);
       setClaudeSet(res.data.claude_api_key_set);
       setClaudeMasked(res.data.claude_api_key_masked);
     } catch (err: any) {
@@ -127,15 +131,15 @@ export default function SettingsPage() {
     load();
   }, []);
 
-  const eitherKeySet = geminiSet || claudeSet;
+  const eitherKeySet = geminiSet || groqSet || claudeSet;
 
   return (
     <div style={{ maxWidth: 600, margin: "0 auto" }}>
       <h2 style={{ marginBottom: 8 }}>Settings</h2>
       <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 20 }}>
-        Company Overview extraction and the Competitor Analysis AI summary need one of these two keys — not both.
-        Gemini is tried first when both are set; Claude is used as the fallback (or the only path, if that's the
-        one you configure).{" "}
+        Company Overview extraction and the Competitor Analysis AI summary need at least one of these keys — not
+        all three. Gemini is tried first, Groq next (free tier, higher per-minute limit — covers Gemini's burst
+        limit), then Claude last as a paid fallback. Any one key alone is enough.{" "}
         {!loading && (eitherKeySet ? <span style={{ color: "var(--success)" }}>✓ AI features are active.</span> : <span style={{ color: "#991b1b" }}>No key set yet — AI features are disabled.</span>)}
       </p>
 
@@ -162,6 +166,29 @@ export default function SettingsPage() {
           onSaved={(set, masked) => {
             setGeminiSet(set);
             setGeminiMasked(masked);
+          }}
+        />
+
+        <ApiKeyCard
+          title="Groq API Key"
+          description={
+            <>
+              Get a key at{" "}
+              <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">
+                console.groq.com/keys
+              </a>
+              . Free tier, much higher per-minute limit than Gemini's.
+            </>
+          }
+          keySet={groqSet}
+          masked={groqMasked}
+          loading={loading}
+          saveUrl="/settings/groq-api-key"
+          testUrl="/settings/groq-api-key/test"
+          saveField="groq_api_key"
+          onSaved={(set, masked) => {
+            setGroqSet(set);
+            setGroqMasked(masked);
           }}
         />
 
