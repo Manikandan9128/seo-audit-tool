@@ -6,12 +6,16 @@ summary, competitor narrative, core problem, keyword clustering) work as
 long as *any* key is set, without provider-specific branching at each
 call site."""
 
+import time
+
 import httpx
 from anthropic import Anthropic
 from google import genai
 
 from app.config import settings
 from app.integrations.gemini_errors import friendly_gemini_error
+
+RATE_LIMIT_RETRY_DELAY_SECONDS = 20
 
 GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -76,7 +80,21 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
                 return text, "gemini"
             errors.append("Gemini returned an empty response")
         except Exception as e:
-            errors.append(friendly_gemini_error(e))
+            error_text = str(e)
+            # A burst of concurrent calls (e.g. one per competitor) can all hit
+            # Gemini's per-minute cap in the same instant — one short wait and
+            # retry is often enough since the window is per-minute, not daily.
+            if "RESOURCE_EXHAUSTED" in error_text or "429" in error_text:
+                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                try:
+                    text = _try_gemini(prompt)
+                    if text:
+                        return text, "gemini"
+                    errors.append("Gemini returned an empty response")
+                except Exception as e2:
+                    errors.append(friendly_gemini_error(e2))
+            else:
+                errors.append(friendly_gemini_error(e))
 
     if settings.groq_api_key:
         try:
@@ -84,6 +102,18 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
             if text:
                 return text, "groq"
             errors.append("Groq returned an empty response")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                try:
+                    text = _try_groq(prompt, max_tokens)
+                    if text:
+                        return text, "groq"
+                    errors.append("Groq returned an empty response")
+                except Exception as e2:
+                    errors.append(f"Groq request failed: {str(e2)[:300]}")
+            else:
+                errors.append(f"Groq request failed: {str(e)[:300]}")
         except Exception as e:
             errors.append(f"Groq request failed: {str(e)[:300]}")
 

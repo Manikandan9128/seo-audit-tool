@@ -355,7 +355,12 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
     # count, which pushed slower/bigger clients past the hosting gateway's
     # request timeout (504) even though nothing had actually failed. Same
     # concurrent pattern as the PageSpeed calls above.
-    with ThreadPoolExecutor(max_workers=max(1, len(domains))) as pool:
+    # Capped at 2, not len(domains): firing every competitor's AI call at the
+    # same instant blew through Groq's free-tier per-minute token limit — only
+    # 1 of 4 narratives came back in a real report, the other 3 got silently
+    # dropped as failures. 2 concurrent still beats fully serial for the
+    # 504-timeout concern without saturating the rate limit.
+    with ThreadPoolExecutor(max_workers=min(2, max(1, len(domains)))) as pool:
         for domain, narrative in pool.map(_build_one, domains):
             if narrative is not None:
                 narratives[domain] = narrative
