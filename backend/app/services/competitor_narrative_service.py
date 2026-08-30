@@ -60,5 +60,17 @@ def generate_competitor_narrative(client_name: str, client_domain: str, competit
     try:
         data_out = json.loads(raw)
     except json.JSONDecodeError:
+        # Some models (seen with Groq's openai/gpt-oss-120b) prepend a line
+        # or two of commentary/reasoning before the JSON object despite the
+        # "return ONLY valid JSON" instruction - the fence-strip above only
+        # catches ``` markers at the very start/end, not stray prose. Fall
+        # back to grabbing the outermost {...} span before giving up.
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data_out = json.loads(raw[start : end + 1])
+                return data_out
+            except json.JSONDecodeError:
+                pass
         return {"error": "AI did not return valid JSON", "raw": raw[:500]}
     return data_out

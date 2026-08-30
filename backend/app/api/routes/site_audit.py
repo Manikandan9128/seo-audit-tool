@@ -345,7 +345,10 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
             logger.warning("Competitor narrative failed for %s (client %s): %s", domain, client.id, e)
             return domain, None
         if "error" in result:
-            logger.warning("Competitor narrative failed for %s (client %s): %s", domain, client.id, result["error"])
+            logger.warning(
+                "Competitor narrative failed for %s (client %s): %s | raw: %s",
+                domain, client.id, result["error"], result.get("raw"),
+            )
             return domain, None
         return domain, result
 
