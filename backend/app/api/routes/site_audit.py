@@ -350,17 +350,14 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         return domain, result
 
     narratives = {}
-    # Each competitor needs its own homepage fetch + AI call — running them
-    # one at a time made total report-generation time scale with competitor
-    # count, which pushed slower/bigger clients past the hosting gateway's
-    # request timeout (504) even though nothing had actually failed. Same
-    # concurrent pattern as the PageSpeed calls above.
-    # Capped at 2, not len(domains): firing every competitor's AI call at the
-    # same instant blew through Groq's free-tier per-minute token limit — only
-    # 1 of 4 narratives came back in a real report, the other 3 got silently
-    # dropped as failures. 2 concurrent still beats fully serial for the
-    # 504-timeout concern without saturating the rate limit.
-    with ThreadPoolExecutor(max_workers=min(2, max(1, len(domains)))) as pool:
+    # Report generation only runs through the background-job flow in
+    # practice (frontend always calls /generate-report/start + polls) — no
+    # live request is held open waiting on this, so there's no gateway
+    # 504 risk from taking longer here. Serial on purpose: running 2+
+    # competitors' AI calls concurrently kept blowing through Groq's
+    # free-tier per-minute token limit, silently dropping 1-2 of 4
+    # narratives per real report even after capping to 2 concurrent.
+    with ThreadPoolExecutor(max_workers=1) as pool:
         for domain, narrative in pool.map(_build_one, domains):
             if narrative is not None:
                 narratives[domain] = narrative
