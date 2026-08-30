@@ -741,6 +741,8 @@ def _gather_report_data(
         core_problem_candidate = generate_core_problem(core_problem_findings)
         if "error" not in core_problem_candidate:
             core_problem_result = core_problem_candidate
+        else:
+            logger.warning("Core Problem generation failed for client %s: %s", client.id, core_problem_candidate["error"])
 
     return {
         "site_audit": site_audit_result,

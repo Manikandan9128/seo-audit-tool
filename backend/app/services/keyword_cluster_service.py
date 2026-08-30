@@ -8,9 +8,12 @@ keywords into topic labels — never invents new keywords, volumes, or any
 other data, only groups what's already there."""
 
 import json
+import logging
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+
+logger = logging.getLogger(__name__)
 
 PROMPT_TEMPLATE = """Group the following SEO keywords into topic clusters - the same kind of \
 grouping an SEO strategist uses to organize a keyword research report by theme (e.g. \
@@ -40,7 +43,8 @@ def generate_keyword_clusters(keywords: list[str]) -> dict[str, str]:
     prompt = PROMPT_TEMPLATE.format(keyword_list="\n".join(f"- {k}" for k in keywords))
     try:
         raw, _provider = generate_text(prompt)
-    except NoAIProviderConfigured:
+    except NoAIProviderConfigured as e:
+        logger.warning("Keyword clustering AI call failed: %s", e)
         return {}
 
     raw = raw.strip()
@@ -48,8 +52,10 @@ def generate_keyword_clusters(keywords: list[str]) -> dict[str, str]:
     try:
         clusters = json.loads(raw)
     except json.JSONDecodeError:
+        logger.warning("Keyword clustering returned invalid JSON: %s", raw[:300])
         return {}
     if not isinstance(clusters, list):
+        logger.warning("Keyword clustering returned non-list JSON: %s", raw[:300])
         return {}
 
     keyword_set = set(keywords)
