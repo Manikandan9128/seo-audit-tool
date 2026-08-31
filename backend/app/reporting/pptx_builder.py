@@ -3,6 +3,7 @@ dark top bar, blue section-title band, light-gray body, white content cards."""
 
 from __future__ import annotations
 
+import re
 import threading
 from io import BytesIO
 from urllib.parse import urlparse
@@ -494,7 +495,7 @@ def _issue_row(slide, left, top, width, text, severity="warn"):
 _CRAWLED_PAGE_CATEGORIES = ["Blocked", "Redirect", "Have issues", "Broken", "Healthy"]
 
 
-def add_site_health_slide(prs: Presentation, audit: dict, page_audit: dict | None, site_audit_overview: dict | None = None):
+def add_site_health_slide(prs: Presentation, audit: dict, site_audit_overview: dict | None = None):
     slide = _blank_slide(prs)
     _content_header(slide, "Understanding Current Scenario")
     if site_audit_overview and site_audit_overview.get("export_date"):
@@ -507,8 +508,6 @@ def add_site_health_slide(prs: Presentation, audit: dict, page_audit: dict | Non
     _textbox(slide, Inches(0.8), Inches(1.35), Inches(3), Inches(0.4), "Crawled Pages", size=15, bold=True)
 
     if site_audit_overview:
-        # Real full-site crawl from Semrush Site Audit — strictly more
-        # accurate than our own homepage + 20-page approximation below.
         health_pct = site_audit_overview.get("site_health_pct")
         _textbox(
             slide, Inches(0.8), Inches(1.68), Inches(2.5), Inches(0.5),
@@ -532,21 +531,19 @@ def add_site_health_slide(prs: Presentation, audit: dict, page_audit: dict | Non
             _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count} ({pct}%)", size=11.5, color=TEXT_DARK)
             y += Inches(0.29)
     else:
-        pages_checked = page_audit.get("pages_checked") if page_audit else None
-        pages_with_issues = page_audit.get("pages_with_issues") if page_audit else None
-        healthy = (pages_checked - pages_with_issues) if pages_checked is not None and pages_with_issues is not None else None
-        health_pct = round(100 * healthy / pages_checked) if pages_checked else None
-
-        _textbox(slide, Inches(0.8), Inches(1.8), Inches(2.5), Inches(0.6), str(pages_checked if pages_checked is not None else "—"), size=32, bold=True, color=_accent())
-        _icon_dot(slide, Inches(0.85), Inches(2.58), Inches(0.13), GOOD)
-        _textbox(slide, Inches(1.08), Inches(2.5), Inches(3.0), Inches(0.35), f"Healthy: {healthy if healthy is not None else '—'}", size=13, color=TEXT_DARK)
-        _icon_dot(slide, Inches(0.85), Inches(2.93), Inches(0.13), WARN)
-        _textbox(slide, Inches(1.08), Inches(2.85), Inches(3.0), Inches(0.35), f"With issues: {pages_with_issues if pages_with_issues is not None else '—'}", size=13, color=TEXT_DARK)
+        # Crawled Pages / Site Health are Semrush-only now — no own-crawl
+        # fallback. A client with no Site Audit Overview PDF uploaded yet
+        # gets an explicit "no data" note instead of a silently-substituted
+        # (and less accurate) own-crawl approximation.
+        health_pct = None
+        _textbox(
+            slide, Inches(0.8), Inches(1.75), Inches(3.0), Inches(0.9),
+            "No Semrush Site Audit data uploaded yet.", size=12.5, color=TEXT_MUTED,
+        )
 
     card2 = _card(slide, Inches(4.5), Inches(1.2), Inches(3.6), Inches(2.6))
     _textbox(slide, Inches(4.7), Inches(1.35), Inches(3), Inches(0.4), "Site Health", size=15, bold=True)
-    ring_label = "full site crawl" if site_audit_overview else "on-page checks"
-    _score_ring(slide, Inches(5.6), Inches(1.85), Inches(1.4), health_pct, ring_label)
+    _score_ring(slide, Inches(5.6), Inches(1.85), Inches(1.4), health_pct, "full site crawl")
     if site_audit_overview and site_audit_overview.get("ai_search_health_pct") is not None:
         _textbox(
             slide, Inches(4.7), Inches(3.45), Inches(3.2), Inches(0.3),
@@ -945,12 +942,22 @@ _STRUCTURED_DATA_TYPES = [
 
 
 def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict]):
-    """Site-wide coverage of the curated schema types above, worst-coverage
-    first — schema types missing on every page become an explicit
-    actionable insight rather than just a 0% table row."""
+    """Total URLs crawled vs. how many have any schema markup implemented,
+    plus a per-type breakdown of the curated rich-result types below,
+    worst-coverage first — schema types missing on every page become an
+    explicit actionable insight rather than just a 0% table row. total_pages
+    is the real crawl total (semrush_parser.py no longer caps structured_data
+    rows at 500 — a real client site can have 1200+ crawled pages, and
+    capping silently understated both this total and every coverage %)."""
     total_pages = len(structured_data_rows)
     if not total_pages:
         return None
+
+    pages_with_any_schema = sum(
+        1 for r in structured_data_rows
+        if _num(r.get("schema_jsonld")) > 0 or _num(r.get("schema_microdata")) > 0
+    )
+    any_schema_pct = 100 * pages_with_any_schema / total_pages
 
     coverage = []
     for label, field, benefit in _STRUCTURED_DATA_TYPES:
@@ -965,14 +972,18 @@ def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict
         for label, _field, _benefit, pages_with in coverage
     ]
 
-    missing = [c for c in coverage if c[3] == 0]
     insights = [
-        f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}."
-        for label, _field, benefit, _pages_with in missing[:4]
+        f"{pages_with_any_schema:,} of {total_pages:,} crawled URLs ({any_schema_pct:.0f}%) have structured data "
+        "(schema.org JSON-LD or Microdata) implemented.",
     ]
-    if not insights:
+    missing = [c for c in coverage if c[3] == 0]
+    insights += [
+        f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}."
+        for label, _field, benefit, _pages_with in missing[:3]
+    ]
+    if len(insights) == 1:
         best = max(coverage, key=lambda c: c[3])
-        insights = [f"{best[0]} schema is your best-covered type — present on {best[3]} of {total_pages} pages."]
+        insights.append(f"{best[0]} schema is your best-covered type — present on {best[3]} of {total_pages} pages.")
 
     return _table_slide(
         prs, "Structured Data", headers, rows, col_widths=col_widths, source="Semrush Site Audit", insights=insights
@@ -1303,61 +1314,6 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
     return slide
 
 
-def add_page_performance_slide(prs: Presentation, page_performance: dict, date_range: dict | None = None):
-    """Top vs. poor performing pages, side by side, with each page's % share
-    of total pageviews and how many pages contributed traffic in the period."""
-    top_pages = page_performance.get("top_pages") or []
-    bottom_pages = page_performance.get("bottom_pages") or []
-    if not top_pages and not bottom_pages:
-        return None
-
-    slide = _blank_slide(prs)
-    _content_header(slide, "Top vs. Poor Performing Pages")
-    span = _ga4_date_span(date_range)
-    source_text = f"Source: Google Analytics 4 ({span})" if span else "Source: Google Analytics 4"
-    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), source_text, size=11, color=TEXT_MUTED)
-
-    total_pages = page_performance.get("total_pages", 0)
-    total_views = page_performance.get("total_page_views", 0)
-    summary = f"{total_pages} pages contributed {total_views:,} pageviews in this period."
-    if page_performance.get("truncated"):
-        summary += " (based on the top pages GA4 returned)"
-    _textbox(slide, Inches(0.6), Inches(0.9), Inches(12.1), Inches(0.3), summary, size=11, color=TEXT_MUTED)
-
-    def _mini_table(left, title, rows, color):
-        _textbox(slide, left, Inches(1.35), Inches(5.9), Inches(0.35), title, size=14, bold=True, color=color)
-        n_rows = min(len(rows), 8) + 1
-        gframe = slide.shapes.add_table(n_rows, 3, left, Inches(1.75), Inches(5.9), Inches(0.4) * n_rows)
-        table = gframe.table
-        table.first_row = False
-        table.columns[0].width = Inches(3.5)
-        table.columns[1].width = Inches(1.3)
-        table.columns[2].width = Inches(1.1)
-        for j, h in enumerate(["Page", "Views", "% of total"]):
-            cell = table.cell(0, j)
-            cell.text = h
-            cell.fill.solid()
-            cell.fill.fore_color.rgb = HEADER_ROW_BG
-            para = cell.text_frame.paragraphs[0]
-            para.font.size = Pt(10)
-            para.font.bold = True
-            para.font.color.rgb = HEADER_ROW_TEXT
-        for i, r in enumerate(rows[:8], start=1):
-            values = [r["path"], f"{r['page_views']:,}", f"{r['pct_of_total']:.1f}%"]
-            for j, val in enumerate(values):
-                cell = table.cell(i, j)
-                cell.text = str(val)
-                cell.fill.solid()
-                cell.fill.fore_color.rgb = ROW_ALT if i % 2 == 0 else WHITE
-                para = cell.text_frame.paragraphs[0]
-                para.font.size = Pt(10)
-                para.font.color.rgb = TEXT_DARK
-
-    _mini_table(Inches(0.6), "Top performing", top_pages, GOOD)
-    _mini_table(Inches(6.8), "Poor performing", bottom_pages, BAD)
-    return slide
-
-
 def _fmt_num(v):
     """Domain Overview numeric fields come back as floats (2400.0, 616.0)
     even for whole-number counts — strip the trailing '.0' for display."""
@@ -1482,12 +1438,32 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
     return _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source=source, insights=insights)
 
 
+def _brand_token(domain: str) -> str:
+    """Best-effort brand name extracted from a domain, for non-branded
+    keyword filtering — e.g. "www.taskus.com" -> "taskus". Semrush's
+    Positions export has no per-keyword branded flag, so this is the only
+    signal available short of a manual list."""
+    host = re.sub(r"^https?://", "", (domain or "").strip().lower())
+    host = re.sub(r"^www\.", "", host).split("/")[0]
+    return host.split(".")[0] if host else ""
+
+
+def _is_branded_keyword(keyword: str, brand: str) -> bool:
+    if not brand or not keyword:
+        return False
+    return re.search(rf"\b{re.escape(brand)}\b", keyword.lower()) is not None
+
+
 def add_competitor_positions_slides(prs: Presentation, competitor_positions: dict[str, list[dict]]):
     """One table slide per competitor domain from a Semrush Organic Research
     > Positions export — what that domain ranks for, and at what position.
-    Matches the "Competitor Keywords: {domain}" slide format."""
+    Matches the "Competitor Keywords: {domain}" slide format. Branded
+    keywords (containing the competitor's own brand name) are excluded —
+    the slide should only surface non-branded keyword opportunities."""
     slides = []
     for domain, rows in competitor_positions.items():
+        brand = _brand_token(domain)
+        rows = [r for r in rows if not _is_branded_keyword(r.get("keyword", ""), brand)]
         if not rows:
             continue
         sorted_rows = sorted(rows, key=lambda r: _num(r.get("search_volume")), reverse=True)
@@ -1529,55 +1505,6 @@ def _num(v, default=0.0):
         return default
 
 
-def add_competitive_gaps_slide(prs: Presentation, competitor_analysis: dict):
-    """Renders the own-vs-competitor comparison from semrush_analysis_service
-    — concrete gaps (traffic, keywords, backlinks) with what to do about each."""
-    issues = competitor_analysis.get("issues") or []
-    if not issues:
-        return None
-
-    slide = _blank_slide(prs)
-    _content_header(slide, "Competitive Gaps & Opportunities")
-    _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.9))
-    y = Inches(1.35)
-
-    severity_color = {"warn": BAD, "opportunity": GOOD, "info": WARN}
-    severity_label = {"warn": "BEHIND", "opportunity": "OPPORTUNITY", "info": "MISSING DATA"}
-
-    for issue in issues[:8]:
-        if y > Inches(6.6):
-            break
-        color = severity_color.get(issue["severity"], WARN)
-        summary_lines = _wrap_lines(issue["summary"], Inches(11.4), size_pt=13)
-        summary_h = Inches(13 * 0.02) * summary_lines
-        detail_lines = _wrap_lines(issue["detail"], Inches(11.4), size_pt=11.5)
-        detail_h = Inches(11.5 * 0.02) * detail_lines
-        do_lines = _wrap_lines(f"Do: {issue['recommendation']}", Inches(11.4), size_pt=11.5)
-        do_h = Inches(11.5 * 0.02) * do_lines
-
-        _icon_dot(slide, Inches(0.9), y + Inches(0.09), Inches(0.13), color)
-        _textbox(slide, Inches(1.15), y, Inches(2.0), Inches(0.3), severity_label.get(issue["severity"], ""), size=10, bold=True, color=color)
-        _textbox(slide, Inches(0.9), y + Inches(0.28), Inches(11.4), summary_h, issue["summary"], size=13, bold=True)
-        y += Inches(0.28) + summary_h + Inches(0.06)
-        _textbox(slide, Inches(0.9), y, Inches(11.4), detail_h, issue["detail"], size=11.5, color=TEXT_MUTED)
-        y += detail_h + Inches(0.06)
-        do_box = slide.shapes.add_textbox(Inches(0.9), y, Inches(11.4), do_h)
-        tf = do_box.text_frame
-        tf.word_wrap = True
-        p = tf.paragraphs[0]
-        r1 = p.add_run()
-        r1.text = "Do: "
-        r1.font.size = Pt(11.5)
-        r1.font.bold = True
-        r1.font.color.rgb = _accent()
-        r2 = p.add_run()
-        r2.text = issue["recommendation"]
-        r2.font.size = Pt(11.5)
-        r2.font.color.rgb = TEXT_DARK
-        y += do_h + Inches(0.2)
-    return slide
-
-
 def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
     """Table version of semrush_analysis_service's keyword-gap detection —
     the "issues" list only surfaces one summary sentence + a single top
@@ -1587,6 +1514,7 @@ def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
     Includes both gap types the analysis surfaces: not ranking at all, and
     ranking so far behind a page-1 competitor it's effectively invisible."""
     rows = competitor_analysis.get("keyword_gap_rows") or []
+    rows = [r for r in rows if not _is_branded_keyword(r.get("keyword", ""), _brand_token(r.get("competitor_domain", "")))]
     if not rows:
         return None
 
@@ -1883,115 +1811,6 @@ def _derive_next_steps(site_audit: dict | None, page_audit: dict | None) -> list
     return unique
 
 
-def _derive_roadmap(
-    site_audit: dict | None,
-    page_audit: dict | None,
-    tech_stack: dict | None = None,
-    keyword_rows: list[dict] | None = None,
-    backlink_row_count: int = 0,
-    competitor_analysis: dict | None = None,
-    domain_strategy: dict | None = None,
-) -> list[tuple[str, str]]:
-    """5-8 prioritized, ordered (category, step) recommendations spanning
-    foundational/domain decisions -> technical -> on-page SEO -> content ->
-    AEO/GEO -> authority/links — the order the client should tackle them in,
-    since each category roughly unblocks the next."""
-    roadmap: list[tuple[str, str]] = []
-
-    if domain_strategy:
-        roadmap.append(("Foundational", f"Decide the domain strategy first — {domain_strategy['open_question']}"))
-
-    # Every distinct technical issue gets its own line — not just the top 3 —
-    # so a technically-heavy site doesn't lose specific fixes (canonical
-    # tags, viewport meta, sitemap, etc.) just to make room for the newer
-    # Content/AEO-GEO/Authority categories below. The slide itself splits
-    # into two columns if this makes the full list too long for one.
-    technical_items = _derive_next_steps(site_audit, page_audit)
-    for item in technical_items:
-        roadmap.append(("Technical", item))
-    if tech_stack and tech_stack.get("https") is False and not any("HTTPS" in t for _, t in roadmap):
-        roadmap.append(("Technical", "Move the site fully to HTTPS before any further SEO work — it's a baseline ranking and trust signal."))
-
-    if page_audit and page_audit.get("pages_with_issues"):
-        roadmap.append((
-            "On-Page SEO",
-            f"Fix titles and meta descriptions on the {page_audit['pages_with_issues']} of "
-            f"{page_audit['pages_checked']} crawled pages flagged with issues.",
-        ))
-
-    if keyword_rows:
-        cluster_counts: dict[str, int] = {}
-        for r in keyword_rows:
-            label = (r.get("cluster") or "").strip()
-            if label:
-                cluster_counts[label] = cluster_counts.get(label, 0) + 1
-        if cluster_counts:
-            top_cluster = max(cluster_counts, key=cluster_counts.get)
-            roadmap.append(("Content", f"Build out content for the \"{top_cluster}\" keyword cluster — the largest opportunity in the keyword research."))
-        else:
-            roadmap.append(("Content", "Build content targeting the keyword opportunities identified in the Target Keywords research."))
-
-    roadmap.append(("AEO/GEO", "Add FAQ schema and concise, extractable answer blocks to key pages so AI Overviews and answer engines can cite the site directly."))
-
-    if backlink_row_count:
-        roadmap.append(("Authority", f"Grow referring domains beyond the current {backlink_row_count:,} tracked backlinks with targeted outreach in the site's core category."))
-    elif competitor_analysis and competitor_analysis.get("issues"):
-        roadmap.append(("Authority", "Build referring-domain authority to close the gap the competitor comparison surfaced."))
-
-    return roadmap
-
-
-def add_next_steps_detail_slide(
-    prs: Presentation,
-    site_audit: dict | None,
-    page_audit: dict | None,
-    tech_stack: dict | None = None,
-    keyword_rows: list[dict] | None = None,
-    backlink_row_count: int = 0,
-    competitor_analysis: dict | None = None,
-    domain_strategy: dict | None = None,
-):
-    slide = _blank_slide(prs)
-    _content_header(slide, "Recommended Next Steps")
-
-    roadmap = _derive_roadmap(
-        site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy
-    )
-    card_top, card_height = Inches(1.1), Inches(5.6)
-    if not roadmap:
-        _card(slide, Inches(0.6), card_top, Inches(12.1), card_height)
-        _textbox(slide, Inches(0.9), Inches(1.3), Inches(10), Inches(0.4), "No outstanding technical issues found.", size=14, color=GOOD)
-        return slide
-
-    # Two side-by-side containers once the list is too long for one column
-    # (same pattern as the SEO Issues slide) — every distinct fix gets a
-    # slot instead of being truncated to make the list fit one column.
-    if len(roadmap) > 9:
-        half = -(-len(roadmap) // 2)
-        columns = [(roadmap[:half], 0, Inches(0.6), Inches(5.85)), (roadmap[half:], half, Inches(6.85), Inches(5.85))]
-    else:
-        columns = [(roadmap, 0, Inches(0.6), Inches(12.1))]
-
-    for items, offset, left, col_width in columns:
-        _card(slide, left, card_top, col_width, card_height)
-        y = card_top + Inches(0.2)
-        for i, (category, step) in enumerate(items, start=offset):
-            lines = _wrap_lines(step, col_width - Inches(0.9), size_pt=12.5)
-            line_h = Inches(12.5 * 0.02)
-            desc_h = line_h * lines
-            num = slide.shapes.add_textbox(left + Inches(0.3), y, Inches(0.4), Inches(0.3))
-            p = num.text_frame.paragraphs[0]
-            r = p.add_run()
-            r.text = f"{i + 1}."
-            r.font.bold = True
-            r.font.size = Pt(12.5)
-            r.font.color.rgb = _accent()
-            _textbox(slide, left + Inches(0.7), y, col_width - Inches(0.9), Inches(0.22), category.upper(), size=9, bold=True, color=_accent())
-            _textbox(slide, left + Inches(0.7), y + Inches(0.22), col_width - Inches(0.9), desc_h, step, size=12.5)
-            y += Inches(0.22) + desc_h + Inches(0.14)
-    return slide
-
-
 def add_domain_strategy_slide(prs: Presentation, domain_strategy: dict):
     """Domain Strategy finding — generic-TLD vs. single-target-country
     mismatch. Framed as a tradeoff explainer plus an open question, since
@@ -2010,12 +1829,15 @@ def add_domain_strategy_slide(prs: Presentation, domain_strategy: dict):
 
 
 def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
-    """UI-Level Fixes (Issue/Where/Fix/Severity) + Conversion Opportunities —
-    or, when no manual UX pass was done, a single slide saying so explicitly
-    rather than silently skipping the dimension (report spec Rule 8)."""
+    """UI-Level Fixes (Issue/Where/Fix/Severity) — or, when no manual UX pass
+    was done, a single slide saying so explicitly rather than silently
+    skipping the dimension (report spec Rule 8). Conversion Opportunities
+    (from the same ux_findings dict) now render on their own "Next Steps:
+    Conversion SEO" slide instead, alongside the other Next Steps categories
+    — see add_conversion_seo_next_steps_slide."""
     if ux_findings.get("no_ux_pass_done"):
         slide = _blank_slide(prs)
-        _content_header(slide, "UI-Level Fixes & Conversion Opportunities")
+        _content_header(slide, "UI-Level Fixes")
         _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(2.0))
         _textbox(slide, Inches(0.9), Inches(1.4), Inches(11.4), Inches(1.4), ux_findings["note"], size=13)
         return [slide]
@@ -2035,210 +1857,123 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
             prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
             col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
         ))
-
-    opportunities = ux_findings.get("conversion_opportunities") or []
-    if opportunities:
-        slide = _blank_slide(prs)
-        _content_header(slide, "Conversion Opportunities")
-        _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
-        y = Inches(1.4)
-        for item in opportunities[:8]:
-            lines = _wrap_lines(item, Inches(11.3), size_pt=13)
-            line_h = Inches(13 * 0.02)
-            _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), _accent())
-            _textbox(slide, Inches(1.15), y, Inches(11.3), line_h * lines, item, size=13)
-            y += line_h * lines + Inches(0.14)
-        slides.append(slide)
     return slides
 
 
-def _top_critical_and_opportunities(competitor_analysis: dict | None) -> tuple[list[str], list[str]]:
-    """Shared by the opening At a Glance slide and the closing Summary
-    slide, so a reader who compares the first and last slide sees the same
-    top items, not two different picks. Critical issues from the
-    competitor-gap analysis (warn severity); opportunities prefer the
-    keyword-gap table, falling back to the analysis's own opportunity-
-    severity issues when no keyword gap data exists."""
-    issues = (competitor_analysis or {}).get("issues") or []
-    critical = [i["summary"] for i in issues if i.get("severity") == "warn"][:3]
-    gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
-    if gap_rows:
-        opportunities = [
-            (
-                f"\"{r['keyword']}\" — {r['competitor_domain']} ranks #{r['competitor_position']}, "
-                + (f"you're at #{r['your_position']}" if r.get("your_position") else "you don't rank")
-                + f", {r['search_volume']:,} searches/mo."
-            )
-            if r.get("competitor_domain") else f"\"{r['keyword']}\" — {r['search_volume']:,} searches/mo opportunity."
-            for r in gap_rows[:3]
-        ]
-    else:
-        opportunities = [i["summary"] for i in issues if i.get("severity") == "opportunity"][:3]
-    return critical, opportunities
-
-
-def _overall_health_score(
-    site_audit_overview: dict | None, psi_mobile: dict | None, psi_desktop: dict | None,
-) -> int | None:
-    """Best real signal available, preferring the full-site Semrush crawl's
-    Site Health % over our own PageSpeed performance-score average — never
-    a made-up composite formula blending unrelated metrics."""
-    if site_audit_overview and site_audit_overview.get("site_health_pct") is not None:
-        return round(site_audit_overview["site_health_pct"])
-    perf_scores = [
-        s["scores"]["performance"] for s in (psi_mobile, psi_desktop)
-        if s and s.get("scores", {}).get("performance") is not None
-    ]
-    if perf_scores:
-        return round(sum(perf_scores) / len(perf_scores))
-    return None
-
-
-def add_at_a_glance_slide(
-    prs: Presentation,
-    core_problem: dict | None,
-    competitor_analysis: dict | None,
-    site_audit_overview: dict | None,
-    psi_mobile: dict | None,
-    psi_desktop: dict | None,
-):
-    """Opening scorecard — right after the title slide, before any detailed
-    findings. A reader who only sees the first 2 slides still gets the
-    verdict: one health-score gauge, the diagnostic thesis (if the AI
-    synthesis succeeded), top critical issues, top opportunities. The full
-    Core Problem slide and detailed findings still follow later — this is
-    a fast preview, not a replacement. Self-guards when literally nothing
-    real is available yet (e.g. very first report before most data
-    sources are gathered)."""
-    critical, opportunities = _top_critical_and_opportunities(competitor_analysis)
-    score = _overall_health_score(site_audit_overview, psi_mobile, psi_desktop)
-    thesis = (core_problem or {}).get("thesis")
-    if score is None and not critical and not opportunities and not thesis:
+def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None, items: list[str]):
+    """Shared renderer for the 4 Next Steps category slides (Local/Technical/
+    Content/Conversion SEO) and the split AEO/GEO slides — one full-width
+    numbered list, roomier per item than the old combined roadmap slide
+    since each slide now covers only one category."""
+    if not items:
         return None
-
     slide = _blank_slide(prs)
-    _content_header(slide, "At a Glance")
-
-    _score_ring(slide, Inches(0.9), Inches(1.5), Inches(1.7), score, "Overall Health")
-
-    if thesis:
-        _card(slide, Inches(3.0), Inches(1.5), Inches(9.7), Inches(1.7))
-        _textbox(slide, Inches(3.25), Inches(1.7), Inches(9.2), Inches(1.3), thesis, size=13.5, bold=True, color=_accent())
-
-    col_top = Inches(3.75)  # clears the score ring's "Overall Health" label, which bottoms out at 3.6"
-    col_bottom = Inches(6.9)
-    col_width = Inches(5.9)
-    gap = Inches(0.3)
-    columns = [("Top Critical Issues", critical, BAD), ("Top Opportunities", opportunities, GOOD)]
-    for i, (label, items, color) in enumerate(columns):
-        if not items:
-            continue
-        left = Inches(0.6) + Emu(i * (col_width + gap))
-        _card(slide, left, col_top, col_width, col_bottom - col_top)
-        cy = col_top + Inches(0.2)
-        _textbox(slide, left + Inches(0.25), cy, col_width - Inches(0.5), Inches(0.3), label.upper(), size=12, bold=True, color=color)
-        cy += Inches(0.45)
-        for item in items:
-            lines = _wrap_lines(item, col_width - Inches(0.55), size_pt=12)
-            line_h = Inches(0.24) * lines
-            if cy + line_h > col_bottom - Inches(0.15):
-                break
-            _icon_dot(slide, left + Inches(0.28), cy + Inches(0.07), Inches(0.09), color)
-            _textbox(slide, left + Inches(0.5), cy, col_width - Inches(0.75), line_h, item, size=12)
-            cy += line_h + Inches(0.14)
+    _content_header(slide, title)
+    y = Inches(1.05)
+    if intro:
+        _textbox(slide, Inches(0.6), y, Inches(12.1), Inches(0.4), intro, size=12, color=TEXT_MUTED)
+        y += Inches(0.45)
+    card_top = y
+    card_bottom = Inches(6.7)
+    _card(slide, Inches(0.6), card_top, Inches(12.1), card_bottom - card_top)
+    y = card_top + Inches(0.25)
+    for i, item in enumerate(items, start=1):
+        lines = _wrap_lines(item, Inches(11.0), size_pt=13)
+        line_h = Inches(13 * 0.02) * lines
+        if y + line_h > card_bottom - Inches(0.15):
+            break
+        num = slide.shapes.add_textbox(Inches(0.85), y, Inches(0.4), Inches(0.3))
+        p = num.text_frame.paragraphs[0]
+        r = p.add_run()
+        r.text = f"{i}."
+        r.font.bold = True
+        r.font.size = Pt(13)
+        r.font.color.rgb = _accent()
+        _textbox(slide, Inches(1.25), y, Inches(11.0), line_h, item, size=13)
+        y += line_h + Inches(0.22)
     return slide
 
 
-def add_final_summary_slide(
+def add_technical_seo_next_steps_slide(
     prs: Presentation,
-    core_problem: dict | None,
-    competitor_analysis: dict | None,
     site_audit: dict | None,
     page_audit: dict | None,
     tech_stack: dict | None,
-    keyword_rows: list[dict] | None,
-    backlink_row_count: int,
     domain_strategy: dict | None,
 ):
-    """The deck's true closing slide — a dense, single-page recap (diagnosis,
-    top issues, top opportunity, immediate next steps, a closing prompt) so
-    a reader who only opens the first and last slide still gets the whole
-    picture. Pulled entirely from data already computed elsewhere in the
-    report (Core Problem, competitor-gap analysis, the roadmap builder
-    behind Next Steps) — no new AI call, no invented numbers."""
-    slide = _blank_slide(prs)
-    _content_header(slide, "Summary & Next Steps")
-
-    y = Inches(1.15)
-    thesis = (core_problem or {}).get("thesis")
-    if thesis:
-        _card(slide, Inches(0.6), y, Inches(12.1), Inches(0.85))
-        _textbox(slide, Inches(0.85), y + Inches(0.13), Inches(11.6), Inches(0.6), thesis, size=13, bold=True, color=_accent())
-        y += Inches(1.0)
-
-    col_top = y
-    col_bottom = Inches(6.6)  # leaves room above the footer band (starts at SLIDE_H - 0.4 = 7.1") for the CTA line below
-    col_height = col_bottom - y
-    col_width = Inches(3.9)
-    gap = Inches(0.2)
-
-    critical, opportunities = _top_critical_and_opportunities(competitor_analysis)
-
-    roadmap = _derive_roadmap(site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy)
-    seen_categories = set()
-    next_steps = []
-    for category, step in roadmap:
-        if category in seen_categories:
-            continue
-        seen_categories.add(category)
-        next_steps.append(f"{category}: {step}")
-        if len(next_steps) == 4:
-            break
-
-    columns = [("Critical Issues", critical, BAD), ("Top Opportunity", opportunities, GOOD), ("Immediate Next Steps", next_steps, _accent())]
-    for i, (label, items, color) in enumerate(columns):
-        if not items:
-            continue
-        left = Inches(0.6) + Emu(i * (col_width + gap))
-        _card(slide, left, col_top, col_width, col_height)
-        cy = col_top + Inches(0.18)
-        _textbox(slide, left + Inches(0.22), cy, col_width - Inches(0.44), Inches(0.28), label.upper(), size=11, bold=True, color=color)
-        cy += Inches(0.4)
-        for item in items:
-            lines = _wrap_lines(item, col_width - Inches(0.5), size_pt=11)
-            line_h = Inches(0.22) * lines
-            if cy + line_h > col_bottom - Inches(0.1):
-                break
-            _icon_dot(slide, left + Inches(0.25), cy + Inches(0.06), Inches(0.08), color)
-            _textbox(slide, left + Inches(0.44), cy, col_width - Inches(0.66), line_h, item, size=11)
-            cy += line_h + Inches(0.12)
-
-    _textbox(
-        slide, Inches(0.6), Inches(6.75), Inches(12.1), Inches(0.3),
-        "Ready to act on these findings? Reach out to plan implementation of these recommendations.",
-        size=12, bold=True, color=TEXT_DARK, align=PP_ALIGN.CENTER,
-    )
-    return slide
+    items = list(_derive_next_steps(site_audit, page_audit))
+    if tech_stack and tech_stack.get("https") is False and not any("HTTPS" in i for i in items):
+        items.append("Move the site fully to HTTPS before any further SEO work — it's a baseline ranking and trust signal.")
+    if domain_strategy:
+        items.insert(0, f"Decide the domain strategy first — {domain_strategy['open_question']}")
+    intro = "Foundational and on-page fixes that unblock every other SEO effort — tackle these first."
+    return _next_steps_category_slide(prs, "Next Steps: Technical SEO", intro, items)
 
 
-def add_aeo_geo_slide(prs: Presentation, site_audit: dict | None, page_audit: dict | None):
-    """AEO (Answer Engine Optimization) / GEO (Generative Engine Optimization)
-    Opportunities — matches the reference deck's dedicated AEO & GEO slide.
-    Left column reacts to real schema/structured-data findings when present;
-    right column is standard GEO practice, since AI-citation entity-building
-    isn't something a crawl can measure directly."""
-    slide = _blank_slide(prs)
-    _content_header(slide, "AEO & GEO Opportunities")
+def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict] | None):
+    items = []
+    if keyword_rows:
+        cluster_counts: dict[str, int] = {}
+        cluster_volume: dict[str, float] = {}
+        for r in keyword_rows:
+            label = (r.get("cluster") or "").strip()
+            if not label:
+                continue
+            cluster_counts[label] = cluster_counts.get(label, 0) + 1
+            cluster_volume[label] = cluster_volume.get(label, 0) + _num(r.get("search_volume"))
+        for label, count in sorted(cluster_counts.items(), key=lambda kv: -cluster_volume.get(kv[0], 0)):
+            vol = cluster_volume.get(label, 0)
+            vol_text = f", {int(vol):,} combined monthly searches" if vol else ""
+            items.append(f"Build out content for the \"{label}\" keyword cluster — {count} keyword(s) tracked{vol_text}.")
+    items.append("Audit existing content for thin or outdated pages and refresh or consolidate them to strengthen topical authority.")
+    items.append("Keep a content calendar built around the highest-volume clusters above so publishing stays consistent rather than one-off.")
+    intro = "Where to focus content production, based on the keyword research and clustering above."
+    return _next_steps_category_slide(prs, "Next Steps: Content SEO", intro, items)
 
-    col_width = Inches(5.75)
-    gap = Inches(0.3)
-    left_x = Inches(0.6)
-    right_x = left_x + col_width + gap
-    top = Inches(1.1)
-    height = Inches(5.6)
-    _card(slide, left_x, top, col_width, height)
-    _card(slide, right_x, top, col_width, height)
 
+def add_local_seo_next_steps_slide(prs: Presentation, structured_data_rows: list[dict] | None):
+    items = []
+    if structured_data_rows:
+        total = len(structured_data_rows)
+        with_local = sum(1 for r in structured_data_rows if _num(r.get("local_business_items")) > 0)
+        if with_local == 0:
+            items.append(f"No Local Business schema found on any of the {total} crawled pages — add it to enable map/business-info rich results.")
+        else:
+            items.append(f"Local Business schema present on {with_local} of {total} crawled pages — extend it to any location page still missing it.")
+    items += [
+        "Claim and fully complete the Google Business Profile — hours, categories, services, and photos all factor into local ranking.",
+        "Keep Name/Address/Phone (NAP) identical across the website, Google Business Profile, and every directory listing — inconsistencies hurt local trust signals.",
+        "Build a dedicated landing page per physical location or service area, each with unique local content rather than a duplicated template.",
+        "Actively request and respond to Google reviews — review volume and recency are a direct local-ranking factor.",
+        "Pursue local citations and backlinks from location-relevant directories, chambers of commerce, and local press.",
+    ]
+    intro = "Local visibility signals — mostly checklist items a crawl can't verify directly, so the schema finding above is the one grounded data point."
+    return _next_steps_category_slide(prs, "Next Steps: Local SEO", intro, items)
+
+
+def add_conversion_seo_next_steps_slide(
+    prs: Presentation,
+    ux_findings: dict | None,
+    backlink_row_count: int,
+):
+    items = []
+    if ux_findings and not ux_findings.get("error") and not ux_findings.get("no_ux_pass_done"):
+        items += list(ux_findings.get("conversion_opportunities") or [])
+    if backlink_row_count:
+        items.append(
+            f"Turn authority growth into conversions — pair the {backlink_row_count:,} tracked backlinks with clear, "
+            "tested calls-to-action on the pages that authority actually lands on."
+        )
+    if not items:
+        return None
+    intro = "Turning existing traffic into leads and sales — from the manual UX walkthrough where available."
+    return _next_steps_category_slide(prs, "Next Steps: Conversion SEO", intro, items)
+
+
+def add_aeo_slide(prs: Presentation, site_audit: dict | None, page_audit: dict | None):
+    """Answer Engine Optimization — schema/structured-data-eligibility
+    recommendations for appearing in AI Overviews and answer boxes. Split
+    out from the old combined AEO & GEO slide into its own slide."""
     schema_present = None
     if site_audit and site_audit.get("meta"):
         schema_present = bool(site_audit["meta"].get("structured_data_present"))
@@ -2246,40 +1981,31 @@ def add_aeo_geo_slide(prs: Presentation, site_audit: dict | None, page_audit: di
     if page_audit and page_audit.get("pages_with_issues"):
         missing_schema_pages = page_audit.get("pages_with_issues")
 
-    aeo_items = [
-        "Add structured FAQ sections to every key page, answering the questions customers actually ask before buying.",
-    ]
+    items = ["Add structured FAQ sections to every key page, answering the questions customers actually ask before buying."]
     if schema_present is False:
-        aeo_items.append("Homepage has no schema.org (JSON-LD) markup — add Organization, Product, and FAQ schema so AI Overviews and rich results can parse the page.")
+        items.append("Homepage has no schema.org (JSON-LD) markup — add Organization, Product, and FAQ schema so AI Overviews and rich results can parse the page.")
     elif missing_schema_pages:
-        aeo_items.append(f"{missing_schema_pages} crawled page(s) are missing schema markup that other pages already have — bring them in line.")
+        items.append(f"{missing_schema_pages} crawled page(s) are missing schema markup that other pages already have — bring them in line.")
     else:
-        aeo_items.append("Implement Organization, Product/Service, FAQ, and Breadcrumb schema site-wide for AI Overview eligibility.")
-    aeo_items += [
+        items.append("Implement Organization, Product/Service, FAQ, and Breadcrumb schema site-wide for AI Overview eligibility.")
+    items += [
         "Write concise, extractable answer blocks (2-3 sentences) near the top of key pages — this is what LLMs quote directly.",
         "Build a dedicated FAQ hub covering the full buyer journey: eligibility, pricing, process, and comparisons.",
     ]
+    return _next_steps_category_slide(prs, "Answer Engine Optimization (AEO)", None, items)
 
-    geo_items = [
+
+def add_geo_slide(prs: Presentation):
+    """Generative Engine Optimization — standard practice for AI-citation
+    entity-building, since that isn't something a crawl can measure
+    directly. Split out from the old combined AEO & GEO slide."""
+    items = [
         "Publish authoritative content that positions the brand as a specialist in its core category — the framing AI engines reuse when answering category questions.",
         "Check whether the brand appears on the sources LLMs actually cite for this category (industry directories, comparison sites, press) — competitors already do.",
         "Create comparison-friendly content (\"X vs Y\", \"how to choose\") that AI systems can reference directly when answering evaluation queries.",
         "Interlink product pages, guides, and FAQs into topic clusters — stronger contextual relevance improves AI-driven discovery.",
     ]
-
-    def _column(x, label, items):
-        _textbox(slide, x + Inches(0.25), top + Inches(0.2), col_width - Inches(0.5), Inches(0.35), label, size=15, bold=True, color=_accent())
-        y = top + Inches(0.65)
-        for item in items:
-            _icon_dot(slide, x + Inches(0.25), y + Inches(0.08), Inches(0.09), _accent())
-            box = _textbox(slide, x + Inches(0.45), y, col_width - Inches(0.7), Inches(0.9), item, size=11.5)
-            chars_per_line = 42
-            lines = max(1, -(-len(item) // chars_per_line))
-            y += Emu(lines * Inches(0.2)) + Inches(0.18)
-
-    _column(left_x, "Answer Engine Optimization (AEO)", aeo_items)
-    _column(right_x, "Generative Engine Optimization (GEO)", geo_items)
-    return slide
+    return _next_steps_category_slide(prs, "Generative Engine Optimization (GEO)", None, items)
 
 
 def build_report(
@@ -2369,7 +2095,6 @@ def _build_report(
     prs.slide_height = SLIDE_H
 
     add_title_slide(prs, client_name, website_url, logo_bytes=logo_bytes, analytics=analytics)
-    add_at_a_glance_slide(prs, core_problem, competitor_analysis, site_audit_overview, psi_mobile, psi_desktop)
 
     if company_overview:
         add_company_overview_extracted_slide(prs, client_name, company_overview)
@@ -2391,7 +2116,7 @@ def _build_report(
             add_pagespeed_slide(prs, psi_mobile, psi_desktop)
             add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
-            add_site_health_slide(prs, site_audit, page_audit, site_audit_overview)
+            add_site_health_slide(prs, site_audit, site_audit_overview)
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
@@ -2405,6 +2130,9 @@ def _build_report(
 
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
+
+    if backlink_rows or backlink_summary or own_domain_rating is not None:
+        add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
@@ -2421,7 +2149,12 @@ def _build_report(
         if top_pages:
             total_views = sum(int(float(p.get("page_views", 0) or 0)) for p in top_pages)
             rows = [
-                (p["path"], f"{int(float(p['page_views'])):,}", f"{int(float(p.get('active_users', 0) or 0)):,}")
+                (
+                    p["path"],
+                    f"{int(float(p['page_views'])):,}",
+                    f"{(int(float(p['page_views'])) / total_views * 100 if total_views else 0):.1f}%",
+                    f"{int(float(p.get('active_users', 0) or 0)):,}",
+                )
                 for p in top_pages[:14]
             ]
             top = top_pages[0]
@@ -2432,11 +2165,9 @@ def _build_report(
             ]
             insights = [i for i in insights if i]
             _table_slide(
-                prs, "Top Pages", ["Page", "Pageviews", "Users"], rows,
-                col_widths=[7.0, 2.5, 2.6], source=ga4_source, insights=insights,
+                prs, "Top Pages", ["Page", "Pageviews", "% of Total", "Users"], rows,
+                col_widths=[6.0, 2.0, 2.0, 2.1], source=ga4_source, insights=insights,
             )
-        if analytics.get("page_performance"):
-            add_page_performance_slide(prs, analytics["page_performance"], analytics.get("date_range"))
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
             total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
@@ -2480,6 +2211,8 @@ def _build_report(
 
     if competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions or competitor_narratives:
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
+        if keyword_rows:
+            add_keyword_research_slide(prs, keyword_rows)
         if competitor_rows:
             add_competitor_table_slide(prs, competitor_rows)
         if competitor_positions:
@@ -2488,26 +2221,19 @@ def _build_report(
             for domain, narrative in competitor_narratives.items():
                 if "error" not in narrative:
                     add_competitor_narrative_slide(prs, client_name, domain, narrative)
-        if keyword_rows:
-            add_keyword_research_slide(prs, keyword_rows)
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
             add_keyword_gap_slide(prs, competitor_analysis)
-        if backlink_rows or backlink_summary or own_domain_rating is not None:
-            add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
-        if competitor_analysis:
-            add_competitive_gaps_slide(prs, competitor_analysis)
 
     if core_problem:
         add_core_problem_slide(prs, core_problem)
 
     add_section_slide(prs, client_name, "Next Steps")
-    add_next_steps_detail_slide(
-        prs, site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, competitor_analysis, domain_strategy
-    )
-    add_aeo_geo_slide(prs, site_audit, page_audit)
-    add_final_summary_slide(
-        prs, core_problem, competitor_analysis, site_audit, page_audit, tech_stack, keyword_rows, backlink_row_count, domain_strategy
-    )
+    add_local_seo_next_steps_slide(prs, structured_data_rows)
+    add_technical_seo_next_steps_slide(prs, site_audit, page_audit, tech_stack, domain_strategy)
+    add_content_seo_next_steps_slide(prs, keyword_rows)
+    add_conversion_seo_next_steps_slide(prs, ux_findings, backlink_row_count)
+    add_aeo_slide(prs, site_audit, page_audit)
+    add_geo_slide(prs)
 
     buf = BytesIO()
     prs.save(buf)

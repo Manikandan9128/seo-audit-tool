@@ -773,7 +773,14 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
     else:
         mapped = df
 
-    mapped = mapped.head(500)  # cap rows stored to keep JSONB payload reasonable
+    if import_type != "structured_data":
+        # Cap rows stored to keep JSONB payload reasonable for wide/text-heavy
+        # exports (keyword gap, backlinks, etc). Structured Data rows are just
+        # ~34 lightweight presence-flag/count columns and the slide needs the
+        # TRUE total-pages-crawled count (a real client export can have 1200+
+        # rows) to compute accurate site-wide schema coverage — capping it
+        # silently understated both the total and the coverage %.
+        mapped = mapped.head(500)
 
     if import_type == "keyword_gap":
         domain_cols = _detect_keyword_gap_domain_columns(df)

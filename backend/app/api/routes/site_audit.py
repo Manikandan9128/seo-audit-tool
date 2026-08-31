@@ -315,7 +315,10 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         top_keywords = sorted(
             competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
         )[:8]
-        relevant_gaps = [i["summary"] for i in gap_issues if domain in i.get("summary", "")]
+        relevant_gaps = [
+            i["summary"] for i in gap_issues
+            if i.get("domain") and _norm(i["domain"]) == _norm(domain)
+        ]
         # Best-effort homepage fetch so the narrative can name concrete
         # on-site tactics (page architecture, trust signals, content
         # formats) instead of only comparing Semrush metrics — failures

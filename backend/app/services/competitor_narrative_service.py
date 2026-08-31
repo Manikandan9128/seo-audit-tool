@@ -42,14 +42,8 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 """
 
 
-def generate_competitor_narrative(client_name: str, client_domain: str, competitor_domain: str, data: dict) -> dict:
-    """Returns {"areas_of_focus": [str], "growth_opportunity": str} or {"error": str}."""
-    prompt = PROMPT_TEMPLATE.format(
-        client_name=client_name,
-        client_domain=client_domain,
-        competitor_domain=competitor_domain,
-        data_json=json.dumps(data, indent=2, default=str)[:8000],
-    )
+def _call_and_parse(prompt: str) -> dict:
+    """One generate+parse attempt. Returns the parsed dict or {"error": ...}."""
     try:
         raw, _provider = generate_text(prompt)
     except NoAIProviderConfigured as e:
@@ -58,7 +52,7 @@ def generate_competitor_narrative(client_name: str, client_domain: str, competit
     raw = raw.strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
-        data_out = json.loads(raw)
+        return json.loads(raw)
     except json.JSONDecodeError:
         # Some models (seen with Groq's openai/gpt-oss-120b) prepend a line
         # or two of commentary/reasoning before the JSON object despite the
@@ -68,9 +62,29 @@ def generate_competitor_narrative(client_name: str, client_domain: str, competit
         start, end = raw.find("{"), raw.rfind("}")
         if start != -1 and end > start:
             try:
-                data_out = json.loads(raw[start : end + 1])
-                return data_out
+                return json.loads(raw[start : end + 1])
             except json.JSONDecodeError:
                 pass
         return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    return data_out
+
+
+def generate_competitor_narrative(client_name: str, client_domain: str, competitor_domain: str, data: dict) -> dict:
+    """Returns {"areas_of_focus": [str], "growth_opportunity": str} or {"error": str}."""
+    prompt = PROMPT_TEMPLATE.format(
+        client_name=client_name,
+        client_domain=client_domain,
+        competitor_domain=competitor_domain,
+        data_json=json.dumps(data, indent=2, default=str)[:8000],
+    )
+    result = _call_and_parse(prompt)
+    if "error" not in result:
+        return result
+    # A single malformed-JSON response is a non-deterministic model hiccup,
+    # not a systemic failure - seen dropping a random 1-2 of 4 competitors
+    # per report even after fully serializing calls (ruled out rate-limits).
+    # One retry on the SAME call (fresh model sample) recovers most of these
+    # instead of permanently losing that competitor's slide.
+    retry_result = _call_and_parse(prompt)
+    if "error" not in retry_result:
+        return retry_result
+    return result

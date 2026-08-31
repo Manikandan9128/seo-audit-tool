@@ -97,6 +97,7 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                 "detail": f"{comp_domain}: {comp_ref_domains} referring domains vs. yours: {own_ref_domains}.",
                 "recommendation": "Build links from domains that link to this competitor but not to you — check its referring-domain list for guest post, directory, or partnership opportunities.",
                 "severity": "warn",
+                "domain": comp_domain,
             })
         elif own_ref_domains is None:
             issues.append({
@@ -104,6 +105,7 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                 "detail": f"{comp_domain} has {comp_ref_domains} referring domains and {comp_count} backlinks.",
                 "recommendation": "Upload a Backlinks export under \"Our Website Data\" to see the gap.",
                 "severity": "info",
+                "domain": comp_domain,
             })
 
     # Organic traffic / keyword gap vs each competitor row in the organic_competitors export(s)
@@ -128,6 +130,7 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                     "detail": f"{comp_domain}: ~{comp_traffic:,.0f} monthly organic visits vs. yours: ~{own_traffic:,.0f}.",
                     "recommendation": "Check which keywords drive their traffic (Keyword Gap export) and target the ones with real search volume you don't rank for yet.",
                     "severity": "warn",
+                    "domain": comp_domain,
                 })
             if comp_keywords > own_keywords:
                 issues.append({
@@ -135,6 +138,7 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                     "detail": f"{comp_domain}: {int(comp_keywords):,} organic keywords vs. yours: {int(own_keywords):,}.",
                     "recommendation": "Expand content/landing pages around topics this competitor covers that you don't.",
                     "severity": "warn",
+                    "domain": comp_domain,
                 })
     elif organic_competitor_rows and not own_overview:
         issues.append({
