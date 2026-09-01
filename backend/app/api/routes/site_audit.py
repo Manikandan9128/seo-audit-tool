@@ -504,9 +504,6 @@ def _gather_report_data(
                     analytics["search_queries"] = gsc_service.get_search_analytics(
                         creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=20
                     )
-                    analytics["page_clicks"] = gsc_service.get_page_clicks(
-                        creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
-                    )
                     date_range["gsc_start"], date_range["gsc_end"] = gsc_start, gsc_end
                 except HttpError:
                     pass

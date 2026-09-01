@@ -935,72 +935,6 @@ def add_critical_issues_slide(
     )
 
 
-def add_priority_issues_slide(
-    prs: Presentation,
-    site_audit_pages_rows: list[dict] | None,
-    page_audit: dict | None,
-    analytics: dict | None,
-):
-    """Ranks per-URL issues by real traffic impact instead of raw issue
-    count: pageviews (GA4) + clicks (GSC), clicks weighted 3x since a lost
-    search click is lost demand, a lost pageview could be internal/referral
-    traffic that finds the page another way regardless of its search
-    ranking. Needs at least one real per-URL issue source AND GA4 or GSC
-    data — silently absent otherwise, same as the rest of this file's
-    cross-referenced insights."""
-    if not analytics:
-        return None
-
-    url_issues: list[tuple[str, str]] = []
-    if site_audit_pages_rows:
-        for r in site_audit_pages_rows:
-            issues = r.get("issues")
-            if issues and r.get("page_url"):
-                url_issues.append((r["page_url"], str(issues)))
-    elif page_audit:
-        for p in page_audit.get("pages") or []:
-            if p.get("issues") and p.get("url"):
-                url_issues.append((p["url"], ", ".join(p["issues"])))
-    if not url_issues:
-        return None
-
-    pageviews_by_path = {
-        (p.get("path") or "").rstrip("/"): int(float(p.get("page_views", 0) or 0))
-        for p in (analytics.get("top_pages") or {}).get("rows", [])
-    }
-    clicks_by_path = {
-        urlparse(r.get("page") or "").path.rstrip("/"): int(r.get("clicks", 0) or 0)
-        for r in (analytics.get("page_clicks") or {}).get("rows", [])
-    }
-    if not pageviews_by_path and not clicks_by_path:
-        return None
-
-    ranked = []
-    for url, issues in url_issues:
-        path = urlparse(url).path.rstrip("/")
-        pageviews = pageviews_by_path.get(path, 0)
-        clicks = clicks_by_path.get(path, 0)
-        score = pageviews + clicks * 3
-        if score > 0:
-            ranked.append((url, issues, pageviews, clicks, score))
-    if not ranked:
-        return None
-
-    ranked.sort(key=lambda r: r[4], reverse=True)
-    headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks", "Priority Score"]
-    col_widths = [3.6, 4.2, 1.3, 1.3, 1.7]
-    rows = [(url, issues, f"{pv:,}", f"{cl:,}", f"{score:,}") for url, issues, pv, cl, score in ranked[:14]]
-    top = ranked[0]
-    insights = [
-        f"{len(ranked)} issue-affected page(s) cross-referenced against real traffic — ranked by pageviews + clicks×3 (a lost search click is lost demand, weighted heavier than a pageview from another channel).",
-        f"Highest priority: {top[0]} — {top[2]:,} pageviews, {top[3]:,} search clicks in the reporting window, still carrying: {top[1]}",
-    ]
-    return _table_slide(
-        prs, "Priority Issues (by Traffic Impact)", headers, rows, col_widths=col_widths,
-        source="Own crawl + Google Analytics + Search Console", insights=insights,
-    )
-
-
 # Semrush Site Audit's per-page Structured Data export has ~29 schema.org
 # rich-result-type columns — this is the curated, business-relevant subset
 # actually surfaced on the slide (nothing is lost on import, see
@@ -2301,7 +2235,6 @@ def _build_report(
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
             add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
-            add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
