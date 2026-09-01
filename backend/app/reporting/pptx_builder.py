@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import threading
+from collections import Counter
 from io import BytesIO
 from urllib.parse import urlparse
 
@@ -605,8 +606,14 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
 
     ranked = sorted(dirs.items(), key=lambda kv: -kv[1]["urls"])
 
-    domains = {urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows}
-    domain = next((d for d in domains if d), "") or "site"
+    # A crawl can include a handful of pages from a subdomain (e.g. a
+    # helpdesk/portal subdomain) alongside the main site — picking "any"
+    # domain from a set is non-deterministic and previously surfaced a
+    # rarely-crawled subdomain as the header instead of the actual site.
+    # The domain with the most crawled pages is the real site.
+    domain_counts = Counter(urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows)
+    domain_counts.pop("", None)
+    domain = domain_counts.most_common(1)[0][0] if domain_counts else "site"
 
     rows = [(f"    {directory}",) for directory, _info in ranked]
     rows.insert(0, (domain,))
@@ -1077,6 +1084,42 @@ def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict
 
     return _table_slide(
         prs, "Structured Data", headers, rows, col_widths=col_widths, source="Semrush Site Audit", insights=insights
+    )
+
+
+def add_structured_data_gap_pages_slide(prs: Presentation, structured_data_rows: list[dict]):
+    """The Structured Data slide's coverage % (e.g. "85% have Product
+    schema") doesn't say WHICH pages make up the remaining gap — this lists
+    them. Targets whichever schema type is best-covered site-wide (the one
+    worth closing out first), and only renders when that coverage is
+    partial: 0% has nothing to list, 100% has nothing missing."""
+    total_pages = len(structured_data_rows)
+    if not total_pages:
+        return None
+
+    coverage = [
+        (label, field, sum(1 for r in structured_data_rows if _num(r.get(field)) > 0))
+        for label, field, _benefit in _STRUCTURED_DATA_TYPES
+    ]
+    best_label, best_field, best_count = max(coverage, key=lambda c: c[2])
+    if best_count == 0 or best_count == total_pages:
+        return None
+
+    missing_urls = [r["page_url"] for r in structured_data_rows if _num(r.get(best_field)) == 0 and r.get("page_url")]
+    if not missing_urls:
+        return None
+
+    headers = [f"Pages Missing {best_label} Schema"]
+    col_widths = [12.1]
+    rows = [(url,) for url in missing_urls[:14]]
+    shown = min(len(missing_urls), 9)  # _table_slide caps at 9 rows when insights are passed
+    insights = [
+        f"{len(missing_urls):,} of {total_pages:,} pages ({100 * len(missing_urls) / total_pages:.0f}%) still don't "
+        f"have {best_label} schema — showing the first {shown:,} below.",
+    ]
+    return _table_slide(
+        prs, f"{best_label} Schema — Missing Pages", headers, rows, col_widths=col_widths,
+        source="Semrush Site Audit", insights=insights,
     )
 
 
@@ -2215,6 +2258,7 @@ def _build_report(
             add_tech_fixes_slide(prs, page_audit, analytics)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
+                add_structured_data_gap_pages_slide(prs, structured_data_rows)
 
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
