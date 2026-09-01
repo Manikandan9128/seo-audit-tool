@@ -593,7 +593,9 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
         path = urlparse(r.get("page_url") or "").path
         segments = [s for s in path.split("/") if s]
         if not segments:
-            directory = "/ (root)"
+            # A bare "/" page — already covered by the domain row itself, so
+            # it doesn't need its own "/ (root)" child row.
+            continue
         elif segments[0].lower() in _WP_ARCHIVE_PREFIXES and len(segments) > 1:
             directory = "/blog"
         else:
