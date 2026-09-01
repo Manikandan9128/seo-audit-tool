@@ -506,17 +506,22 @@ def parse_site_audit_overview_pdf(content: bytes) -> dict | None:
         "ai_search_health_pct": ai_search_health_pct,
         "export_date": _extract_export_date(text),
     }
+    # Semrush abbreviates larger counts here ("1.26K", "1.34K") the same way
+    # the Domain Overview PDF does — a plain \d+ only ever captured the
+    # leading digit before the decimal point ("1.34K" -> 1), which is how
+    # "Crawled Pages" ended up showing "1" for a 1,340-page site. Reuse the
+    # same abbreviation parser Domain Overview parsing already relies on.
     for category in _CRAWLED_PAGE_CATEGORIES:
         key = category.lower().replace(" ", "_")
-        match = re.search(rf"{re.escape(category)}\s+([\d.]+)%\s+(\d+)", text)
+        match = re.search(rf"{re.escape(category)}\s+([\d.]+)%\s+([\d.,]+[KMB]?)", text)
         if match:
             result[f"{key}_pct"] = float(match.group(1))
-            result[f"{key}_count"] = int(match.group(2))
+            result[f"{key}_count"] = int(_parse_abbrev_number(match.group(2)) or 0)
 
-    total_match = re.search(r"Total\s+(\d+)", text)
+    total_match = re.search(r"Total\s+([\d.,]+[KMB]?)", text)
     if not total_match:
         return None
-    result["pages_total"] = int(total_match.group(1))
+    result["pages_total"] = int(_parse_abbrev_number(total_match.group(1)) or 0)
     return result
 
 
