@@ -2103,6 +2103,111 @@ def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None,
     return slide
 
 
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-") or "page"
+
+
+def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | None):
+    """Hub + sub-page content-architecture recommendations — matches the
+    manual reference deck's "Programmatic SEO Opportunities" slide (one main
+    hub page per topic, sub-pages beneath it targeting specific keywords).
+    Built entirely from the keyword clusters already identified for the
+    Target Keywords slides — no new data source needed, just a different
+    way of presenting the same clusters as a content-architecture plan."""
+    if not keyword_rows:
+        return None
+    clusters: dict[str, list[dict]] = {}
+    for r in keyword_rows:
+        label = (r.get("cluster") or "").strip()
+        if label:
+            clusters.setdefault(label, []).append(r)
+    if not clusters:
+        return None
+
+    ranked = sorted(clusters.items(), key=lambda kv: sum(_num(r.get("search_volume")) for r in kv[1]), reverse=True)
+    items = []
+    for label, rows_for_cluster in ranked[:6]:
+        hub_slug = _slugify(label)
+        top_keywords = sorted(rows_for_cluster, key=lambda r: _num(r.get("search_volume")), reverse=True)
+        sub_slugs = []
+        for r in top_keywords:
+            slug = _slugify(r.get("keyword", ""))
+            # A keyword identical to (or slugifying the same as) the cluster
+            # name itself belongs on the hub page, not a redundant nested
+            # duplicate of it.
+            if slug and slug != hub_slug and slug not in sub_slugs:
+                sub_slugs.append(slug)
+            if len(sub_slugs) == 2:
+                break
+        if not sub_slugs:
+            continue
+        subpages = ", ".join(f"/{hub_slug}/{s}" for s in sub_slugs)
+        items.append(f"{label}: main hub page /{hub_slug}, with sub-pages {subpages} targeting the cluster's highest-volume keywords.")
+    if not items:
+        return None
+
+    intro = (
+        "Content architecture built from the keyword clusters identified above — one hub page per topic, "
+        "with sub-pages beneath it targeting the cluster's specific high-volume keywords."
+    )
+    return _next_steps_category_slide(prs, "Programmatic SEO Opportunities", intro, items)
+
+
+def add_goals_slide(
+    prs: Presentation,
+    own_domain_rating: int | None,
+    competitor_rows: list[dict] | None,
+    keyword_rows: list[dict] | None,
+):
+    """Early Stage / Advanced Stage target slide, matching the manual
+    reference deck's closing "Goal" page. Early Stage targets are derived
+    from data already gathered elsewhere in the report (low-difficulty
+    keywords on the table, current Domain Rating vs. the strongest tracked
+    competitor's) — Advanced Stage stays qualitative/process-oriented, same
+    as the reference deck's own advanced-stage bullets (SERP features, AI
+    answer visibility, brand-authority signals), since those aren't
+    something a crawl or export can size numerically."""
+    early = []
+    if keyword_rows:
+        low_kd = [
+            r for r in keyword_rows
+            if r.get("keyword_difficulty") not in (None, "") and _num(r.get("keyword_difficulty"), default=100) < 30
+        ]
+        if low_kd:
+            volume = sum(_num(r.get("search_volume")) for r in low_kd)
+            early.append(
+                f"Rank on page 1 (top 10) for the {len(low_kd)} target keyword(s) already identified under "
+                f"KD 30 — {volume:,.0f} combined monthly searches on the table today."
+            )
+    if own_domain_rating is not None:
+        competitor_drs = [
+            _num(r.get("authority_score")) for r in (competitor_rows or [])
+            if r.get("authority_score") not in (None, "") and r.get("domain")
+        ]
+        leader_dr = max(competitor_drs) if competitor_drs else None
+        if leader_dr and leader_dr > own_domain_rating:
+            target = min(int(leader_dr), own_domain_rating + 20)
+            early.append(
+                f"Increase Domain Rating from {own_domain_rating} toward {target} — the strongest tracked "
+                f"competitor sits at DR {int(leader_dr)}."
+            )
+        else:
+            early.append(f"Increase Domain Rating from {own_domain_rating} to {own_domain_rating + 15}+ through consistent, relevant backlink acquisition.")
+    if not early:
+        return None
+    early.append("Drive consistent month-over-month organic traffic growth from the keyword and content work above.")
+
+    advanced = [
+        "Rank for high-difficulty (KD 50+) category keywords once the page-1 foundation from Early Stage is established.",
+        "Diversify traffic beyond traditional search — earn visibility in AI answers (ChatGPT, Gemini, Claude) alongside classic search results.",
+        "Win SERP features: featured snippets, AI Overviews, and image search placements.",
+        "Build brand-authority signals — directory/citation listings, LinkedIn referral traffic, and steady backlink growth toward the category-leading Domain Rating.",
+    ]
+    items = [f"Early Stage: {b}" for b in early] + [f"Advanced Stage: {b}" for b in advanced]
+    intro = "Near-term targets build the foundation; advanced-stage targets compound on them once page-1 rankings and a stronger Domain Rating are in place."
+    return _next_steps_category_slide(prs, "SEO Goals & Targets", intro, items)
+
+
 def add_technical_seo_next_steps_slide(
     prs: Presentation,
     site_audit: dict | None,
@@ -2443,9 +2548,11 @@ def _build_report(
     add_local_seo_next_steps_slide(prs, structured_data_rows)
     add_technical_seo_next_steps_slide(prs, site_audit, page_audit, tech_stack, domain_strategy)
     add_content_seo_next_steps_slide(prs, keyword_rows)
+    add_programmatic_seo_slide(prs, keyword_rows)
     add_conversion_seo_next_steps_slide(prs, ux_findings, backlink_row_count)
     add_aeo_slide(prs, site_audit, page_audit)
     add_geo_slide(prs)
+    add_goals_slide(prs, own_domain_rating, competitor_rows, keyword_rows)
 
     buf = BytesIO()
     prs.save(buf)
