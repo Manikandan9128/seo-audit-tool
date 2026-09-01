@@ -195,17 +195,21 @@ def _extract_trust_signals(text: str) -> dict[str, bool]:
     return {name: bool(re.search(pattern, text, re.IGNORECASE)) for name, pattern in _TRUST_SIGNAL_PATTERNS.items()}
 
 
-def _find_embed_candidates(html_source: str) -> list[tuple[str, str]]:
-    """(label, src) pairs for known third-party embed/chat-widget references
-    on this page — pure regex, no network call. A site-wide widget (chat
-    scripts, social feeds embedded in the header/footer template) shows up
-    on every page, so the live reachability check is done once per unique
-    src across the whole crawl (see run_multi_page_audit_async), not here."""
-    return [
-        (label, src)
-        for label, pattern in _EMBED_PATTERNS
-        for src in pattern.findall(html_source)
-    ]
+def _extract_broken_embeds(html_source: str) -> list[dict]:
+    """Known third-party embed/chat-widget srcs that no longer resolve on
+    this page. A live HEAD check, so only runs for the (rare) pages that
+    actually reference one of these — not on every page."""
+    found = []
+    for label, pattern in _EMBED_PATTERNS:
+        for src in pattern.findall(html_source):
+            try:
+                resp = httpx.head(src, timeout=5.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+                ok = resp.status_code < 400
+            except httpx.HTTPError:
+                ok = False
+            if not ok:
+                found.append({"type": label, "src": src})
+    return found
 
 
 _SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
@@ -313,14 +317,6 @@ async def run_multi_page_audit_async(
     with_issues = 0
     lock = asyncio.Lock()
     semaphore = asyncio.Semaphore(CONCURRENCY)
-    # A site-wide chat widget or social embed shows up on every single page
-    # (header/footer template) — cache each unique src's reachability once
-    # for the whole crawl instead of re-checking it per page. Without this,
-    # a 1300-page site with one site-wide widget did 1300 live HEAD checks
-    # instead of 1, and did them with a BLOCKING call inside an async
-    # coroutine (stalling the entire crawl's concurrency), turning a
-    # multi-minute crawl into an hour-plus one.
-    embed_cache: dict[str, bool] = {}
 
     async def check_one(client: httpx.AsyncClient, url: str):
         nonlocal checked, with_issues
@@ -342,25 +338,13 @@ async def run_multi_page_audit_async(
                 page_result["issues"] = _meta_issues(meta)
                 if deep:
                     images_total, images_missing_alt = _extract_images(text)
-                    broken_embeds = []
-                    for label, src in _find_embed_candidates(text):
-                        if src not in embed_cache:
-                            try:
-                                embed_resp = await client.head(
-                                    src, timeout=5.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}
-                                )
-                                embed_cache[src] = embed_resp.status_code < 400
-                            except httpx.HTTPError:
-                                embed_cache[src] = False
-                        if not embed_cache[src]:
-                            broken_embeds.append({"type": label, "src": src})
                     page_result["extras"] = {
                         "images_total": images_total,
                         "images_missing_alt": images_missing_alt,
                         "internal_links_out": list(_extract_internal_links(text, base_domain)),
                         "word_count": len(extract_visible_text(text).split()),
                         "trust_signals": _extract_trust_signals(text),
-                        "broken_embeds": broken_embeds,
+                        "broken_embeds": _extract_broken_embeds(text),
                         **_extract_json_ld_types(text),
                         "schema_jsonld": 1 if "application/ld+json" in text.lower() else 0,
                         "schema_microdata": 1 if "itemscope" in text.lower() else 0,
