@@ -125,7 +125,7 @@ def _run_page_audit_job(job_id: uuid.UUID, website_url: str, page_limit: int):
             j.pages_with_issues = issues
             progress_db.commit()
 
-        result = asyncio.run(run_multi_page_audit_async(website_url, page_limit, on_progress=progress, deep=True))
+        result = asyncio.run(run_multi_page_audit_async(website_url, page_limit, on_progress=progress))
 
         job = db.get(PageAuditJob, job_id)
         stored = dict(result)
@@ -575,22 +575,6 @@ def _gather_report_data(
     # Site Audit family exports above — structured data isn't something we
     # compare against competitors anywhere in the report.
     structured_data_rows = _all_rows("structured_data", own_only=True)
-
-    # Own full-site crawl (PageAuditJob, run via /site-audit-pages/start,
-    # deep=True) — the fallback source for structured data plus 5 checks
-    # Semrush doesn't give us: image alt-text coverage, internal-link/orphan
-    # pages, thin-content pages, trust-signal presence, broken third-party
-    # embeds. Only the latest completed deep crawl is used; a client who's
-    # never run one just gets None for all of these (no slides render).
-    latest_deep_crawl = (
-        db.query(PageAuditJob)
-        .filter(PageAuditJob.client_id == client_id, PageAuditJob.status == "done")
-        .order_by(PageAuditJob.created_at.desc())
-        .first()
-    )
-    crawl_extras = (latest_deep_crawl.result or {}).get("crawl_extras") if latest_deep_crawl else None
-    if crawl_extras and not structured_data_rows:
-        structured_data_rows = crawl_extras.get("structured_data_rows") or None
     # Semrush Site Audit's own per-page export — same rows semrush_analysis_
     # service already reads for the non-200/canonical/sitemap findings, but
     # threaded through directly here too so the Website Structure slide can
@@ -774,11 +758,6 @@ def _gather_report_data(
         "site_audit_issues": site_audit_issues_rows or None,
         "structured_data_rows": structured_data_rows or None,
         "site_audit_pages_rows": site_audit_pages_rows or None,
-        "alt_text_summary": (crawl_extras or {}).get("alt_text_summary") or None,
-        "internal_linking_summary": (crawl_extras or {}).get("internal_linking_summary") or None,
-        "thin_content_pages": (crawl_extras or {}).get("thin_content_pages") or None,
-        "trust_signal_summary": (crawl_extras or {}).get("trust_signal_summary") or None,
-        "broken_embeds": (crawl_extras or {}).get("broken_embeds") or None,
         "site_audit_overview": site_audit_overview,
         "backlink_summary": backlink_summary,
         "own_domain_rating": own_domain_rating,

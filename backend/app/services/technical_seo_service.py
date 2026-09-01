@@ -1,6 +1,5 @@
 import asyncio
 import html
-import json
 import re
 import time
 from collections.abc import Callable
@@ -16,46 +15,6 @@ from app.services.logo_service import find_logo_url
 
 USER_AGENT = "SEOAuditTool/1.0 (+https://seoaudittool.local/bot-info)"
 TIMEOUT = 8.0
-
-# JSON-LD @type -> the same curated rich-result category fields the Semrush
-# Structured Data export uses (STRUCTURED_DATA_COLUMN_ALIASES in
-# semrush_parser.py) — lets crawl-sourced rows feed the exact same
-# add_structured_data_slide unchanged when no Semrush export is uploaded.
-_SCHEMA_TYPE_FIELDS = {
-    "Article": "article_items", "BlogPosting": "article_items", "NewsArticle": "article_items",
-    "FAQPage": "faq_items",
-    "Product": "product_items",
-    "Review": "review_items", "AggregateRating": "review_items",
-    "LocalBusiness": "local_business_items",
-    "HowTo": "howto_items",
-    "BreadcrumbList": "breadcrumb_items",
-    "JobPosting": "job_posting_items",
-    "Event": "event_items",
-}
-
-# Best-effort text patterns for trust signals the manual reference decks call
-# out by hand (Trustpilot rating, certifications, security badges, a visible
-# phone number) — presence-only, not a quality judgment.
-_TRUST_SIGNAL_PATTERNS = {
-    "trustpilot": r"trustpilot",
-    "certifications": r"\b(BBB|Better Business Bureau|ISO\s?9001|Norton Secured|McAfee Secure)\b",
-    "security_badge": r"\b(SSL Secure|Secure Checkout|256-bit encryption)\b",
-    "phone_number": r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b",
-}
-
-# Known third-party embed/chat-widget src patterns — a page referencing one
-# of these whose src no longer resolves is a broken embed (matches manual
-# deck findings like "Home page Instagram feed broken").
-_EMBED_PATTERNS = [
-    ("Instagram feed", re.compile(r'src=["\']([^"\']*instagram\.com/embed[^"\']*)["\']', re.IGNORECASE)),
-    ("Facebook plugin", re.compile(r'src=["\']([^"\']*facebook\.com/plugins[^"\']*)["\']', re.IGNORECASE)),
-    ("Intercom chat", re.compile(r'src=["\']([^"\']*widget\.intercom\.io[^"\']*)["\']', re.IGNORECASE)),
-    ("Drift chat", re.compile(r'src=["\']([^"\']*js\.driftt\.com[^"\']*)["\']', re.IGNORECASE)),
-    ("Tawk.to chat", re.compile(r'src=["\']([^"\']*embed\.tawk\.to[^"\']*)["\']', re.IGNORECASE)),
-    ("Zendesk chat", re.compile(r'src=["\']([^"\']*static\.zdassets\.com[^"\']*)["\']', re.IGNORECASE)),
-]
-
-THIN_CONTENT_WORD_THRESHOLD = 300
 
 
 def _fetch(url: str, retries: int = 1) -> httpx.Response | None:
@@ -136,82 +95,6 @@ def extract_visible_text(html_source: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _extract_json_ld_types(html_source: str) -> dict[str, int]:
-    """{field_name: count} for each curated schema category found in this
-    page's JSON-LD <script> blocks. Handles @graph arrays and top-level
-    lists — a single page can bundle several schema objects in one block."""
-    counts: dict[str, int] = {}
-    for block in re.findall(
-        r'(?is)<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_source
-    ):
-        try:
-            data = json.loads(block.strip())
-        except (json.JSONDecodeError, ValueError):
-            continue
-        candidates = data if isinstance(data, list) else [data]
-        expanded = []
-        for item in candidates:
-            if isinstance(item, dict) and isinstance(item.get("@graph"), list):
-                expanded.extend(item["@graph"])
-            else:
-                expanded.append(item)
-        for item in expanded:
-            if not isinstance(item, dict):
-                continue
-            raw_type = item.get("@type")
-            for t in raw_type if isinstance(raw_type, list) else [raw_type]:
-                field = _SCHEMA_TYPE_FIELDS.get(t)
-                if field:
-                    counts[field] = counts.get(field, 0) + 1
-    return counts
-
-
-def _extract_images(html_source: str) -> tuple[int, int]:
-    """(total <img> tags, tags with a missing/empty alt attribute)."""
-    imgs = re.findall(r"<img\b[^>]*>", html_source, re.IGNORECASE)
-    missing = 0
-    for tag in imgs:
-        m = re.search(r'alt=["\']([^"\']*)["\']', tag, re.IGNORECASE)
-        if not m or not m.group(1).strip():
-            missing += 1
-    return len(imgs), missing
-
-
-def _extract_internal_links(html_source: str, base_domain: str) -> set[str]:
-    """Same-domain link targets (normalized, no fragment/trailing slash) —
-    the raw material for orphan-page detection (built after the whole
-    crawl, once every page's outbound links are known)."""
-    root_domain = base_domain.removeprefix("www.")
-    links = set()
-    for href in re.findall(r'<a\b[^>]+href=["\']([^"\'#][^"\']*)["\']', html_source, re.IGNORECASE):
-        absolute = urljoin(f"https://{base_domain}", href)
-        parsed = urlparse(absolute)
-        if parsed.netloc.removeprefix("www.") == root_domain:
-            links.add(absolute.split("#")[0].rstrip("/"))
-    return links
-
-
-def _extract_trust_signals(text: str) -> dict[str, bool]:
-    return {name: bool(re.search(pattern, text, re.IGNORECASE)) for name, pattern in _TRUST_SIGNAL_PATTERNS.items()}
-
-
-def _extract_broken_embeds(html_source: str) -> list[dict]:
-    """Known third-party embed/chat-widget srcs that no longer resolve on
-    this page. A live HEAD check, so only runs for the (rare) pages that
-    actually reference one of these — not on every page."""
-    found = []
-    for label, pattern in _EMBED_PATTERNS:
-        for src in pattern.findall(html_source):
-            try:
-                resp = httpx.head(src, timeout=5.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
-                ok = resp.status_code < 400
-            except httpx.HTTPError:
-                ok = False
-            if not ok:
-                found.append({"type": label, "src": src})
-    return found
-
-
 _SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
 
@@ -275,24 +158,13 @@ async def run_multi_page_audit_async(
     website_url: str,
     page_limit: int = 20,
     on_progress: Callable[[int, int, int], None] | None = None,
-    deep: bool = False,
 ) -> dict:
     """Async, concurrent version of the crawl for large sites (thousands of
     URLs) — runs page fetches CONCURRENCY at a time instead of one-by-one, and
     reports progress via on_progress(pages_checked, pages_total, pages_with_issues)
-    after each page so a caller can persist progress for polling.
-
-    deep=True additionally extracts, per page: JSON-LD structured-data
-    categories (feeds the Structured Data slide when no Semrush export is
-    uploaded), image alt-text coverage, outbound internal links (for
-    orphan-page detection), word count (thin-content flagging), trust-signal
-    presence, and broken third-party embeds — then rolls all of that into a
-    "crawl_extras" summary once every page is in. Off by default since it's
-    extra per-page work (incl. live HEAD checks for embeds) that the fast
-    inline 20-page report-generation fallback shouldn't pay for."""
+    after each page so a caller can persist progress for polling."""
     parsed = urlparse(website_url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
-    base_domain = parsed.netloc
 
     robots_url = urljoin(base_url, "/robots.txt")
     robots_resp = _fetch(robots_url)
@@ -336,19 +208,6 @@ async def run_multi_page_audit_async(
                 meta = _extract_meta(text)
                 page_result["meta"] = meta
                 page_result["issues"] = _meta_issues(meta)
-                if deep:
-                    images_total, images_missing_alt = _extract_images(text)
-                    page_result["extras"] = {
-                        "images_total": images_total,
-                        "images_missing_alt": images_missing_alt,
-                        "internal_links_out": list(_extract_internal_links(text, base_domain)),
-                        "word_count": len(extract_visible_text(text).split()),
-                        "trust_signals": _extract_trust_signals(text),
-                        "broken_embeds": _extract_broken_embeds(text),
-                        **_extract_json_ld_types(text),
-                        "schema_jsonld": 1 if "application/ld+json" in text.lower() else 0,
-                        "schema_microdata": 1 if "itemscope" in text.lower() else 0,
-                    }
             else:
                 page_result["meta"] = None
                 page_result["issues"] = ["Page not reachable"]
@@ -364,77 +223,12 @@ async def run_multi_page_audit_async(
     async with httpx.AsyncClient() as client:
         await asyncio.gather(*(check_one(client, url) for url in urls_to_check))
 
-    result = {
+    return {
         "base_url": base_url,
         "sitemap_url": sitemap_url if sitemap_urls else None,
         "pages_checked": len(pages),
         "pages_with_issues": with_issues,
         "pages": pages,
-    }
-    if deep:
-        result["crawl_extras"] = _summarize_crawl_extras(pages)
-    return result
-
-
-def _summarize_crawl_extras(pages: list[dict]) -> dict:
-    """Rolls up per-page `extras` (see run_multi_page_audit_async deep=True)
-    into the aggregates the report slides actually need: orphan-page
-    detection needs every page's outbound links known first, so this can
-    only run once the whole crawl is in, not per-page."""
-    reachable_pages = [p for p in pages if p.get("extras")]
-    urls = {p["url"].rstrip("/") for p in reachable_pages}
-
-    inbound_counts = {u: 0 for u in urls}
-    for p in reachable_pages:
-        for link in p["extras"].get("internal_links_out", []):
-            key = link.rstrip("/")
-            if key in inbound_counts and key != p["url"].rstrip("/"):
-                inbound_counts[key] += 1
-    orphan_pages = sorted(u for u, count in inbound_counts.items() if count == 0)
-    avg_internal_links = (
-        sum(len(p["extras"].get("internal_links_out", [])) for p in reachable_pages) / len(reachable_pages)
-        if reachable_pages else 0
-    )
-
-    structured_data_rows = [
-        {
-            "page_url": p["url"],
-            "schema_jsonld": p["extras"].get("schema_jsonld", 0),
-            "schema_microdata": p["extras"].get("schema_microdata", 0),
-            **{field: p["extras"].get(field, 0) for field in set(_SCHEMA_TYPE_FIELDS.values())},
-        }
-        for p in reachable_pages
-    ]
-
-    thin_content_pages = sorted(
-        (
-            {"page_url": p["url"], "word_count": p["extras"]["word_count"]}
-            for p in reachable_pages if p["extras"]["word_count"] < THIN_CONTENT_WORD_THRESHOLD
-        ),
-        key=lambda r: r["word_count"],
-    )
-
-    total_images = sum(p["extras"]["images_total"] for p in reachable_pages)
-    total_missing_alt = sum(p["extras"]["images_missing_alt"] for p in reachable_pages)
-
-    trust_signal_summary = {
-        name: any(p["extras"]["trust_signals"].get(name) for p in reachable_pages)
-        for name in _TRUST_SIGNAL_PATTERNS
-    }
-
-    broken_embeds = [
-        {**embed, "page_url": p["url"]} for p in reachable_pages for embed in p["extras"].get("broken_embeds", [])
-    ]
-
-    return {
-        "structured_data_rows": structured_data_rows,
-        "alt_text_summary": {"images_total": total_images, "images_missing_alt": total_missing_alt},
-        "internal_linking_summary": {
-            "pages_crawled": len(reachable_pages), "orphan_pages": orphan_pages, "avg_internal_links": avg_internal_links,
-        },
-        "thin_content_pages": thin_content_pages,
-        "trust_signal_summary": trust_signal_summary,
-        "broken_embeds": broken_embeds,
     }
 
 

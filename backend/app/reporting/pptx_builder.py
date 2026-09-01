@@ -1004,95 +1004,6 @@ def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict
     )
 
 
-# Five checks Semrush's exports don't give us for free — pulled from our own
-# full-site crawl instead (PageAuditJob, deep=True; see
-# technical_seo_service._summarize_crawl_extras). Each is best-effort/
-# presence-only, same spirit as the rest of the own-crawl findings elsewhere
-# in this file: silently absent (no slide) rather than guessed at when no
-# deep crawl has been run for this client yet.
-def add_alt_text_slide(prs: Presentation, alt_text_summary: dict):
-    total = alt_text_summary.get("images_total") or 0
-    if not total:
-        return None
-    missing = alt_text_summary.get("images_missing_alt") or 0
-    with_alt = total - missing
-    coverage_pct = 100 * with_alt / total
-    headers = ["Metric", "Count"]
-    col_widths = [6.5, 3.5]
-    rows = [
-        ("Total images crawled", f"{total:,}"),
-        ("Images with alt text", f"{with_alt:,}"),
-        ("Images missing alt text", f"{missing:,}"),
-        ("Alt-text coverage", f"{coverage_pct:.0f}%"),
-    ]
-    insights = [f"{missing:,} of {total:,} images ({100 * missing / total:.0f}%) are missing alt text — each one is a missed image-search/accessibility opportunity."]
-    return _table_slide(prs, "Image Alt-Text Coverage", headers, rows, col_widths=col_widths, source="Own site crawl", insights=insights)
-
-
-def add_internal_linking_slide(prs: Presentation, internal_linking_summary: dict):
-    orphans = internal_linking_summary.get("orphan_pages") or []
-    pages_crawled = internal_linking_summary.get("pages_crawled") or 0
-    if not pages_crawled:
-        return None
-    avg_links = internal_linking_summary.get("avg_internal_links") or 0
-    headers = ["Orphan Page (no internal links point to it)"]
-    col_widths = [10.0]
-    rows = [(url,) for url in orphans[:14]]
-    insights = [f"{pages_crawled:,} pages crawled, averaging {avg_links:.1f} internal links per page."]
-    if orphans:
-        insights.append(f"{len(orphans):,} orphan page(s) found — no other page on the site links to them, so search engines and users may never discover them.")
-    else:
-        insights.append("No orphan pages found — every crawled page has at least one internal link pointing to it.")
-    return _table_slide(prs, "Internal Linking Health", headers, rows, col_widths=col_widths, source="Own site crawl", insights=insights)
-
-
-def add_thin_content_slide(prs: Presentation, thin_content_pages: list[dict]):
-    if not thin_content_pages:
-        return None
-    headers = ["Page URL", "Word Count"]
-    col_widths = [7.5, 2.5]
-    rows = [(p["page_url"], f"{p['word_count']:,}") for p in thin_content_pages[:14]]
-    insights = [
-        f"{len(thin_content_pages):,} page(s) have under 300 words of visible content — thin pages rank poorly and offer little for search engines to index.",
-    ]
-    return _table_slide(prs, "Thin Content Pages", headers, rows, col_widths=col_widths, source="Own site crawl", insights=insights)
-
-
-_TRUST_SIGNAL_LABELS = {
-    "trustpilot": "Trustpilot rating widget",
-    "certifications": "Certification badges (BBB, ISO, Norton/McAfee Secure)",
-    "security_badge": "Security/checkout trust badges",
-    "phone_number": "Visible phone number",
-}
-
-
-def add_trust_signals_slide(prs: Presentation, trust_signal_summary: dict):
-    if not trust_signal_summary:
-        return None
-    headers = ["Trust Signal", "Found on Site"]
-    col_widths = [7.5, 2.5]
-    rows = [
-        (_TRUST_SIGNAL_LABELS.get(key, key), "Yes" if found else "No")
-        for key, found in trust_signal_summary.items()
-    ]
-    missing = [_TRUST_SIGNAL_LABELS.get(k, k) for k, found in trust_signal_summary.items() if not found]
-    insights = (
-        [f"Missing: {', '.join(missing)} — adding these builds visitor confidence at the point of decision."]
-        if missing else ["All checked trust signals were found somewhere on the site."]
-    )
-    return _table_slide(prs, "Trust Signals", headers, rows, col_widths=col_widths, source="Own site crawl", insights=insights)
-
-
-def add_broken_embeds_slide(prs: Presentation, broken_embeds: list[dict]):
-    if not broken_embeds:
-        return None
-    headers = ["Embed Type", "Page URL", "Source"]
-    col_widths = [2.5, 4.5, 3.0]
-    rows = [(e["type"], e["page_url"], e["src"]) for e in broken_embeds[:14]]
-    insights = [f"{len(broken_embeds):,} third-party embed(s) (chat widgets, social feeds) failed to load — visitors see a broken block where a working feature should be."]
-    return _table_slide(prs, "Broken Embeds & Widgets", headers, rows, col_widths=col_widths, source="Own site crawl", insights=insights)
-
-
 # Canned fix per page-level issue string from technical_seo_service.py's
 # crawler (see _meta_issues() and run_multi_page_audit) — (fix text,
 # severity). Matches the real manual-report "Tech Fixes" slide format
@@ -2139,11 +2050,6 @@ def build_report(
     own_domain_rating: int | None = None,
     core_problem: dict | None = None,
     site_audit_pages_rows: list[dict] | None = None,
-    alt_text_summary: dict | None = None,
-    internal_linking_summary: dict | None = None,
-    thin_content_pages: list[dict] | None = None,
-    trust_signal_summary: dict | None = None,
-    broken_embeds: list[dict] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -2163,8 +2069,7 @@ def build_report(
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
-            site_audit_pages_rows, alt_text_summary, internal_linking_summary,
-            thin_content_pages, trust_signal_summary, broken_embeds,
+            site_audit_pages_rows,
         )
     finally:
         _theme["footer"] = ""
@@ -2198,11 +2103,6 @@ def _build_report(
     own_domain_rating: int | None = None,
     core_problem: dict | None = None,
     site_audit_pages_rows: list[dict] | None = None,
-    alt_text_summary: dict | None = None,
-    internal_linking_summary: dict | None = None,
-    thin_content_pages: list[dict] | None = None,
-    trust_signal_summary: dict | None = None,
-    broken_embeds: list[dict] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -2238,16 +2138,6 @@ def _build_report(
             add_tech_fixes_slide(prs, page_audit, analytics)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
-            if alt_text_summary:
-                add_alt_text_slide(prs, alt_text_summary)
-            if internal_linking_summary:
-                add_internal_linking_slide(prs, internal_linking_summary)
-            if thin_content_pages:
-                add_thin_content_slide(prs, thin_content_pages)
-            if trust_signal_summary:
-                add_trust_signals_slide(prs, trust_signal_summary)
-            if broken_embeds:
-                add_broken_embeds_slide(prs, broken_embeds)
 
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
