@@ -1038,60 +1038,12 @@ _STRUCTURED_DATA_TYPES = [
 ]
 
 
-def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict]):
-    """Total URLs crawled vs. how many have any schema markup implemented,
-    plus a per-type breakdown of the curated rich-result types below,
-    worst-coverage first — schema types missing on every page become an
-    explicit actionable insight rather than just a 0% table row. total_pages
-    is the real crawl total (semrush_parser.py no longer caps structured_data
-    rows at 500 — a real client site can have 1200+ crawled pages, and
-    capping silently understated both this total and every coverage %)."""
-    total_pages = len(structured_data_rows)
-    if not total_pages:
-        return None
-
-    pages_with_any_schema = sum(
-        1 for r in structured_data_rows
-        if _num(r.get("schema_jsonld")) > 0 or _num(r.get("schema_microdata")) > 0
-    )
-    any_schema_pct = 100 * pages_with_any_schema / total_pages
-
-    coverage = []
-    for label, field, benefit in _STRUCTURED_DATA_TYPES:
-        pages_with = sum(1 for r in structured_data_rows if _num(r.get(field)) > 0)
-        coverage.append((label, field, benefit, pages_with))
-    coverage.sort(key=lambda c: c[3])
-
-    headers = ["Schema Type", "Pages With It", "Coverage"]
-    col_widths = [4.0, 2.5, 2.5]
-    rows = [
-        (label, f"{pages_with:,} / {total_pages:,}", f"{100 * pages_with / total_pages:.0f}%")
-        for label, _field, _benefit, pages_with in coverage
-    ]
-
-    insights = [
-        f"{pages_with_any_schema:,} of {total_pages:,} crawled URLs ({any_schema_pct:.0f}%) have structured data "
-        "(schema.org JSON-LD or Microdata) implemented.",
-    ]
-    missing = [c for c in coverage if c[3] == 0]
-    insights += [
-        f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}."
-        for label, _field, benefit, _pages_with in missing[:3]
-    ]
-    if len(insights) == 1:
-        best = max(coverage, key=lambda c: c[3])
-        insights.append(f"{best[0]} schema is your best-covered type — present on {best[3]} of {total_pages} pages.")
-
-    return _table_slide(
-        prs, "Structured Data", headers, rows, col_widths=col_widths, source="Semrush Site Audit", insights=insights
-    )
-
-
 # Every schema.org item-type field Semrush's Structured Data export tracks
 # (STRUCTURED_DATA_COLUMN_ALIASES in semrush_parser.py) — a superset of the
-# 9 curated rich-result types shown on the main Structured Data slide.
-# Needed here so a page missing the best-covered type (e.g. Product) can
-# show what it HAS instead, if anything, rather than just "missing".
+# 9 curated rich-result types in _STRUCTURED_DATA_TYPES. Checked so a type
+# no one asked to curate (Logo, Organization sitelinks, etc.) still shows up
+# on the slide if it actually has real coverage, instead of silently having
+# no row at all.
 _ALL_SCHEMA_ITEM_FIELDS = [
     ("Article", "article_items"), ("Book", "book_items"), ("Breadcrumb", "breadcrumb_items"),
     ("Carousel", "carousel_items"), ("Course", "course_items"), ("Dataset", "dataset_items"),
@@ -1106,52 +1058,78 @@ _ALL_SCHEMA_ITEM_FIELDS = [
 ]
 
 
-def add_structured_data_gap_pages_slide(prs: Presentation, structured_data_rows: list[dict]):
-    """The Structured Data slide's coverage % (e.g. "85% have Product
-    schema") doesn't say WHICH pages make up the remaining gap, or whether
-    those pages have SOME OTHER schema type instead of nothing at all. This
-    lists the gap pages plus, per page, whichever other tracked schema
-    types (of all ~27 Semrush tracks, not just the 9 curated ones) it does
-    carry — "None found" if genuinely bare. Targets whichever type is
-    best-covered site-wide (the one worth closing out first); only renders
-    when that coverage is partial (0% has nothing to list, 100% has nothing
-    missing)."""
+def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict]):
+    """Total URLs crawled vs. how many have any schema markup implemented,
+    plus a per-type breakdown, worst-coverage first. Shows the 9 curated
+    rich-result types PLUS any other tracked type (of all ~27 Semrush
+    exports) that actually has real coverage — so if the pages missing a
+    curated type (e.g. Product) carry some other schema instead, that shows
+    up as its own row here rather than needing a separate slide to explain
+    where the remaining % went. total_pages is the real crawl total
+    (semrush_parser.py no longer caps structured_data rows at 500 — a real
+    client site can have 1200+ crawled pages, and capping silently
+    understated both this total and every coverage %)."""
     total_pages = len(structured_data_rows)
     if not total_pages:
         return None
 
+    pages_with_any_schema = sum(
+        1 for r in structured_data_rows
+        if _num(r.get("schema_jsonld")) > 0 or _num(r.get("schema_microdata")) > 0
+    )
+    any_schema_pct = 100 * pages_with_any_schema / total_pages
+
+    curated_fields = {field for _label, field, _benefit in _STRUCTURED_DATA_TYPES}
     coverage = [
-        (label, field, sum(1 for r in structured_data_rows if _num(r.get(field)) > 0))
-        for label, field, _benefit in _STRUCTURED_DATA_TYPES
+        (label, field, benefit, sum(1 for r in structured_data_rows if _num(r.get(field)) > 0))
+        for label, field, benefit in _STRUCTURED_DATA_TYPES
     ]
-    best_label, best_field, best_count = max(coverage, key=lambda c: c[2])
-    if best_count == 0 or best_count == total_pages:
-        return None
+    # Any non-curated type that actually has coverage earns its own row too
+    # — otherwise a client whose gap pages use e.g. Logo schema instead of
+    # Product would show 85% Product and nothing explaining the other 15%.
+    extra_coverage = [
+        (label, field, None, sum(1 for r in structured_data_rows if _num(r.get(field)) > 0))
+        for label, field in _ALL_SCHEMA_ITEM_FIELDS
+        if field not in curated_fields
+    ]
+    coverage += [c for c in extra_coverage if c[3] > 0]
+    # Highest-coverage first — with an extra non-curated row possibly added
+    # above, the table's row cap (9 when insights are shown) must never
+    # silently truncate the row(s) that actually have real coverage in
+    # favor of interchangeable 0% rows; the "missing" story is already
+    # covered by the insight bullets below regardless of which 0% rows
+    # make the cut.
+    coverage.sort(key=lambda c: c[3], reverse=True)
 
-    missing_rows = [r for r in structured_data_rows if _num(r.get(best_field)) == 0 and r.get("page_url")]
-    if not missing_rows:
-        return None
+    headers = ["Schema Type", "Pages With It", "Coverage"]
+    col_widths = [4.0, 2.5, 2.5]
+    rows = [
+        (label, f"{pages_with:,} / {total_pages:,}", f"{100 * pages_with / total_pages:.0f}%")
+        for label, _field, _benefit, pages_with in coverage
+    ]
 
-    other_fields = [(label, field) for label, field in _ALL_SCHEMA_ITEM_FIELDS if field != best_field]
-
-    def _has_instead(row: dict) -> str:
-        found = [label for label, field in other_fields if _num(row.get(field)) > 0]
-        return ", ".join(found) if found else "None found"
-
-    headers = ["Page URL", "Has Instead"]
-    col_widths = [7.6, 4.5]
-    rows = [(r["page_url"], _has_instead(r)) for r in missing_rows[:14]]
-    shown = min(len(missing_rows), 9)  # _table_slide caps at 9 rows when insights are passed
-    bare_count = sum(1 for r in missing_rows if _has_instead(r) == "None found")
     insights = [
-        f"{len(missing_rows):,} of {total_pages:,} pages ({100 * len(missing_rows) / total_pages:.0f}%) still don't "
-        f"have {best_label} schema — showing the first {shown:,} below.",
-        f"{bare_count:,} of those {len(missing_rows):,} have no structured data of any tracked type at all; "
-        f"the rest carry some other schema type instead of {best_label}.",
+        f"{pages_with_any_schema:,} of {total_pages:,} crawled URLs ({any_schema_pct:.0f}%) have structured data "
+        "(schema.org JSON-LD or Microdata) implemented.",
     ]
+    missing = [c for c in coverage if c[3] == 0 and c[2] is not None]  # curated-only, has benefit text
+    insights += [
+        f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}."
+        for label, _field, benefit, _pages_with in missing[:2]
+    ]
+    best = max(coverage, key=lambda c: c[3])
+    if best[3] > 0:
+        gap = total_pages - pages_with_any_schema
+        if gap > 0:
+            insights.append(
+                f"{gap:,} of {total_pages:,} pages ({100 * gap / total_pages:.0f}%) have no structured data "
+                f"of any tracked type at all — not even {best[0]}, the site's best-covered type."
+            )
+        elif len(insights) == 1:
+            insights.append(f"{best[0]} schema is your best-covered type — present on {best[3]:,} of {total_pages:,} pages.")
+
     return _table_slide(
-        prs, f"{best_label} Schema — Missing Pages", headers, rows, col_widths=col_widths,
-        source="Semrush Site Audit", insights=insights,
+        prs, "Structured Data", headers, rows, col_widths=col_widths, source="Semrush Site Audit", insights=insights
     )
 
 
@@ -2439,7 +2417,6 @@ def _build_report(
             add_tech_fixes_slide(prs, page_audit, analytics)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows)
-                add_structured_data_gap_pages_slide(prs, structured_data_rows)
 
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
