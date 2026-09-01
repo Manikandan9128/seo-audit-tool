@@ -32,3 +32,30 @@ def get_search_analytics(creds: Credentials, site_url: str, start_date: str, end
             }
         )
     return {"rows": rows}
+
+
+def get_page_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 1000) -> dict:
+    """Same Search Analytics API as get_search_analytics, dimensioned by page
+    instead of query — clicks/impressions per URL, for cross-referencing
+    against per-page SEO issues (which URLs are actually losing search
+    traffic, not just which have the most issues by count)."""
+    webmasters = build("searchconsole", "v1", credentials=creds)
+    body = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "dimensions": ["page"],
+        "rowLimit": row_limit,
+    }
+    response = webmasters.searchanalytics().query(siteUrl=site_url, body=body).execute()
+    rows = []
+    for row in response.get("rows", []):
+        rows.append(
+            {
+                "page": row["keys"][0],
+                "clicks": row["clicks"],
+                "impressions": row["impressions"],
+                "ctr": row["ctr"],
+                "position": row["position"],
+            }
+        )
+    return {"rows": rows}
