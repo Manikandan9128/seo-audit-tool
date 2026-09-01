@@ -578,11 +578,25 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     if not site_audit_pages_rows:
         return None
 
+    # WordPress auto-generates a permalink for every post under one of these
+    # base prefixes (post/page slugs, author archives, tag/category archives).
+    # Each is an individual item or archive page, not a real content section
+    # a client would recognize as a site "directory" — bucketing them
+    # standalone produces phantom top-level directories (e.g. "/post" with
+    # dozens of URLs) that don't correspond to anything in the client's nav.
+    # Fold them into "/blog" alongside the section they actually belong to.
+    _WP_ARCHIVE_PREFIXES = {"post", "author", "tag", "category", "page"}
+
     dirs: dict[str, dict] = {}
     for r in site_audit_pages_rows:
         path = urlparse(r.get("page_url") or "").path
         segments = [s for s in path.split("/") if s]
-        directory = f"/{segments[0]}" if segments else "/ (root)"
+        if not segments:
+            directory = "/ (root)"
+        elif segments[0].lower() in _WP_ARCHIVE_PREFIXES and len(segments) > 1:
+            directory = "/blog"
+        else:
+            directory = f"/{segments[0]}"
         entry = dirs.setdefault(directory, {"urls": 0, "issues": 0})
         entry["urls"] += 1
         entry["issues"] += int(_num(r.get("issues")))
