@@ -571,11 +571,11 @@ def add_site_health_slide(prs: Presentation, audit: dict, site_audit_overview: d
 
 def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict] | None):
     """Directory-level rollup of the full-site crawl, styled after Semrush's
-    own "Site Structure" widget: a root domain row on top with the full
-    crawl count, then each top-level directory folder underneath with just
-    its URL count — no Issues column. Derived entirely from Semrush Site
-    Audit's per-page export (page_url) we already parse for the SEO Issues /
-    Tech Fixes slides — no new Semrush upload needed, just a grouping."""
+    own "Site Structure" widget: a root domain row on top, then each
+    top-level directory folder underneath — directory names only, no
+    URL-count or Issues column. Derived entirely from Semrush Site Audit's
+    per-page export (page_url) we already parse for the SEO Issues / Tech
+    Fixes slides — no new Semrush upload needed, just a grouping."""
     if not site_audit_pages_rows:
         return None
 
@@ -602,17 +602,16 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
         entry["urls"] += 1
 
     ranked = sorted(dirs.items(), key=lambda kv: -kv[1]["urls"])
-    total_urls = sum(info["urls"] for _, info in ranked)
 
     domains = {urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows}
     domain = next((d for d in domains if d), "") or "site"
 
-    rows = [(f"    {directory}", info["urls"]) for directory, info in ranked]
-    rows.insert(0, (domain, total_urls))
+    rows = [(f"    {directory}",) for directory, _info in ranked]
+    rows.insert(0, (domain,))
 
     slide = _table_slide(
-        prs, "Website Structure", ["Directory", "URLs"], rows,
-        col_widths=[9.5, 2.6], source="Semrush Site Audit",
+        prs, "Website Structure", ["Directory"], rows,
+        col_widths=[12.1], source="Semrush Site Audit",
     )
     for shape in slide.shapes:
         if shape.has_table:
