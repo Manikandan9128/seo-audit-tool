@@ -1713,6 +1713,50 @@ def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
     )
 
 
+def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narrative: dict):
+    """Matches the reference decks' "What {Competitor} Does Well" slide —
+    objective bullets on the competitor's own tactics/strengths, grounded in
+    their homepage text and metrics (narrative["best_at"]), rendered ahead
+    of the "Areas of Focus" response slide. Distinct from that slide: this
+    one states facts about the competitor, not advice for the client.
+    Absent (no slide) if the AI narrative didn't produce best_at bullets —
+    same silent-skip pattern as the rest of this file's AI-derived content."""
+    best_at = narrative.get("best_at") or []
+    if not best_at:
+        return None
+    screenshot = narrative.get("screenshot")
+
+    slide = _blank_slide(prs)
+    _content_header(slide, f"What {competitor_domain} Does Well")
+    card_top, card_height = Inches(1.1), Inches(5.9)
+    card_width = Inches(7.8) if screenshot else Inches(12.1)
+    text_width = card_width - Inches(0.75)
+    _card(slide, Inches(0.6), card_top, card_width, card_height)
+    y = Inches(1.35)
+
+    if screenshot:
+        img_left, img_width = Inches(8.7), Inches(3.9)
+        try:
+            slide.shapes.add_picture(BytesIO(screenshot), img_left, card_top, width=img_width)
+        except Exception:
+            pass
+        else:
+            _textbox(slide, img_left, card_top + Inches(2.6), img_width, Inches(0.3), competitor_domain, size=10.5, color=TEXT_MUTED, align=PP_ALIGN.CENTER)
+
+    bullets_max_y = card_top + card_height - Inches(0.15)
+    chars_per_line = max(20, int(text_width / 914400 * 14))
+    line_h = Inches(0.24)
+    for item in best_at[:6]:
+        lines = max(1, -(-len(item) // chars_per_line))
+        item_h = line_h * lines + Inches(0.08)
+        if y + item_h > bullets_max_y:
+            break
+        _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), DEFAULT_ACCENT)
+        _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, item, size=12.5)
+        y += item_h
+    return slide
+
+
 def add_competitor_narrative_slide(prs: Presentation, client_name: str, competitor_domain: str, narrative: dict):
     """Matches the reference deck's "Areas of Focus for {Client} (vs
     {Competitor})" slide — a bulleted recommendation list followed by a
@@ -2387,6 +2431,7 @@ def _build_report(
         if competitor_narratives:
             for domain, narrative in competitor_narratives.items():
                 if "error" not in narrative:
+                    add_competitor_best_at_slide(prs, domain, narrative)
                     add_competitor_narrative_slide(prs, client_name, domain, narrative)
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
             add_keyword_gap_slide(prs, competitor_analysis)
