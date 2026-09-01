@@ -1087,12 +1087,35 @@ def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict
     )
 
 
+# Every schema.org item-type field Semrush's Structured Data export tracks
+# (STRUCTURED_DATA_COLUMN_ALIASES in semrush_parser.py) — a superset of the
+# 9 curated rich-result types shown on the main Structured Data slide.
+# Needed here so a page missing the best-covered type (e.g. Product) can
+# show what it HAS instead, if anything, rather than just "missing".
+_ALL_SCHEMA_ITEM_FIELDS = [
+    ("Article", "article_items"), ("Book", "book_items"), ("Breadcrumb", "breadcrumb_items"),
+    ("Carousel", "carousel_items"), ("Course", "course_items"), ("Dataset", "dataset_items"),
+    ("Employer Rating", "employer_rating_items"), ("Estimated Salary", "estimated_salary_items"),
+    ("Event", "event_items"), ("Fact Check", "fact_check_items"), ("FAQ", "faq_items"),
+    ("Guided Recipe", "guided_recipe_items"), ("How-to", "howto_items"), ("Job Posting", "job_posting_items"),
+    ("Local Business", "local_business_items"), ("Logo", "logo_items"), ("Merchant Listing", "merchant_listing_items"),
+    ("Movie", "movie_items"), ("Product", "product_items"), ("Product Group", "product_group_items"),
+    ("Q&A", "qa_items"), ("Recipe", "recipe_items"), ("Review", "review_items"),
+    ("Sitelinks Search Box", "sitelinks_searchbox_items"), ("Site Names", "site_names_items"),
+    ("Software App", "software_app_items"), ("Vehicle Listing", "vehicle_listing_items"), ("Video", "video_items"),
+]
+
+
 def add_structured_data_gap_pages_slide(prs: Presentation, structured_data_rows: list[dict]):
     """The Structured Data slide's coverage % (e.g. "85% have Product
-    schema") doesn't say WHICH pages make up the remaining gap — this lists
-    them. Targets whichever schema type is best-covered site-wide (the one
-    worth closing out first), and only renders when that coverage is
-    partial: 0% has nothing to list, 100% has nothing missing."""
+    schema") doesn't say WHICH pages make up the remaining gap, or whether
+    those pages have SOME OTHER schema type instead of nothing at all. This
+    lists the gap pages plus, per page, whichever other tracked schema
+    types (of all ~27 Semrush tracks, not just the 9 curated ones) it does
+    carry — "None found" if genuinely bare. Targets whichever type is
+    best-covered site-wide (the one worth closing out first); only renders
+    when that coverage is partial (0% has nothing to list, 100% has nothing
+    missing)."""
     total_pages = len(structured_data_rows)
     if not total_pages:
         return None
@@ -1105,17 +1128,26 @@ def add_structured_data_gap_pages_slide(prs: Presentation, structured_data_rows:
     if best_count == 0 or best_count == total_pages:
         return None
 
-    missing_urls = [r["page_url"] for r in structured_data_rows if _num(r.get(best_field)) == 0 and r.get("page_url")]
-    if not missing_urls:
+    missing_rows = [r for r in structured_data_rows if _num(r.get(best_field)) == 0 and r.get("page_url")]
+    if not missing_rows:
         return None
 
-    headers = [f"Pages Missing {best_label} Schema"]
-    col_widths = [12.1]
-    rows = [(url,) for url in missing_urls[:14]]
-    shown = min(len(missing_urls), 9)  # _table_slide caps at 9 rows when insights are passed
+    other_fields = [(label, field) for label, field in _ALL_SCHEMA_ITEM_FIELDS if field != best_field]
+
+    def _has_instead(row: dict) -> str:
+        found = [label for label, field in other_fields if _num(row.get(field)) > 0]
+        return ", ".join(found) if found else "None found"
+
+    headers = ["Page URL", "Has Instead"]
+    col_widths = [7.6, 4.5]
+    rows = [(r["page_url"], _has_instead(r)) for r in missing_rows[:14]]
+    shown = min(len(missing_rows), 9)  # _table_slide caps at 9 rows when insights are passed
+    bare_count = sum(1 for r in missing_rows if _has_instead(r) == "None found")
     insights = [
-        f"{len(missing_urls):,} of {total_pages:,} pages ({100 * len(missing_urls) / total_pages:.0f}%) still don't "
+        f"{len(missing_rows):,} of {total_pages:,} pages ({100 * len(missing_rows) / total_pages:.0f}%) still don't "
         f"have {best_label} schema — showing the first {shown:,} below.",
+        f"{bare_count:,} of those {len(missing_rows):,} have no structured data of any tracked type at all; "
+        f"the rest carry some other schema type instead of {best_label}.",
     ]
     return _table_slide(
         prs, f"{best_label} Schema — Missing Pages", headers, rows, col_widths=col_widths,
