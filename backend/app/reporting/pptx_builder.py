@@ -570,11 +570,12 @@ def add_site_health_slide(prs: Presentation, audit: dict, site_audit_overview: d
 
 
 def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict] | None):
-    """Directory-level rollup of the full-site crawl — matches the manual
-    report's "Site Structure" table (Directory | URLs | Issues). Derived
-    entirely from Semrush Site Audit's per-page export (page_url + issues
-    count) we already parse for the SEO Issues / Tech Fixes slides — no new
-    Semrush upload needed, just a grouping we weren't doing yet."""
+    """Directory-level rollup of the full-site crawl, styled after Semrush's
+    own "Site Structure" widget: a root domain row on top with the full
+    crawl count, then each top-level directory folder underneath with just
+    its URL count — no Issues column. Derived entirely from Semrush Site
+    Audit's per-page export (page_url) we already parse for the SEO Issues /
+    Tech Fixes slides — no new Semrush upload needed, just a grouping."""
     if not site_audit_pages_rows:
         return None
 
@@ -597,23 +598,31 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
             directory = "/blog"
         else:
             directory = f"/{segments[0]}"
-        entry = dirs.setdefault(directory, {"urls": 0, "issues": 0})
+        entry = dirs.setdefault(directory, {"urls": 0})
         entry["urls"] += 1
-        entry["issues"] += int(_num(r.get("issues")))
 
     ranked = sorted(dirs.items(), key=lambda kv: -kv[1]["urls"])
-    rows = [(d, info["urls"], info["issues"]) for d, info in ranked]
     total_urls = sum(info["urls"] for _, info in ranked)
-    total_issues = sum(info["issues"] for _, info in ranked)
-    insights = [f"{total_urls} crawled URLs across {len(ranked)} top-level section(s), {total_issues} total flagged issues."]
-    worst = max(ranked, key=lambda kv: kv[1]["issues"]) if ranked else None
-    if worst and worst[1]["issues"] > 0:
-        insights.append(f"\"{worst[0]}\" has the most issues ({worst[1]['issues']}) across {worst[1]['urls']} URLs — highest-leverage section to fix first.")
 
-    return _table_slide(
-        prs, "Website Structure", ["Directory", "URLs", "Issues"], rows,
-        col_widths=[7.0, 2.5, 2.6], source="Semrush Site Audit", insights=insights,
+    domains = {urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows}
+    domain = next((d for d in domains if d), "") or "site"
+
+    rows = [(f"    {directory}", info["urls"]) for directory, info in ranked]
+    rows.insert(0, (domain, total_urls))
+
+    slide = _table_slide(
+        prs, "Website Structure", ["Directory", "URLs"], rows,
+        col_widths=[9.5, 2.6], source="Semrush Site Audit",
     )
+    for shape in slide.shapes:
+        if shape.has_table:
+            domain_row = shape.table.rows[1]  # row 0 is the header, row 1 is the domain row we inserted
+            for cell in domain_row.cells:
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = HEADER_ROW_BG
+                cell.text_frame.paragraphs[0].font.bold = True
+            break
+    return slide
 
 
 def add_company_overview_slide(prs: Presentation, client_name: str, summary: str):
