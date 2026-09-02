@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -34,5 +34,13 @@ class ReportGenerationJob(Base):
     filename: Mapped[str | None] = mapped_column(String, nullable=True)
     pptx_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     error: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Real failure reason per AI-dependent section that didn't come through
+    # this run (keyword clustering, Core Problem, a competitor narrative,
+    # Next Steps) — e.g. a rate limit or quota message. Deliberately NEVER
+    # rendered into the PPTX itself (a client-facing deliverable is no
+    # place for "Groq request failed: 429") — surfaced here instead so the
+    # agency user sees it in the app before deciding whether to regenerate
+    # or send the file as-is.
+    content_generation_issues: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

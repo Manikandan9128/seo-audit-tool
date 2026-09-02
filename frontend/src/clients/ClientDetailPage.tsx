@@ -79,6 +79,7 @@ export default function ClientDetailPage() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportStatusMsg, setReportStatusMsg] = useState("");
   const [reportProgressPct, setReportProgressPct] = useState<number | null>(null);
+  const [contentGenerationIssues, setContentGenerationIssues] = useState<string[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewData, setPreviewData] = useState<ReportPreviewData | null>(null);
   const [previewOverview, setPreviewOverview] = useState<CompanyOverview | null>(null);
@@ -325,6 +326,7 @@ export default function ClientDetailPage() {
     setReportLoading(true);
     setReportStatusMsg("Starting report build…");
     setReportProgressPct(0);
+    setContentGenerationIssues(null);
     setError("");
     try {
       const startRes = await api.post(`/clients/${clientId}/generate-report/start`, body);
@@ -363,6 +365,15 @@ export default function ClientDetailPage() {
     if (job.status === "done") {
       setReportStatusMsg("Downloading…");
       setReportProgressPct(100);
+      // Real per-section AI failures (rate limit, quota, etc.) this run —
+      // deliberately never inside the PPTX itself (not something a client
+      // should see), shown here instead so it's visible before the file
+      // gets sent anywhere.
+      setContentGenerationIssues(
+        Array.isArray(job.content_generation_issues) && job.content_generation_issues.length > 0
+          ? job.content_generation_issues
+          : null
+      );
       try {
         const fileRes = await api.get(`/clients/${clientId}/generate-report/${jobId}/download`, { responseType: "blob" });
         const url = window.URL.createObjectURL(new Blob([fileRes.data]));
@@ -596,6 +607,28 @@ export default function ClientDetailPage() {
                       />
                     </div>
                   )}
+                </div>
+              )}
+              {!reportLoading && contentGenerationIssues && (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "#92400e",
+                    background: "#fef3c7",
+                    border: "1px solid #fde68a",
+                    borderRadius: 6,
+                    padding: "8px 10px",
+                    maxWidth: 420,
+                  }}
+                >
+                  <strong>Heads up:</strong> {contentGenerationIssues.length} section(s) didn't generate this run
+                  (shown below, not in the downloaded file) — usually a temporary AI rate limit. Regenerating often
+                  fixes it.
+                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                    {contentGenerationIssues.map((issue, i) => (
+                      <li key={i}>{issue}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
             </>

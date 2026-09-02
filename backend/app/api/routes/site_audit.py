@@ -303,15 +303,24 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
 
 
 def _generate_competitor_narratives(
-    client: Client, data: dict, max_competitors: int = 5, on_progress: Callable[[str, int], None] | None = None
+    client: Client,
+    data: dict,
+    max_competitors: int = 5,
+    on_progress: Callable[[str, int], None] | None = None,
+    content_issues: list[str] | None = None,
 ) -> dict[str, dict]:
     """One AI-generated "Areas of Focus" narrative per competitor domain,
     grounded in whatever data was actually uploaded for that domain (Domain
     Overview stats, keyword positions, the rule-based gap findings that
     mention it by name). Capped at max_competitors — each one is a real AI
     call, so an unbounded competitor list would make report generation slow
-    and expensive for no proportional benefit."""
+    and expensive for no proportional benefit. content_issues (optional,
+    mutated in place) collects a human-readable failure reason per
+    competitor that didn't get a narrative, for the report's own
+    diagnostics slide."""
     progress = on_progress or (lambda _stage, _pct: None)
+    if content_issues is None:
+        content_issues = []
     competitor_rows = data.get("competitor_rows") or []
     competitor_positions = data.get("competitor_positions") or {}
     gap_issues = (data.get("competitor_analysis") or {}).get("issues") or []
@@ -387,12 +396,14 @@ def _generate_competitor_narratives(
             # A single competitor's AI narrative failing (rate limit, API
             # error, timeout) shouldn't take down the whole report.
             logger.warning("Competitor narrative failed for %s (client %s): %s", domain, client.id, e)
+            content_issues.append(f"Competitor narrative for {domain}: {e}")
             return domain, None
         if "error" in result:
             logger.warning(
                 "Competitor narrative failed for %s (client %s): %s | raw: %s",
                 domain, client.id, result["error"], result.get("raw"),
             )
+            content_issues.append(f"Competitor narrative for {domain}: {result['error']}")
             return domain, None
         return domain, result
 
@@ -550,6 +561,12 @@ def _gather_report_data(
     aren't comparable units of work), so this reports the current stage by
     name rather than fabricating a percentage."""
     progress = on_progress or (lambda _stage, _pct: None)
+    # Real failure reasons for any AI-dependent section that didn't come
+    # through this run (keyword clustering, Core Problem, competitor
+    # narratives, Next Steps) — surfaced on the report's own last slide
+    # instead of only a server log line, since whoever downloads the report
+    # often has no access to server logs to see why a section is missing.
+    content_issues: list[str] = []
     company_overview_result = None
     if company_overview_override is not None:
         company_overview_result = company_overview_override
@@ -729,6 +746,7 @@ def _gather_report_data(
             cluster_map = generate_keyword_clusters(unique_keywords[:100])
         except Exception as e:
             logger.warning("Keyword clustering failed for client %s: %s", client_id, e)
+            content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
             cluster_map = {}
         for r in keyword_rows_all:
             label = cluster_map.get(r.get("keyword"))
@@ -923,6 +941,7 @@ def _gather_report_data(
             core_problem_result = core_problem_candidate
         else:
             logger.warning("Core Problem generation failed for client %s: %s", client.id, core_problem_candidate["error"])
+            content_issues.append(f"Core Problem slide: {core_problem_candidate['error']}")
 
     # Whole-site schema coverage, from whatever full-site Page Audit job the
     # user last ran (if any) — not the fresh 20-page page_audit_result above,
@@ -964,6 +983,7 @@ def _gather_report_data(
         "competitor_analysis": competitor_analysis_result,
         "domain_strategy": domain_strategy_result,
         "ux_findings": ux_findings_result,
+        "content_generation_issues": content_issues,
     }
 
 
@@ -1002,10 +1022,15 @@ def _build_pptx_for_client(
     competitor_analysis_override: dict | None,
     ux_notes: str | None,
     on_progress: Callable[[str, int], None] | None = None,
-) -> tuple[bytes, str]:
+) -> tuple[bytes, str, list[str]]:
     """Runs the available checks for this client and assembles the PPTX
     bytes — shared by the synchronous /generate-report endpoint and the
-    background job runner below."""
+    background job runner below. The third return value lists any
+    AI-dependent section that failed this run (keyword clustering, Core
+    Problem, a competitor narrative, Next Steps) — deliberately never
+    rendered into the PPTX itself (a client-facing deliverable is no place
+    for "Groq request failed: 429"), surfaced instead through the job
+    status API so the agency user sees it before handing the file over."""
     progress = on_progress or (lambda _stage, _pct: None)
     data = _gather_report_data(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
@@ -1020,7 +1045,19 @@ def _build_pptx_for_client(
         except Exception:
             logger.exception("Logo fetch failed for client %s (%s) — continuing without it", client_id, logo_url)
 
-    competitor_narratives = _generate_competitor_narratives(client, data, on_progress=on_progress)
+    # Same list object _gather_report_data already put in data["content_
+    # generation_issues"] — mutated in place here too so **data below
+    # carries every AI-dependent failure (keyword clustering, Core Problem,
+    # each competitor, Next Steps) through to build_report without a
+    # colliding duplicate keyword argument.
+    content_issues = data.get("content_generation_issues")
+    if content_issues is None:
+        content_issues = []
+        data["content_generation_issues"] = content_issues
+
+    competitor_narratives = _generate_competitor_narratives(
+        client, data, on_progress=on_progress, content_issues=content_issues
+    )
 
     # Bespoke, business-aware Next Steps advice (real products/competitors/
     # numbers, sections that don't fit the business dropped entirely) in
@@ -1038,6 +1075,11 @@ def _build_pptx_for_client(
             next_steps_ai = next_steps_candidate
         else:
             logger.warning("Next Steps generation failed for client %s: %s", client.id, next_steps_candidate["error"])
+            content_issues.append(f"Next Steps recommendations: {next_steps_candidate['error']}")
+
+    # Popped out before spreading — build_report has no such parameter (see
+    # the docstring above on why this never goes into the PPTX itself).
+    data.pop("content_generation_issues", None)
 
     progress("Building presentation...", 96)
     try:
@@ -1054,7 +1096,7 @@ def _build_pptx_for_client(
         raise HTTPException(status_code=500, detail="Report generation failed while building the PPTX.")
 
     filename = f"{client.name.replace(' ', '-')}-seo-audit.pptx"
-    return pptx_bytes, filename
+    return pptx_bytes, filename, content_issues
 
 
 @router.post("/{client_id}/generate-report")
@@ -1074,7 +1116,11 @@ def generate_report(
     outlast the hosting gateway's request timeout, so prefer
     /generate-report/start for new callers."""
     client = _get_owned_client(client_id, db, current_user)
-    pptx_bytes, filename = _build_pptx_for_client(
+    # content_generation_issues has nowhere to go on this raw-file response
+    # (unlike the /start job, which surfaces it via its JSON status) — this
+    # legacy synchronous path is kept for backward compatibility only, not
+    # used by the current frontend (which always uses /start + polling).
+    pptx_bytes, filename, _content_issues = _build_pptx_for_client(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
         company_overview_override, competitor_analysis_override, ux_notes,
     )
@@ -1117,7 +1163,7 @@ def _run_generate_report_job(
                 progress_db.commit()
 
         client = db.get(Client, client_id)
-        pptx_bytes, filename = _build_pptx_for_client(
+        pptx_bytes, filename, content_issues = _build_pptx_for_client(
             client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
             company_overview_override, competitor_analysis_override, ux_notes, progress,
         )
@@ -1128,6 +1174,11 @@ def _run_generate_report_job(
         job.pptx_bytes = pptx_bytes
         job.progress_stage = None
         job.progress_pct = 100
+        # Never rendered into the PPTX itself (see _build_pptx_for_client's
+        # docstring) — stored here so the agency user sees which sections
+        # failed and why, right in the app, before deciding whether to
+        # regenerate or send the file as-is.
+        job.content_generation_issues = content_issues or None
         db.commit()
     except Exception as e:
         job = db.get(ReportGenerationJob, job_id)
@@ -1188,6 +1239,7 @@ def get_generate_report_job(
         "error": job.error,
         "progress_stage": job.progress_stage,
         "progress_pct": job.progress_pct,
+        "content_generation_issues": job.content_generation_issues,
     }
 
 
