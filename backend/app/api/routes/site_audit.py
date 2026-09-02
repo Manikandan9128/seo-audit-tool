@@ -33,7 +33,7 @@ from app.services.core_problem_service import generate_core_problem
 from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
-from app.services.competitor_narrative_service import generate_competitor_narrative
+from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -315,14 +315,15 @@ def _generate_competitor_narratives(
     on_progress: Callable[[str, int], None] | None = None,
     content_issues: list[str] | None = None,
 ) -> dict[str, dict]:
-    """One AI-generated "Areas of Focus" narrative per competitor domain,
+    """AI-generated "Areas of Focus" narrative per competitor domain,
     grounded in whatever data was actually uploaded for that domain (Domain
     Overview stats, keyword positions, the rule-based gap findings that
-    mention it by name). Capped at max_competitors — each one is a real AI
-    call, so an unbounded competitor list would make report generation slow
-    and expensive for no proportional benefit. content_issues (optional,
-    mutated in place) collects a human-readable failure reason per
-    competitor that didn't get a narrative, for the report's own
+    mention it by name). Capped at max_competitors — an unbounded
+    competitor list would make the one batched AI call below unbounded too
+    (see generate_competitor_narratives_batch, which covers every
+    competitor in a single call rather than one call each). content_issues
+    (optional, mutated in place) collects a human-readable failure reason
+    per competitor that didn't get a narrative, for the report's own
     diagnostics slide."""
     progress = on_progress or (lambda _stage, _pct: None)
     if content_issues is None:
@@ -368,13 +369,11 @@ def _generate_competitor_narratives(
             except Exception:
                 homepage_texts[domain] = None
 
-    def _build_one(domain: str) -> tuple[str, dict | None]:
-        idx = domains.index(domain) + 1
-        # Competitor analysis is the biggest, most variable chunk of a
-        # report (N sequential AI calls) — given a 30-point band (50-80%),
-        # sliced proportionally across however many competitors there are.
-        pct = 50 + round(30 * idx / len(domains))
-        progress(f"Analyzing competitor {idx} of {len(domains)}: {domain}...", pct)
+    # Gather each domain's grounding facts (pure data assembly, no AI call)
+    # — a domain with nothing grounded to write from is dropped entirely
+    # rather than sent to the AI to invent from.
+    competitors_facts: dict[str, dict] = {}
+    for domain in domains:
         row = next((r for r in competitor_rows if r.get("domain") == domain), None)
         top_keywords = sorted(
             competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
@@ -384,7 +383,9 @@ def _generate_competitor_narratives(
             if i.get("domain") and _norm(i["domain"]) == _norm(domain)
         ]
         homepage_text = homepage_texts.get(domain)
-        facts = {
+        if not row and not top_keywords and not relevant_gaps and not homepage_text:
+            continue
+        competitors_facts[domain] = {
             "domain_stats": row,
             "top_ranking_keywords": [
                 {"keyword": r.get("keyword"), "position": r.get("position"), "search_volume": r.get("search_volume")}
@@ -394,37 +395,28 @@ def _generate_competitor_narratives(
             "homepage_url": f"https://{domain}",
             "homepage_text": homepage_text,
         }
-        if not row and not top_keywords and not relevant_gaps and not homepage_text:
-            return domain, None  # nothing grounded to write from — skip rather than let the AI invent
-        try:
-            result = generate_competitor_narrative(client.name, client_domain, domain, facts)
-        except Exception as e:
-            # A single competitor's AI narrative failing (rate limit, API
-            # error, timeout) shouldn't take down the whole report.
-            logger.warning("Competitor narrative failed for %s (client %s): %s", domain, client.id, e)
-            content_issues.append(f"Competitor narrative for {domain}: {e}")
-            return domain, None
-        if "error" in result:
-            logger.warning(
-                "Competitor narrative failed for %s (client %s): %s | raw: %s",
-                domain, client.id, result["error"], result.get("raw"),
-            )
-            content_issues.append(f"Competitor narrative for {domain}: {result['error']}")
-            return domain, None
-        return domain, result
 
     narratives = {}
-    # Report generation only runs through the background-job flow in
-    # practice (frontend always calls /generate-report/start + polls) — no
-    # live request is held open waiting on this, so there's no gateway
-    # 504 risk from taking longer here. Serial on purpose: running 2+
-    # competitors' AI calls concurrently kept blowing through Groq's
-    # free-tier per-minute token limit, silently dropping 1-2 of 4
-    # narratives per real report even after capping to 2 concurrent.
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        for domain, narrative in pool.map(_build_one, domains):
-            if narrative is not None:
-                narratives[domain] = narrative
+    if competitors_facts:
+        # One AI call for every competitor at once instead of one call per
+        # competitor — competitor narratives were routinely the largest
+        # chunk of a report's total AI-call footprint (up to 5 of 7-8
+        # calls), and this app's free-tier AI quota (not raw processing
+        # time) is the actual binding constraint on report generation.
+        # Trade-off accepted deliberately: if this one call fails outright,
+        # every competitor's narrative is lost together instead of just
+        # one — see competitor_narrative_service's module docstring.
+        progress(f"Analyzing {len(competitors_facts)} competitor(s) together...", 65)
+        results = generate_competitor_narratives_batch(client.name, client_domain, competitors_facts)
+        for domain, result in results.items():
+            if "error" in result:
+                logger.warning(
+                    "Competitor narrative failed for %s (client %s): %s | raw: %s",
+                    domain, client.id, result["error"], result.get("raw"),
+                )
+                content_issues.append(f"Competitor narrative for {domain}: {result['error']}")
+            else:
+                narratives[domain] = result
 
     # Best-effort homepage screenshot per competitor, for visual grounding
     # on the narrative slide (matches the manual reference deck). Run
