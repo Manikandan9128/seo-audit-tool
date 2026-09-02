@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import SiteAuditHistory from "../components/SiteAuditHistory";
 import PageSpeedReport from "../components/PageSpeedReport";
 import PageAuditTable from "../components/PageAuditTable";
+import SchemaValidationPanel from "../components/SchemaValidationPanel";
 import AnalyticsReport from "../components/AnalyticsReport";
 import CompanyOverviewEditor from "../components/CompanyOverviewEditor";
 import type { CompanyOverview } from "../components/CompanyOverviewEditor";
@@ -889,6 +890,7 @@ export default function ClientDetailPage() {
           {pageAuditResult && (
             <div style={{ marginTop: 20 }}>
               <PageAuditTable result={pageAuditResult} />
+              <SchemaValidationPanel pages={pageAuditResult.pages || []} />
             </div>
           )}
         </SectionCard>

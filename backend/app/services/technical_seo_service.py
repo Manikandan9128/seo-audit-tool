@@ -146,6 +146,53 @@ def _schema_field_issues(entities: list[dict]) -> list[str]:
     return issues
 
 
+_SCHEMA_FIELD_ISSUE_RE = re.compile(r"^(.+?) schema missing required field: (.+)$")
+
+
+def aggregate_schema_validation(pages: list[dict]) -> dict:
+    """Whole-site schema.org coverage + missing-required-property counts,
+    built from a multi-page crawl's already-computed per-page meta (see
+    _extract_meta) — no extra crawling, just tallying what run_multi_page_audit*
+    already collected. Powers both the live UI panel and the PPTX slide."""
+    from collections import Counter
+
+    total_pages = 0
+    pages_with_schema = 0
+    type_counts: Counter = Counter()
+    missing_field_counts: Counter = Counter()
+
+    for page in pages:
+        meta = page.get("meta")
+        if not meta:
+            continue
+        total_pages += 1
+        types_found = meta.get("schema_types_found") or []
+        if types_found:
+            pages_with_schema += 1
+        for t in types_found:
+            type_counts[t] += 1
+        for issue in meta.get("schema_field_issues") or []:
+            match = _SCHEMA_FIELD_ISSUE_RE.match(issue)
+            if match:
+                missing_field_counts[(match.group(1), match.group(2))] += 1
+
+    type_coverage = [
+        {"type": t, "pages_with_it": c, "coverage_pct": round(100 * c / total_pages) if total_pages else 0}
+        for t, c in type_counts.most_common()
+    ]
+    missing_properties = [
+        {"type": t, "field": f, "pages_missing": c}
+        for (t, f), c in missing_field_counts.most_common()
+    ]
+
+    return {
+        "total_pages": total_pages,
+        "pages_with_schema": pages_with_schema,
+        "type_coverage": type_coverage,
+        "missing_properties": missing_properties,
+    }
+
+
 def _extract_meta(html_source: str) -> dict:
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html_source, re.IGNORECASE | re.DOTALL)
     title = html.unescape(title_match.group(1).strip()) if title_match else None

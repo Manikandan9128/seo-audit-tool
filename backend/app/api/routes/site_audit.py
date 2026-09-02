@@ -38,7 +38,7 @@ from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
 from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.tech_stack_service import detect_tech_stack
-from app.services.technical_seo_service import run_multi_page_audit_async, run_site_audit
+from app.services.technical_seo_service import aggregate_schema_validation, run_multi_page_audit_async, run_site_audit
 
 router = APIRouter(prefix="/clients", tags=["site-audit"])
 logger = logging.getLogger(__name__)
@@ -192,6 +192,27 @@ def get_page_audit_job(
         "error": job.error,
         "result": job.result if job.status == "done" else None,
     }
+
+
+@router.get("/{client_id}/schema-validation")
+def schema_validation(
+    client_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Whole-site schema.org coverage + missing required properties, tallied
+    from the most recently completed Page Audit job — no fresh crawl, reuses
+    whatever full-site data that background job already collected."""
+    _get_owned_client(client_id, db, current_user)
+    job = (
+        db.query(PageAuditJob)
+        .filter(PageAuditJob.client_id == client_id, PageAuditJob.status == "done")
+        .order_by(PageAuditJob.created_at.desc())
+        .first()
+    )
+    if not job or not job.result:
+        raise HTTPException(status_code=404, detail="No completed Page Audit yet — run one first")
+    return aggregate_schema_validation(job.result.get("pages", []))
 
 
 @router.post("/{client_id}/pagespeed")
@@ -878,9 +899,25 @@ def _gather_report_data(
         else:
             logger.warning("Core Problem generation failed for client %s: %s", client.id, core_problem_candidate["error"])
 
+    # Whole-site schema coverage, from whatever full-site Page Audit job the
+    # user last ran (if any) — not the fresh 20-page page_audit_result above,
+    # which is too small a sample for a sitewide schema claim.
+    latest_page_audit_job = (
+        db.query(PageAuditJob)
+        .filter(PageAuditJob.client_id == client_id, PageAuditJob.status == "done")
+        .order_by(PageAuditJob.created_at.desc())
+        .first()
+    )
+    schema_validation_result = (
+        aggregate_schema_validation(latest_page_audit_job.result.get("pages", []))
+        if latest_page_audit_job and latest_page_audit_job.result
+        else None
+    )
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
+        "schema_validation": schema_validation_result,
         "site_audit_issues": site_audit_issues_rows or None,
         "structured_data_rows": structured_data_rows or None,
         "site_audit_pages_rows": site_audit_pages_rows or None,

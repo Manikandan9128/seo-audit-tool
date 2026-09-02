@@ -1301,6 +1301,45 @@ def add_structured_data_slide(
     )
 
 
+def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
+    """Missing REQUIRED PROPERTIES per Google's structured-data docs — not
+    just type presence/absence (the Semrush-sourced Structured Data slide
+    above already covers that), but "Product pages are missing 'image' on
+    12 of 15 pages" style gaps. Built from this tool's own full-site Page
+    Audit crawl (see aggregate_schema_validation), since Semrush's export
+    only tracks per-page type presence, never property-level completeness.
+    Skipped entirely if no Page Audit has been run for this client yet."""
+    total_pages = schema_validation.get("total_pages") or 0
+    if not total_pages:
+        return None
+
+    missing_properties = schema_validation.get("missing_properties") or []
+    if not missing_properties:
+        return None
+
+    headers = ["Schema Type", "Missing Property", "Pages Affected"]
+    col_widths = [4.0, 4.0, 4.0]
+    rows = [
+        (m["type"], m["field"], f"{m['pages_missing']:,} of {total_pages:,}")
+        for m in missing_properties
+    ]
+
+    pages_with_schema = schema_validation.get("pages_with_schema") or 0
+    insights = [
+        f"{pages_with_schema:,} of {total_pages:,} crawled pages have some structured data — this table is the "
+        "required-property gaps within that markup, per Google's structured-data requirements.",
+    ]
+    worst = missing_properties[0]
+    insights.append(
+        f"{worst['type']} schema is missing '{worst['field']}' on {worst['pages_missing']:,} page(s) — "
+        "the largest single gap found."
+    )
+
+    return _table_slide(
+        prs, "Schema Validator", headers, rows, col_widths=col_widths, source="Site Audit crawl", insights=insights
+    )
+
+
 # Canned fix per page-level issue string from technical_seo_service.py's
 # crawler (see _meta_issues() and run_multi_page_audit) — (fix text,
 # severity). Matches the real manual-report "Tech Fixes" slide format
@@ -2497,6 +2536,7 @@ def build_report(
     core_problem: dict | None = None,
     site_audit_pages_rows: list[dict] | None = None,
     next_steps_ai: dict | None = None,
+    schema_validation: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -2516,7 +2556,7 @@ def build_report(
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
-            site_audit_pages_rows, next_steps_ai,
+            site_audit_pages_rows, next_steps_ai, schema_validation,
         )
     finally:
         _theme["footer"] = ""
@@ -2551,6 +2591,7 @@ def _build_report(
     core_problem: dict | None = None,
     site_audit_pages_rows: list[dict] | None = None,
     next_steps_ai: dict | None = None,
+    schema_validation: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -2587,6 +2628,8 @@ def _build_report(
             add_tech_fixes_slide(prs, page_audit, analytics)
             if structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
+            if schema_validation:
+                add_schema_validation_slide(prs, schema_validation)
 
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
