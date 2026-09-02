@@ -572,11 +572,14 @@ def add_site_health_slide(prs: Presentation, audit: dict, site_audit_overview: d
 
 def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict] | None):
     """Directory-level rollup of the full-site crawl, styled after Semrush's
-    own "Site Structure" widget: a root domain row on top, then each
-    top-level directory folder underneath — directory names only, no
-    URL-count or Issues column. Derived entirely from Semrush Site Audit's
-    per-page export (page_url) we already parse for the SEO Issues / Tech
-    Fixes slides — no new Semrush upload needed, just a grouping."""
+    own "Site Structure" widget: a root domain row (with its total URL
+    count) on top, each top-level directory folder underneath with its own
+    URL count, and — for directories that actually branch into further
+    sub-directories (e.g. /ca, /product) — the top sub-directories nested
+    beneath it, indented one level deeper, matching Semrush's expandable
+    folder rows. Derived entirely from Semrush Site Audit's per-page export
+    (page_url) we already parse for the SEO Issues / Tech Fixes slides — no
+    new Semrush upload needed, just a grouping."""
     if not site_audit_pages_rows:
         return None
 
@@ -589,47 +592,87 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     # Fold them into "/blog" alongside the section they actually belong to.
     _WP_ARCHIVE_PREFIXES = {"post", "author", "tag", "category", "page"}
 
-    dirs: dict[str, dict] = {}
-    for r in site_audit_pages_rows:
-        path = urlparse(r.get("page_url") or "").path
-        segments = [s for s in path.split("/") if s]
-        if not segments:
-            # A bare "/" page — already covered by the domain row itself, so
-            # it doesn't need its own "/ (root)" child row.
-            continue
-        elif segments[0].lower() in _WP_ARCHIVE_PREFIXES and len(segments) > 1:
-            directory = "/blog"
-        else:
-            directory = f"/{segments[0]}"
-        entry = dirs.setdefault(directory, {"urls": 0})
-        entry["urls"] += 1
-
-    ranked = sorted(dirs.items(), key=lambda kv: -kv[1]["urls"])
-
     # A crawl can include a handful of pages from a subdomain (e.g. a
     # helpdesk/portal subdomain) alongside the main site — picking "any"
     # domain from a set is non-deterministic and previously surfaced a
     # rarely-crawled subdomain as the header instead of the actual site.
-    # The domain with the most crawled pages is the real site.
+    # The domain with the most crawled pages is the real site, and every
+    # other subdomain's paths are excluded below so they can't be
+    # misattributed into this domain's directory structure.
     domain_counts = Counter(urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows)
     domain_counts.pop("", None)
-    domain = domain_counts.most_common(1)[0][0] if domain_counts else "site"
+    if not domain_counts:
+        return None
+    domain = domain_counts.most_common(1)[0][0]
 
-    rows = [(f"    {directory}",) for directory, _info in ranked]
-    rows.insert(0, (domain,))
+    top_counts: dict[str, int] = {}
+    child_counts: dict[str, Counter] = {}
+    root_count = 0
+    for r in site_audit_pages_rows:
+        parsed = urlparse(r.get("page_url") or "")
+        if parsed.netloc != domain:
+            continue
+        segments = [s for s in parsed.path.split("/") if s]
+        if not segments:
+            # A bare "/" page — already covered by the domain row itself, so
+            # it doesn't need its own "/ (root)" child row.
+            root_count += 1
+            continue
+        if segments[0].lower() in _WP_ARCHIVE_PREFIXES and len(segments) > 1:
+            directory = "/blog"
+            sub_directory = f"/blog/{segments[0]}"
+        else:
+            directory = f"/{segments[0]}"
+            sub_directory = f"{directory}/{segments[1]}" if len(segments) > 1 else None
+        top_counts[directory] = top_counts.get(directory, 0) + 1
+        if sub_directory:
+            child_counts.setdefault(directory, Counter())[sub_directory] += 1
+
+    ranked = sorted(top_counts.items(), key=lambda kv: -kv[1])
+    domain_total = sum(top_counts.values()) + root_count
+
+    # Same 13-directory-row budget the slide always had (14 total minus the
+    # domain row) — sub-directory rows draw from the same budget so the
+    # table never overflows the slide, same as before this only showed flat
+    # top-level rows.
+    rows = [(domain, f"{domain_total:,}")]
+    budget = 13
+    child_row_indices: set[int] = set()
+    for directory, count in ranked:
+        if budget <= 0:
+            break
+        rows.append((f"    {directory}", f"{count:,}"))
+        budget -= 1
+        subs = child_counts.get(directory)
+        # Only worth expanding when the directory genuinely branches into
+        # more than one sub-directory — a single child is just that folder's
+        # one page, not a structure worth nesting.
+        if subs and len(subs) >= 2:
+            for sub_directory, sub_count in sorted(subs.items(), key=lambda kv: -kv[1])[:3]:
+                if budget <= 0:
+                    break
+                child_row_indices.add(len(rows))
+                rows.append((f"        {sub_directory}", f"{sub_count:,}"))
+                budget -= 1
 
     slide = _table_slide(
-        prs, "Website Structure", ["Directory"], rows,
-        col_widths=[12.1], source="Semrush Site Audit",
+        prs, "Website Structure", ["Directory", "URLs"], rows,
+        col_widths=[9.6, 2.5], source="Semrush Site Audit",
     )
     for shape in slide.shapes:
-        if shape.has_table:
-            domain_row = shape.table.rows[1]  # row 0 is the header, row 1 is the domain row we inserted
-            for cell in domain_row.cells:
-                cell.fill.solid()
-                cell.fill.fore_color.rgb = HEADER_ROW_BG
-                cell.text_frame.paragraphs[0].font.bold = True
-            break
+        if not shape.has_table:
+            continue
+        table = shape.table
+        domain_row = table.rows[1]  # row 0 is the header, row 1 is the domain row we inserted
+        for cell in domain_row.cells:
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = HEADER_ROW_BG
+            cell.text_frame.paragraphs[0].font.bold = True
+        for row_idx in child_row_indices:
+            for cell in table.rows[row_idx + 1].cells:  # +1 to skip the header row
+                cell.text_frame.paragraphs[0].font.size = Pt(10)
+                cell.text_frame.paragraphs[0].font.color.rgb = TEXT_MUTED
+        break
     return slide
 
 
