@@ -234,7 +234,7 @@ export default function SiteAuditReport({
                     <td><Status ok={meta.structured_data_present} okLabel="Present" failLabel="Missing" /></td>
                     <td>
                       {meta.structured_data_present
-                        ? meta.schema_types_found.length > 0
+                        ? (meta.schema_types_found || []).length > 0
                           ? meta.schema_types_found.join(", ")
                           : "schema.org markup (type unreadable)"
                         : "schema.org markup"}
@@ -245,12 +245,12 @@ export default function SiteAuditReport({
             ) : (
               <p style={{ color: "var(--text-muted)", fontSize: 13.5 }}>Homepage could not be fetched — no on-page data available.</p>
             )}
-            {meta && meta.schema_types_missing.length > 0 && (
+            {meta && (meta.schema_types_missing || []).length > 0 && (
               <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 8 }}>
                 Missing recommended schema: {meta.schema_types_missing.join(", ")}
               </p>
             )}
-            {meta && meta.schema_field_issues.length > 0 && (
+            {meta && (meta.schema_field_issues || []).length > 0 && (
               <div style={{ marginTop: 8 }}>
                 <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--danger)" }}>
                   Schema validation issues (per Google's structured-data requirements):
