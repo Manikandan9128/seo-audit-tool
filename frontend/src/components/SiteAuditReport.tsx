@@ -20,6 +20,7 @@ interface SiteAuditResult {
     structured_data_present: boolean;
     schema_types_found: string[];
     schema_types_missing: string[];
+    schema_field_issues: string[];
     og_tags_present: boolean;
   } | null;
   issues: string[];
@@ -249,12 +250,24 @@ export default function SiteAuditReport({
                 Missing recommended schema: {meta.schema_types_missing.join(", ")}
               </p>
             )}
+            {meta && meta.schema_field_issues.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--danger)" }}>
+                  Schema validation issues (per Google's structured-data requirements):
+                </p>
+                <ul className="issue-list">
+                  {meta.schema_field_issues.map((issue, i) => (
+                    <li key={i}>{issue}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {meta && meta.structured_data_present && clientId && gscConnected && (
               <RichResultsValidator clientId={clientId} url={result.url} />
             )}
             {meta && meta.structured_data_present && clientId && !gscConnected && (
               <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 8 }}>
-                Connect Google Search Console for this client to validate structured data against Google's rich result requirements.
+                Connect Google Search Console for this client for full Google Rich Results validation.
               </p>
             )}
           </div>

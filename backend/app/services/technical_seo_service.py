@@ -62,10 +62,37 @@ def _check_sitemap(sitemap_url: str) -> dict:
 _RECOMMENDED_SCHEMA_TYPES = ["Organization", "WebSite", "BreadcrumbList"]
 
 
-def _extract_schema_types(html_source: str) -> list[str]:
-    """@type values across all application/ld+json blocks on the page,
-    including @graph-wrapped and array-of-entities forms."""
-    types: list[str] = []
+# Required/recommended top-level properties per Google's rich-result docs
+# (https://developers.google.com/search/docs/appearance/structured-data) for
+# the types that show up on ordinary business/marketing sites. Not every
+# type Google supports — just enough to flag the common gaps without a
+# Search Console connection. Field presence only (not value-shape validation,
+# e.g. offers needing its own price/availability) — good enough to catch
+# "you have a Product block but no image/offers", not full schema linting.
+_SCHEMA_FIELD_RULES: dict[str, dict[str, list[str]]] = {
+    "Article": {"required": ["headline", "image", "datePublished"], "recommended": ["author", "dateModified", "publisher"]},
+    "NewsArticle": {"required": ["headline", "image", "datePublished"], "recommended": ["author", "dateModified", "publisher"]},
+    "BlogPosting": {"required": ["headline", "image", "datePublished"], "recommended": ["author", "dateModified", "publisher"]},
+    "Product": {"required": ["name"], "recommended": ["image", "description", "offers", "review", "aggregateRating", "brand"]},
+    "Organization": {"required": ["name", "url"], "recommended": ["logo", "sameAs"]},
+    "LocalBusiness": {"required": ["name", "address"], "recommended": ["image", "telephone", "priceRange", "openingHoursSpecification"]},
+    "BreadcrumbList": {"required": ["itemListElement"], "recommended": []},
+    "FAQPage": {"required": ["mainEntity"], "recommended": []},
+    "Review": {"required": ["reviewRating", "author"], "recommended": ["itemReviewed"]},
+    "Event": {"required": ["name", "startDate", "location"], "recommended": ["image", "description", "offers"]},
+    "Recipe": {"required": ["name", "image", "author"], "recommended": ["recipeIngredient", "recipeInstructions", "aggregateRating"]},
+    "VideoObject": {"required": ["name", "description", "thumbnailUrl", "uploadDate"], "recommended": []},
+    "JobPosting": {"required": ["title", "description", "datePosted", "hiringOrganization", "jobLocation"], "recommended": []},
+    "HowTo": {"required": ["name", "step"], "recommended": ["image", "totalTime"]},
+    "WebSite": {"required": ["name", "url"], "recommended": ["potentialAction"]},
+}
+
+
+def _extract_schema_entities(html_source: str) -> list[dict]:
+    """Every JSON-LD entity on the page (flattened out of @graph and array
+    forms), each still carrying its own fields so field-level rules can run
+    against it."""
+    entities: list[dict] = []
     for block in re.findall(
         r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_source, re.IGNORECASE | re.DOTALL
     ):
@@ -74,24 +101,24 @@ def _extract_schema_types(html_source: str) -> list[str]:
         except (json.JSONDecodeError, ValueError):
             continue
 
-        entities = data if isinstance(data, list) else [data]
-        expanded = []
-        for entity in entities:
+        top_level = data if isinstance(data, list) else [data]
+        for entity in top_level:
             if isinstance(entity, dict) and "@graph" in entity:
-                expanded.extend(entity["@graph"])
-            else:
-                expanded.append(entity)
+                entities.extend(e for e in entity["@graph"] if isinstance(e, dict))
+            elif isinstance(entity, dict):
+                entities.append(entity)
+    return entities
 
-        for entity in expanded:
-            if not isinstance(entity, dict):
-                continue
-            entity_type = entity.get("@type")
-            if isinstance(entity_type, list):
-                types.extend(str(t) for t in entity_type)
-            elif entity_type:
-                types.append(str(entity_type))
 
-    # de-duplicate, keep first-seen order
+def _schema_types_from_entities(entities: list[dict]) -> list[str]:
+    types: list[str] = []
+    for entity in entities:
+        entity_type = entity.get("@type")
+        if isinstance(entity_type, list):
+            types.extend(str(t) for t in entity_type)
+        elif entity_type:
+            types.append(str(entity_type))
+
     seen = set()
     unique_types = []
     for t in types:
@@ -99,6 +126,24 @@ def _extract_schema_types(html_source: str) -> list[str]:
             seen.add(t)
             unique_types.append(t)
     return unique_types
+
+
+def _schema_field_issues(entities: list[dict]) -> list[str]:
+    """'<Type> missing required field: <field>' for every rule-covered type
+    detected on the page — the same required-property gaps Google's Rich
+    Results Test would flag, checked locally without a Search Console call."""
+    issues: list[str] = []
+    for entity in entities:
+        entity_types = entity.get("@type")
+        entity_types = entity_types if isinstance(entity_types, list) else [entity_types]
+        for t in entity_types:
+            rules = _SCHEMA_FIELD_RULES.get(str(t))
+            if not rules:
+                continue
+            for field in rules["required"]:
+                if field not in entity:
+                    issues.append(f"{t} schema missing required field: {field}")
+    return issues
 
 
 def _extract_meta(html_source: str) -> dict:
@@ -118,8 +163,10 @@ def _extract_meta(html_source: str) -> dict:
     canonical_present = bool(re.search(r'<link[^>]+rel=["\']canonical["\']', html_source, re.IGNORECASE))
     h1_count = len(re.findall(r"<h1[^>]*>", html_source, re.IGNORECASE))
     structured_data_present = bool(re.search(r'application/ld\+json', html_source, re.IGNORECASE))
-    schema_types = _extract_schema_types(html_source) if structured_data_present else []
+    schema_entities = _extract_schema_entities(html_source) if structured_data_present else []
+    schema_types = _schema_types_from_entities(schema_entities)
     schema_types_missing = [t for t in _RECOMMENDED_SCHEMA_TYPES if t not in schema_types]
+    schema_field_issues = _schema_field_issues(schema_entities)
     og_tags_present = bool(re.search(r'<meta[^>]+property=["\']og:', html_source, re.IGNORECASE))
 
     return {
@@ -133,6 +180,7 @@ def _extract_meta(html_source: str) -> dict:
         "structured_data_present": structured_data_present,
         "schema_types_found": schema_types,
         "schema_types_missing": schema_types_missing,
+        "schema_field_issues": schema_field_issues,
         "og_tags_present": og_tags_present,
     }
 
@@ -201,8 +249,10 @@ def _meta_issues(meta: dict) -> list[str]:
         issues.append("Missing canonical tag")
     if not meta["structured_data_present"]:
         issues.append("Missing structured data (JSON-LD)")
-    elif meta["schema_types_missing"]:
-        issues.append(f"Missing recommended schema types: {', '.join(meta['schema_types_missing'])}")
+    else:
+        if meta["schema_types_missing"]:
+            issues.append(f"Missing recommended schema types: {', '.join(meta['schema_types_missing'])}")
+        issues.extend(meta["schema_field_issues"])
     return issues
 
 
