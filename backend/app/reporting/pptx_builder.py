@@ -1115,8 +1115,77 @@ _ALL_SCHEMA_ITEM_FIELDS = [
     ("Software App", "software_app_items"), ("Vehicle Listing", "vehicle_listing_items"), ("Video", "video_items"),
 ]
 
+# Contextual schema relevance: a page has to actually BE the shape a schema
+# type is for before its absence counts as a gap — a SaaS site with zero
+# careers pages doesn't need Job Posting schema, and flagging it as missing
+# "on all 1,336 pages" is noise, not a finding. Product/blog/jobs/local/
+# event are detected by URL pattern (cheap, no extra crawl); FAQ/how-to
+# genuinely can't be — a FAQ section can live on any URL, including a
+# homepage or product page — so those fall back to whatever text is
+# available (URL slug + page title, when Site Audit Pages data is joined
+# in) as a best-effort proxy. True content-scanning (question-shaped
+# headings, numbered steps) would need our own crawler to fetch full page
+# HTML — that infra existed once (see crawl_extras_2026-09-01) and was
+# reverted for being too slow; this stays URL/title-only until that's
+# safely rebuilt.
+_PRODUCT_SHAPE_RE = re.compile(r"/(?:products?|shop|store|items?)/", re.IGNORECASE)
+_BLOG_SHAPE_RE = re.compile(r"/(?:blog|news|articles?|posts?)/", re.IGNORECASE)
+_JOBS_SHAPE_RE = re.compile(r"/(?:careers?|jobs?)/", re.IGNORECASE)
+_LOCAL_SHAPE_RE = re.compile(r"/(?:locations?|store-locator|near-me|branch(?:es)?)/", re.IGNORECASE)
+_EVENT_SHAPE_RE = re.compile(r"/events?/", re.IGNORECASE)
+_FAQ_SHAPE_RE = re.compile(r"faq|frequently[\s-]asked[\s-]questions", re.IGNORECASE)
+_HOWTO_SHAPE_RE = re.compile(r"how[\s-]to|step[\s-]by[\s-]step|\btutorial\b|\bguide\b", re.IGNORECASE)
 
-def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict]):
+
+def _classify_page_shapes(page_url: str, page_title: str = "") -> set[str]:
+    path = urlparse(page_url or "").path
+    shapes = set()
+    if _PRODUCT_SHAPE_RE.search(path):
+        shapes.add("product")
+    if _BLOG_SHAPE_RE.search(path):
+        shapes.add("blog")
+    if _JOBS_SHAPE_RE.search(path):
+        shapes.add("jobs")
+    if _LOCAL_SHAPE_RE.search(path):
+        shapes.add("local")
+    if _EVENT_SHAPE_RE.search(path):
+        shapes.add("event")
+    text = f"{path} {page_title or ''}"
+    if _FAQ_SHAPE_RE.search(text):
+        shapes.add("faq")
+    if _HOWTO_SHAPE_RE.search(text):
+        shapes.add("howto")
+    return shapes
+
+
+# Which page shape(s) make a curated schema type's absence a real finding.
+# A type with no entry here (Breadcrumb) applies site-wide — every page can
+# carry one, so its denominator stays the full crawl, same as before.
+_SCHEMA_TYPE_REQUIRED_SHAPES = {
+    "article_items": {"blog"},
+    "faq_items": {"faq"},
+    "product_items": {"product"},
+    "review_items": {"product"},  # reviews live on/near the product they review
+    "local_business_items": {"local"},
+    "howto_items": {"howto"},
+    "job_posting_items": {"jobs"},
+    "event_items": {"event"},
+}
+_SCHEMA_TYPE_SHAPE_NOUN = {
+    "article_items": "blog/news",
+    "faq_items": "FAQ-worthy",
+    "product_items": "product",
+    "review_items": "product",
+    "local_business_items": "location",
+    "howto_items": "how-to/guide",
+    "job_posting_items": "job listing",
+    "event_items": "event",
+}
+
+
+def add_structured_data_slide(
+    prs: Presentation, structured_data_rows: list[dict], site_audit_pages_rows: list[dict] | None = None
+):
     """Total URLs crawled vs. how many have any schema markup implemented,
     plus a per-type breakdown, worst-coverage first. Shows the 9 curated
     rich-result types PLUS any other tracked type (of all ~27 Semrush
@@ -1126,10 +1195,36 @@ def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict
     where the remaining % went. total_pages is the real crawl total
     (semrush_parser.py no longer caps structured_data rows at 500 — a real
     client site can have 1200+ crawled pages, and capping silently
-    understated both this total and every coverage %)."""
+    understated both this total and every coverage %).
+
+    The coverage TABLE stays site-wide (X of ALL crawled pages) deliberately
+    — narrowing its denominator to "relevant" pages would also silently
+    exclude a genuinely valuable finding like a blog post carrying Product
+    schema instead of Article (confirmed on a real Lumber crawl). Only the
+    "No X schema found" INSIGHT bullets get contextual: a type mapped to a
+    page shape (see _SCHEMA_TYPE_REQUIRED_SHAPES) is only flagged as missing
+    when at least one page of that shape actually exists on the site — a
+    SaaS site with zero careers pages doesn't need a "no Job Posting schema"
+    bullet. site_audit_pages_rows (optional) supplies page_title for the
+    FAQ/how-to shape check, which can't rely on URL alone."""
     total_pages = len(structured_data_rows)
     if not total_pages:
         return None
+
+    title_by_url: dict[str, str] = {}
+    if site_audit_pages_rows:
+        for r in site_audit_pages_rows:
+            url = r.get("page_url")
+            if url:
+                title_by_url[url] = r.get("page_title") or ""
+    row_shapes = [
+        _classify_page_shapes(r.get("page_url") or "", title_by_url.get(r.get("page_url") or "", ""))
+        for r in structured_data_rows
+    ]
+    relevant_counts = {
+        field: sum(1 for shapes in row_shapes if shapes & required)
+        for field, required in _SCHEMA_TYPE_REQUIRED_SHAPES.items()
+    }
 
     pages_with_any_schema = sum(
         1 for r in structured_data_rows
@@ -1171,10 +1266,25 @@ def add_structured_data_slide(prs: Presentation, structured_data_rows: list[dict
         "(schema.org JSON-LD or Microdata) implemented.",
     ]
     missing = [c for c in coverage if c[3] == 0 and c[2] is not None]  # curated-only, has benefit text
-    insights += [
-        f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}."
-        for label, _field, benefit, _pages_with in missing[:2]
-    ]
+    missing_insights = []
+    for label, field, benefit, _pages_with in missing:
+        required_shapes = _SCHEMA_TYPE_REQUIRED_SHAPES.get(field)
+        if required_shapes is not None:
+            relevant = relevant_counts.get(field, 0)
+            if relevant == 0:
+                # No page on the site is even shaped for this type (e.g. no
+                # careers pages at all) — not a gap, just not applicable.
+                continue
+            noun = _SCHEMA_TYPE_SHAPE_NOUN.get(field, label.lower())
+            missing_insights.append(
+                f"No {label} schema found on any of the {relevant} {noun} page(s) identified — adding it {benefit}."
+            )
+        else:
+            # Site-wide type (Breadcrumb) — no shape to narrow to, every page qualifies.
+            missing_insights.append(f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}.")
+        if len(missing_insights) == 2:
+            break
+    insights += missing_insights
     best = max(coverage, key=lambda c: c[3])
     if best[3] > 0:
         gap = total_pages - pages_with_any_schema
@@ -2476,7 +2586,7 @@ def _build_report(
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
             if structured_data_rows:
-                add_structured_data_slide(prs, structured_data_rows)
+                add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
 
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
