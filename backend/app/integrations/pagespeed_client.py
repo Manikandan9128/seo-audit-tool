@@ -45,8 +45,9 @@ def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
 
 
 def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 2) -> dict:
-    """strategy: 'mobile' or 'desktop'. Retries once on timeout — PSI's own
-    Lighthouse run is slow enough that transient timeouts aren't unusual."""
+    """strategy: 'mobile' or 'desktop'. Retries on timeout and on a 5xx from
+    PSI itself — its own Lighthouse run is slow and flaky enough that both
+    transient timeouts and transient server errors aren't unusual."""
     params = {
         "url": url,
         "strategy": strategy,
@@ -55,11 +56,13 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 2) -> dict:
     }
     try:
         resp = httpx.get(PSI_ENDPOINT, params=params, timeout=TIMEOUT)
-    except httpx.TimeoutException:
+        resp.raise_for_status()
+    except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+            raise
         if retries > 0:
             return run_pagespeed(url, strategy=strategy, retries=retries - 1)
         raise
-    resp.raise_for_status()
     data = resp.json()
 
     lighthouse = data.get("lighthouseResult", {})
