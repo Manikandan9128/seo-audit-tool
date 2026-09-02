@@ -16,3 +16,19 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// A 401 means the token is gone/expired — bounce to login instead of
+// leaving the page stuck silently re-issuing the same failing request
+// (e.g. polling loops during a backend restart).
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401 && !error.config?.url?.startsWith("/auth/")) {
+      localStorage.removeItem("access_token");
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
+    }
+    return Promise.reject(error);
+  }
+);
