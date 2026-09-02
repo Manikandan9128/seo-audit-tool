@@ -337,59 +337,6 @@ async def run_multi_page_audit_async(
     }
 
 
-def run_multi_page_audit(website_url: str, page_limit: int = 20) -> dict:
-    """Crawls up to page_limit URLs from the sitemap (falls back to just the
-    homepage if no sitemap is found) and runs the same on-page checks on each.
-    Respects robots.txt disallow rules and paces requests to be a polite crawler.
-    """
-    parsed = urlparse(website_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-    robots_url = urljoin(base_url, "/robots.txt")
-    robots_resp = _fetch(robots_url)
-    parser = RobotFileParser()
-    if robots_resp is not None and robots_resp.status_code == 200:
-        parser.parse(robots_resp.text.splitlines())
-        sitemap_hint = re.findall(r"(?i)sitemap:\s*(\S+)", robots_resp.text)
-    else:
-        sitemap_hint = []
-
-    sitemap_url = sitemap_hint[0] if sitemap_hint else urljoin(base_url, "/sitemap.xml")
-    sitemap_urls = _get_sitemap_urls(sitemap_url, limit=page_limit)
-
-    urls_to_check = sitemap_urls if sitemap_urls else [website_url]
-    urls_to_check = urls_to_check[:page_limit]
-
-    pages = []
-    for url in urls_to_check:
-        if robots_resp is not None and not parser.can_fetch(USER_AGENT, url):
-            continue
-        resp = _fetch(url)
-        reachable = resp is not None and resp.status_code < 400
-        page_result = {
-            "url": url,
-            "reachable": reachable,
-            "status_code": resp.status_code if resp else None,
-        }
-        if reachable:
-            meta = _extract_meta(resp.text)
-            page_result["meta"] = meta
-            page_result["issues"] = _meta_issues(meta)
-        else:
-            page_result["meta"] = None
-            page_result["issues"] = ["Page not reachable"]
-        pages.append(page_result)
-        time.sleep(0.3)
-
-    return {
-        "base_url": base_url,
-        "sitemap_url": sitemap_url if sitemap_urls else None,
-        "pages_checked": len(pages),
-        "pages_with_issues": sum(1 for p in pages if p["issues"]),
-        "pages": pages,
-    }
-
-
 def run_site_audit(website_url: str) -> dict:
     parsed = urlparse(website_url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"

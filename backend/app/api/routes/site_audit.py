@@ -38,7 +38,7 @@ from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
 from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.tech_stack_service import detect_tech_stack
-from app.services.technical_seo_service import run_multi_page_audit, run_multi_page_audit_async, run_site_audit
+from app.services.technical_seo_service import run_multi_page_audit_async, run_site_audit
 
 router = APIRouter(prefix="/clients", tags=["site-audit"])
 logger = logging.getLogger(__name__)
@@ -103,7 +103,12 @@ def site_audit_pages(
 ):
     client = _get_owned_client(client_id, db, current_user)
     limit = max(1, min(limit, 50))
-    return run_multi_page_audit(client.website_url, page_limit=limit)
+    # Async version fetches pages concurrently with no artificial delay,
+    # instead of the serial run_multi_page_audit's one-at-a-time loop with a
+    # hardcoded time.sleep(0.3) after every page — this is a live request
+    # blocking on the response, so that delay was directly felt by whoever
+    # called this endpoint.
+    return asyncio.run(run_multi_page_audit_async(client.website_url, page_limit=limit))
 
 
 def _run_page_audit_job(job_id: uuid.UUID, website_url: str, page_limit: int):
@@ -523,7 +528,13 @@ def _gather_report_data(
             db.commit()
 
     site_audit_result = run_site_audit(client.website_url)
-    page_audit_result = run_multi_page_audit(client.website_url, page_limit=20)
+    # The async version (already used by the background full-crawl job)
+    # fetches pages CONCURRENCY-at-a-time with no artificial delay, instead
+    # of run_multi_page_audit's one-at-a-time loop with a hardcoded
+    # time.sleep(0.3) after every page — that alone is 6+ seconds of pure
+    # sleep for a 20-page crawl, run synchronously on every single report
+    # generation. Same return shape, drop-in swap.
+    page_audit_result = asyncio.run(run_multi_page_audit_async(client.website_url, page_limit=20))
 
     tech_stack_result = detect_tech_stack(client.website_url)
     if "error" in tech_stack_result:
