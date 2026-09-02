@@ -1,10 +1,17 @@
 """Unified text-generation call that tries whichever AI provider has a
-configured key — Gemini first (existing default), then Groq (free-tier,
-much higher RPM — covers Gemini's per-minute burst limit), then Claude as
-a last, paid fallback — so callers (company overview extraction, AI
-summary, competitor narrative, core problem, keyword clustering) work as
-long as *any* key is set, without provider-specific branching at each
-call site."""
+configured key — Groq first, then Gemini, then Claude as a last, paid
+fallback — so callers (company overview extraction, AI summary,
+competitor narrative, core problem, keyword clustering) work as long as
+*any* key is set, without provider-specific branching at each call site.
+
+Groq goes first deliberately (confirmed real-world tradeoff, not the
+original default): Gemini's free-tier quota resets once every 24 hours, so
+burning it first on every call exhausts it early in the day and it then
+sits useless in reserve while Groq alone (with its own, faster-recovering
+per-minute/hourly limits) idles unused until Gemini fails. Trying Groq
+first spends the fast-recovering resource first and keeps Gemini's scarce
+daily allowance in reserve for when Groq is genuinely, if temporarily,
+tapped out."""
 
 import threading
 import time
@@ -130,6 +137,27 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
 
     errors = []
 
+    if settings.groq_api_key:
+        try:
+            text = _try_groq(prompt, max_tokens)
+            if text:
+                return text, "groq"
+            errors.append("Groq returned an empty response")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                try:
+                    text = _try_groq(prompt, max_tokens)
+                    if text:
+                        return text, "groq"
+                    errors.append("Groq returned an empty response")
+                except Exception as e2:
+                    errors.append(f"Groq request failed: {str(e2)[:300]}")
+            else:
+                errors.append(f"Groq request failed: {str(e)[:300]}")
+        except Exception as e:
+            errors.append(f"Groq request failed: {str(e)[:300]}")
+
     if settings.gemini_api_key:
         try:
             text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
@@ -154,27 +182,6 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
                     errors.append(friendly_gemini_error(e2))
             else:
                 errors.append(friendly_gemini_error(e))
-
-    if settings.groq_api_key:
-        try:
-            text = _try_groq(prompt, max_tokens)
-            if text:
-                return text, "groq"
-            errors.append("Groq returned an empty response")
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-                try:
-                    text = _try_groq(prompt, max_tokens)
-                    if text:
-                        return text, "groq"
-                    errors.append("Groq returned an empty response")
-                except Exception as e2:
-                    errors.append(f"Groq request failed: {str(e2)[:300]}")
-            else:
-                errors.append(f"Groq request failed: {str(e)[:300]}")
-        except Exception as e:
-            errors.append(f"Groq request failed: {str(e)[:300]}")
 
     if settings.claude_api_key:
         try:
