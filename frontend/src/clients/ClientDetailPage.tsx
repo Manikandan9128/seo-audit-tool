@@ -337,8 +337,28 @@ export default function ClientDetailPage() {
     }
   }
 
-  async function pollGenerateReportJob(jobId: string, closePreviewAfter: boolean) {
-    const res = await api.get(`/clients/${clientId}/generate-report/${jobId}`);
+  async function pollGenerateReportJob(jobId: string, closePreviewAfter: boolean, failCount = 0) {
+    let res;
+    try {
+      res = await api.get(`/clients/${clientId}/generate-report/${jobId}`);
+    } catch (err: any) {
+      // A transient gateway error (502/504 — a deploy restarting the
+      // backend, or a brief hiccup) previously threw here uncaught, which
+      // silently killed the entire polling loop: no retry, no error shown,
+      // the button just stuck on "Generating..." forever even if the
+      // report had actually finished or failed server-side. Retry a few
+      // times with the same interval before giving up.
+      if (failCount < 5) {
+        setReportStatusMsg("Reconnecting…");
+        setTimeout(() => pollGenerateReportJob(jobId, closePreviewAfter, failCount + 1), 3000);
+        return;
+      }
+      setError(err?.response?.data?.detail || "Lost connection while checking report status — please try again");
+      setReportLoading(false);
+      setReportStatusMsg("");
+      setReportProgressPct(null);
+      return;
+    }
     const job = res.data;
     if (job.status === "done") {
       setReportStatusMsg("Downloading…");
