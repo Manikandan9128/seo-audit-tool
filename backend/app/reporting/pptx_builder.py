@@ -1013,10 +1013,25 @@ def add_priority_issues_slide(
 
     url_issues: list[tuple[str, str]] = []
     if site_audit_pages_rows:
+        # GA4/GSC data below is matched by path alone (pagePath has no host
+        # dimension) — a page on a different subdomain (agents., services.,
+        # timesheet., unionagent.lumberfi.com, etc.) that happens to share a
+        # path with the main site's homepage would otherwise silently
+        # inherit the homepage's real pageviews/clicks. Only the dominant
+        # crawled domain actually has per-path analytics behind it, so
+        # every other host's issue rows are dropped here rather than scored
+        # against traffic that was never theirs.
+        domain_counts = Counter(urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows)
+        domain_counts.pop("", None)
+        own_domain = domain_counts.most_common(1)[0][0] if domain_counts else None
         for r in site_audit_pages_rows:
             issues = r.get("issues")
-            if issues and r.get("page_url"):
-                url_issues.append((r["page_url"], str(issues)))
+            page_url = r.get("page_url")
+            if not (issues and page_url):
+                continue
+            if own_domain and urlparse(page_url).netloc not in ("", own_domain):
+                continue
+            url_issues.append((page_url, str(issues)))
     elif page_audit:
         for p in page_audit.get("pages") or []:
             if p.get("issues") and p.get("url"):
