@@ -88,29 +88,6 @@ _SCHEMA_FIELD_RULES: dict[str, dict[str, list[str]]] = {
 }
 
 
-def _render_html_for_schema(url: str, timeout_ms: int = 10000) -> str | None:
-    """A JS-rendered fetch, used only to re-check structured data on the
-    homepage. Some sites inject JSON-LD client-side (React/Vue apps), which
-    the plain httpx GET everything else here uses will never see — Google's
-    own crawler renders JS, so its Rich Results Test can find schema this
-    tool's static fetch misses entirely. Best-effort only: this is a full
-    headless Chromium launch, too slow to run per-page across a multi-page
-    crawl, so it's deliberately not used there."""
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(args=["--no-sandbox"])
-            try:
-                page = browser.new_page()
-                page.goto(url, timeout=timeout_ms, wait_until="networkidle")
-                return page.content()
-            finally:
-                browser.close()
-    except Exception:
-        return None
-
-
 def _extract_schema_entities(html_source: str) -> list[dict]:
     """Every JSON-LD entity on the page (flattened out of @graph and array
     forms), each still carrying its own fields so field-level rules can run
@@ -386,21 +363,6 @@ def run_site_audit(website_url: str) -> dict:
 
     if home_resp is not None and home_resp.status_code < 400:
         result["meta"] = _extract_meta(home_resp.text)
-
-        # The static fetch above misses any JSON-LD injected client-side
-        # (React/Vue sites) — re-check structured data on a JS-rendered copy
-        # of the page, which is what Google's own crawler actually sees.
-        # Rendered DOM is a superset of the static one, so its entities
-        # replace rather than merge with the static-only results.
-        rendered_html = _render_html_for_schema(website_url)
-        if rendered_html is not None:
-            rendered_entities = _extract_schema_entities(rendered_html)
-            rendered_types = _schema_types_from_entities(rendered_entities)
-            result["meta"]["structured_data_present"] = result["meta"]["structured_data_present"] or bool(rendered_types)
-            result["meta"]["schema_types_found"] = rendered_types or result["meta"]["schema_types_found"]
-            result["meta"]["schema_types_missing"] = [t for t in _RECOMMENDED_SCHEMA_TYPES if t not in (rendered_types or result["meta"]["schema_types_found"])]
-            result["meta"]["schema_field_issues"] = _schema_field_issues(rendered_entities) or result["meta"]["schema_field_issues"]
-
         result["company_summary"] = summarize_company(website_url, extract_visible_text(home_resp.text))
         result["brand_color"] = extract_brand_color(home_resp.text)
         result["logo_url"] = find_logo_url(base_url, home_resp.text)
