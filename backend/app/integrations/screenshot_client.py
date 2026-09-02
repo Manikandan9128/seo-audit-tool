@@ -24,7 +24,13 @@ def capture_homepage_screenshots(domains: list[str], timeout_ms: int = 10000) ->
         return screenshots
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(args=["--no-sandbox"])
+            # Explicit launch timeout — was relying on Playwright's implicit
+            # 30s default, undocumented anywhere in this code. If Chromium
+            # can't start cleanly in the deploy environment (missing
+            # dependency, resource limit, sandbox issue), this is a
+            # best-effort feature — fail fast rather than silently holding
+            # up the entire report for 30s on every single generation.
+            browser = p.chromium.launch(args=["--no-sandbox"], timeout=15000)
             try:
                 page = browser.new_page(viewport={"width": 1280, "height": 800})
                 for domain in domains:
