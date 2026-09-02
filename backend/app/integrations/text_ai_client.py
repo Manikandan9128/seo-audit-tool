@@ -6,6 +6,7 @@ summary, competitor narrative, core problem, keyword clustering) work as
 long as *any* key is set, without provider-specific branching at each
 call site."""
 
+import threading
 import time
 
 import httpx
@@ -23,6 +24,20 @@ CLAUDE_MODEL = "claude-sonnet-5"
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+# A single report generation makes 7-8 sequential AI calls (company
+# overview, core problem, keyword clustering, up to 5 competitor
+# narratives, next steps). Whenever Gemini's DAILY quota is exhausted
+# (confirmed on a real report), every one of those calls falls through to
+# Groq — with no spacing, that's enough back-to-back requests to burst past
+# Groq's free-tier per-minute token limit, and the existing single 20s
+# retry on 429 isn't always enough once several calls are already queued
+# right behind each other. This tracks the last Groq call's timestamp
+# process-wide and waits out the minimum interval before the next one, so
+# Groq calls spread out across the run instead of bursting.
+_groq_pacing_lock = threading.Lock()
+_last_groq_call_at: float | None = None
+_GROQ_MIN_INTERVAL_SECONDS = 4.0
+
 
 class NoAIProviderConfigured(Exception):
     pass
@@ -34,7 +49,20 @@ def _try_gemini(prompt: str) -> str:
     return (response.text or "").strip()
 
 
+def _wait_for_groq_slot():
+    """Blocks until at least _GROQ_MIN_INTERVAL_SECONDS have passed since
+    the last Groq call anywhere in this process."""
+    global _last_groq_call_at
+    with _groq_pacing_lock:
+        if _last_groq_call_at is not None:
+            elapsed = time.monotonic() - _last_groq_call_at
+            if elapsed < _GROQ_MIN_INTERVAL_SECONDS:
+                time.sleep(_GROQ_MIN_INTERVAL_SECONDS - elapsed)
+        _last_groq_call_at = time.monotonic()
+
+
 def _try_groq(prompt: str, max_tokens: int) -> str:
+    _wait_for_groq_slot()
     response = httpx.post(
         GROQ_API_URL,
         headers={"Authorization": f"Bearer {settings.groq_api_key}"},

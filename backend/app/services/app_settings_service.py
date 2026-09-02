@@ -93,7 +93,13 @@ def test_groq_key() -> dict:
             json={
                 "model": GROQ_MODEL,
                 "messages": [{"role": "user", "content": "Reply with just: OK"}],
-                "max_tokens": 20,
+                # GROQ_MODEL (openai/gpt-oss-120b) is a reasoning model that
+                # can spend its token budget on internal reasoning before
+                # emitting the visible answer — a tight budget here
+                # previously cut it off before any visible content came
+                # through, misreporting a genuinely working key as
+                # returning "(empty)".
+                "max_tokens": 200,
             },
             timeout=30,
         )
