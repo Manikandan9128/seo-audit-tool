@@ -78,6 +78,7 @@ export default function ClientDetailPage() {
 
   const [reportLoading, setReportLoading] = useState(false);
   const [reportStatusMsg, setReportStatusMsg] = useState("");
+  const [reportProgressPct, setReportProgressPct] = useState<number | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewData, setPreviewData] = useState<ReportPreviewData | null>(null);
   const [previewOverview, setPreviewOverview] = useState<CompanyOverview | null>(null);
@@ -323,6 +324,7 @@ export default function ClientDetailPage() {
   async function downloadReportWithBody(body: any, closePreviewAfter: boolean) {
     setReportLoading(true);
     setReportStatusMsg("Starting report build…");
+    setReportProgressPct(0);
     setError("");
     try {
       const startRes = await api.post(`/clients/${clientId}/generate-report/start`, body);
@@ -340,6 +342,7 @@ export default function ClientDetailPage() {
     const job = res.data;
     if (job.status === "done") {
       setReportStatusMsg("Downloading…");
+      setReportProgressPct(100);
       try {
         const fileRes = await api.get(`/clients/${clientId}/generate-report/${jobId}/download`, { responseType: "blob" });
         const url = window.URL.createObjectURL(new Blob([fileRes.data]));
@@ -357,15 +360,25 @@ export default function ClientDetailPage() {
       } finally {
         setReportLoading(false);
         setReportStatusMsg("");
+        setReportProgressPct(null);
       }
     } else if (job.status === "failed") {
       setError(job.error || "Report generation failed");
       setReportLoading(false);
       setReportStatusMsg("");
+      setReportProgressPct(null);
     } else {
       setReportStatusMsg(
-        job.status === "running" ? "Building report… PageSpeed/AI steps can take a couple minutes" : "Queued…"
+        job.status === "running"
+          ? job.progress_stage || "Building report… PageSpeed/AI steps can take a couple minutes"
+          : "Queued…"
       );
+      // job.progress_pct is a rough, hand-assigned estimate per stage (see
+      // report_generation_job.py) — stage durations vary too much (a
+      // PageSpeed call vs. a per-competitor AI call) for an exact number,
+      // but it's still a real, monotonically increasing signal of how much
+      // is left, not a fake animation.
+      setReportProgressPct(typeof job.progress_pct === "number" ? job.progress_pct : reportProgressPct);
       setTimeout(() => pollGenerateReportJob(jobId, closePreviewAfter), 2000);
     }
   }
@@ -546,7 +559,24 @@ export default function ClientDetailPage() {
                 {reportLoading ? "Generating..." : "Download Report (PPTX)"}
               </button>
               {reportLoading && reportStatusMsg && (
-                <span className="muted" style={{ fontSize: 12 }}>{reportStatusMsg}</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {reportStatusMsg}
+                    {typeof reportProgressPct === "number" ? ` — ${reportProgressPct}%` : ""}
+                  </span>
+                  {typeof reportProgressPct === "number" && (
+                    <div style={{ height: 6, borderRadius: 3, background: "#e5e7eb", overflow: "hidden" }}>
+                      <div
+                        style={{
+                          height: "100%",
+                          width: `${reportProgressPct}%`,
+                          background: "#2563eb",
+                          transition: "width 0.3s ease",
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
               )}
             </>
           )}

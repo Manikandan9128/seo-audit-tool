@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,15 @@ class ReportGenerationJob(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     client_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clients.id"), nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")  # pending | running | done | failed
+    # Human-readable current step ("Running PageSpeed Insights...",
+    # "Analyzing competitor 2 of 4..."), paired with a rough percentage
+    # (progress_pct) — hand-assigned per stage based on typical relative
+    # duration (PageSpeed Insights and a per-competitor AI call aren't
+    # comparable units of work, so this is an estimate, not a measured
+    # byte-count), same as most "estimated progress" bars. Good enough for
+    # "about how much longer" without pretending to be exact.
+    progress_stage: Mapped[str | None] = mapped_column(String, nullable=True)
+    progress_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
     filename: Mapped[str | None] = mapped_column(String, nullable=True)
     pptx_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     error: Mapped[str | None] = mapped_column(String, nullable=True)

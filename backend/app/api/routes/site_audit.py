@@ -2,6 +2,7 @@ import asyncio
 import logging
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -301,13 +302,16 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
         return None
 
 
-def _generate_competitor_narratives(client: Client, data: dict, max_competitors: int = 5) -> dict[str, dict]:
+def _generate_competitor_narratives(
+    client: Client, data: dict, max_competitors: int = 5, on_progress: Callable[[str, int], None] | None = None
+) -> dict[str, dict]:
     """One AI-generated "Areas of Focus" narrative per competitor domain,
     grounded in whatever data was actually uploaded for that domain (Domain
     Overview stats, keyword positions, the rule-based gap findings that
     mention it by name). Capped at max_competitors — each one is a real AI
     call, so an unbounded competitor list would make report generation slow
     and expensive for no proportional benefit."""
+    progress = on_progress or (lambda _stage, _pct: None)
     competitor_rows = data.get("competitor_rows") or []
     competitor_positions = data.get("competitor_positions") or {}
     gap_issues = (data.get("competitor_analysis") or {}).get("issues") or []
@@ -350,6 +354,12 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
                 homepage_texts[domain] = None
 
     def _build_one(domain: str) -> tuple[str, dict | None]:
+        idx = domains.index(domain) + 1
+        # Competitor analysis is the biggest, most variable chunk of a
+        # report (N sequential AI calls) — given a 30-point band (50-80%),
+        # sliced proportionally across however many competitors there are.
+        pct = 50 + round(30 * idx / len(domains))
+        progress(f"Analyzing competitor {idx} of {len(domains)}: {domain}...", pct)
         row = next((r for r in competitor_rows if r.get("domain") == domain), None)
         top_keywords = sorted(
             competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
@@ -408,6 +418,8 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
     # above. A screenshot that fails (bot-blocked, timeout, unreachable)
     # just means that competitor's slide renders without one — never an
     # error surfaced anywhere in the report.
+    if narratives:
+        progress("Capturing competitor homepage screenshots...", 82)
     try:
         screenshots = capture_homepage_screenshots(list(narratives.keys()))
     except Exception:
@@ -520,6 +532,7 @@ def _gather_report_data(
     company_overview_override: dict | None,
     competitor_analysis_override: dict | None,
     ux_notes: str | None = None,
+    on_progress: Callable[[str, int], None] | None = None,
 ) -> dict:
     """Runs every check for this client and returns the plain-dict payload
     that build_report() consumes — shared by the preview (JSON, for the user
@@ -528,7 +541,15 @@ def _gather_report_data(
 
     If company_overview_override / competitor_analysis_override are given
     (the user's edited version of what the preview returned), they're used
-    as-is instead of re-crawling/re-analyzing."""
+    as-is instead of re-crawling/re-analyzing.
+
+    on_progress (optional) is called with a short human-readable stage
+    string at each major checkpoint — used by the background job runner to
+    show real progress instead of a plain spinner. There's no single
+    meaningful "% complete" here (a PageSpeed Insights call and a crawl
+    aren't comparable units of work), so this reports the current stage by
+    name rather than fabricating a percentage."""
+    progress = on_progress or (lambda _stage, _pct: None)
     company_overview_result = None
     if company_overview_override is not None:
         company_overview_result = company_overview_override
@@ -542,6 +563,7 @@ def _gather_report_data(
         # for no benefit. Only refreshed via the explicit refresh endpoint.
         company_overview_result = client.company_overview_cache
     elif include_company_overview and (settings.gemini_api_key or settings.claude_api_key):
+        progress("Reading company overview...", 5)
         result = extract_company_overview(client.website_url)
         if "error" not in result:
             company_overview_result = result
@@ -561,6 +583,7 @@ def _gather_report_data(
     # instead of the old one-at-a-time loop with a hardcoded time.sleep(0.3)
     # after every page — that alone was 6+ seconds of pure sleep for a
     # 20-page crawl, run synchronously on every single report generation.
+    progress("Crawling site and checking tech stack...", 15)
     with ThreadPoolExecutor(max_workers=3) as pool:
         site_audit_future = pool.submit(run_site_audit, client.website_url)
         page_audit_future = pool.submit(asyncio.run, run_multi_page_audit_async(client.website_url, page_limit=20))
@@ -573,6 +596,7 @@ def _gather_report_data(
 
     psi_mobile = psi_desktop = None
     if include_pagespeed and settings.google_psi_api_key:
+        progress("Running PageSpeed Insights...", 30)
         with ThreadPoolExecutor(max_workers=2) as pool:
             mobile_future = pool.submit(run_pagespeed, client.website_url, "mobile")
             desktop_future = pool.submit(run_pagespeed, client.website_url, "desktop")
@@ -591,6 +615,7 @@ def _gather_report_data(
     if include_analytics and (client.ga4_property_id or client.gsc_site_url):
         creds = _load_credentials(client_id, db)
         if creds:
+            progress("Pulling Analytics & Search Console data...", 45)
             from datetime import date, timedelta
 
             analytics = {}
@@ -976,13 +1001,15 @@ def _build_pptx_for_client(
     company_overview_override: dict | None,
     competitor_analysis_override: dict | None,
     ux_notes: str | None,
+    on_progress: Callable[[str, int], None] | None = None,
 ) -> tuple[bytes, str]:
     """Runs the available checks for this client and assembles the PPTX
     bytes — shared by the synchronous /generate-report endpoint and the
     background job runner below."""
+    progress = on_progress or (lambda _stage, _pct: None)
     data = _gather_report_data(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-        company_overview_override, competitor_analysis_override, ux_notes,
+        company_overview_override, competitor_analysis_override, ux_notes, on_progress,
     )
 
     logo_bytes = None
@@ -993,7 +1020,7 @@ def _build_pptx_for_client(
         except Exception:
             logger.exception("Logo fetch failed for client %s (%s) — continuing without it", client_id, logo_url)
 
-    competitor_narratives = _generate_competitor_narratives(client, data)
+    competitor_narratives = _generate_competitor_narratives(client, data, on_progress=on_progress)
 
     # Bespoke, business-aware Next Steps advice (real products/competitors/
     # numbers, sections that don't fit the business dropped entirely) in
@@ -1003,6 +1030,7 @@ def _build_pptx_for_client(
     # build_report when this is None or a category comes back empty.
     next_steps_ai = None
     if settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key:
+        progress("Writing tailored recommendations...", 90)
         client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
         findings = _build_next_steps_findings(data, competitor_narratives)
         next_steps_candidate = generate_next_steps(client.name, client_domain, findings)
@@ -1011,6 +1039,7 @@ def _build_pptx_for_client(
         else:
             logger.warning("Next Steps generation failed for client %s: %s", client.id, next_steps_candidate["error"])
 
+    progress("Building presentation...", 96)
     try:
         pptx_bytes = build_report(
             client_name=client.name,
@@ -1070,21 +1099,35 @@ def _run_generate_report_job(
     slow build (PageSpeed Insights, AI narratives, crawls) never has an HTTP
     request waiting on it past a gateway's timeout."""
     db = SessionLocal()
+    progress_db = SessionLocal()
     try:
         job = db.get(ReportGenerationJob, job_id)
         job.status = "running"
         db.commit()
 
+        # Separate session for progress updates (same pattern as
+        # _run_page_audit_job's PageAuditJob progress callback) — keeps
+        # these frequent small commits independent of the main session's
+        # transaction, which stays open for the whole build.
+        def progress(stage: str, pct: int):
+            j = progress_db.get(ReportGenerationJob, job_id)
+            if j:
+                j.progress_stage = stage
+                j.progress_pct = pct
+                progress_db.commit()
+
         client = db.get(Client, client_id)
         pptx_bytes, filename = _build_pptx_for_client(
             client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-            company_overview_override, competitor_analysis_override, ux_notes,
+            company_overview_override, competitor_analysis_override, ux_notes, progress,
         )
 
         job = db.get(ReportGenerationJob, job_id)
         job.status = "done"
         job.filename = filename
         job.pptx_bytes = pptx_bytes
+        job.progress_stage = None
+        job.progress_pct = 100
         db.commit()
     except Exception as e:
         job = db.get(ReportGenerationJob, job_id)
@@ -1094,6 +1137,7 @@ def _run_generate_report_job(
             db.commit()
     finally:
         db.close()
+        progress_db.close()
 
 
 @router.post("/{client_id}/generate-report/start")
@@ -1138,7 +1182,13 @@ def get_generate_report_job(
     job = db.get(ReportGenerationJob, job_id)
     if not job or job.client_id != client_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    return {"id": job.id, "status": job.status, "error": job.error}
+    return {
+        "id": job.id,
+        "status": job.status,
+        "error": job.error,
+        "progress_stage": job.progress_stage,
+        "progress_pct": job.progress_pct,
+    }
 
 
 @router.get("/{client_id}/generate-report/{job_id}/download")
