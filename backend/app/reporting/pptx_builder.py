@@ -2409,9 +2409,85 @@ def add_technical_seo_next_steps_slide(
     return _next_steps_category_slide(prs, "Next Steps: Technical SEO", intro, items)
 
 
+# Page-type classification for target keywords — maps a keyword's own text
+# to the page FORMAT its search intent calls for (landing page for
+# commercial terms, blog/guide for informational terms, comparison page for
+# vs./alternative terms), so Content SEO recommendations say WHAT KIND of
+# page to build, not just WHAT TOPIC. Generic signal words only — nothing
+# industry-specific hardcoded, so this works for any client's keyword list.
+# Checked in this order because a comparison-shaped keyword ("X vs Y") is a
+# more specific, higher-intent signal than the generic commercial terms a
+# landing page would also match on the same keyword.
+_COMPARISON_KEYWORD_SIGNALS = [
+    "vs", "versus", "comparison", "compare", "compared to", "difference", "difference between",
+    "alternative", "alternatives", "competitor", "competitors", "similar to", "replacement", "substitute",
+]
+_BLOG_KEYWORD_SIGNALS = [
+    "how to", "how do", "what is", "what are", "why", "guide", "basics", "explained", "definition",
+    "meaning", "steps", "step-by-step", "tutorial", "tips", "best practices", "checklist", "mistakes",
+    "benefits", "advantages", "disadvantages", "process", "calculate", "calculation", "requirements",
+    "rules", "regulations", "compliance", "trends", "statistics", "research", "report", "examples",
+]
+_LANDING_PAGE_KEYWORD_SIGNALS = [
+    "software", "platform", "system", "tool", "solution", "service", "services", "provider",
+    "pricing", "price", "cost", "quote", "demo", "company", "vendor",
+]
+_KEYWORD_PAGE_CATEGORIES = [
+    (
+        "Comparison / Alternative", _COMPARISON_KEYWORD_SIGNALS,
+        "build dedicated vs./alternative comparison pages targeting these high-intent searches",
+    ),
+    (
+        "Blog / Guide", _BLOG_KEYWORD_SIGNALS,
+        "publish blog or guide content directly answering these informational searches",
+    ),
+    (
+        "Landing Page", _LANDING_PAGE_KEYWORD_SIGNALS,
+        "build or strengthen a dedicated landing/product page targeting these commercial-intent searches",
+    ),
+]
+
+
+def _classify_keyword_page_category(keyword: str) -> str | None:
+    text = keyword.lower()
+    for label, signals, _action in _KEYWORD_PAGE_CATEGORIES:
+        if any(re.search(rf"\b{re.escape(signal)}\b", text) for signal in signals):
+            return label
+    return None
+
+
 def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict] | None):
     items = []
     if keyword_rows:
+        # WHAT KIND of page each keyword calls for (format), separate from
+        # WHAT TOPIC it belongs to (the cluster bullets below) — a client
+        # can need both a landing page AND a guide for the same topic.
+        category_counts: dict[str, int] = {}
+        category_volume: dict[str, float] = {}
+        category_examples: dict[str, list[str]] = {}
+        for r in keyword_rows:
+            keyword = r.get("keyword")
+            if not keyword:
+                continue
+            category = _classify_keyword_page_category(keyword)
+            if not category:
+                continue
+            category_counts[category] = category_counts.get(category, 0) + 1
+            category_volume[category] = category_volume.get(category, 0) + _num(r.get("search_volume"))
+            examples = category_examples.setdefault(category, [])
+            if len(examples) < 2:
+                examples.append(keyword)
+
+        category_action = {label: action for label, _signals, action in _KEYWORD_PAGE_CATEGORIES}
+        for label, count in sorted(category_counts.items(), key=lambda kv: -category_volume.get(kv[0], 0)):
+            vol = category_volume.get(label, 0)
+            vol_text = f", {int(vol):,} combined monthly searches" if vol else ""
+            example_text = ", ".join(f"\"{e}\"" for e in category_examples.get(label, []))
+            items.append(
+                f"{count} target keyword(s) are {label}-shaped{vol_text} (e.g. {example_text}) — "
+                f"{category_action[label]}."
+            )
+
         cluster_counts: dict[str, int] = {}
         cluster_volume: dict[str, float] = {}
         for r in keyword_rows:
@@ -2747,13 +2823,14 @@ def _build_report(
     # back empty/malformed — never lets one bad category blank the section.
     ai_categories = (next_steps_ai or {}).get("categories") or {}
     # Kept in sync with next_steps_service.CATEGORY_TITLES by hand (a small,
-    # stable 7-entry map) rather than importing that module here — this file
+    # stable map) rather than importing that module here — this file
     # otherwise has zero app.* imports, staying a pure rendering layer with
-    # no network-client dependencies pulled in transitively.
+    # no network-client dependencies pulled in transitively. content_seo has
+    # no entry here — that slide always renders through the deterministic
+    # classifier below, never through this AI-category routing.
     _ai_category_titles = {
         "local_seo": "Next Steps: Local SEO",
         "technical_seo": "Next Steps: Technical SEO",
-        "content_seo": "Next Steps: Content SEO",
         "conversion_seo": "Next Steps: Conversion SEO",
         "aeo": "Answer Engine Optimization (AEO)",
         "geo": "Generative Engine Optimization (GEO)",
@@ -2779,7 +2856,11 @@ def _build_report(
     _next_steps_slide(
         "technical_seo", add_technical_seo_next_steps_slide, prs, site_audit, page_audit, tech_stack, domain_strategy
     )
-    _next_steps_slide("content_seo", add_content_seo_next_steps_slide, prs, keyword_rows)
+    # Always the deterministic keyword-page-category classifier below, never
+    # the AI path — this needs an EXACT, guaranteed-consistent rule applied
+    # every time (comparison-shaped vs. blog-shaped vs. landing-page-shaped
+    # keywords), not an AI's variable phrasing of the same idea.
+    add_content_seo_next_steps_slide(prs, keyword_rows)
     add_programmatic_seo_slide(prs, keyword_rows)
     _next_steps_slide("conversion_seo", add_conversion_seo_next_steps_slide, prs, ux_findings, backlink_row_count)
     _next_steps_slide("aeo", add_aeo_slide, prs, site_audit, page_audit)

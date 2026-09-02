@@ -20,12 +20,17 @@ from app.integrations.text_ai_client import NoAIProviderConfigured, generate_tex
 CATEGORY_TITLES = {
     "local_seo": "Next Steps: Local SEO",
     "technical_seo": "Next Steps: Technical SEO",
-    "content_seo": "Next Steps: Content SEO",
     "conversion_seo": "Next Steps: Conversion SEO",
     "aeo": "Answer Engine Optimization (AEO)",
     "geo": "Generative Engine Optimization (GEO)",
     "goals": "SEO Goals & Targets",
 }
+# content_seo deliberately excluded — that slide always renders through
+# pptx_builder's deterministic keyword-page-category classifier
+# (_classify_keyword_page_category) instead of this AI path. It needs an
+# EXACT, guaranteed-consistent rule (comparison-shaped vs. blog-shaped vs.
+# landing-page-shaped keywords, by fixed signal-word list) applied every
+# single time, not an AI's variable phrasing of the same idea.
 
 PROMPT_TEMPLATE = """You are a senior SEO/growth strategist writing the "Next Steps" section of a client-facing \
 Web & SEO Audit report for {client_name} ({client_domain}). This report is used to help win {client_name} as a \
@@ -34,14 +39,13 @@ bullet must sound like an analyst who actually studied this specific business: n
 competitors, real numbers, real customer-question types — using ONLY the facts given below. Never invent a \
 fact, number, competitor name, or product that isn't in the data.
 
-For EACH of these 7 categories, decide first whether it genuinely applies to this business, THEN write it:
+For EACH of these 6 categories, decide first whether it genuinely applies to this business, THEN write it:
 - local_seo — only applies to a business with physical locations, regional service areas, or city-level search \
 intent. A national or global B2B/SaaS/e-commerce business with no physical storefront must get \
 "applicable": false — never recommend Google Business Profile, NAP consistency, or local citations to a \
 business that has no physical location. When it IS applicable, favor geo-targeted CONTENT strategy (e.g. \
 city-specific landing pages for real service areas) over generic listing-hygiene advice.
 - technical_seo — foundational crawl/on-page fixes; applicable whenever technical findings exist.
-- content_seo — content strategy grounded in the actual keyword clusters/topics found.
 - conversion_seo — turning traffic into leads/sales, using real trust signals, real competitor conversion \
 tactics, or real top-traffic pages if given.
 - aeo — schema/FAQ eligibility for AI Overviews and answer boxes, referencing real customer-question types for \
@@ -71,7 +75,6 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
   "categories": {{
     "local_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "technical_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
-    "content_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "conversion_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "aeo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "geo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
