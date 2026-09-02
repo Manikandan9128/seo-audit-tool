@@ -315,6 +315,19 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
         except (TypeError, ValueError):
             return 0.0
 
+    # Homepage fetches are plain network I/O with no AI-rate-limit concern,
+    # unlike the narrative generation below — pulled out of that serial loop
+    # and run concurrently first so N-1 fetch durations overlap instead of
+    # each one stacking onto the already-serial AI critical path.
+    homepage_texts: dict[str, str | None] = {}
+    with ThreadPoolExecutor(max_workers=min(5, len(domains))) as pool:
+        futures = {pool.submit(fetch_homepage_text, d): d for d in domains}
+        for future, domain in futures.items():
+            try:
+                homepage_texts[domain] = future.result()
+            except Exception:
+                homepage_texts[domain] = None
+
     def _build_one(domain: str) -> tuple[str, dict | None]:
         row = next((r for r in competitor_rows if r.get("domain") == domain), None)
         top_keywords = sorted(
@@ -324,15 +337,7 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
             i["summary"] for i in gap_issues
             if i.get("domain") and _norm(i["domain"]) == _norm(domain)
         ]
-        # Best-effort homepage fetch so the narrative can name concrete
-        # on-site tactics (page architecture, trust signals, content
-        # formats) instead of only comparing Semrush metrics — failures
-        # here are silent, the narrative just falls back to metrics-only.
-        homepage_text = None
-        try:
-            homepage_text = fetch_homepage_text(domain)
-        except Exception:
-            homepage_text = None
+        homepage_text = homepage_texts.get(domain)
         facts = {
             "domain_stats": row,
             "top_ranking_keywords": [
@@ -527,16 +532,21 @@ def _gather_report_data(
             client.company_overview_cached_at = datetime.now(timezone.utc)
             db.commit()
 
-    site_audit_result = run_site_audit(client.website_url)
-    # The async version (already used by the background full-crawl job)
-    # fetches pages CONCURRENCY-at-a-time with no artificial delay, instead
-    # of run_multi_page_audit's one-at-a-time loop with a hardcoded
-    # time.sleep(0.3) after every page — that alone is 6+ seconds of pure
-    # sleep for a 20-page crawl, run synchronously on every single report
-    # generation. Same return shape, drop-in swap.
-    page_audit_result = asyncio.run(run_multi_page_audit_async(client.website_url, page_limit=20))
-
-    tech_stack_result = detect_tech_stack(client.website_url)
+    # site_audit/page_audit/tech_stack each fetch the site independently and
+    # none needs another's result — previously run one after another, now
+    # run concurrently so their fetch times overlap instead of stacking.
+    # page_audit uses the async concurrent crawler (already used by the
+    # background full-crawl job, CONCURRENCY-at-a-time, no artificial delay)
+    # instead of the old one-at-a-time loop with a hardcoded time.sleep(0.3)
+    # after every page — that alone was 6+ seconds of pure sleep for a
+    # 20-page crawl, run synchronously on every single report generation.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        site_audit_future = pool.submit(run_site_audit, client.website_url)
+        page_audit_future = pool.submit(asyncio.run, run_multi_page_audit_async(client.website_url, page_limit=20))
+        tech_stack_future = pool.submit(detect_tech_stack, client.website_url)
+        site_audit_result = site_audit_future.result()
+        page_audit_result = page_audit_future.result()
+        tech_stack_result = tech_stack_future.result()
     if "error" in tech_stack_result:
         tech_stack_result = None
 
@@ -564,25 +574,50 @@ def _gather_report_data(
 
             analytics = {}
             date_range = {}
+            ga4_start = (date.today() - timedelta(days=30)).isoformat()
+            ga4_end = date.today().isoformat()
+            # Search Console data lags ~2-3 days behind — a range whose end
+            # date is more recent than that reliably comes back empty (not
+            # partial), so clamp regardless of "today".
+            gsc_start = (date.today() - timedelta(days=30)).isoformat()
+            gsc_end = (date.today() - timedelta(days=3)).isoformat()
+
+            # These 6 calls are independent of each other and of anything
+            # else in this function (traffic_spike is the one exception — it
+            # needs traffic_overview's own result, so it stays sequential
+            # afterward) — running them concurrently instead of one-by-one
+            # saves several seconds of pure Google API round-trip latency
+            # that were previously just stacking up serially on every report.
+            jobs = {}
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                if client.ga4_property_id:
+                    jobs["traffic_overview"] = pool.submit(
+                        ga4_service.get_traffic_overview, creds, client.ga4_property_id, "30daysAgo", "today"
+                    )
+                    jobs["top_pages"] = pool.submit(
+                        ga4_service.get_top_pages, creds, client.ga4_property_id, "30daysAgo", "today", limit=15
+                    )
+                    jobs["traffic_sources"] = pool.submit(
+                        ga4_service.get_traffic_sources, creds, client.ga4_property_id, "30daysAgo", "today"
+                    )
+                    jobs["page_performance"] = pool.submit(
+                        ga4_service.get_page_performance, creds, client.ga4_property_id, "30daysAgo", "today"
+                    )
+                if client.gsc_site_url:
+                    jobs["search_queries"] = pool.submit(
+                        gsc_service.get_search_analytics, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=20
+                    )
+                    jobs["page_clicks"] = pool.submit(
+                        gsc_service.get_page_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
+                    )
+                for key, future in jobs.items():
+                    try:
+                        analytics[key] = future.result()
+                    except HttpError:
+                        pass
+
             if client.ga4_property_id:
-                ga4_start = (date.today() - timedelta(days=30)).isoformat()
-                ga4_end = date.today().isoformat()
-                try:
-                    analytics["traffic_overview"] = ga4_service.get_traffic_overview(
-                        creds, client.ga4_property_id, "30daysAgo", "today"
-                    )
-                    analytics["top_pages"] = ga4_service.get_top_pages(
-                        creds, client.ga4_property_id, "30daysAgo", "today", limit=15
-                    )
-                    analytics["traffic_sources"] = ga4_service.get_traffic_sources(
-                        creds, client.ga4_property_id, "30daysAgo", "today"
-                    )
-                    analytics["page_performance"] = ga4_service.get_page_performance(
-                        creds, client.ga4_property_id, "30daysAgo", "today"
-                    )
-                    date_range["ga4_start"], date_range["ga4_end"] = ga4_start, ga4_end
-                except HttpError:
-                    pass
+                date_range["ga4_start"], date_range["ga4_end"] = ga4_start, ga4_end
                 # Separate try: needs Google Signals/demographics enabled on
                 # the property (age/gender), which the calls above don't —
                 # a permission/config error here shouldn't wipe out the
@@ -597,21 +632,7 @@ def _gather_report_data(
                 except HttpError:
                     pass
             if client.gsc_site_url:
-                # Search Console data lags ~2-3 days behind — a range whose
-                # end date is more recent than that reliably comes back
-                # empty (not partial), so clamp regardless of "today".
-                gsc_start = (date.today() - timedelta(days=30)).isoformat()
-                gsc_end = (date.today() - timedelta(days=3)).isoformat()
-                try:
-                    analytics["search_queries"] = gsc_service.get_search_analytics(
-                        creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=20
-                    )
-                    analytics["page_clicks"] = gsc_service.get_page_clicks(
-                        creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
-                    )
-                    date_range["gsc_start"], date_range["gsc_end"] = gsc_start, gsc_end
-                except HttpError:
-                    pass
+                date_range["gsc_start"], date_range["gsc_end"] = gsc_start, gsc_end
             if date_range:
                 analytics["date_range"] = date_range
 
