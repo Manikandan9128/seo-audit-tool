@@ -50,6 +50,15 @@ async def upload_semrush_file(
     db.add(record)
     db.commit()
     db.refresh(record)
+    # Surfaced so a Domain Overview PDF exported from the wrong Semrush
+    # database (confirmed real incident: a client's 4 competitor PDFs were
+    # accidentally exported from Guyana instead of US, silently producing
+    # empty/near-zero traffic numbers with no error anywhere) is visible
+    # right here at upload time instead of only showing up as wrong-looking
+    # numbers in the finished report.
+    database = None
+    if import_type == "domain_overview" and parsed_data.get("rows"):
+        database = parsed_data["rows"][0].get("database")
     return {
         "id": record.id,
         "import_type": record.import_type,
@@ -57,6 +66,7 @@ async def upload_semrush_file(
         "original_filename": record.original_filename,
         "is_own_site": record.is_own_site,
         "domain_label": record.domain_label,
+        "database": database,
     }
 
 

@@ -334,6 +334,24 @@ def _parse_domain_overview_text(
         return None
     domain = domain_match.group(1)
 
+    # Semrush prints the export's database/country code directly before this
+    # same header ("US | Domain | miter.com", "Worldwide | Domain | ..."). A
+    # PDF exported against the wrong database is otherwise invisible until
+    # the report's numbers look wrong — confirmed on a real client's 4
+    # competitor PDFs, all accidentally exported from Guyana instead of US,
+    # which rendered empty/near-zero Organic/Paid summary cards for 3 of
+    # them with no error anywhere in the pipeline (their real Guyana traffic
+    # is genuinely near-zero). Surfaced here so it's visible right after
+    # upload instead of discovered in the finished report.
+    # Restricted to the same line as "| Domain |" (text before the nearest
+    # preceding newline is discarded) — a naive backward scan otherwise
+    # crosses onto the "Domain Overview" heading line directly above and
+    # captures "Domain Overview\nUS" instead of just "US".
+    prefix_window = text[max(0, domain_match.start() - 30) : domain_match.start()]
+    same_line = prefix_window.rsplit("\n", 1)[-1]
+    database_match = re.search(r"([A-Za-z]{2,})\s*$", same_line)
+    database = database_match.group(1).strip() if database_match else None
+
     # Organic and Paid Summary cards render side by side on the page — a
     # plain top-to-bottom text join can interleave their lines, so prefer
     # the already-isolated left/right column text when given (real PDF
@@ -374,6 +392,7 @@ def _parse_domain_overview_text(
 
     row = {
         "domain": domain,
+        "database": database,
         "organic_traffic": organic_fields["traffic"],
         "organic_keywords": organic_fields["keywords"],
         "organic_cost": organic_fields["cost"],
