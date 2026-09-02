@@ -8,6 +8,8 @@ call site."""
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import httpx
 from anthropic import Anthropic
@@ -23,6 +25,33 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 CLAUDE_MODEL = "claude-sonnet-5"
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+GEMINI_TIMEOUT_SECONDS = 45
+CLAUDE_TIMEOUT_SECONDS = 60
+
+
+def _call_with_timeout(fn, timeout_seconds: float, *args, **kwargs):
+    """Runs fn in a worker thread and enforces a hard wall-clock timeout,
+    regardless of whether the underlying SDK exposes (or honors) its own
+    timeout — confirmed real: a Gemini call with no client-side timeout
+    hung an entire report generation for 30+ minutes on one single AI call
+    with nothing to stop it, even though a quota/rate-limit rejection
+    normally comes back near-instantly (this was Google's servers being
+    slow to respond, not a fast reject). Raises TimeoutError on expiry,
+    which every caller's existing `except Exception` handling already
+    treats the same as any other provider failure — falls through to the
+    next provider instead of hanging the whole pipeline. The orphaned
+    thread is abandoned (not killed — Python has no API for that) rather
+    than waited on; it either eventually finishes harmlessly in the
+    background or the process exits, whichever comes first."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        raise TimeoutError(f"{fn.__name__} timed out after {timeout_seconds:.0f}s with no response") from None
+    finally:
+        pool.shutdown(wait=False)
 
 # A single report generation makes 7-8 sequential AI calls (company
 # overview, core problem, keyword clustering, up to 5 competitor
@@ -103,7 +132,7 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
 
     if settings.gemini_api_key:
         try:
-            text = _try_gemini(prompt)
+            text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
             if text:
                 return text, "gemini"
             errors.append("Gemini returned an empty response")
@@ -117,7 +146,7 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
             if not is_daily_quota and ("RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
                 time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
                 try:
-                    text = _try_gemini(prompt)
+                    text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
                     if text:
                         return text, "gemini"
                     errors.append("Gemini returned an empty response")
@@ -149,7 +178,7 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
 
     if settings.claude_api_key:
         try:
-            text = _try_claude(prompt, max_tokens)
+            text = _call_with_timeout(_try_claude, CLAUDE_TIMEOUT_SECONDS, prompt, max_tokens)
             if text:
                 return text, "claude"
             errors.append("Claude returned an empty response")
