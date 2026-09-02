@@ -34,6 +34,7 @@ from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -308,6 +309,50 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
         return None
 
 
+def _filter_competitor_keywords(client: Client, data: dict) -> None:
+    """Classifies every competitor keyword (Highly relevant / Potentially
+    relevant / Exclude — see keyword_relevance_service) and strips excluded
+    rows from competitor_positions and competitor_analysis["keyword_gap_
+    rows"] in place, before anything downstream (PPTX slides, Next Steps
+    findings, competitor narratives) ever sees them. Raw uploaded data in
+    SemrushImport is untouched — only what gets rendered is filtered.
+    "Potentially relevant" keywords are kept (not just "highly relevant") —
+    the existing volume-sort + row caps on those slides already surface
+    only the highest-value rows once excludes are stripped out."""
+    competitor_positions: dict[str, list[dict]] = data.get("competitor_positions") or {}
+    competitor_analysis = data.get("competitor_analysis") or {}
+    keyword_gap_rows = competitor_analysis.get("keyword_gap_rows") or []
+    if not competitor_positions and not keyword_gap_rows:
+        return
+
+    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    brand_tokens = {_brand_token(client_domain)}
+    brand_tokens.update(_brand_token(d) for d in competitor_positions.keys())
+    brand_tokens.update(_brand_token(r.get("competitor_domain") or "") for r in keyword_gap_rows)
+    brand_tokens.discard("")
+
+    all_keywords = [r.get("keyword", "") for rows in competitor_positions.values() for r in rows]
+    all_keywords += [r.get("keyword", "") for r in keyword_gap_rows]
+    if not all_keywords:
+        return
+
+    classifications = classify_keywords(client.name, client_domain, brand_tokens, all_keywords)
+    if not classifications:
+        return
+    keep = {"highly_relevant", "potentially_relevant"}
+
+    for domain, rows in list(competitor_positions.items()):
+        competitor_positions[domain] = [
+            r for r in rows if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
+        ]
+
+    if keyword_gap_rows:
+        competitor_analysis["keyword_gap_rows"] = [
+            r for r in keyword_gap_rows
+            if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
+        ]
+
+
 def _generate_competitor_narratives(
     client: Client,
     data: dict,
@@ -385,12 +430,24 @@ def _generate_competitor_narratives(
         homepage_text = homepage_texts.get(domain)
         if not row and not top_keywords and not relevant_gaps and not homepage_text:
             continue
+        # Cheap evidence signal for the opportunity_analysis prompt — counts
+        # of what PAGE TYPE this competitor's own ranking keywords call for,
+        # so "has comparison pages" / "has a blog" is grounded in real
+        # keyword data instead of guessed blind from homepage_text alone.
+        # No new AI/network call: reuses the same classifier the Content
+        # SEO Next Steps slide already runs over the client's own keywords.
+        ranking_page_types: dict[str, int] = {}
+        for r in competitor_positions.get(domain, []):
+            category = _classify_keyword_page_category(r.get("keyword") or "")
+            if category:
+                ranking_page_types[category] = ranking_page_types.get(category, 0) + 1
         competitors_facts[domain] = {
             "domain_stats": row,
             "top_ranking_keywords": [
                 {"keyword": r.get("keyword"), "position": r.get("position"), "search_volume": r.get("search_volume")}
                 for r in top_keywords
             ],
+            "ranking_page_types": ranking_page_types,
             "gaps_vs_this_competitor": relevant_gaps,
             "homepage_url": f"https://{domain}",
             "homepage_text": homepage_text,
@@ -1052,6 +1109,11 @@ def _build_pptx_for_client(
     if content_issues is None:
         content_issues = []
         data["content_generation_issues"] = content_issues
+
+    # Strip excluded competitor keywords (brand, nav/login, careers, typos,
+    # unrelated industries) before anything downstream — PPTX slides, the
+    # ranking_page_types signal below, Next Steps findings — ever sees them.
+    _filter_competitor_keywords(client, data)
 
     competitor_narratives = _generate_competitor_narratives(
         client, data, on_progress=on_progress, content_issues=content_issues

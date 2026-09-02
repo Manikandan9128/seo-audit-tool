@@ -14,6 +14,13 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.util import Inches, Pt, Emu
 
+from app.services.keyword_relevance_service import (
+    _KEYWORD_PAGE_CATEGORIES,
+    _brand_token,
+    _classify_keyword_page_category,
+    _is_branded_keyword,
+)
+
 SLIDE_W = Inches(13.333)
 SLIDE_H = Inches(7.5)
 
@@ -1788,22 +1795,6 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
     return _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source=source, insights=insights)
 
 
-def _brand_token(domain: str) -> str:
-    """Best-effort brand name extracted from a domain, for non-branded
-    keyword filtering — e.g. "www.taskus.com" -> "taskus". Semrush's
-    Positions export has no per-keyword branded flag, so this is the only
-    signal available short of a manual list."""
-    host = re.sub(r"^https?://", "", (domain or "").strip().lower())
-    host = re.sub(r"^www\.", "", host).split("/")[0]
-    return host.split(".")[0] if host else ""
-
-
-def _is_branded_keyword(keyword: str, brand: str) -> bool:
-    if not brand or not keyword:
-        return False
-    return re.search(rf"\b{re.escape(brand)}\b", keyword.lower()) is not None
-
-
 def add_competitor_positions_slides(prs: Presentation, competitor_positions: dict[str, list[dict]]):
     """One table slide per competitor domain from a Semrush Organic Research
     > Positions export — what that domain ranks for, and at what position.
@@ -1939,6 +1930,62 @@ def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narr
         _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), DEFAULT_ACCENT)
         _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, item, size=12.5)
         y += item_h
+    return slide
+
+
+def _opportunity_quadrant(slide, left, top, width, height, label, items, color):
+    """One quadrant card of add_competitor_opportunity_slide: a label
+    header plus height-budgeted bullets, same truncate-rather-than-overflow
+    discipline as the rest of this file's AI-derived content."""
+    _card(slide, left, top, width, height)
+    pad = Inches(0.22)
+    _textbox(slide, left + pad, top + Inches(0.15), width - pad * 2, Inches(0.3), label, size=13, bold=True, color=color)
+    y = top + Inches(0.55)
+    max_y = top + height - Inches(0.12)
+    text_width = width - pad * 2 - Inches(0.2)
+    chars_per_line = max(18, int(text_width / 914400 * 13))
+    line_h = Inches(0.22)
+    for item in items:
+        lines = max(1, -(-len(item) // chars_per_line))
+        item_h = line_h * lines + Inches(0.06)
+        if y + item_h > max_y:
+            break
+        _icon_dot(slide, left + pad, y + Inches(0.07), Inches(0.07), color)
+        _textbox(slide, left + pad + Inches(0.2), y, text_width, line_h * lines, item, size=10.5)
+        y += item_h
+
+
+def add_competitor_opportunity_slide(prs: Presentation, client_name: str, competitor_domain: str, narrative: dict):
+    """Competitor Opportunity Analysis — the manual-deck-style bridge
+    between "What {Competitor} Does Well" (evidence) and "Areas of Focus"
+    (prescriptive advice): a four-quadrant WHAT COMPETITOR HAS / WHAT
+    CLIENT LACKS / WHY IT MATTERS / WHAT CLIENT SHOULD BUILD layout.
+    Grounded only in narrative["opportunity_analysis"] (produced in the
+    same batched AI call as best_at/areas_of_focus, see
+    competitor_narrative_service) — absent (no slide) if the AI didn't
+    produce it, same silent-skip pattern as every other AI-derived slide
+    in this file."""
+    opp = narrative.get("opportunity_analysis") or {}
+    has = opp.get("competitor_has") or []
+    lacks = opp.get("client_lacks") or []
+    why = opp.get("why_it_matters") or []
+    build = opp.get("client_should_build") or []
+    if not any([has, lacks, why, build]):
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, f"Competitor Opportunity Analysis: {competitor_domain}")
+
+    gutter = Inches(0.3)
+    left0, top0 = Inches(0.6), Inches(1.1)
+    total_w, total_h = Inches(12.1), Inches(5.9)
+    col_w = int((total_w - gutter) / 2)
+    row_h = int((total_h - gutter) / 2)
+
+    _opportunity_quadrant(slide, left0, top0, col_w, row_h, f"What {competitor_domain} Has", has[:5], _accent())
+    _opportunity_quadrant(slide, left0 + col_w + gutter, top0, col_w, row_h, f"What {client_name} Lacks", lacks[:5], BAD)
+    _opportunity_quadrant(slide, left0, top0 + row_h + gutter, col_w, row_h, "Why It Matters", why[:5], WARN)
+    _opportunity_quadrant(slide, left0 + col_w + gutter, top0 + row_h + gutter, col_w, row_h, f"What {client_name} Should Build", build[:5], GOOD)
     return slide
 
 
@@ -2409,53 +2456,6 @@ def add_technical_seo_next_steps_slide(
     return _next_steps_category_slide(prs, "Next Steps: Technical SEO", intro, items)
 
 
-# Page-type classification for target keywords — maps a keyword's own text
-# to the page FORMAT its search intent calls for (landing page for
-# commercial terms, blog/guide for informational terms, comparison page for
-# vs./alternative terms), so Content SEO recommendations say WHAT KIND of
-# page to build, not just WHAT TOPIC. Generic signal words only — nothing
-# industry-specific hardcoded, so this works for any client's keyword list.
-# Checked in this order because a comparison-shaped keyword ("X vs Y") is a
-# more specific, higher-intent signal than the generic commercial terms a
-# landing page would also match on the same keyword.
-_COMPARISON_KEYWORD_SIGNALS = [
-    "vs", "versus", "comparison", "compare", "compared to", "difference", "difference between",
-    "alternative", "alternatives", "competitor", "competitors", "similar to", "replacement", "substitute",
-]
-_BLOG_KEYWORD_SIGNALS = [
-    "how to", "how do", "what is", "what are", "why", "guide", "basics", "explained", "definition",
-    "meaning", "steps", "step-by-step", "tutorial", "tips", "best practices", "checklist", "mistakes",
-    "benefits", "advantages", "disadvantages", "process", "calculate", "calculation", "requirements",
-    "rules", "regulations", "compliance", "trends", "statistics", "research", "report", "examples",
-]
-_LANDING_PAGE_KEYWORD_SIGNALS = [
-    "software", "platform", "system", "tool", "solution", "service", "services", "provider",
-    "pricing", "price", "cost", "quote", "demo", "company", "vendor",
-]
-_KEYWORD_PAGE_CATEGORIES = [
-    (
-        "Comparison / Alternative", _COMPARISON_KEYWORD_SIGNALS,
-        "build dedicated vs./alternative comparison pages targeting these high-intent searches",
-    ),
-    (
-        "Blog / Guide", _BLOG_KEYWORD_SIGNALS,
-        "publish blog or guide content directly answering these informational searches",
-    ),
-    (
-        "Landing Page", _LANDING_PAGE_KEYWORD_SIGNALS,
-        "build or strengthen a dedicated landing/product page targeting these commercial-intent searches",
-    ),
-]
-
-
-def _classify_keyword_page_category(keyword: str) -> str | None:
-    text = keyword.lower()
-    for label, signals, _action in _KEYWORD_PAGE_CATEGORIES:
-        if any(re.search(rf"\b{re.escape(signal)}\b", text) for signal in signals):
-            return label
-    return None
-
-
 def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict] | None):
     items = []
     if keyword_rows:
@@ -2803,6 +2803,7 @@ def _build_report(
             for domain, narrative in competitor_narratives.items():
                 if "error" not in narrative:
                     add_competitor_best_at_slide(prs, domain, narrative)
+                    add_competitor_opportunity_slide(prs, client_name, domain, narrative)
                     add_competitor_narrative_slide(prs, client_name, domain, narrative)
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
             add_keyword_gap_slide(prs, competitor_analysis)
