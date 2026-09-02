@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import re
 import time
 from collections.abc import Callable
@@ -54,6 +55,52 @@ def _check_sitemap(sitemap_url: str) -> dict:
         return {"present": False, "url_count": 0}
 
 
+# Baseline Google recommends for effectively any site's homepage — Organization
+# for the Knowledge Panel, WebSite for the sitelinks search box, BreadcrumbList
+# for breadcrumb rich results on internal pages. Not exhaustive (Product/Article/
+# FAQPage etc. only apply to specific page types), just the generic floor.
+_RECOMMENDED_SCHEMA_TYPES = ["Organization", "WebSite", "BreadcrumbList"]
+
+
+def _extract_schema_types(html_source: str) -> list[str]:
+    """@type values across all application/ld+json blocks on the page,
+    including @graph-wrapped and array-of-entities forms."""
+    types: list[str] = []
+    for block in re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_source, re.IGNORECASE | re.DOTALL
+    ):
+        try:
+            data = json.loads(block.strip())
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        entities = data if isinstance(data, list) else [data]
+        expanded = []
+        for entity in entities:
+            if isinstance(entity, dict) and "@graph" in entity:
+                expanded.extend(entity["@graph"])
+            else:
+                expanded.append(entity)
+
+        for entity in expanded:
+            if not isinstance(entity, dict):
+                continue
+            entity_type = entity.get("@type")
+            if isinstance(entity_type, list):
+                types.extend(str(t) for t in entity_type)
+            elif entity_type:
+                types.append(str(entity_type))
+
+    # de-duplicate, keep first-seen order
+    seen = set()
+    unique_types = []
+    for t in types:
+        if t not in seen:
+            seen.add(t)
+            unique_types.append(t)
+    return unique_types
+
+
 def _extract_meta(html_source: str) -> dict:
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html_source, re.IGNORECASE | re.DOTALL)
     title = html.unescape(title_match.group(1).strip()) if title_match else None
@@ -71,6 +118,8 @@ def _extract_meta(html_source: str) -> dict:
     canonical_present = bool(re.search(r'<link[^>]+rel=["\']canonical["\']', html_source, re.IGNORECASE))
     h1_count = len(re.findall(r"<h1[^>]*>", html_source, re.IGNORECASE))
     structured_data_present = bool(re.search(r'application/ld\+json', html_source, re.IGNORECASE))
+    schema_types = _extract_schema_types(html_source) if structured_data_present else []
+    schema_types_missing = [t for t in _RECOMMENDED_SCHEMA_TYPES if t not in schema_types]
     og_tags_present = bool(re.search(r'<meta[^>]+property=["\']og:', html_source, re.IGNORECASE))
 
     return {
@@ -82,6 +131,8 @@ def _extract_meta(html_source: str) -> dict:
         "canonical_present": canonical_present,
         "h1_count": h1_count,
         "structured_data_present": structured_data_present,
+        "schema_types_found": schema_types,
+        "schema_types_missing": schema_types_missing,
         "og_tags_present": og_tags_present,
     }
 
@@ -148,6 +199,10 @@ def _meta_issues(meta: dict) -> list[str]:
         issues.append("Missing mobile viewport meta tag")
     if not meta["canonical_present"]:
         issues.append("Missing canonical tag")
+    if not meta["structured_data_present"]:
+        issues.append("Missing structured data (JSON-LD)")
+    elif meta["schema_types_missing"]:
+        issues.append(f"Missing recommended schema types: {', '.join(meta['schema_types_missing'])}")
     return issues
 
 

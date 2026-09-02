@@ -18,6 +18,8 @@ interface SiteAuditResult {
     viewport_present: boolean;
     canonical_present: boolean;
     structured_data_present: boolean;
+    schema_types_found: string[];
+    schema_types_missing: string[];
     og_tags_present: boolean;
   } | null;
   issues: string[];
@@ -229,12 +231,23 @@ export default function SiteAuditReport({
                   <tr>
                     <td>Structured data (JSON-LD)</td>
                     <td><Status ok={meta.structured_data_present} okLabel="Present" failLabel="Missing" /></td>
-                    <td>schema.org markup</td>
+                    <td>
+                      {meta.structured_data_present
+                        ? meta.schema_types_found.length > 0
+                          ? meta.schema_types_found.join(", ")
+                          : "schema.org markup (type unreadable)"
+                        : "schema.org markup"}
+                    </td>
                   </tr>
                 </tbody>
               </table>
             ) : (
               <p style={{ color: "var(--text-muted)", fontSize: 13.5 }}>Homepage could not be fetched — no on-page data available.</p>
+            )}
+            {meta && meta.schema_types_missing.length > 0 && (
+              <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 8 }}>
+                Missing recommended schema: {meta.schema_types_missing.join(", ")}
+              </p>
             )}
             {meta && meta.structured_data_present && clientId && gscConnected && (
               <RichResultsValidator clientId={clientId} url={result.url} />
