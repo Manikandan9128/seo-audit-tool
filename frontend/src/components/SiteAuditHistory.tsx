@@ -23,7 +23,7 @@ function diffIssues(current: string[], previous: string[]) {
   };
 }
 
-export default function SiteAuditHistory({ clientId, refreshKey }: { clientId: string; refreshKey: number }) {
+export default function SiteAuditHistory({ clientId, refreshKey, gscConnected }: { clientId: string; refreshKey: number; gscConnected?: boolean }) {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -119,7 +119,7 @@ export default function SiteAuditHistory({ clientId, refreshKey }: { clientId: s
         <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginBottom: 16 }}>No change in issues since the previous run.</p>
       )}
 
-      {selectedResult && <SiteAuditReport result={selectedResult} />}
+      {selectedResult && <SiteAuditReport result={selectedResult} clientId={clientId} gscConnected={gscConnected} />}
     </div>
   );
 }

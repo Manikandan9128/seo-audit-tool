@@ -34,6 +34,43 @@ def get_search_analytics(creds: Credentials, site_url: str, start_date: str, end
     return {"rows": rows}
 
 
+def inspect_url(creds: Credentials, site_url: str, inspection_url: str) -> dict:
+    """URL Inspection API — the only Google-hosted source of real rich-result
+    validation. Only works for pages on a site the connected account has
+    verified in Search Console; unlike the old Structured Data Testing Tool
+    or the Rich Results Test UI, there's no way to check an arbitrary URL
+    without that ownership."""
+    webmasters = build("searchconsole", "v1", credentials=creds)
+    body = {"inspectionUrl": inspection_url, "siteUrl": site_url}
+    response = webmasters.urlInspection().index().inspect(body=body).execute()
+    result = response.get("inspectionResult", {})
+    rich_results = result.get("richResultsResult", {})
+
+    items = []
+    for item in rich_results.get("detectedItems", []):
+        items.append(
+            {
+                "type": item.get("richResultType"),
+                "items": [
+                    {
+                        "name": sub.get("name"),
+                        "issues": [
+                            {"severity": issue.get("severity"), "message": issue.get("issueMessage")}
+                            for issue in sub.get("issues", [])
+                        ],
+                    }
+                    for sub in item.get("items", [])
+                ],
+            }
+        )
+
+    return {
+        "verdict": rich_results.get("verdict", "VERDICT_UNSPECIFIED"),
+        "detected_items": items,
+        "inspection_url": result.get("inspectionResultLink"),
+    }
+
+
 def get_page_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 1000) -> dict:
     """Same Search Analytics API as get_search_analytics, dimensioned by page
     instead of query — clicks/impressions per URL, for cross-referencing

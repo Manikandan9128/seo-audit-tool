@@ -145,6 +145,8 @@ export default function ReportPreviewModal({
   onDownload,
   onClose,
   downloading,
+  clientId,
+  gscConnected,
 }: {
   data: ReportPreviewData;
   companyOverview: CompanyOverview | null;
@@ -154,6 +156,8 @@ export default function ReportPreviewModal({
   onDownload: () => void;
   onClose: () => void;
   downloading: boolean;
+  clientId?: string;
+  gscConnected?: boolean;
 }) {
   const domain = data.website_url.replace(/^https?:\/\//, "").replace(/\/$/, "");
   const hasSiteContent = data.site_audit || data.page_audit;
@@ -242,7 +246,7 @@ export default function ReportPreviewModal({
             <SectionDividerSlide title="Understanding Current Scenario" />
             {data.site_audit && (
               <Slide eyebrow="Site Health" title="Reachability & Crawlability">
-                <SiteAuditReport result={data.site_audit} />
+                <SiteAuditReport result={data.site_audit} clientId={clientId} gscConnected={gscConnected} />
               </Slide>
             )}
             {data.page_audit && (

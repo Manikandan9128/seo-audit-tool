@@ -176,6 +176,25 @@ def gsc_sites(client_id: uuid.UUID, db: Session = Depends(get_db), current_user:
     return [GSCSiteOut(site_url=s["site_url"], permission_level=s["permission_level"]) for s in sites]
 
 
+@router.get("/{client_id}/gsc/rich-results")
+def gsc_rich_results(
+    client_id: uuid.UUID,
+    url: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Real rich-result validation via Search Console's URL Inspection API —
+    only works for a URL on the client's verified gsc_site_url property."""
+    client = _get_owned_client(client_id, db, current_user)
+    if not client.gsc_site_url:
+        raise HTTPException(status_code=400, detail="No Search Console site selected for this client")
+    creds = _load_credentials(client_id, db)
+    try:
+        return gsc_service.inspect_url(creds, client.gsc_site_url, url)
+    except HttpError as e:
+        raise HTTPException(status_code=e.resp.status, detail=_google_error_message(e))
+
+
 @router.post("/{client_id}/select-properties")
 def select_properties(
     client_id: uuid.UUID,

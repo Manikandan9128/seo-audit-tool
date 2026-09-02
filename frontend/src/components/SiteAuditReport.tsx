@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { api } from "../api/client";
+
 interface SiteAuditResult {
   url: string;
   https: boolean;
@@ -25,7 +28,90 @@ function Status({ ok, okLabel, failLabel }: { ok: boolean; okLabel: string; fail
   return <span className={`status dot ${ok ? "ok" : "fail"}`}>{ok ? okLabel : failLabel}</span>;
 }
 
-export default function SiteAuditReport({ result }: { result: SiteAuditResult }) {
+interface RichResultItem {
+  type: string | null;
+  items: { name: string | null; issues: { severity: string | null; message: string | null }[] }[];
+}
+
+interface RichResultsData {
+  verdict: string;
+  detected_items: RichResultItem[];
+  inspection_url: string | null;
+}
+
+function RichResultsValidator({ clientId, url }: { clientId: string; url: string }) {
+  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [data, setData] = useState<RichResultsData | null>(null);
+  const [error, setError] = useState("");
+
+  async function run() {
+    setState("loading");
+    setError("");
+    try {
+      const res = await api.get(`/clients/${clientId}/gsc/rich-results`, { params: { url } });
+      setData(res.data);
+      setState("done");
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Validation failed");
+      setState("error");
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button className="secondary" onClick={run} disabled={state === "loading"}>
+        {state === "loading" ? "Validating with Google…" : "Validate with Google Rich Results"}
+      </button>
+      {state === "error" && <p style={{ color: "var(--danger)", fontSize: 13, marginTop: 6 }}>{error}</p>}
+      {state === "done" && data && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 13, fontWeight: 600 }}>
+            Verdict: <span className={data.verdict === "PASS" ? "status dot ok" : "status dot fail"}>{data.verdict}</span>
+          </p>
+          {data.detected_items.length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--text-muted)" }}>No eligible rich result types detected on this page.</p>
+          ) : (
+            <ul className="issue-list">
+              {data.detected_items.map((item, i) => (
+                <li key={i}>
+                  <span style={{ fontWeight: 600 }}>{item.type}</span>
+                  {item.items.flatMap((sub) => sub.issues).length > 0 ? (
+                    <ul>
+                      {item.items.flatMap((sub, j) =>
+                        sub.issues.map((issue, k) => (
+                          <li key={`${j}-${k}`}>
+                            {issue.severity}: {issue.message}
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  ) : (
+                    <span style={{ color: "var(--success)" }}> — valid, no issues</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          {data.inspection_url && (
+            <p style={{ fontSize: 12, marginTop: 6 }}>
+              <a href={data.inspection_url} target="_blank" rel="noreferrer">View in Search Console</a>
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function SiteAuditReport({
+  result,
+  clientId,
+  gscConnected,
+}: {
+  result: SiteAuditResult;
+  clientId?: string;
+  gscConnected?: boolean;
+}) {
   const pageSizeKb = result.page_size_bytes ? Math.round(result.page_size_bytes / 1024) : null;
   const meta = result.meta;
 
@@ -149,6 +235,14 @@ export default function SiteAuditReport({ result }: { result: SiteAuditResult })
               </table>
             ) : (
               <p style={{ color: "var(--text-muted)", fontSize: 13.5 }}>Homepage could not be fetched — no on-page data available.</p>
+            )}
+            {meta && meta.structured_data_present && clientId && gscConnected && (
+              <RichResultsValidator clientId={clientId} url={result.url} />
+            )}
+            {meta && meta.structured_data_present && clientId && !gscConnected && (
+              <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 8 }}>
+                Connect Google Search Console for this client to validate structured data against Google's rich result requirements.
+              </p>
             )}
           </div>
         </section>

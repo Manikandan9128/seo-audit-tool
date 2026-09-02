@@ -702,6 +702,8 @@ export default function ClientDetailPage() {
           onDownload={downloadReportFromPreview}
           onClose={() => setPreviewData(null)}
           downloading={reportLoading}
+          clientId={clientId}
+          gscConnected={!!client.gsc_site_url}
         />
       )}
 
@@ -792,7 +794,7 @@ export default function ClientDetailPage() {
               hasData={true}
             >
               <div style={{ marginTop: 12 }}>
-                <SiteAuditHistory clientId={clientId!} refreshKey={auditHistoryKey} />
+                <SiteAuditHistory clientId={clientId!} refreshKey={auditHistoryKey} gscConnected={!!client.gsc_site_url} />
               </div>
             </SectionCard>
           )}
