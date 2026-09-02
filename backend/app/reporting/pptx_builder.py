@@ -2386,6 +2386,7 @@ def build_report(
     own_domain_rating: int | None = None,
     core_problem: dict | None = None,
     site_audit_pages_rows: list[dict] | None = None,
+    next_steps_ai: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -2405,7 +2406,7 @@ def build_report(
             company_overview, tech_stack, competitor_analysis, competitor_positions, logo_bytes,
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
-            site_audit_pages_rows,
+            site_audit_pages_rows, next_steps_ai,
         )
     finally:
         _theme["footer"] = ""
@@ -2439,6 +2440,7 @@ def _build_report(
     own_domain_rating: int | None = None,
     core_problem: dict | None = None,
     site_audit_pages_rows: list[dict] | None = None,
+    next_steps_ai: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -2580,14 +2582,56 @@ def _build_report(
         add_core_problem_slide(prs, core_problem)
 
     add_section_slide(prs, client_name, "Next Steps")
-    add_local_seo_next_steps_slide(prs, structured_data_rows)
-    add_technical_seo_next_steps_slide(prs, site_audit, page_audit, tech_stack, domain_strategy)
-    add_content_seo_next_steps_slide(prs, keyword_rows)
+
+    # AI-generated categories (next_steps_ai) take priority when present —
+    # bespoke, business-aware advice grounded in this client's actual
+    # products/competitors/numbers, matching how real manual-report decks
+    # handle this section (confirmed against 3 references: a category that
+    # doesn't fit the business, e.g. Local SEO for a national B2B SaaS with
+    # no physical locations, is dropped entirely rather than padded with
+    # generic checklist filler). Falls back to the static template slide
+    # per-category whenever the AI call failed, or that one category came
+    # back empty/malformed — never lets one bad category blank the section.
+    ai_categories = (next_steps_ai or {}).get("categories") or {}
+    # Kept in sync with next_steps_service.CATEGORY_TITLES by hand (a small,
+    # stable 7-entry map) rather than importing that module here — this file
+    # otherwise has zero app.* imports, staying a pure rendering layer with
+    # no network-client dependencies pulled in transitively.
+    _ai_category_titles = {
+        "local_seo": "Next Steps: Local SEO",
+        "technical_seo": "Next Steps: Technical SEO",
+        "content_seo": "Next Steps: Content SEO",
+        "conversion_seo": "Next Steps: Conversion SEO",
+        "aeo": "Answer Engine Optimization (AEO)",
+        "geo": "Generative Engine Optimization (GEO)",
+        "goals": "SEO Goals & Targets",
+    }
+
+    def _next_steps_slide(key: str, fallback_fn, *fallback_args):
+        category = ai_categories.get(key)
+        if not category:
+            return fallback_fn(*fallback_args)
+        if category.get("applicable") is False:
+            # The AI explicitly judged this category irrelevant to this
+            # business — that's a real finding, not a gap to paper over
+            # with the generic fallback checklist.
+            return None
+        items = category.get("items")
+        if not items:
+            return fallback_fn(*fallback_args)
+        title = _ai_category_titles.get(key, key)
+        return _next_steps_category_slide(prs, title, category.get("intro") or None, items)
+
+    _next_steps_slide("local_seo", add_local_seo_next_steps_slide, prs, structured_data_rows)
+    _next_steps_slide(
+        "technical_seo", add_technical_seo_next_steps_slide, prs, site_audit, page_audit, tech_stack, domain_strategy
+    )
+    _next_steps_slide("content_seo", add_content_seo_next_steps_slide, prs, keyword_rows)
     add_programmatic_seo_slide(prs, keyword_rows)
-    add_conversion_seo_next_steps_slide(prs, ux_findings, backlink_row_count)
-    add_aeo_slide(prs, site_audit, page_audit)
-    add_geo_slide(prs)
-    add_goals_slide(prs, own_domain_rating, competitor_rows, keyword_rows)
+    _next_steps_slide("conversion_seo", add_conversion_seo_next_steps_slide, prs, ux_findings, backlink_row_count)
+    _next_steps_slide("aeo", add_aeo_slide, prs, site_audit, page_audit)
+    _next_steps_slide("geo", add_geo_slide, prs)
+    _next_steps_slide("goals", add_goals_slide, prs, own_domain_rating, competitor_rows, keyword_rows)
 
     buf = BytesIO()
     prs.save(buf)

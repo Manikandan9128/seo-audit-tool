@@ -34,6 +34,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.competitor_narrative_service import generate_competitor_narrative
 from app.services.logo_service import fetch_logo_bytes
+from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
 from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.tech_stack_service import detect_tech_stack
@@ -385,6 +386,97 @@ def _generate_competitor_narratives(client: Client, data: dict, max_competitors:
             narratives[domain]["screenshot"] = shot
 
     return narratives
+
+
+def _build_next_steps_findings(data: dict, competitor_narratives: dict[str, dict]) -> dict:
+    """Assembles the bounded, summarized fact-set the Next Steps AI prompt
+    reasons over — reuses data already gathered elsewhere in the report
+    (never re-fetches anything) so the AI has real products/competitors/
+    numbers to name instead of inventing generic advice. Kept summarized
+    (top N only, no raw per-page dumps) to stay inside the prompt's 12,000-
+    char budget in next_steps_service."""
+
+    def _num(v) -> float:
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    company_overview = data.get("company_overview") or {}
+
+    competitors = []
+    for row in (data.get("competitor_rows") or [])[:5]:
+        domain = row.get("domain")
+        if not domain:
+            continue
+        narrative = competitor_narratives.get(domain) or {}
+        competitors.append({
+            "domain": domain,
+            "authority_score": row.get("authority_score"),
+            "backlinks_total": row.get("backlinks_total"),
+            "organic_traffic": row.get("organic_traffic"),
+            # Real on-site tactics this competitor actually uses, already
+            # AI-extracted for the "What X Does Well" slide — reusing it here
+            # is exactly what makes GEO/Conversion bullets business-specific
+            # instead of generic ("Switch to Hex"-style specificity).
+            "best_at": narrative.get("best_at") if "error" not in narrative else None,
+        })
+
+    keyword_clusters: dict[str, dict] = {}
+    for r in data.get("keyword_rows") or []:
+        label = (r.get("cluster") or "").strip()
+        if not label:
+            continue
+        entry = keyword_clusters.setdefault(label, {"count": 0, "volume": 0.0})
+        entry["count"] += 1
+        entry["volume"] += _num(r.get("search_volume"))
+    top_clusters = sorted(keyword_clusters.items(), key=lambda kv: -kv[1]["volume"])[:10]
+
+    structured_data_rows = data.get("structured_data_rows") or []
+    structured_data_summary = None
+    if structured_data_rows:
+        total = len(structured_data_rows)
+        structured_data_summary = {
+            "total_pages": total,
+            "local_business_pages": sum(1 for r in structured_data_rows if _num(r.get("local_business_items")) > 0),
+            "faq_pages": sum(1 for r in structured_data_rows if _num(r.get("faq_items")) > 0),
+            "product_pages": sum(1 for r in structured_data_rows if _num(r.get("product_items")) > 0),
+            "review_pages": sum(1 for r in structured_data_rows if _num(r.get("review_items")) > 0),
+        }
+
+    analytics = data.get("analytics") or {}
+    top_pages = ((analytics.get("top_pages") or {}).get("rows") or [])[:5]
+    traffic_rows = (analytics.get("traffic_overview") or {}).get("rows") or []
+    bounce_rate = (
+        sum(_num(r.get("bounce_rate")) for r in traffic_rows) / len(traffic_rows) if traffic_rows else None
+    )
+
+    ux_findings = data.get("ux_findings") or {}
+
+    return {
+        "company_overview": {
+            "summary": company_overview.get("summary"),
+            "industries_served": company_overview.get("industries_served"),
+            "icp": company_overview.get("icp"),
+            "solutions": company_overview.get("solutions"),
+        } if company_overview else None,
+        "competitors": competitors or None,
+        "keyword_clusters": [
+            {"label": label, "keyword_count": v["count"], "combined_monthly_searches": round(v["volume"])}
+            for label, v in top_clusters
+        ] or None,
+        "core_problem": data.get("core_problem"),
+        "structured_data_coverage": structured_data_summary,
+        "backlink_summary": data.get("backlink_summary"),
+        "own_domain_rating": data.get("own_domain_rating"),
+        "own_backlink_row_count": data.get("backlink_row_count"),
+        "top_traffic_pages": [
+            {"path": p.get("path"), "pageviews": p.get("page_views")} for p in top_pages
+        ] or None,
+        "bounce_rate_pct": round(bounce_rate, 1) if bounce_rate is not None else None,
+        "domain_strategy": data.get("domain_strategy"),
+        "ux_findings": ux_findings if not ux_findings.get("no_ux_pass_done") and not ux_findings.get("error") else None,
+    }
 
 
 def _gather_report_data(
@@ -834,12 +926,29 @@ def _build_pptx_for_client(
 
     competitor_narratives = _generate_competitor_narratives(client, data)
 
+    # Bespoke, business-aware Next Steps advice (real products/competitors/
+    # numbers, sections that don't fit the business dropped entirely) in
+    # place of the fixed checklist — see next_steps_service for why. Only
+    # attempted when an AI key is configured (same gate as Core Problem);
+    # falls back to the static per-category slides automatically inside
+    # build_report when this is None or a category comes back empty.
+    next_steps_ai = None
+    if settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key:
+        client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+        findings = _build_next_steps_findings(data, competitor_narratives)
+        next_steps_candidate = generate_next_steps(client.name, client_domain, findings)
+        if "error" not in next_steps_candidate:
+            next_steps_ai = next_steps_candidate
+        else:
+            logger.warning("Next Steps generation failed for client %s: %s", client.id, next_steps_candidate["error"])
+
     try:
         pptx_bytes = build_report(
             client_name=client.name,
             website_url=client.website_url,
             logo_bytes=logo_bytes,
             competitor_narratives=competitor_narratives,
+            next_steps_ai=next_steps_ai,
             **data,
         )
     except Exception:
