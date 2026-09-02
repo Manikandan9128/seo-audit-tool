@@ -4,7 +4,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
@@ -43,6 +43,12 @@ from app.services.technical_seo_service import aggregate_schema_validation, run_
 
 router = APIRouter(prefix="/clients", tags=["site-audit"])
 logger = logging.getLogger(__name__)
+
+# A real report generation's worst realistic case (every AI call needing
+# its full retry, several competitors, PageSpeed included) tops out around
+# 10-12 minutes — well under this. A "running" job whose progress hasn't
+# moved in this long is treated as dead (see get_generate_report_job).
+STALE_JOB_MINUTES = 15
 
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
@@ -1233,6 +1239,20 @@ def get_generate_report_job(
     job = db.get(ReportGenerationJob, job_id)
     if not job or job.client_id != client_id:
         raise HTTPException(status_code=404, detail="Job not found")
+    # A background job's worker process can die mid-build (deploy restart,
+    # OOM, crash) with nothing left alive to ever mark the row "done" or
+    # "failed" — confirmed real: a job frozen at "Analyzing competitor 2 of
+    # 4" / 65% for 30+ minutes, far past any realistic worst-case for that
+    # one step (Groq's own call+retry tops out around 2-3 minutes). Treat a
+    # "running" job whose progress hasn't moved in STALE_JOB_MINUTES as
+    # dead rather than let the frontend poll a frozen percentage forever.
+    if job.status == "running" and datetime.now(timezone.utc) - job.updated_at > timedelta(minutes=STALE_JOB_MINUTES):
+        job.status = "failed"
+        job.error = (
+            "Report generation appears to have stalled or crashed server-side "
+            f"(no progress for over {STALE_JOB_MINUTES} minutes) — please try again."
+        )
+        db.commit()
     return {
         "id": job.id,
         "status": job.status,
