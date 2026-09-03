@@ -1820,6 +1820,42 @@ def add_top_pages_segment_slide(prs: Presentation, title: str, share_label: str,
     return slide
 
 
+def add_direct_traffic_breakdown_slide(prs: Presentation, sources: list[dict], source: str | None = None):
+    """Single-row isolation of the Direct channel — Total Direct Users,
+    Total Sessions, New Direct Users, Returning Direct Users. All 4 metrics
+    already exist per-channel on the `sources` rows the Traffic Sources
+    slide above also consumes (get_traffic_sources' channel x
+    newVsReturning crosstab) — no new GA4 query needed, just filtered to
+    the one channel and reshaped into the 5-column table the client asked
+    for (Dimension: Channel Grouping + the 4 metrics)."""
+    direct = next((s for s in sources if (s.get("channel") or "").strip().lower() == "direct"), None)
+    if not direct:
+        return None
+    slide = _blank_slide(prs)
+    _content_header(slide, "Direct Traffic Breakdown")
+    if source:
+        _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
+
+    total_users = int(float(direct.get("users", 0) or 0))
+    total_sessions = int(float(direct.get("sessions", 0) or 0))
+    new_users = int(float(direct.get("new_users", 0) or 0))
+    returning_users = int(float(direct.get("returning_users", 0) or 0))
+    rows = [(direct["channel"], f"{total_users:,}", f"{total_sessions:,}", f"{new_users:,}", f"{returning_users:,}")]
+    headers = ["Channel Grouping", "Total Direct Users", "Total Sessions", "New Direct Users", "Returning Direct Users"]
+
+    bottom = _draw_table(slide, headers, rows, Inches(1.3), col_widths=[2.5, 2.4, 2.4, 2.4, 2.4])
+
+    insights = []
+    if total_users:
+        new_share = new_users / total_users * 100
+        insights.append(f"{new_share:.0f}% of Direct users are new — {'mostly first-time visits typing the URL or using a bookmark' if new_share > 60 else 'a healthy mix of new and repeat direct visits'}.")
+    if total_sessions and total_users:
+        insights.append(f"{total_sessions / total_users:.1f} sessions per Direct user on average.")
+    if insights:
+        _insights_strip(slide, Inches(0.6), bottom + Inches(0.25), Inches(11.9), insights)
+    return slide
+
+
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Overview")
@@ -3322,6 +3358,7 @@ def _build_report(
                 prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
                 col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights,
             )
+            add_direct_traffic_breakdown_slide(prs, sources, source=ga4_source)
         queries = (analytics.get("search_queries") or {}).get("rows", [])
         if queries:
             brand = _brand_token(website_url)
