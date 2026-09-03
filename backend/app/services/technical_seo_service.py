@@ -129,9 +129,15 @@ def _schema_types_from_entities(entities: list[dict]) -> list[str]:
 
 
 def _schema_field_issues(entities: list[dict]) -> list[str]:
-    """'<Type> missing required field: <field>' for every rule-covered type
-    detected on the page — the same required-property gaps Google's Rich
-    Results Test would flag, checked locally without a Search Console call."""
+    """'<Type> schema missing required/recommended field: <field>' for every
+    rule-covered type detected on the page — the same property gaps
+    Google's Rich Results Test would flag, checked locally without a Search
+    Console call. Recommended fields (e.g. Organization's "sameAs" — the
+    entity-linking property that ties a site to its Wikipedia/Wikidata/
+    social profiles for GEO/AI-citation purposes) were defined in
+    _SCHEMA_FIELD_RULES but never actually checked here — confirmed against
+    a real manual audit (EJTOY) that flagged exactly this as a finding our
+    tool didn't surface anywhere."""
     issues: list[str] = []
     for entity in entities:
         entity_types = entity.get("@type")
@@ -143,10 +149,13 @@ def _schema_field_issues(entities: list[dict]) -> list[str]:
             for field in rules["required"]:
                 if field not in entity:
                     issues.append(f"{t} schema missing required field: {field}")
+            for field in rules.get("recommended", []):
+                if field not in entity:
+                    issues.append(f"{t} schema missing recommended field: {field}")
     return issues
 
 
-_SCHEMA_FIELD_ISSUE_RE = re.compile(r"^(.+?) schema missing required field: (.+)$")
+_SCHEMA_FIELD_ISSUE_RE = re.compile(r"^(.+?) schema missing (required|recommended) field: (.+)$")
 
 
 def aggregate_schema_validation(pages: list[dict]) -> dict:
@@ -174,16 +183,22 @@ def aggregate_schema_validation(pages: list[dict]) -> dict:
         for issue in meta.get("schema_field_issues") or []:
             match = _SCHEMA_FIELD_ISSUE_RE.match(issue)
             if match:
-                missing_field_counts[(match.group(1), match.group(2))] += 1
+                missing_field_counts[(match.group(1), match.group(2), match.group(3))] += 1
 
     type_coverage = [
         {"type": t, "pages_with_it": c, "coverage_pct": round(100 * c / total_pages) if total_pages else 0}
         for t, c in type_counts.most_common()
     ]
-    missing_properties = [
-        {"type": t, "field": f, "pages_missing": c}
-        for (t, f), c in missing_field_counts.most_common()
-    ]
+    # Required gaps first (Google's Rich Results eligibility depends on
+    # these), recommended gaps after — both still ranked by how many pages
+    # they affect within their own group.
+    missing_properties = sorted(
+        (
+            {"type": t, "severity": severity, "field": f, "pages_missing": c}
+            for (t, severity, f), c in missing_field_counts.items()
+        ),
+        key=lambda m: (m["severity"] != "required", -m["pages_missing"]),
+    )
 
     return {
         "total_pages": total_pages,

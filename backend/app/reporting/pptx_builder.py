@@ -837,10 +837,21 @@ def add_solutions_products_slide(prs: Presentation, overview: dict):
             run.font.color.rgb = TEXT_MUTED
             y += line_h * lines + Inches(0.2)
 
-    if industries and y < Inches(6.7):
-        _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Industries", size=15, bold=True, color=_accent())
-        y += Inches(0.4)
-        _textbox(slide, Inches(0.9), y, Inches(11.3), Inches(0.5), ", ".join(industries[:12]), size=12)
+    if industries:
+        if y < Inches(6.7):
+            _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Industries", size=15, bold=True, color=_accent())
+            y += Inches(0.4)
+            _textbox(slide, Inches(0.9), y, Inches(11.3), Inches(0.5), ", ".join(industries[:12]), size=12)
+        else:
+            # Didn't fit on the main slide — a long Solutions/Products list
+            # can push y past the card before Industries even starts (seen
+            # live on a real report: Industries vanished with no trace).
+            # Real client data never gets silently dropped for lack of
+            # room — give it its own slide instead.
+            overflow_slide = _blank_slide(prs)
+            _content_header(overflow_slide, "Industries Served")
+            _card(overflow_slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(1.6))
+            _textbox(overflow_slide, Inches(0.9), Inches(1.4), Inches(11.3), Inches(1.0), ", ".join(industries[:12]), size=14)
 
     return slide
 
@@ -1353,18 +1364,24 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
     headers = ["Schema Type", "Missing Property", "Pages Affected"]
     col_widths = [4.0, 4.0, 4.0]
     rows = [
-        (m["type"], m["field"], f"{m['pages_missing']:,} of {total_pages:,}")
+        (
+            m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)",
+            m["field"],
+            f"{m['pages_missing']:,} of {total_pages:,}",
+        )
         for m in missing_properties
     ]
 
     pages_with_schema = schema_validation.get("pages_with_schema") or 0
     insights = [
-        f"{pages_with_schema:,} of {total_pages:,} crawled pages have some structured data — this table is the "
-        "required-property gaps within that markup, per Google's structured-data requirements.",
+        f"{pages_with_schema:,} of {total_pages:,} crawled pages have some structured data — this table lists both "
+        "REQUIRED property gaps (block rich-result eligibility) and RECOMMENDED gaps (e.g. Organization's 'sameAs' "
+        "entity links, which strengthen how AI engines and Google cite the site) within that markup.",
     ]
     worst = missing_properties[0]
+    worst_label = "missing (required)" if worst["severity"] == "required" else "missing (recommended)"
     insights.append(
-        f"{worst['type']} schema is missing '{worst['field']}' on {worst['pages_missing']:,} page(s) — "
+        f"{worst['type']} schema is {worst_label} '{worst['field']}' on {worst['pages_missing']:,} page(s) — "
         "the largest single gap found."
     )
 
@@ -2263,6 +2280,59 @@ def add_backlink_profile_slide(
     return slide
 
 
+# A generic, high-authority set of listing/review directories worth a
+# submission for most B2B sites (matches the manual reference decks'
+# "Current Brand Mentions" recommendations section — SPOTONIX itself
+# recommended this same style of generic directory list, not a bespoke
+# per-client set). Deliberately NOT a claim about whether the client is
+# already listed anywhere — that would need a live search/citation-lookup
+# API this app doesn't have, and this file's "never invent data" discipline
+# rules out guessing. This is the submission-recommendation half only.
+_BRAND_DIRECTORY_RECOMMENDATIONS = [
+    ("G2", "Buyer-intent software marketplace — strong for B2B SaaS comparison shoppers."),
+    ("Capterra", "Gartner-owned software directory — high-intent traffic, category-specific listings."),
+    ("TrustRadius", "In-depth review platform enterprise buyers check before a demo call."),
+    ("SoftwareSuggest", "Regional/vertical software directory — useful for reaching underserved markets."),
+    ("Crunchbase", "Company profile indexed by AI/LLM training and citation sources — strengthens entity recognition."),
+    ("Trustpilot", "General-purpose review platform — builds the trust signals AI Overviews and shoppers both check."),
+]
+
+
+def add_brand_mentions_slide(prs: Presentation, client_name: str):
+    """Brand citation/directory-listing opportunities — the manual
+    reference decks' "Current Brand Mentions" slide, minus the half of it
+    that isn't safely automatable: those decks also list specific external
+    pages that already mention the brand (Tracxn, CBInsights), which needs
+    a live web-search/citation-lookup API this app doesn't have. Faking
+    that with an AI guess would violate this file's "never invent data"
+    discipline, so this slide covers only the submission-recommendation
+    half — grounded, generic, and still real value (these are the same
+    directories the manual decks themselves recommend, not client-specific
+    claims)."""
+    slide = _blank_slide(prs)
+    _content_header(slide, "Brand Citation Opportunities")
+    _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.9))
+    _textbox(
+        slide, Inches(0.9), Inches(1.3), Inches(11.5), Inches(0.5),
+        "Getting listed on high-authority directories builds the trust signals both human buyers and AI answer "
+        "engines check before recommending a brand.", size=12.5, color=TEXT_MUTED,
+    )
+    y = Inches(1.9)
+    for name, blurb in _BRAND_DIRECTORY_RECOMMENDATIONS:
+        if y > Inches(6.7):
+            break
+        _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), _accent())
+        _textbox(slide, Inches(1.15), y, Inches(2.4), Inches(0.3), name, size=13, bold=True)
+        _textbox(slide, Inches(3.7), y, Inches(8.3), Inches(0.5), blurb, size=12, color=TEXT_DARK)
+        y += Inches(0.62)
+    _textbox(
+        slide, Inches(0.9), min(y + Inches(0.1), Inches(6.9)), Inches(11.3), Inches(0.4),
+        f"Submit {client_name} to the directories most relevant to its category first — a targeted, complete "
+        "profile beats a partial listing on every site at once.", size=11, color=TEXT_MUTED,
+    )
+    return slide
+
+
 def _derive_next_steps(site_audit: dict | None, page_audit: dict | None) -> list[str]:
     steps = []
     if site_audit:
@@ -2761,6 +2831,8 @@ def _build_report(
 
     if backlink_rows or backlink_summary or own_domain_rating is not None:
         add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
+
+    add_brand_mentions_slide(prs, client_name)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
