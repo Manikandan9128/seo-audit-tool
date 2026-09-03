@@ -1365,41 +1365,81 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
     12 of 15 pages" style gaps. Built from this tool's own full-site Page
     Audit crawl (see aggregate_schema_validation), since Semrush's export
     only tracks per-page type presence, never property-level completeness.
+
+    When schema_validation also carries "gsc_rich_results" (real verdicts
+    from Search Console's URL Inspection API — see gsc_service.inspect_urls,
+    wired in for clients with GSC connected), those rows lead the table:
+    Google's own PASS/FAIL rich-result eligibility check on real pages beats
+    this tool's local rule replica, which only exists because that API needs
+    site ownership this tool doesn't always have. Additive only — the local
+    rule-based rows still show for every type/page GSC wasn't asked about.
+
     Skipped entirely if no Page Audit has been run for this client yet."""
     total_pages = schema_validation.get("total_pages") or 0
     if not total_pages:
         return None
 
     missing_properties = schema_validation.get("missing_properties") or []
-    if not missing_properties:
+    gsc_rich_results = schema_validation.get("gsc_rich_results") or []
+    if not missing_properties and not gsc_rich_results:
         return None
 
-    headers = ["Schema Type", "Missing Property", "Pages Affected"]
+    headers = ["Schema Type", "Finding", "Pages Affected"]
     col_widths = [4.0, 4.0, 4.0]
-    rows = [
+
+    gsc_rows = []
+    gsc_pass_count = 0
+    gsc_fail_count = 0
+    for r in gsc_rich_results:
+        verdict = r.get("verdict")
+        if verdict == "PASS":
+            gsc_pass_count += 1
+        elif verdict == "FAIL":
+            gsc_fail_count += 1
+        for item in r.get("detected_items") or []:
+            for sub in item.get("items") or []:
+                for issue in sub.get("issues") or []:
+                    gsc_rows.append((
+                        f"{item.get('type')} (Google-verified)",
+                        issue.get("message") or "Flagged by Google's Rich Results check",
+                        _truncate_cell(r.get("url") or "", col_widths[2]),
+                    ))
+
+    rule_rows = [
         (
             m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)",
-            m["field"],
+            f"Missing {m['field']}",
             f"{m['pages_missing']:,} of {total_pages:,}",
         )
         for m in missing_properties
     ]
+    rows = gsc_rows + rule_rows
 
     pages_with_schema = schema_validation.get("pages_with_schema") or 0
-    insights = [
-        f"{pages_with_schema:,} of {total_pages:,} crawled pages have some structured data — this table lists both "
-        "REQUIRED property gaps (block rich-result eligibility) and RECOMMENDED gaps (e.g. Organization's 'sameAs' "
-        "entity links, which strengthen how AI engines and Google cite the site) within that markup.",
-    ]
-    worst = missing_properties[0]
-    worst_label = "missing (required)" if worst["severity"] == "required" else "missing (recommended)"
-    insights.append(
-        f"{worst['type']} schema is {worst_label} '{worst['field']}' on {worst['pages_missing']:,} page(s) — "
-        "the largest single gap found."
-    )
+    insights = []
+    if gsc_rich_results:
+        insights.append(
+            f"Cross-checked against Search Console's URL Inspection API on {len(gsc_rich_results):,} page(s) with "
+            f"structured data — Google's own rich-result eligibility check: {gsc_pass_count:,} pass, "
+            f"{gsc_fail_count:,} fail."
+        )
+    if missing_properties:
+        insights.append(
+            f"{pages_with_schema:,} of {total_pages:,} crawled pages have some structured data — this table also lists "
+            "REQUIRED property gaps (block rich-result eligibility) and RECOMMENDED gaps (e.g. Organization's 'sameAs' "
+            "entity links, which strengthen how AI engines and Google cite the site) that GSC wasn't checked against.",
+        )
+        worst = missing_properties[0]
+        worst_label = "missing (required)" if worst["severity"] == "required" else "missing (recommended)"
+        insights.append(
+            f"{worst['type']} schema is {worst_label} '{worst['field']}' on {worst['pages_missing']:,} page(s) — "
+            "the largest single local gap found."
+        )
 
     return _table_slide(
-        prs, "Schema Validator", headers, rows, col_widths=col_widths, source="Site Audit crawl", insights=insights
+        prs, "Schema Validator", headers, rows, col_widths=col_widths,
+        source="Site Audit crawl + Search Console URL Inspection" if gsc_rich_results else "Site Audit crawl",
+        insights=insights,
     )
 
 

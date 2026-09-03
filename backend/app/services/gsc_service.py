@@ -1,5 +1,6 @@
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 
 def list_sites(creds: Credentials) -> list[dict]:
@@ -69,6 +70,23 @@ def inspect_url(creds: Credentials, site_url: str, inspection_url: str) -> dict:
         "detected_items": items,
         "inspection_url": result.get("inspectionResultLink"),
     }
+
+
+def inspect_urls(creds: Credentials, site_url: str, urls: list[str], max_urls: int = 5) -> list[dict]:
+    """Batch wrapper around inspect_url for the PPTX Schema Validator slide.
+    There's no batch URL Inspection endpoint — one call per page — so this
+    is capped (max_urls) since the quota is per-minute/day, not meant for
+    hammering a whole site, and each URL is guarded independently so one
+    unverified/failed page doesn't cost the rest of the report's real
+    verdicts."""
+    results = []
+    for url in urls[:max_urls]:
+        try:
+            result = inspect_url(creds, site_url, url)
+        except HttpError:
+            continue
+        results.append({"url": url, **result})
+    return results
 
 
 def get_page_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 1000) -> dict:

@@ -1042,6 +1042,28 @@ def _gather_report_data(
         else None
     )
 
+    # Cross-check the Schema Validator's local rule replica against Google's
+    # own real rich-result verdict via Search Console's URL Inspection API —
+    # only possible for clients with GSC connected AND owning the property
+    # (see gsc_service.inspect_url), so this is additive: real GSC rows lead
+    # the slide, local rule-based rows still fill in everything GSC wasn't
+    # asked about.
+    if schema_validation_result and client.gsc_site_url:
+        schema_page_urls = [
+            p.get("url")
+            for p in latest_page_audit_job.result.get("pages", [])
+            if (p.get("meta") or {}).get("schema_types_found") and p.get("url")
+        ]
+        if schema_page_urls:
+            try:
+                rr_creds = _load_credentials(client_id, db)
+                if rr_creds:
+                    schema_validation_result["gsc_rich_results"] = gsc_service.inspect_urls(
+                        rr_creds, client.gsc_site_url, schema_page_urls, max_urls=5
+                    )
+            except Exception:
+                logger.exception("GSC rich-result inspection failed for client %s", client.id)
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
