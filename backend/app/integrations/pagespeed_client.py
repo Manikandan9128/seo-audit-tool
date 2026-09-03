@@ -44,7 +44,7 @@ def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
     return issues[:limit]
 
 
-def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 2) -> dict:
+def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1) -> dict:
     """strategy: 'mobile' or 'desktop'. Retries on timeout and on a 5xx from
     PSI itself — its own Lighthouse run is slow and flaky enough that both
     transient timeouts and transient server errors aren't unusual."""
