@@ -127,7 +127,11 @@ export default function ClientDetailPage() {
       const tasks: Promise<any>[] = [];
       if (selectedSections.includes("overview")) tasks.push(loadOverview());
       if (selectedSections.includes("site_audit")) tasks.push(runSiteAudit());
-      if (selectedSections.includes("all_pages")) tasks.push(runPageAudit());
+      // Full-site crawl (up to 200000 pages) runs in the background and is not
+      // awaited here — the PPTX build reuses the latest *completed* page-audit
+      // job regardless, so gating "Generate Report" on a fresh multi-thousand-
+      // page crawl only stalls the button for no benefit.
+      if (selectedSections.includes("all_pages")) runPageAudit();
       if (selectedSections.includes("pagespeed")) tasks.push(runPageSpeed());
       if (selectedSections.includes("tech_stack")) tasks.push(loadTechStack());
       if (selectedSections.includes("analytics") && client?.google_connected) {

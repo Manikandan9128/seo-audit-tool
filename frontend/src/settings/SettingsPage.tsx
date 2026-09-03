@@ -138,8 +138,8 @@ export default function SettingsPage() {
       <h2 style={{ marginBottom: 8 }}>Settings</h2>
       <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 20 }}>
         Company Overview extraction and the Competitor Analysis AI summary need at least one of these keys — not
-        all three. Gemini is tried first, Groq next (free tier, higher per-minute limit — covers Gemini's burst
-        limit), then Claude last as a paid fallback. Any one key alone is enough.{" "}
+        all three. Groq is tried first (fast-recovering per-minute limit), then Gemini (its free-tier quota resets
+        only once a day, so it's kept in reserve), then Claude last as a paid fallback. Any one key alone is enough.{" "}
         {!loading && (eitherKeySet ? <span style={{ color: "var(--success)" }}>✓ AI features are active.</span> : <span style={{ color: "#991b1b" }}>No key set yet — AI features are disabled.</span>)}
       </p>
 
