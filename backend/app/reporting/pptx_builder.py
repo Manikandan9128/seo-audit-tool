@@ -1358,6 +1358,52 @@ def add_structured_data_slide(
     )
 
 
+def add_structured_data_slide_from_crawl(prs: Presentation, schema_validation: dict):
+    """Same 'Structured Data' coverage slide as add_structured_data_slide,
+    but sourced from this tool's own crawl (aggregate_schema_validation)
+    instead of Semrush's Site Audit export. Semrush's per-type item counts
+    can be stale or wrong for a given crawl (confirmed on a live client
+    site: Semrush's export showed 85% Product-schema coverage while
+    Google's own Rich Results Test found zero Product items, only
+    LocalBusiness + Organization) — this crawl-based path is ground truth
+    since it parses the page's actual JSON-LD, so it's preferred whenever
+    real crawl data is available."""
+    total_pages = schema_validation.get("total_pages") or 0
+    if not total_pages:
+        return None
+
+    type_coverage = schema_validation.get("type_coverage") or []
+    headers = ["Schema Type", "Pages With It", "Coverage"]
+    col_widths = [4.0, 2.5, 2.5]
+    rows = [
+        (c["type"], f"{c['pages_with_it']:,} / {total_pages:,}", f"{c['coverage_pct']}%")
+        for c in type_coverage
+    ]
+
+    pages_with_schema = schema_validation.get("pages_with_schema") or 0
+    any_schema_pct = 100 * pages_with_schema / total_pages
+    insights = [
+        f"{pages_with_schema:,} of {total_pages:,} crawled URLs ({any_schema_pct:.0f}%) have structured data "
+        "(schema.org JSON-LD) implemented, per this tool's own crawl.",
+    ]
+    missing_types = schema_validation.get("missing_types") or []
+    for m in missing_types[:2]:
+        insights.append(f"{m['type']} schema is entirely missing — {m['reason']}.")
+    if type_coverage:
+        best = type_coverage[0]
+        gap = total_pages - pages_with_schema
+        if gap > 0:
+            insights.append(
+                f"{gap:,} of {total_pages:,} pages ({100 * gap / total_pages:.0f}%) have no structured data "
+                f"of any kind — not even {best['type']}, the site's best-covered type."
+            )
+
+    return _table_slide(
+        prs, "Structured Data", headers, rows, col_widths=col_widths, source="Site Audit crawl (JSON-LD)",
+        insights=insights,
+    )
+
+
 def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
     """Missing REQUIRED PROPERTIES per Google's structured-data docs — not
     just type presence/absence (the Semrush-sourced Structured Data slide
@@ -1381,7 +1427,8 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
 
     missing_properties = schema_validation.get("missing_properties") or []
     gsc_rich_results = schema_validation.get("gsc_rich_results") or []
-    if not missing_properties and not gsc_rich_results:
+    missing_types = schema_validation.get("missing_types") or []
+    if not missing_properties and not gsc_rich_results and not missing_types:
         return None
 
     headers = ["Schema Type", "Finding", "Pages Affected"]
@@ -1405,6 +1452,10 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
                         _truncate_cell(r.get("url") or "", col_widths[2]),
                     ))
 
+    type_rows = [
+        (m["type"], "(entire type missing)", m["reason"])
+        for m in missing_types
+    ]
     rule_rows = [
         (
             m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)",
@@ -1413,7 +1464,7 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
         )
         for m in missing_properties
     ]
-    rows = gsc_rows + rule_rows
+    rows = gsc_rows + type_rows + rule_rows
 
     pages_with_schema = schema_validation.get("pages_with_schema") or 0
     insights = []
@@ -1423,6 +1474,9 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
             f"structured data — Google's own rich-result eligibility check: {gsc_pass_count:,} pass, "
             f"{gsc_fail_count:,} fail."
         )
+    if missing_types:
+        worst_type = missing_types[0]
+        insights.append(f"{worst_type['type']} schema is entirely missing — {worst_type['reason']}.")
     if missing_properties:
         insights.append(
             f"{pages_with_schema:,} of {total_pages:,} crawled pages have some structured data — this table also lists "
@@ -2917,7 +2971,9 @@ def _build_report(
             add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
-            if structured_data_rows:
+            if schema_validation and schema_validation.get("total_pages"):
+                add_structured_data_slide_from_crawl(prs, schema_validation)
+            elif structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
             if schema_validation:
                 add_schema_validation_slide(prs, schema_validation)

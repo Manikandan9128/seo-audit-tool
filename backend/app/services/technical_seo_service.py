@@ -158,6 +158,29 @@ def _schema_field_issues(entities: list[dict]) -> list[str]:
 _SCHEMA_FIELD_ISSUE_RE = re.compile(r"^(.+?) schema missing (required|recommended) field: (.+)$")
 
 
+# Contextual "missing type" detection — a type here is only flagged as
+# entirely absent when at least one page shaped for it exists (by URL
+# pattern), same reasoning pptx_builder._SCHEMA_TYPE_REQUIRED_SHAPES uses for
+# the Semrush-driven slide: a site with zero /product/ URLs doesn't need a
+# "no Product schema" finding. Types with no entry here (Organization,
+# WebSite, BreadcrumbList) apply site-wide instead — see _site_wide_missing_types.
+_SCHEMA_TYPE_SHAPE_RE: dict[str, re.Pattern] = {
+    "Article-type": re.compile(r"/(?:blog|news|articles?|posts?)/", re.IGNORECASE),
+    "Product": re.compile(r"/(?:products?|shop|store|items?)/", re.IGNORECASE),
+    "LocalBusiness": re.compile(r"/(?:locations?|store-locator|near-me|branch(?:es)?)/", re.IGNORECASE),
+    "JobPosting": re.compile(r"/(?:careers?|jobs?)/", re.IGNORECASE),
+    "Event": re.compile(r"/events?/", re.IGNORECASE),
+    "FAQPage": re.compile(r"faq|frequently[\s-]asked[\s-]questions", re.IGNORECASE),
+}
+# "Article-type" isn't a real @type on its own — Article/BlogPosting/
+# NewsArticle all satisfy the same blog-shaped-page finding, so they collapse
+# into one row instead of three near-duplicate ones.
+_SCHEMA_TYPE_GROUP_MEMBERS: dict[str, set[str]] = {
+    "Article-type": {"Article", "BlogPosting", "NewsArticle"},
+}
+_SITE_WIDE_SCHEMA_TYPES = ["Organization", "WebSite", "BreadcrumbList"]
+
+
 def aggregate_schema_validation(pages: list[dict]) -> dict:
     """Whole-site schema.org coverage + missing-required-property counts,
     built from a multi-page crawl's already-computed per-page meta (see
@@ -169,13 +192,15 @@ def aggregate_schema_validation(pages: list[dict]) -> dict:
     pages_with_schema = 0
     type_counts: Counter = Counter()
     missing_field_counts: Counter = Counter()
+    shape_page_counts: Counter = Counter()
+    shape_type_found_counts: Counter = Counter()
 
     for page in pages:
         meta = page.get("meta")
         if not meta:
             continue
         total_pages += 1
-        types_found = meta.get("schema_types_found") or []
+        types_found = set(meta.get("schema_types_found") or [])
         if types_found:
             pages_with_schema += 1
         for t in types_found:
@@ -184,6 +209,14 @@ def aggregate_schema_validation(pages: list[dict]) -> dict:
             match = _SCHEMA_FIELD_ISSUE_RE.match(issue)
             if match:
                 missing_field_counts[(match.group(1), match.group(2), match.group(3))] += 1
+
+        url = page.get("url") or ""
+        for label, shape_re in _SCHEMA_TYPE_SHAPE_RE.items():
+            if shape_re.search(url):
+                shape_page_counts[label] += 1
+                members = _SCHEMA_TYPE_GROUP_MEMBERS.get(label, {label})
+                if types_found & members:
+                    shape_type_found_counts[label] += 1
 
     type_coverage = [
         {"type": t, "pages_with_it": c, "coverage_pct": round(100 * c / total_pages) if total_pages else 0}
@@ -200,11 +233,23 @@ def aggregate_schema_validation(pages: list[dict]) -> dict:
         key=lambda m: (m["severity"] != "required", -m["pages_missing"]),
     )
 
+    missing_types = [
+        {"type": t, "reason": f"{shape_page_counts[t]} relevant page(s) found, 0 have {t} schema"}
+        for t in _SCHEMA_TYPE_SHAPE_RE
+        if shape_page_counts[t] > 0
+        and shape_type_found_counts[t] == 0
+        and not any(type_counts[m] for m in _SCHEMA_TYPE_GROUP_MEMBERS.get(t, {t}))
+    ]
+    for t in _SITE_WIDE_SCHEMA_TYPES:
+        if total_pages > 0 and type_counts[t] == 0:
+            missing_types.append({"type": t, "reason": f"not found on any of the {total_pages} crawled pages"})
+
     return {
         "total_pages": total_pages,
         "pages_with_schema": pages_with_schema,
         "type_coverage": type_coverage,
         "missing_properties": missing_properties,
+        "missing_types": missing_types,
     }
 
 
