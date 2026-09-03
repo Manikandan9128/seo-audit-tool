@@ -33,6 +33,7 @@ from app.services.core_problem_service import generate_core_problem
 from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
+from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords
 from app.services.logo_service import fetch_logo_bytes
@@ -1169,6 +1170,23 @@ def _build_pptx_for_client(
     # the docstring above on why this never goes into the PPTX itself).
     data.pop("content_generation_issues", None)
 
+    # Real citation lookup for the Brand Citation Opportunities slide — a
+    # free Brave Search call (only when brave_api_key is configured; None
+    # otherwise) plus an always-free Wikipedia check. Wrapped defensively
+    # even though both service functions already swallow their own network
+    # errors — an unexpected failure here should cost this one slide, never
+    # the whole report, same as the logo fetch above.
+    brand_citations = None
+    brand_wikipedia = None
+    try:
+        brand_citations = search_brand_mentions(client.name, client.website_url)
+    except Exception:
+        logger.exception("Brand citation search failed for client %s — continuing without it", client_id)
+    try:
+        brand_wikipedia = check_wikipedia_presence(client.name)
+    except Exception:
+        logger.exception("Wikipedia check failed for client %s — continuing without it", client_id)
+
     progress("Building presentation...", 96)
     try:
         pptx_bytes = build_report(
@@ -1177,6 +1195,8 @@ def _build_pptx_for_client(
             logo_bytes=logo_bytes,
             competitor_narratives=competitor_narratives,
             next_steps_ai=next_steps_ai,
+            brand_citations=brand_citations,
+            brand_wikipedia=brand_wikipedia,
             **data,
         )
     except Exception:

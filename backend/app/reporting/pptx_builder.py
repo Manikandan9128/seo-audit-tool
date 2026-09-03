@@ -2331,35 +2331,56 @@ _BRAND_DIRECTORY_RECOMMENDATIONS = [
 ]
 
 
-def add_brand_mentions_slide(prs: Presentation, client_name: str):
+def add_brand_mentions_slide(
+    prs: Presentation, client_name: str, citations: list[dict] | None = None, wikipedia: dict | None = None,
+):
     """Brand citation/directory-listing opportunities — the manual
-    reference decks' "Current Brand Mentions" slide, minus the half of it
-    that isn't safely automatable: those decks also list specific external
-    pages that already mention the brand (Tracxn, CBInsights), which needs
-    a live web-search/citation-lookup API this app doesn't have. Faking
-    that with an AI guess would violate this file's "never invent data"
-    discipline, so this slide covers only the submission-recommendation
-    half — grounded, generic, and still real value (these are the same
-    directories the manual decks themselves recommend, not client-specific
-    claims)."""
+    reference decks' "Current Brand Mentions" slide. When citations/
+    wikipedia are supplied (see brand_citation_service — a real Brave
+    Search + Wikipedia lookup, gated on a free API key), a "Where You're
+    Already Cited" section leads the slide with grounded, real results.
+    Silently falls back to directory-recommendations-only (the original
+    version of this slide) when neither is available — never invents a
+    citation that wasn't actually found, same discipline as the rest of
+    this file."""
+    citations = citations or []
     slide = _blank_slide(prs)
     _content_header(slide, "Brand Citation Opportunities")
     _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.9))
+    max_y = Inches(6.9)
+    y = Inches(1.3)
+
+    if citations or wikipedia:
+        _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.3), "Where You're Already Cited", size=13, bold=True, color=_accent())
+        y += Inches(0.36)
+        if wikipedia:
+            _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), GOOD)
+            _textbox(slide, Inches(1.15), y, Inches(11), Inches(0.3), f"Wikipedia: \"{wikipedia['title']}\"", size=11.5)
+            y += Inches(0.3)
+        for c in citations[:4]:
+            if y > max_y - Inches(0.5):
+                break
+            _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), GOOD)
+            domain = urlparse(c["url"]).netloc
+            _textbox(slide, Inches(1.15), y, Inches(11), Inches(0.3), f"{c['title']} — {domain}", size=11.5)
+            y += Inches(0.3)
+        y += Inches(0.25)
+
     _textbox(
-        slide, Inches(0.9), Inches(1.3), Inches(11.5), Inches(0.5),
+        slide, Inches(0.9), y, Inches(11.5), Inches(0.5),
         "Getting listed on high-authority directories builds the trust signals both human buyers and AI answer "
         "engines check before recommending a brand.", size=12.5, color=TEXT_MUTED,
     )
-    y = Inches(1.9)
+    y += Inches(0.6)
     for name, blurb in _BRAND_DIRECTORY_RECOMMENDATIONS:
-        if y > Inches(6.7):
+        if y > max_y - Inches(0.2):
             break
         _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), _accent())
         _textbox(slide, Inches(1.15), y, Inches(2.4), Inches(0.3), name, size=13, bold=True)
         _textbox(slide, Inches(3.7), y, Inches(8.3), Inches(0.5), blurb, size=12, color=TEXT_DARK)
         y += Inches(0.62)
     _textbox(
-        slide, Inches(0.9), min(y + Inches(0.1), Inches(6.9)), Inches(11.3), Inches(0.4),
+        slide, Inches(0.9), min(y + Inches(0.1), max_y), Inches(11.3), Inches(0.4),
         f"Submit {client_name} to the directories most relevant to its category first — a targeted, complete "
         "profile beats a partial listing on every site at once.", size=11, color=TEXT_MUTED,
     )
@@ -2762,6 +2783,8 @@ def build_report(
     site_audit_pages_rows: list[dict] | None = None,
     next_steps_ai: dict | None = None,
     schema_validation: dict | None = None,
+    brand_citations: list[dict] | None = None,
+    brand_wikipedia: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -2782,6 +2805,7 @@ def build_report(
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
             site_audit_pages_rows, next_steps_ai, schema_validation,
+            brand_citations, brand_wikipedia,
         )
     finally:
         _theme["footer"] = ""
@@ -2817,6 +2841,8 @@ def _build_report(
     site_audit_pages_rows: list[dict] | None = None,
     next_steps_ai: dict | None = None,
     schema_validation: dict | None = None,
+    brand_citations: list[dict] | None = None,
+    brand_wikipedia: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -2865,7 +2891,7 @@ def _build_report(
     if backlink_rows or backlink_summary or own_domain_rating is not None:
         add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
 
-    add_brand_mentions_slide(prs, client_name)
+    add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
