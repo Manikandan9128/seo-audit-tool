@@ -1,4 +1,5 @@
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as _date
 
 from google.oauth2.credentials import Credentials
@@ -282,24 +283,35 @@ def get_traffic_channel_breakdown(
     queries (channel+country, channel+device) instead of one 3-dimension
     cross-tab — GA4's data-thresholding fragments a 3-way cross-tab too
     much to reliably return rows (see get_traffic_spike_breakdown)."""
-    client = _data_client(creds)
     months = _months_in_range(start_date, end_date)
 
-    body = {
-        "dimensions": [{"name": "sessionDefaultChannelGroup"}],
-        "metrics": [{"name": "sessions"}, {"name": "totalUsers"}],
-        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
-        "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
-    }
-    response = client.properties().runReport(property=property_id, body=body).execute()
-    channel_totals = []
-    for row in response.get("rows", []):
-        dv, mv = row["dimensionValues"], row["metricValues"]
-        channel_totals.append((dv[0]["value"], int(mv[0]["value"]), int(mv[1]["value"])))
-    total_sessions = sum(s for _, s, _ in channel_totals)
+    def _channel_totals_query():
+        client = _data_client(creds)
+        body = {
+            "dimensions": [{"name": "sessionDefaultChannelGroup"}],
+            "metrics": [{"name": "sessions"}, {"name": "totalUsers"}],
+            "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+            "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
+        }
+        response = client.properties().runReport(property=property_id, body=body).execute()
+        return [
+            (row["dimensionValues"][0]["value"], int(row["metricValues"][0]["value"]), int(row["metricValues"][1]["value"]))
+            for row in response.get("rows", [])
+        ]
 
-    countries_by_channel = _channel_crosstab(client, property_id, start_date, end_date, "country", top_n_secondary)
-    devices_by_channel = _channel_crosstab(client, property_id, start_date, end_date, "deviceCategory", top_n_secondary)
+    # 3 independent GA4 queries — each ran sequentially before (a fresh
+    # client per thread, not a shared one, matching the established
+    # concurrency pattern the caller in site_audit.py already uses for
+    # independent GA4/GSC calls) so this job's wall-clock time is ~1 call
+    # instead of 3 stacked calls.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        totals_future = pool.submit(_channel_totals_query)
+        countries_future = pool.submit(_channel_crosstab, _data_client(creds), property_id, start_date, end_date, "country", top_n_secondary)
+        devices_future = pool.submit(_channel_crosstab, _data_client(creds), property_id, start_date, end_date, "deviceCategory", top_n_secondary)
+        channel_totals = totals_future.result()
+        countries_by_channel = countries_future.result()
+        devices_by_channel = devices_future.result()
+    total_sessions = sum(s for _, s, _ in channel_totals)
 
     rows = [
         {
@@ -315,7 +327,7 @@ def get_traffic_channel_breakdown(
     return {"rows": rows, "months": round(months, 1)}
 
 
-def get_traffic_sources(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
+def _traffic_sources_query(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
     client = _data_client(creds)
     body = {
         "dimensions": [{"name": "sessionDefaultChannelGroup"}],
@@ -323,7 +335,30 @@ def get_traffic_sources(creds: Credentials, property_id: str, start_date: str, e
         "dateRanges": [{"startDate": start_date, "endDate": end_date}],
         "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
     }
-    response = client.properties().runReport(property=property_id, body=body).execute()
+    return client.properties().runReport(property=property_id, body=body).execute()
+
+
+def _traffic_sources_nvr_query(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
+    client = _data_client(creds)
+    nvr_body = {
+        "dimensions": [{"name": "sessionDefaultChannelGroup"}, {"name": "newVsReturning"}],
+        "metrics": [{"name": "totalUsers"}],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "limit": 100000,
+    }
+    return client.properties().runReport(property=property_id, body=nvr_body).execute()
+
+
+def get_traffic_sources(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
+    # Both queries are independent — run concurrently (fresh client per
+    # thread, same pattern as get_traffic_channel_breakdown) instead of
+    # stacking two sequential GA4 round-trips into this one job's time.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        main_future = pool.submit(_traffic_sources_query, creds, property_id, start_date, end_date)
+        nvr_future = pool.submit(_traffic_sources_nvr_query, creds, property_id, start_date, end_date)
+        response = main_future.result()
+        nvr_response = nvr_future.result()
+
     rows = []
     for row in response.get("rows", []):
         dv = row["dimensionValues"]
@@ -334,13 +369,6 @@ def get_traffic_sources(creds: Credentials, property_id: str, start_date: str, e
     # newVsReturning) merged onto the rows above by channel, same reasoning
     # as get_traffic_channel_breakdown: keeping it out of the first query
     # avoids fragmenting sessions/totalUsers into thresholded sub-buckets.
-    nvr_body = {
-        "dimensions": [{"name": "sessionDefaultChannelGroup"}, {"name": "newVsReturning"}],
-        "metrics": [{"name": "totalUsers"}],
-        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
-        "limit": 100000,
-    }
-    nvr_response = client.properties().runReport(property=property_id, body=nvr_body).execute()
     nvr_by_channel: dict[str, dict[str, int]] = {}
     for row in nvr_response.get("rows", []):
         channel = row["dimensionValues"][0]["value"]
