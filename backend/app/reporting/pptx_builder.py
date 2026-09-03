@@ -800,6 +800,8 @@ def add_solutions_products_slide(prs: Presentation, overview: dict):
         _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Solutions", size=15, bold=True, color=_accent())
         y += Inches(0.4)
         for s in solutions[:8]:
+            if y > Inches(6.6):
+                break
             text = f"•  {s}"
             lines = _wrap_lines(text, Inches(11.1), size_pt=12)
             line_h = Inches(12 * 0.02)
@@ -1045,6 +1047,20 @@ def add_priority_issues_slide(
                 url_issues.append((p["url"], ", ".join(p["issues"])))
     if not url_issues:
         return None
+
+    # Dedupe by normalized path — the homepage (or any page) can appear
+    # twice as a trailing-slash variant ("https://site.com" vs.
+    # "https://site.com/") when a Semrush Site Audit export lists both,
+    # and both resolve to the same GA4/GSC path below — without this they'd
+    # score identically and print as two adjacent, seemingly-repeated rows
+    # on the same slide. First occurrence wins (order from the source data
+    # is otherwise arbitrary here, before the traffic-based sort below).
+    deduped_url_issues: dict[str, tuple[str, str]] = {}
+    for url, issues in url_issues:
+        key = urlparse(url).path.rstrip("/") or "/"
+        if key not in deduped_url_issues:
+            deduped_url_issues[key] = (url, issues)
+    url_issues = list(deduped_url_issues.values())
 
     pageviews_by_path = {
         (p.get("path") or "").rstrip("/"): int(float(p.get("page_views", 0) or 0))
@@ -1303,8 +1319,18 @@ def add_structured_data_slide(
         elif len(insights) == 1:
             insights.append(f"{best[0]} schema is your best-covered type — present on {best[3]:,} of {total_pages:,} pages.")
 
+    # The generic _table_slide row_cap (9, once insights are shown) silently
+    # dropped whichever curated type sorted last whenever a non-curated
+    # extra (e.g. Fact Check) also had real coverage, pushing the curated
+    # count over 9 — confirmed live: a real Lumber report showed 9 rows
+    # with "Event" (0% coverage) missing entirely, nothing on the slide
+    # explaining where the rest of the picture went. The 9 curated types
+    # are fixed; a couple of extra real-coverage rows is the realistic
+    # case, so this leaves headroom for both while still capping well
+    # short of the table pushing insights off the slide.
     return _table_slide(
-        prs, "Structured Data", headers, rows, col_widths=col_widths, source="Semrush Site Audit", insights=insights
+        prs, "Structured Data", headers, rows, col_widths=col_widths, source="Semrush Site Audit", insights=insights,
+        row_cap=min(len(coverage), 11),
     )
 
 
@@ -1487,12 +1513,22 @@ def add_core_problem_slide(prs: Presentation, core_problem: dict):
     return slide
 
 
-def _insights_strip(slide, left, top, width, insights, title="Key Insights"):
+def _insights_strip(slide, left, top, width, insights, title="Key Insights", max_y=None):
     """2-5 bullet takeaways mechanically derived from the slide's own data —
     no free-text generation, every line traces back to a number on the same
-    slide. Returns the bottom y (Emu) after the strip."""
+    slide. Returns the bottom y (Emu) after the strip.
+
+    max_y (defaults to leaving room for the footer) hard-caps how far this
+    strip may draw — a long real insight sentence at a table with many rows
+    (row_cap pushes `top` down) could otherwise run past the slide bottom or
+    print over the footer text with no visible break, since this was the
+    one text-list renderer in the file with no truncate-rather-than-overflow
+    guard; every AI-bullet slide already stops before its card boundary the
+    same way this now does."""
     if not insights:
         return top
+    if max_y is None:
+        max_y = SLIDE_H - Inches(0.5)
     _textbox(slide, left, top, width, Inches(0.24), title.upper(), size=9.5, bold=True, color=_accent())
     y = top + Inches(0.26)
     # Width-aware wrap estimate (~14 chars/inch at size 11) — a fixed
@@ -1502,21 +1538,25 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights"):
     text_width_in = max(width - Inches(0.18), Inches(0.5)) / 914400
     chars_per_line = max(20, int(text_width_in * 14))
     for item in insights[:5]:
-        _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
         lines = max(1, -(-len(item) // chars_per_line))
         line_h = Inches(0.22)
+        item_h = line_h * lines + Inches(0.05)
+        if y + item_h > max_y:
+            break
+        _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
         _textbox(slide, left + Inches(0.18), y, width - Inches(0.18), line_h * lines, item, size=11)
-        y += line_h * lines + Inches(0.05)
+        y += item_h
     return y
 
 
-def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None):
+def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None, row_cap=None):
     slide = _blank_slide(prs)
     _content_header(slide, title)
     if source:
         _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
 
-    row_cap = 9 if insights else 14
+    if row_cap is None:
+        row_cap = 9 if insights else 14
     n_cols = len(headers)
     n_rows = min(len(rows), row_cap) + 1
     left, top, width, height = Inches(0.6), Inches(1.2), Inches(12.1), Inches(0.4) * n_rows
@@ -1936,18 +1976,24 @@ def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narr
 def _opportunity_quadrant(slide, left, top, width, height, label, items, color):
     """One quadrant card of add_competitor_opportunity_slide: a label
     header plus height-budgeted bullets, same truncate-rather-than-overflow
-    discipline as the rest of this file's AI-derived content."""
+    discipline as the rest of this file's AI-derived content. Deliberately
+    conservative chars-per-line estimate (11, vs. ~13-14 used for the wider
+    single-card slides elsewhere in this file) — a narrow ~5in quadrant
+    column wraps on whole words, so a flat width/avg-char-width estimate
+    under-counts wrapped lines more here than it does on a wide card,
+    which under-reserved height and let real (longer) wrapped text run
+    into the next bullet."""
     _card(slide, left, top, width, height)
     pad = Inches(0.22)
     _textbox(slide, left + pad, top + Inches(0.15), width - pad * 2, Inches(0.3), label, size=13, bold=True, color=color)
     y = top + Inches(0.55)
-    max_y = top + height - Inches(0.12)
+    max_y = top + height - Inches(0.15)
     text_width = width - pad * 2 - Inches(0.2)
-    chars_per_line = max(18, int(text_width / 914400 * 13))
+    chars_per_line = max(16, int(text_width / 914400 * 11))
     line_h = Inches(0.22)
     for item in items:
         lines = max(1, -(-len(item) // chars_per_line))
-        item_h = line_h * lines + Inches(0.06)
+        item_h = line_h * lines + Inches(0.09)
         if y + item_h > max_y:
             break
         _icon_dot(slide, left + pad, y + Inches(0.07), Inches(0.07), color)
@@ -1982,10 +2028,10 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     col_w = int((total_w - gutter) / 2)
     row_h = int((total_h - gutter) / 2)
 
-    _opportunity_quadrant(slide, left0, top0, col_w, row_h, f"What {competitor_domain} Has", has[:5], _accent())
-    _opportunity_quadrant(slide, left0 + col_w + gutter, top0, col_w, row_h, f"What {client_name} Lacks", lacks[:5], BAD)
-    _opportunity_quadrant(slide, left0, top0 + row_h + gutter, col_w, row_h, "Why It Matters", why[:5], WARN)
-    _opportunity_quadrant(slide, left0 + col_w + gutter, top0 + row_h + gutter, col_w, row_h, f"What {client_name} Should Build", build[:5], GOOD)
+    _opportunity_quadrant(slide, left0, top0, col_w, row_h, f"What {competitor_domain} Has", has[:4], _accent())
+    _opportunity_quadrant(slide, left0 + col_w + gutter, top0, col_w, row_h, f"What {client_name} Lacks", lacks[:4], BAD)
+    _opportunity_quadrant(slide, left0, top0 + row_h + gutter, col_w, row_h, "Why It Matters", why[:4], WARN)
+    _opportunity_quadrant(slide, left0 + col_w + gutter, top0 + row_h + gutter, col_w, row_h, f"What {client_name} Should Build", build[:4], GOOD)
     return slide
 
 

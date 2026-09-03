@@ -50,8 +50,9 @@ which content formats it uses, whether it has tools/calculators, comparison page
 (badges, certifications, review counts, guarantees), or dedicated commercial/pricing pages. If "ranking_page_types" \
 is present in a competitor's data, treat those counts as real evidence of the page types it has (e.g. several \
 comparison-shaped ranking keywords means it likely has comparison pages) rather than guessing from homepage_text \
-alone. Each of the four lists should be short (3-5 items) and line up 1:1 where possible — item 1 of \
-"competitor_has" pairs with item 1 of "client_lacks", "why_it_matters", and "client_should_build". If the data is \
+alone. Each of the four lists should be SHORT — at most 4 items, each one sentence — and line up 1:1 where \
+possible — item 1 of "competitor_has" pairs with item 1 of "client_lacks", "why_it_matters", and \
+"client_should_build". If the data is \
 too thin to support this breakdown for a competitor, omit "opportunity_analysis" for that competitor entirely \
 rather than inventing content — never invent tools, calculators, FAQs, or trust signals that aren't evidenced.
 
@@ -75,10 +76,10 @@ domain listed above, using the EXACT domain string as the key:
       "areas_of_focus": [string],   // 6-9 short, specific, actionable bullets — what {client_name} should do in response to this competitor, ordered by impact
       "growth_opportunity": string, // 2-4 sentence closing paragraph naming the strategic opening {client_name} has vs. this specific competitor
       "opportunity_analysis": {{    // OPTIONAL — omit entirely for a competitor if the data is too thin to support it
-        "competitor_has": [string],       // 3-5 short bullets: concrete things this competitor has (page types, audiences/industries targeted, content formats, tools/calculators, comparison pages, FAQs, trust signals, commercial pages) — only ones the data actually evidences
-        "client_lacks": [string],         // 3-5 bullets, lined up 1:1 with competitor_has: the matching thing {client_name} doesn't have
-        "why_it_matters": [string],       // 3-5 bullets, lined up 1:1: why each gap matters (traffic, trust, conversion)
-        "client_should_build": [string]   // 3-5 bullets, lined up 1:1: the concrete thing {client_name} should build in response
+        "competitor_has": [string],       // at most 4 short bullets: concrete things this competitor has (page types, audiences/industries targeted, content formats, tools/calculators, comparison pages, FAQs, trust signals, commercial pages) — only ones the data actually evidences
+        "client_lacks": [string],         // at most 4 bullets, lined up 1:1 with competitor_has: the matching thing {client_name} doesn't have
+        "why_it_matters": [string],       // at most 4 bullets, lined up 1:1: why each gap matters (traffic, trust, conversion)
+        "client_should_build": [string]   // at most 4 bullets, lined up 1:1: the concrete thing {client_name} should build in response
       }}
     }}
   }}
