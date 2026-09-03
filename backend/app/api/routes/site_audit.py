@@ -748,7 +748,12 @@ def _gather_report_data(
                         ga4_service.get_traffic_sources, creds, client.ga4_property_id, "30daysAgo", "today"
                     )
                     jobs["traffic_channel_breakdown"] = pool.submit(
-                        ga4_service.get_traffic_channel_breakdown, creds, client.ga4_property_id, "30daysAgo", "today"
+                        # Real ISO dates, not "30daysAgo"/"today" like the other
+                        # jobs above — get_traffic_channel_breakdown computes a
+                        # months-in-range figure via date.fromisoformat(), which
+                        # crashes on GA4's relative-date keywords (confirmed: this
+                        # is the "Invalid isoformat string: 'today'" report failure).
+                        ga4_service.get_traffic_channel_breakdown, creds, client.ga4_property_id, ga4_start, ga4_end
                     )
                     jobs["page_performance"] = pool.submit(
                         ga4_service.get_page_performance, creds, client.ga4_property_id, "30daysAgo", "today"
