@@ -96,16 +96,21 @@ def _rule_exclude(keyword: str, brand_tokens: set[str]) -> str | None:
 
 
 _CLASSIFY_PROMPT_TEMPLATE = """You are an SEO analyst filtering a raw competitor keyword export for {client_name} \
-({client_domain}) before it goes into a client-facing report. Classify EACH of the {keyword_count} keywords below \
-into exactly one label:
+({client_domain}){business_context} before it goes into a client-facing report. Classify EACH of the \
+{keyword_count} keywords below into exactly one label:
 
-- "highly_relevant": a real prospect/topic search directly tied to {client_name}'s industry, products, or services \
-— the kind of query an actual customer or prospect would type.
-- "potentially_relevant": tangentially related — an adjacent topic, broader category, or informational query that \
-could still support content strategy, even though it isn't a direct product/service match.
-- "exclude": an unrelated industry or product, an irrelevant informational query with no strategic value, or \
-anything that reads as noise. (Brand names, navigation/login queries, careers queries, and obvious typos are \
-already stripped before you see this list — focus on relevance judgment, not those mechanical cases.)
+- "highly_relevant": a real prospect/topic search directly tied to {client_name}'s ACTUAL industry, products, or \
+services (per the business context above) — the kind of query an actual customer or prospect would type.
+- "potentially_relevant": tangentially related — an adjacent topic or broader category still within or near \
+{client_name}'s own industry, that could support content strategy even though it isn't a direct product/service \
+match.
+- "exclude": belongs to a DIFFERENT industry or product category than {client_name}'s (even if a competitor \
+happens to rank for it because that competitor also serves other markets), an irrelevant informational query with \
+no strategic value to {client_name} specifically, or anything that reads as noise. A keyword a competitor ranks \
+for is not automatically relevant just because the competitor ranks for it — judge it against {client_name}'s own \
+business, not the competitor's. When in doubt about whether a keyword is truly outside {client_name}'s industry, \
+prefer "exclude" over "potentially_relevant". (Brand names, navigation/login queries, careers queries, and obvious \
+typos are already stripped before you see this list — focus on relevance judgment, not those mechanical cases.)
 
 Keywords:
 {keywords_json}
@@ -141,7 +146,11 @@ def _call_and_parse(prompt: str, max_tokens: int) -> dict:
 
 
 def classify_keywords(
-    client_name: str, client_domain: str, brand_tokens: set[str], keywords: list[str]
+    client_name: str,
+    client_domain: str,
+    brand_tokens: set[str],
+    keywords: list[str],
+    client_description: str | None = None,
 ) -> dict[str, str]:
     """Returns {lowercased keyword: "highly_relevant" | "potentially_relevant" | "exclude"}
     for every unique keyword in `keywords`. Rule-based excludes are free and
@@ -149,7 +158,12 @@ def classify_keywords(
     retry on a malformed/failed response). If the AI call fails outright,
     every surviving keyword fails open as "potentially_relevant" — a failed
     classification must never silently vanish keywords the rules didn't
-    already catch."""
+    already catch. client_description (the client's own 2-4 sentence
+    company-overview summary, when available) grounds the AI's industry-
+    relevance judgment in what the CLIENT actually does — without it, a
+    keyword a broad-market competitor ranks for (e.g. "cloud security
+    tips" from an HR platform that also does IT) has no signal to be
+    judged against and tends to survive as a false "potentially_relevant"."""
     unique: dict[str, str] = {}  # lowercased -> original text (first seen)
     for kw in keywords:
         k = (kw or "").strip()
@@ -168,9 +182,11 @@ def classify_keywords(
     if not remaining:
         return result
 
+    business_context = f" — {client_description.strip()}" if client_description and client_description.strip() else ""
     prompt = _CLASSIFY_PROMPT_TEMPLATE.format(
         client_name=client_name,
         client_domain=client_domain,
+        business_context=business_context,
         keyword_count=len(remaining),
         keywords_json=json.dumps(remaining, indent=2)[:12000],
     )

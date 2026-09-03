@@ -309,6 +309,25 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
         return None
 
 
+def _num_for_sort(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# A real Semrush export can carry hundreds of keyword rows per competitor —
+# classifying every single one would blow past classify_keywords' AI-call
+# token budget (the response gets truncated mid-JSON, fails to parse, and
+# the whole batch fails open with NO real filtering applied at all). Only
+# the top-by-volume rows can ever survive the render caps downstream anyway
+# (14 per competitor positions table, 20 in the keyword-gap table) — this
+# cap leaves a generous buffer above those so an exclude higher up the list
+# can't starve the rendered table, while keeping the AI batch bounded
+# regardless of how large the raw export was.
+_CLASSIFY_CANDIDATE_CAP = 40
+
+
 def _filter_competitor_keywords(client: Client, data: dict) -> None:
     """Classifies every competitor keyword (Highly relevant / Potentially
     relevant / Exclude — see keyword_relevance_service) and strips excluded
@@ -318,7 +337,9 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
     SemrushImport is untouched — only what gets rendered is filtered.
     "Potentially relevant" keywords are kept (not just "highly relevant") —
     the existing volume-sort + row caps on those slides already surface
-    only the highest-value rows once excludes are stripped out."""
+    only the highest-value rows once excludes are stripped out. Only the
+    top _CLASSIFY_CANDIDATE_CAP rows per domain/list (by search volume) are
+    even considered — see that constant's comment for why."""
     competitor_positions: dict[str, list[dict]] = data.get("competitor_positions") or {}
     competitor_analysis = data.get("competitor_analysis") or {}
     keyword_gap_rows = competitor_analysis.get("keyword_gap_rows") or []
@@ -331,24 +352,31 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
     brand_tokens.update(_brand_token(r.get("competitor_domain") or "") for r in keyword_gap_rows)
     brand_tokens.discard("")
 
-    all_keywords = [r.get("keyword", "") for rows in competitor_positions.values() for r in rows]
-    all_keywords += [r.get("keyword", "") for r in keyword_gap_rows]
+    def _top_by_volume(rows: list[dict]) -> list[dict]:
+        return sorted(rows, key=lambda r: _num_for_sort(r.get("search_volume")), reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
+
+    candidates_by_domain = {domain: _top_by_volume(rows) for domain, rows in competitor_positions.items()}
+    gap_candidates = _top_by_volume(keyword_gap_rows)
+
+    all_keywords = [r.get("keyword", "") for rows in candidates_by_domain.values() for r in rows]
+    all_keywords += [r.get("keyword", "") for r in gap_candidates]
     if not all_keywords:
         return
 
-    classifications = classify_keywords(client.name, client_domain, brand_tokens, all_keywords)
+    client_description = (data.get("company_overview") or {}).get("description")
+    classifications = classify_keywords(client.name, client_domain, brand_tokens, all_keywords, client_description)
     if not classifications:
         return
     keep = {"highly_relevant", "potentially_relevant"}
 
-    for domain, rows in list(competitor_positions.items()):
+    for domain, candidates in candidates_by_domain.items():
         competitor_positions[domain] = [
-            r for r in rows if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
+            r for r in candidates if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
         ]
 
     if keyword_gap_rows:
         competitor_analysis["keyword_gap_rows"] = [
-            r for r in keyword_gap_rows
+            r for r in gap_candidates
             if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
         ]
 
