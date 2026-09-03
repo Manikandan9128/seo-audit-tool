@@ -235,6 +235,86 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     }
 
 
+def _months_in_range(start_date: str, end_date: str) -> float:
+    days = (_date.fromisoformat(end_date) - _date.fromisoformat(start_date)).days + 1
+    return max(days / 30.44, 1.0)
+
+
+def _channel_crosstab(client, property_id: str, start_date: str, end_date: str, dimension: str, top_n: int) -> dict[str, list[dict]]:
+    """Sessions for (channel, dimension) pairs, grouped by channel with each
+    channel's own top-n dimension values by share — e.g. per-channel top
+    countries, not a single global top-n across all channels."""
+    body = {
+        "dimensions": [{"name": "sessionDefaultChannelGroup"}, {"name": dimension}],
+        "metrics": [{"name": "sessions"}],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "limit": 100000,
+    }
+    response = client.properties().runReport(property=property_id, body=body).execute()
+    by_channel: dict[str, dict[str, int]] = {}
+    for row in response.get("rows", []):
+        channel = row["dimensionValues"][0]["value"]
+        value = row["dimensionValues"][1]["value"]
+        if value in _DEMOGRAPHIC_IGNORE:
+            continue
+        sessions = int(row["metricValues"][0]["value"])
+        by_channel.setdefault(channel, {})
+        by_channel[channel][value] = by_channel[channel].get(value, 0) + sessions
+
+    result: dict[str, list[dict]] = {}
+    for channel, totals in by_channel.items():
+        channel_total = sum(totals.values())
+        top = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+        result[channel] = [
+            {"label": label, "pct": round(100 * s / channel_total, 1) if channel_total else 0}
+            for label, s in top
+        ]
+    return result
+
+
+def get_traffic_channel_breakdown(
+    creds: Credentials, property_id: str, start_date: str, end_date: str, top_n_secondary: int = 3
+) -> dict:
+    """Channel is the primary key for this breakdown (per report spec) —
+    one row per channel with its own monthly-average sessions/users and,
+    folded into the same row rather than separate country/device sections,
+    that channel's own top countries and device split. Two 2-dimension
+    queries (channel+country, channel+device) instead of one 3-dimension
+    cross-tab — GA4's data-thresholding fragments a 3-way cross-tab too
+    much to reliably return rows (see get_traffic_spike_breakdown)."""
+    client = _data_client(creds)
+    months = _months_in_range(start_date, end_date)
+
+    body = {
+        "dimensions": [{"name": "sessionDefaultChannelGroup"}],
+        "metrics": [{"name": "sessions"}, {"name": "totalUsers"}],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
+    }
+    response = client.properties().runReport(property=property_id, body=body).execute()
+    channel_totals = []
+    for row in response.get("rows", []):
+        dv, mv = row["dimensionValues"], row["metricValues"]
+        channel_totals.append((dv[0]["value"], int(mv[0]["value"]), int(mv[1]["value"])))
+    total_sessions = sum(s for _, s, _ in channel_totals)
+
+    countries_by_channel = _channel_crosstab(client, property_id, start_date, end_date, "country", top_n_secondary)
+    devices_by_channel = _channel_crosstab(client, property_id, start_date, end_date, "deviceCategory", top_n_secondary)
+
+    rows = [
+        {
+            "channel": channel,
+            "avg_sessions_month": round(sessions / months),
+            "avg_users_month": round(users / months),
+            "pct_share": round(100 * sessions / total_sessions, 1) if total_sessions else 0,
+            "top_countries": countries_by_channel.get(channel, []),
+            "top_devices": devices_by_channel.get(channel, []),
+        }
+        for channel, sessions, users in channel_totals
+    ]
+    return {"rows": rows, "months": round(months, 1)}
+
+
 def get_traffic_sources(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
     client = _data_client(creds)
     body = {
@@ -249,4 +329,34 @@ def get_traffic_sources(creds: Credentials, property_id: str, start_date: str, e
         dv = row["dimensionValues"]
         mv = row["metricValues"]
         rows.append({"channel": dv[0]["value"], "sessions": mv[0]["value"], "users": mv[1]["value"]})
+
+    # New vs. Returning is a separate 2-dimension query (channel +
+    # newVsReturning) merged onto the rows above by channel, same reasoning
+    # as get_traffic_channel_breakdown: keeping it out of the first query
+    # avoids fragmenting sessions/totalUsers into thresholded sub-buckets.
+    nvr_body = {
+        "dimensions": [{"name": "sessionDefaultChannelGroup"}, {"name": "newVsReturning"}],
+        "metrics": [{"name": "totalUsers"}],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "limit": 100000,
+    }
+    nvr_response = client.properties().runReport(property=property_id, body=nvr_body).execute()
+    nvr_by_channel: dict[str, dict[str, int]] = {}
+    for row in nvr_response.get("rows", []):
+        channel = row["dimensionValues"][0]["value"]
+        segment = row["dimensionValues"][1]["value"]
+        if segment in _DEMOGRAPHIC_IGNORE:
+            continue
+        users = int(row["metricValues"][0]["value"])
+        nvr_by_channel.setdefault(channel, {})[segment] = users
+
+    for r in rows:
+        segment_users = nvr_by_channel.get(r["channel"], {})
+        new_users = segment_users.get("new", 0)
+        returning_users = segment_users.get("returning", 0)
+        r["new_users"] = new_users
+        r["returning_users"] = returning_users
+        total = new_users + returning_users
+        r["return_rate_pct"] = round(100 * returning_users / total, 1) if total else None
+
     return {"rows": rows}

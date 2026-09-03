@@ -1639,17 +1639,21 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     return y
 
 
-def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None, row_cap=None):
-    slide = _blank_slide(prs)
-    _content_header(slide, title)
-    if source:
-        _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
-
+def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=None, width=None, insights=None):
+    """Shared table-drawing body behind _table_slide, factored out so a
+    slide needing extra content above the table (e.g. a stat card) can draw
+    its own header/card and still reuse this instead of duplicating the
+    table + insights-strip logic. Returns the slide's own bottom y (Emu)
+    after the table (and insights strip, if any)."""
+    if left is None:
+        left = Inches(0.6)
+    if width is None:
+        width = Inches(12.1)
     if row_cap is None:
         row_cap = 9 if insights else 14
     n_cols = len(headers)
     n_rows = min(len(rows), row_cap) + 1
-    left, top, width, height = Inches(0.6), Inches(1.2), Inches(12.1), Inches(0.4) * n_rows
+    height = Inches(0.4) * n_rows
     gframe = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
     table = gframe.table
     table.first_row = False  # suppress the built-in banded-header theme so our colors apply cleanly
@@ -1678,8 +1682,87 @@ def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insigh
             para.font.size = Pt(11)
             para.font.color.rgb = TEXT_DARK
 
+    bottom = top + height
     if insights:
-        _insights_strip(slide, left, top + height + Inches(0.15), width, insights)
+        bottom = _insights_strip(slide, left, bottom + Inches(0.15), width, insights)
+    return bottom
+
+
+def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None, row_cap=None):
+    slide = _blank_slide(prs)
+    _content_header(slide, title)
+    if source:
+        _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
+    _draw_table(slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=row_cap, insights=insights)
+    return slide
+
+
+# Branded/Non-Branded page-path rules, as specified by the client. Substring
+# checks against the raw path, case-insensitive — deliberately literal to
+# what was specified (e.g. "/blog" matches "/blog-post" too) rather than
+# adding stricter boundary logic not asked for. Order doesn't matter within
+# a bucket; a path matching neither list is dropped from both segmented
+# slides (still counted in the overall, unsegmented Top Pages slide above).
+_BRANDED_PAGE_SIGNALS = [
+    "/about", "/our-team", "/careers", "/jobs", "/news", "/newsroom", "/press",
+    "/contact", "/support", "/login", "/sign-in", "/app", "/demo", "/quote", "/pricing",
+]
+_NONBRANDED_PAGE_SIGNALS = [
+    "/features", "/modules", "/capabilities", "/products/", "/solutions/", "/services/",
+    "/blog", "/articles", "/insights", "/podcast", "/webinar", "/videos",
+    "/case-studies", "/success-stories", "/customers",
+    "/resources", "/guides", "/whitepapers", "/tools", "/calculators", "/templates",
+    "/glossary", "/wiki", "/dictionary",
+]
+
+
+def _classify_page_branded(path: str) -> str | None:
+    if (path or "").strip("/") == "":
+        return "branded"  # homepage
+    text = (path or "").lower()
+    if any(sig in text for sig in _BRANDED_PAGE_SIGNALS):
+        return "branded"
+    if any(sig in text for sig in _NONBRANDED_PAGE_SIGNALS):
+        return "non-branded"
+    return None
+
+
+def add_top_pages_segment_slide(prs: Presentation, title: str, share_label: str, share_pct: float, pages: list[dict]):
+    """Same Page/Pageviews/%-of-Contribution/Users table as the overall Top
+    Pages slide, but scoped to one branded/non-branded subset — % of
+    Contribution recalculates within this subset (sums to 100% on this
+    slide alone), separate from the big stat card's share of the FULL
+    site's pageviews. A big bold stat card sits top-right per spec ("huge
+    bold... side of it") rather than folded into the insights strip below,
+    since it's a headline number, not a derived takeaway."""
+    if not pages:
+        return None
+    slide = _blank_slide(prs)
+    _content_header(slide, title)
+
+    card_left, card_top, card_w, card_h = Inches(9.5), Inches(0.15), Inches(3.4), Inches(0.72)
+    _card(slide, card_left, card_top, card_w, card_h)
+    _textbox(slide, card_left + Inches(0.15), card_top + Inches(0.05), card_w - Inches(0.3), Inches(0.2), share_label.upper(), size=9, bold=True, color=TEXT_MUTED)
+    _textbox(slide, card_left + Inches(0.15), card_top + Inches(0.24), Inches(1.4), Inches(0.42), f"{share_pct:.0f}%", size=24, bold=True, color=_accent())
+    _textbox(slide, card_left + Inches(1.5), card_top + Inches(0.37), card_w - Inches(1.65), Inches(0.3), "of total site traffic", size=8.5, color=TEXT_MUTED)
+
+    def _page_label(path: str) -> str:
+        return f"{path} (Home Page)" if path.strip("/") == "" else path
+
+    segment_total = sum(int(float(p.get("page_views", 0) or 0)) for p in pages)
+    rows = [
+        (
+            _truncate_cell(_page_label(p["path"]), 6.0),
+            f"{int(float(p['page_views'])):,}",
+            f"{(int(float(p['page_views'])) / segment_total * 100 if segment_total else 0):.1f}%",
+            f"{int(float(p.get('active_users', 0) or 0)):,}",
+        )
+        for p in pages[:14]
+    ]
+    top = pages[0]
+    top_share = int(float(top["page_views"])) / segment_total * 100 if segment_total else 0
+    insights = [f"\"{_page_label(top['path'])}\" leads this segment, {top_share:.0f}% of its tracked pageviews."]
+    _draw_table(slide, ["Page", "Pageviews", "% of Contribution", "Users"], rows, Inches(1.2), col_widths=[6.0, 2.0, 2.0, 2.1], insights=insights)
     return slide
 
 
@@ -1701,8 +1784,16 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     sessions = total("sessions")
     users = total("total_users")
     pageviews = total("page_views")
+    engagement_seconds = total("engagement_duration")
     avg_engagement = (sum(float(r.get("engagement_rate", 0) or 0) for r in traffic) / len(traffic)) * 100
     avg_bounce = (sum(float(r.get("bounce_rate", 0) or 0) for r in traffic) / len(traffic)) * 100
+
+    def _fmt_duration(total_seconds: float) -> str:
+        m, s = divmod(round(total_seconds), 60)
+        return f"{m}m {s:02d}s"
+
+    avg_session_duration = engagement_seconds / sessions if sessions else 0
+    avg_time_on_page = engagement_seconds / pageviews if pageviews else 0
 
     metrics = [
         ("Sessions", f"{sessions:,.0f}"),
@@ -1710,15 +1801,28 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
         ("Page views", f"{pageviews:,.0f}"),
         ("Avg. engagement", f"{avg_engagement:.1f}%"),
         ("Bounce rate", f"{avg_bounce:.1f}%"),
+        ("Avg. session", _fmt_duration(avg_session_duration)),
+        ("Avg. time on page", _fmt_duration(avg_time_on_page)),
     ]
-    card_width = Inches(2.28)
+    # 4 cards per row instead of one fixed-width row of 5 — 7 metrics
+    # (Avg. session and Avg. time on page added) no longer fit one row
+    # without shrinking the value text past legibility.
+    cols_per_row = 4
     gap = Inches(0.15)
+    total_width = Inches(12.1)
+    card_width = Emu(int((total_width - gap * (cols_per_row - 1)) / cols_per_row))
+    card_height = Inches(1.35)
+    row_gap = Inches(0.15)
     for i, (label, value) in enumerate(metrics):
-        left = Inches(0.6) + Emu(i * (card_width + gap))
-        _card(slide, left, Inches(1.3), card_width, Inches(1.6))
-        _textbox(slide, left + Inches(0.15), Inches(1.45), card_width - Inches(0.3), Inches(0.4), label, size=12, color=TEXT_MUTED)
-        _textbox(slide, left + Inches(0.15), Inches(1.85), card_width - Inches(0.3), Inches(0.7), value, size=22, bold=True, color=_accent())
+        row, col = divmod(i, cols_per_row)
+        left = Inches(0.6) + Emu(col * (card_width + gap))
+        top = Inches(1.3) + Emu(row * (card_height + row_gap))
+        _card(slide, left, top, card_width, card_height)
+        _textbox(slide, left + Inches(0.15), top + Inches(0.15), card_width - Inches(0.3), Inches(0.4), label, size=12, color=TEXT_MUTED)
+        _textbox(slide, left + Inches(0.15), top + Inches(0.55), card_width - Inches(0.3), Inches(0.7), value, size=20, bold=True, color=_accent())
 
+    rows_used = -(-len(metrics) // cols_per_row)
+    insights_top = Inches(1.3) + Emu(rows_used * (card_height + row_gap)) + Inches(0.05)
     pages_per_session = pageviews / sessions if sessions else 0
     insights = []
     if avg_bounce >= 55:
@@ -1732,7 +1836,7 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
         sessions_per_user = sessions / users
         if sessions_per_user > 1.3:
             insights.append(f"{sessions_per_user:.1f} sessions per user — a meaningful share of visitors are returning, not just first-time traffic.")
-    _insights_strip(slide, Inches(0.6), Inches(3.15), Inches(11.9), insights)
+    _insights_strip(slide, Inches(0.6), insights_top, Inches(11.9), insights)
     return slide
 
 
@@ -1799,6 +1903,42 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
             y += Inches(0.36)
         left += col_width + gap
     return slide
+
+
+def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, source: str | None = None):
+    """Channel is the primary key (one row per channel, per report spec) —
+    country and device are folded into that same row as each channel's own
+    top-3 split, rather than getting separate sections, since channel is
+    the priority lens here and country/device are secondary detail."""
+    rows_data = breakdown.get("rows") or []
+    if not rows_data:
+        return None
+
+    def _split_text(entries):
+        return ", ".join(f"{e['label']} {e['pct']:.0f}%" for e in entries) if entries else "—"
+
+    rows = [
+        (
+            r["channel"],
+            f"{r['avg_sessions_month']:,}",
+            f"{r['pct_share']:.0f}%",
+            _split_text(r.get("top_countries")),
+            _split_text([{"label": d["label"].title(), "pct": d["pct"]} for d in (r.get("top_devices") or [])]),
+        )
+        for r in rows_data
+    ]
+    months = breakdown.get("months")
+    top = rows_data[0]
+    insights = [
+        f"{top['channel']} is the leading channel, averaging {top['avg_sessions_month']:,} sessions/month ({top['pct_share']:.0f}% of total).",
+    ]
+    if months:
+        insights.append(f"Figures are monthly averages across the last {months:.1f} month(s) of tracked data.")
+    return _table_slide(
+        prs, "Traffic Breakdown — Monthly Average",
+        ["Channel", "Avg Sessions/mo", "% Share", "Top Countries", "Top Devices"],
+        rows, col_widths=[2.0, 1.7, 1.1, 3.5, 3.8], source=source, insights=insights,
+    )
 
 
 def _fmt_num(v):
@@ -2302,18 +2442,29 @@ def add_backlink_profile_slide(
     authority_score = own_domain_rating
     authority_label = "Domain Rating"
 
+    # Distinct from Domain Rating above (that's the site's own manually-
+    # entered Ahrefs DR) — this averages each individual referring domain's
+    # own authority/page score (domain_score, parsed per backlink row from
+    # the Semrush CSV) to give a read on the QUALITY of sites linking in,
+    # not the client's own authority.
+    domain_scores = [float(r["domain_score"]) for r in backlink_rows if r.get("domain_score") not in (None, "")]
+    avg_authority_score = round(sum(domain_scores) / len(domain_scores), 1) if domain_scores else None
+
     _card(slide, Inches(0.6), Inches(1.2), Inches(12.1), Inches(2.2))
     stats = [
         ("Backlinks", f"{int(total_backlinks):,}" if total_backlinks is not None else "—", f"{pct_dofollow:.0f}% dofollow" if pct_dofollow is not None else None),
         ("Referring domains", f"{int(total_referring_domains):,}" if total_referring_domains is not None else "—", None),
         (authority_label, str(int(authority_score)) if authority_score is not None else "—", None),
+        ("Avg. authority score", f"{avg_authority_score:g}" if avg_authority_score is not None else "—", "of referring domains" if avg_authority_score is not None else None),
     ]
+    card_w = Inches(2.75)
+    gap = Inches(0.15)
     for i, (label, value, sub) in enumerate(stats):
-        left = Inches(0.9) + Emu(i * Inches(4.0))
-        _textbox(slide, left, Inches(1.4), Inches(3.6), Inches(0.35), label, size=13, color=TEXT_MUTED)
-        _textbox(slide, left, Inches(1.8), Inches(3.6), Inches(0.8), value, size=34, bold=True, color=_accent())
+        left = Inches(0.9) + Emu(i * (card_w + gap))
+        _textbox(slide, left, Inches(1.4), card_w, Inches(0.35), label, size=13, color=TEXT_MUTED)
+        _textbox(slide, left, Inches(1.8), card_w, Inches(0.8), value, size=30, bold=True, color=_accent())
         if sub:
-            _textbox(slide, left, Inches(2.65), Inches(3.6), Inches(0.3), sub, size=12, color=TEXT_MUTED)
+            _textbox(slide, left, Inches(2.65), card_w, Inches(0.3), sub, size=12, color=TEXT_MUTED)
 
     y = Inches(3.65)
     attr_labels = ["Follow", "Nofollow", "Sponsored", "UGC"]
@@ -2349,6 +2500,8 @@ def add_backlink_profile_slide(
             insights.append(f"{pct_dofollow:.0f}% of backlinks are dofollow — the majority are passing ranking authority.")
     if authority_score is not None:
         insights.append(f"Domain Rating is {int(authority_score)} — {'a strong, established domain' if authority_score >= 40 else 'still building authority, prioritize link acquisition'}.")
+    if avg_authority_score is not None:
+        insights.append(f"Referring domains average an authority score of {avg_authority_score:g} — {'links are coming from generally reputable sites' if avg_authority_score >= 30 else 'link quality is on the lower end, prioritize higher-authority placements'}.")
     _insights_strip(slide, Inches(0.6), y, Inches(11.9), insights)
     return slide
 
@@ -2486,29 +2639,111 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     (from the same ux_findings dict) now render on their own "Next Steps:
     Conversion SEO" slide instead, alongside the other Next Steps categories
     — see add_conversion_seo_next_steps_slide."""
+    slides = []
+
     if ux_findings.get("no_ux_pass_done"):
         slide = _blank_slide(prs)
         _content_header(slide, "UI-Level Fixes")
         _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(2.0))
         _textbox(slide, Inches(0.9), Inches(1.4), Inches(11.4), Inches(1.4), ux_findings["note"], size=13)
-        return [slide]
+        slides.append(slide)
+    elif not ux_findings.get("error"):
+        fixes = ux_findings.get("ui_fixes") or []
+        if fixes:
+            rows = [(f.get("issue", ""), f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
+            critical = sum(1 for f in fixes if (f.get("severity") or "").lower() == "critical")
+            insights = [f"{len(fixes)} UI issue(s) found from the manual walkthrough."]
+            if critical:
+                insights.append(f"{critical} flagged Critical — these block a purchase or signup and should be fixed first.")
+            slides.append(_table_slide(
+                prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
+                col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
+            ))
 
-    if ux_findings.get("error"):
-        return []
+    # Independent of the manual-walkthrough branch above — runs off the
+    # landing page's own scraped text, so it can be present even when
+    # no_ux_pass_done is True (no manual notes, but onboarding breakdown
+    # still succeeded).
+    onboarding = ux_findings.get("onboarding_breakdown")
+    if onboarding and not onboarding.get("error"):
+        onboarding_slide = add_onboarding_breakdown_slide(prs, onboarding)
+        if onboarding_slide:
+            slides.append(onboarding_slide)
 
-    slides = []
-    fixes = ux_findings.get("ui_fixes") or []
-    if fixes:
-        rows = [(f.get("issue", ""), f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
-        critical = sum(1 for f in fixes if (f.get("severity") or "").lower() == "critical")
-        insights = [f"{len(fixes)} UI issue(s) found from the manual walkthrough."]
-        if critical:
-            insights.append(f"{critical} flagged Critical — these block a purchase or signup and should be fixed first.")
-        slides.append(_table_slide(
-            prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
-            col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
-        ))
     return slides
+
+
+def add_onboarding_breakdown_slide(prs: Presentation, breakdown: dict):
+    """Onboarding cognitive-bias breakdown of the landing page (Social
+    Proof, Authority, Scarcity, etc.) plus the top 5 directional
+    suggestions — a compact bias table on top, numbered suggestions below,
+    same two-part layout style as the Backlink Profile slide's stats+list."""
+    biases = breakdown.get("biases") or []
+    suggestions = breakdown.get("top_suggestions") or []
+    if not biases and not suggestions:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Onboarding Breakdown")
+    y = Inches(1.1)
+
+    if biases:
+        n_rows = len(biases) + 1
+        row_h = Inches(0.35)
+        table_h = row_h * n_rows
+        left, width = Inches(0.6), Inches(12.1)
+        gframe = slide.shapes.add_table(n_rows, 3, left, y, width, table_h)
+        table = gframe.table
+        table.first_row = False
+        table.columns[0].width = Inches(2.3)
+        table.columns[1].width = Inches(1.2)
+        table.columns[2].width = Inches(8.6)
+
+        for j, h in enumerate(["Bias", "Present", "Assessment"]):
+            cell = table.cell(0, j)
+            cell.text = h
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = HEADER_ROW_BG
+            para = cell.text_frame.paragraphs[0]
+            para.font.size = Pt(11)
+            para.font.bold = True
+            para.font.color.rgb = HEADER_ROW_TEXT
+
+        for i, b in enumerate(biases, start=1):
+            present = bool(b.get("present"))
+            values = [b.get("bias", ""), "Yes" if present else "No", b.get("assessment", "")]
+            for j, val in enumerate(values):
+                cell = table.cell(i, j)
+                cell.text = str(val)
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = ROW_ALT if i % 2 == 0 else WHITE
+                para = cell.text_frame.paragraphs[0]
+                para.font.size = Pt(10.5)
+                para.font.color.rgb = GOOD if (j == 1 and present) else (WARN if j == 1 else TEXT_DARK)
+        y += table_h + Inches(0.25)
+
+    if suggestions:
+        _textbox(slide, Inches(0.6), y, Inches(8), Inches(0.32), "Top 5 Directional Suggestions", size=14, bold=True, color=_accent())
+        y += Inches(0.4)
+        card_top = y
+        card_bottom = Inches(6.95)
+        _card(slide, Inches(0.6), card_top, Inches(12.1), card_bottom - card_top)
+        y = card_top + Inches(0.18)
+        for i, item in enumerate(suggestions[:5], start=1):
+            lines = _wrap_lines(item, Inches(10.9), size_pt=11.5)
+            line_h = Inches(0.19) * lines
+            if y + line_h > card_bottom - Inches(0.1):
+                break
+            num = slide.shapes.add_textbox(Inches(0.85), y, Inches(0.4), Inches(0.28))
+            p = num.text_frame.paragraphs[0]
+            r = p.add_run()
+            r.text = f"{i}."
+            r.font.bold = True
+            r.font.size = Pt(11.5)
+            r.font.color.rgb = _accent()
+            _textbox(slide, Inches(1.25), y, Inches(10.9), line_h, item, size=11.5)
+            y += line_h + Inches(0.12)
+    return slide
 
 
 def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None, items: list[str]):
@@ -2943,13 +3178,21 @@ def _build_report(
             add_traffic_overview_slide(prs, analytics)
         if analytics.get("traffic_spike"):
             add_traffic_spike_slide(prs, analytics["traffic_spike"])
+        if analytics.get("traffic_channel_breakdown"):
+            add_traffic_channel_breakdown_slide(prs, analytics["traffic_channel_breakdown"], source=ga4_source)
         top_pages = (analytics.get("top_pages") or {}).get("rows", [])
         top_pages = [p for p in top_pages if "career" not in (p.get("path") or "").lower()]
         if top_pages:
             total_views = sum(int(float(p.get("page_views", 0) or 0)) for p in top_pages)
+
+            def _page_label(path: str) -> str:
+                # A bare "/" reads as an unlabeled empty path to anyone without
+                # an SEO background — spell out that it's the home page.
+                return f"{path} (Home Page)" if path.strip("/") == "" else path
+
             rows = [
                 (
-                    _truncate_cell(p["path"], 6.0),
+                    _truncate_cell(_page_label(p["path"]), 6.0),
                     f"{int(float(p['page_views'])):,}",
                     f"{(int(float(p['page_views'])) / total_views * 100 if total_views else 0):.1f}%",
                     f"{int(float(p.get('active_users', 0) or 0)):,}",
@@ -2959,14 +3202,38 @@ def _build_report(
             top = top_pages[0]
             top_share = int(float(top["page_views"])) / total_views * 100 if total_views else 0
             insights = [
-                f"\"{top['path']}\" is the top page, {top_share:.0f}% of all tracked pageviews.",
+                f"\"{_page_label(top['path'])}\" is the top page, {top_share:.0f}% of all tracked pageviews.",
                 f"Top {min(3, len(top_pages))} pages account for {sum(int(float(p['page_views'])) for p in top_pages[:3]) / total_views * 100:.0f}% of total traffic." if total_views else "",
             ]
             insights = [i for i in insights if i]
             _table_slide(
-                prs, "Top Pages", ["Page", "Pageviews", "% of Total", "Users"], rows,
+                prs, "Top Pages", ["Page", "Pageviews", "% of Contribution", "Users"], rows,
                 col_widths=[6.0, 2.0, 2.0, 2.1], source=ga4_source, insights=insights,
             )
+
+            # Full (unfiltered) page list for the branded/non-branded split —
+            # career pages are excluded from the overall Top Pages slide
+            # above as a non-signal, but the client's own branded rules
+            # explicitly classify /careers as branded, so it belongs here.
+            all_pages = (analytics.get("top_pages") or {}).get("rows", [])
+            classified = [(p, _classify_page_branded(p.get("path") or "")) for p in all_pages]
+            site_total_views = sum(int(float(p.get("page_views", 0) or 0)) for p, _ in classified)
+            branded_pages = [p for p, c in classified if c == "branded"]
+            nonbranded_pages = [p for p, c in classified if c == "non-branded"]
+            branded_views = sum(int(float(p.get("page_views", 0) or 0)) for p in branded_pages)
+            nonbranded_views = sum(int(float(p.get("page_views", 0) or 0)) for p in nonbranded_pages)
+            if branded_pages:
+                branded_pages = sorted(branded_pages, key=lambda p: float(p.get("page_views", 0) or 0), reverse=True)
+                add_top_pages_segment_slide(
+                    prs, "Top Pages — Branded", "Branded Share",
+                    branded_views / site_total_views * 100 if site_total_views else 0, branded_pages,
+                )
+            if nonbranded_pages:
+                nonbranded_pages = sorted(nonbranded_pages, key=lambda p: float(p.get("page_views", 0) or 0), reverse=True)
+                add_top_pages_segment_slide(
+                    prs, "Top Pages — Non-Branded", "Non-Branded Share",
+                    nonbranded_views / site_total_views * 100 if site_total_views else 0, nonbranded_pages,
+                )
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
             total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
@@ -2975,7 +3242,9 @@ def _build_report(
                     s["channel"],
                     f"{int(float(s['sessions'])):,}",
                     f"{(float(s['sessions']) / total_sessions * 100 if total_sessions else 0):.1f}%",
-                    f"{int(float(s.get('users', 0) or 0)):,}",
+                    f"{int(float(s.get('new_users', 0) or 0)):,}",
+                    f"{int(float(s.get('returning_users', 0) or 0)):,}",
+                    f"{s['return_rate_pct']:.0f}%" if s.get("return_rate_pct") is not None else "—",
                 )
                 for s in sources[:14]
             ]
@@ -2988,25 +3257,40 @@ def _build_report(
                 insights.append(f"Organic Search is {organic_share:.0f}% of sessions — {'a healthy share of true search-driven discovery' if organic_share > 15 else 'a thin slice, most traffic is not coming from search yet'}.")
             else:
                 insights.append("No Organic Search sessions in this period — SEO isn't driving measurable traffic yet.")
+            best_return_channel = max(
+                (s for s in sources if s.get("return_rate_pct") is not None), key=lambda s: s["return_rate_pct"], default=None
+            )
+            if best_return_channel:
+                insights.append(f"{best_return_channel['channel']} has the highest return rate at {best_return_channel['return_rate_pct']:.0f}% — strongest channel for repeat visitors.")
             _table_slide(
-                prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "Users"], rows,
-                col_widths=[4.6, 2.5, 2.5, 2.5], source=ga4_source, insights=insights,
+                prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
+                col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights,
             )
         queries = (analytics.get("search_queries") or {}).get("rows", [])
         if queries:
-            top_q = sorted(queries, key=lambda q: q.get("clicks", 0), reverse=True)[:14]
-            rows = [(q["query"], q["clicks"], q["impressions"], f"{q['ctr']*100:.1f}%", f"{q['position']:.1f}") for q in top_q]
-            total_clicks = sum(q.get("clicks", 0) for q in queries)
-            total_impressions = sum(q.get("impressions", 0) for q in queries)
-            avg_ctr = total_clicks / total_impressions * 100 if total_impressions else 0
-            best_positioned = min((q for q in queries if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None)
-            insights = [f"Overall CTR is {avg_ctr:.1f}% across {total_impressions:,} impressions — {'strong' if avg_ctr > 3 else 'below the ~3% search-average, titles/descriptions may need work'}."]
-            if best_positioned:
-                insights.append(f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}.")
-            _table_slide(
-                prs, "Search Queries", ["Query", "Clicks", "Impressions", "CTR", "Avg. position"], rows,
-                col_widths=[5.5, 1.5, 1.9, 1.5, 1.7], source=gsc_source, insights=insights,
-            )
+            brand = _brand_token(website_url)
+
+            def _query_table_slide(title: str, subset: list[dict]):
+                if not subset:
+                    return
+                top_q = sorted(subset, key=lambda q: q.get("clicks", 0), reverse=True)[:14]
+                rows = [(q["query"], q["clicks"], q["impressions"], f"{q['ctr']*100:.1f}%", f"{q['position']:.1f}") for q in top_q]
+                total_clicks = sum(q.get("clicks", 0) for q in subset)
+                total_impressions = sum(q.get("impressions", 0) for q in subset)
+                avg_ctr = total_clicks / total_impressions * 100 if total_impressions else 0
+                best_positioned = min((q for q in subset if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None)
+                insights = [f"Overall CTR is {avg_ctr:.1f}% across {total_impressions:,} impressions — {'strong' if avg_ctr > 3 else 'below the ~3% search-average, titles/descriptions may need work'}."]
+                if best_positioned:
+                    insights.append(f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}.")
+                _table_slide(
+                    prs, title, ["Query", "Clicks", "Impressions", "CTR", "Avg. position"], rows,
+                    col_widths=[5.5, 1.5, 1.9, 1.5, 1.7], source=gsc_source, insights=insights,
+                )
+
+            branded_queries = [q for q in queries if _is_branded_keyword(q.get("query", ""), brand)]
+            nonbranded_queries = [q for q in queries if not _is_branded_keyword(q.get("query", ""), brand)]
+            _query_table_slide("Search Queries — Branded", branded_queries)
+            _query_table_slide("Search Queries — Non-Branded", nonbranded_queries)
 
     if competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions or competitor_narratives:
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
