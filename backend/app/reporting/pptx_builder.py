@@ -2679,7 +2679,7 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
             keyword = r.get("keyword")
             if not keyword:
                 continue
-            category = _classify_keyword_page_category(keyword)
+            category = _classify_keyword_page_category(keyword, r.get("intent"))
             if not category:
                 continue
             category_counts[category] = category_counts.get(category, 0) + 1

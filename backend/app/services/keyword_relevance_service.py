@@ -259,9 +259,27 @@ _KEYWORD_PAGE_CATEGORIES = [
 ]
 
 
-def _classify_keyword_page_category(keyword: str) -> str | None:
+def _classify_keyword_page_category(keyword: str, intent: str | None = None) -> str | None:
+    """Comparison is a page-format signal Semrush's own Intent column has no
+    concept of, so that word-list check always runs first and wins outright.
+    For everything else, trust Semrush's real search-intent data (grounded in
+    actual query behavior) over guessing from keyword text — it cleanly
+    separates informational ("pricing guide" -> Commercial, not Blog, despite
+    the word "guide") from commercial/transactional. Only fall back to the
+    word-list for Blog vs. Landing when Semrush intent is missing/blank or
+    Navigational (which doesn't map to either)."""
     text = keyword.lower()
-    for label, signals, _action in _KEYWORD_PAGE_CATEGORIES:
+    comparison_signals = _KEYWORD_PAGE_CATEGORIES[0][1]
+    if any(re.search(rf"\b{re.escape(signal)}\b", text) for signal in comparison_signals):
+        return _KEYWORD_PAGE_CATEGORIES[0][0]
+
+    intent_norm = (intent or "").lower()
+    if "informational" in intent_norm:
+        return "Blog / Guide"
+    if "commercial" in intent_norm or "transactional" in intent_norm:
+        return "Landing Page"
+
+    for label, signals, _action in _KEYWORD_PAGE_CATEGORIES[1:]:
         if any(re.search(rf"\b{re.escape(signal)}\b", text) for signal in signals):
             return label
     return None

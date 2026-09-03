@@ -467,7 +467,7 @@ def _generate_competitor_narratives(
         # SEO Next Steps slide already runs over the client's own keywords.
         ranking_page_types: dict[str, int] = {}
         for r in competitor_positions.get(domain, []):
-            category = _classify_keyword_page_category(r.get("keyword") or "")
+            category = _classify_keyword_page_category(r.get("keyword") or "", r.get("intent"))
             if category:
                 ranking_page_types[category] = ranking_page_types.get(category, 0) + 1
         competitors_facts[domain] = {
