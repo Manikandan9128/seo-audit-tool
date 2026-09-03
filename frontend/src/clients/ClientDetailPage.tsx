@@ -718,10 +718,11 @@ export default function ClientDetailPage() {
                     />
                   ))}
                 </div>
-                {steps.map((step) => (
+                {steps.map((step, i) => (
                   <div
                     key={step.n}
                     style={{
+                      gridColumn: i + 1,
                       gridRow: 1,
                       display: "flex",
                       justifyContent: "center",
@@ -747,11 +748,12 @@ export default function ClientDetailPage() {
                     </span>
                   </div>
                 ))}
-                {steps.map((step) => (
+                {steps.map((step, i) => (
                   <button
                     key={step.n}
                     onClick={step.onClick}
                     style={{
+                      gridColumn: i + 1,
                       gridRow: 2,
                       marginTop: 8,
                       display: "flex",
