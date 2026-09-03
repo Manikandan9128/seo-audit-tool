@@ -1820,42 +1820,6 @@ def add_top_pages_segment_slide(prs: Presentation, title: str, share_label: str,
     return slide
 
 
-def add_direct_traffic_breakdown_slide(prs: Presentation, sources: list[dict], source: str | None = None):
-    """Single-row isolation of the Direct channel — Total Direct Users,
-    Total Sessions, New Direct Users, Returning Direct Users. All 4 metrics
-    already exist per-channel on the `sources` rows the Traffic Sources
-    slide above also consumes (get_traffic_sources' channel x
-    newVsReturning crosstab) — no new GA4 query needed, just filtered to
-    the one channel and reshaped into the 5-column table the client asked
-    for (Dimension: Channel Grouping + the 4 metrics)."""
-    direct = next((s for s in sources if (s.get("channel") or "").strip().lower() == "direct"), None)
-    if not direct:
-        return None
-    slide = _blank_slide(prs)
-    _content_header(slide, "Direct Traffic Breakdown")
-    if source:
-        _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
-
-    total_users = int(float(direct.get("users", 0) or 0))
-    total_sessions = int(float(direct.get("sessions", 0) or 0))
-    new_users = int(float(direct.get("new_users", 0) or 0))
-    returning_users = int(float(direct.get("returning_users", 0) or 0))
-    rows = [(direct["channel"], f"{total_users:,}", f"{total_sessions:,}", f"{new_users:,}", f"{returning_users:,}")]
-    headers = ["Channel Grouping", "Total Direct Users", "Total Sessions", "New Direct Users", "Returning Direct Users"]
-
-    bottom = _draw_table(slide, headers, rows, Inches(1.3), col_widths=[2.5, 2.4, 2.4, 2.4, 2.4])
-
-    insights = []
-    if total_users:
-        new_share = new_users / total_users * 100
-        insights.append(f"{new_share:.0f}% of Direct users are new — {'mostly first-time visits typing the URL or using a bookmark' if new_share > 60 else 'a healthy mix of new and repeat direct visits'}.")
-    if total_sessions and total_users:
-        insights.append(f"{total_sessions / total_users:.1f} sessions per Direct user on average.")
-    if insights:
-        _insights_strip(slide, Inches(0.6), bottom + Inches(0.25), Inches(11.9), insights)
-    return slide
-
-
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Overview")
@@ -3358,10 +3322,19 @@ def _build_report(
                 prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
                 col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights,
             )
-            add_direct_traffic_breakdown_slide(prs, sources, source=ga4_source)
         queries = (analytics.get("search_queries") or {}).get("rows", [])
         if queries:
-            brand = _brand_token(website_url)
+            # The domain-derived token alone ("lumberfi" from lumberfi.com)
+            # missed real branded queries built around the actual company
+            # name ("lumber careers", "lumber payroll") since "lumberfi"
+            # never appears in them as a whole word — confirmed on a real
+            # Lumber regen, every one of those fell into Non-Branded. Match
+            # on EITHER the company-name token OR the domain token so both
+            # "lumber ..." and "lumberfi ..." style queries count as branded.
+            brand_tokens = {t for t in (_brand_token(client_name), _brand_token(website_url)) if t}
+
+            def _is_branded(query: str) -> bool:
+                return any(_is_branded_keyword(query, token) for token in brand_tokens)
 
             def _query_table_slide(title: str, subset: list[dict]):
                 if not subset:
@@ -3372,7 +3345,7 @@ def _build_report(
                 total_impressions = sum(q.get("impressions", 0) for q in subset)
                 avg_ctr = total_clicks / total_impressions * 100 if total_impressions else 0
                 best_positioned = min((q for q in subset if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None)
-                insights = [f"Overall CTR is {avg_ctr:.1f}% across {total_impressions:,} impressions — {'strong' if avg_ctr > 3 else 'below the ~3% search-average, titles/descriptions may need work'}."]
+                insights = [f"Average CTR is {avg_ctr:.1f}% across {total_impressions:,} impressions — {'strong' if avg_ctr > 3 else 'below the ~3% search-average, titles/descriptions may need work'}."]
                 if best_positioned:
                     insights.append(f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}.")
                 _table_slide(
@@ -3380,8 +3353,8 @@ def _build_report(
                     col_widths=[5.5, 1.5, 1.9, 1.5, 1.7], source=gsc_source, insights=insights,
                 )
 
-            branded_queries = [q for q in queries if _is_branded_keyword(q.get("query", ""), brand)]
-            nonbranded_queries = [q for q in queries if not _is_branded_keyword(q.get("query", ""), brand)]
+            branded_queries = [q for q in queries if _is_branded(q.get("query", ""))]
+            nonbranded_queries = [q for q in queries if not _is_branded(q.get("query", ""))]
             _query_table_slide("Search Queries — Branded", branded_queries)
             _query_table_slide("Search Queries — Non-Branded", nonbranded_queries)
 
