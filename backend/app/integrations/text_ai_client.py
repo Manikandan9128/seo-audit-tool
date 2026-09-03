@@ -114,6 +114,16 @@ def _try_groq(prompt: str, max_tokens: int) -> str:
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 
+def _groq_retry_after_seconds(response: httpx.Response) -> float | None:
+    value = response.headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def _try_claude(prompt: str, max_tokens: int) -> str:
     client = Anthropic(api_key=settings.claude_api_key)
     response = client.messages.create(
@@ -145,14 +155,27 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
             errors.append("Groq returned an empty response")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-                try:
-                    text = _try_groq(prompt, max_tokens)
-                    if text:
-                        return text, "groq"
-                    errors.append("Groq returned an empty response")
-                except Exception as e2:
-                    errors.append(f"Groq request failed: {str(e2)[:300]}")
+                retry_after = _groq_retry_after_seconds(e.response)
+                # Groq's Retry-After tells us whether this 429 is a
+                # per-minute limit (short, recovers inside our retry
+                # window) or a daily/token-cap exhaustion (long, won't
+                # recover in 20s) — same reasoning already applied to
+                # Gemini's daily-quota case below. Confirmed real: with
+                # both providers quota-exhausted, blindly retrying every
+                # single Groq 429 after a 20s sleep (guaranteed to fail
+                # again) was the main contributor to reports stalling for
+                # minutes at the competitor-narrative AI call.
+                if retry_after is not None and retry_after > RATE_LIMIT_RETRY_DELAY_SECONDS:
+                    errors.append(f"Groq rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:200]}")
+                else:
+                    time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                    try:
+                        text = _try_groq(prompt, max_tokens)
+                        if text:
+                            return text, "groq"
+                        errors.append("Groq returned an empty response")
+                    except Exception as e2:
+                        errors.append(f"Groq request failed: {str(e2)[:300]}")
             else:
                 errors.append(f"Groq request failed: {str(e)[:300]}")
         except Exception as e:
