@@ -1098,7 +1098,10 @@ def add_priority_issues_slide(
     ranked.sort(key=lambda r: r[4], reverse=True)
     headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks", "Priority Score"]
     col_widths = [3.6, 4.2, 1.3, 1.3, 1.7]
-    rows = [(url, issues, f"{pv:,}", f"{cl:,}", f"{score:,}") for url, issues, pv, cl, score in ranked[:14]]
+    rows = [
+        (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1]), f"{pv:,}", f"{cl:,}", f"{score:,}")
+        for url, issues, pv, cl, score in ranked[:14]
+    ]
     top = ranked[0]
     insights = [
         f"{len(ranked)} issue-affected page(s) cross-referenced against real traffic — ranked by pageviews + clicks×3 (a lost search click is lost demand, weighted heavier than a pageview from another channel).",
@@ -1295,10 +1298,30 @@ def add_structured_data_slide(
         for label, _field, _benefit, pages_with in coverage
     ]
 
+    # The per-type coverage rows above are NOT mutually exclusive (a page can
+    # carry Product AND Review AND nothing-else-tracked at once), so they
+    # never sum to 100% and were never meant to — confirmed this reads as
+    # "where's the rest of the percentage?" to a non-technical reviewer.
+    # The fix: put the complementary "and here's the rest" stat (pages with
+    # NO tracked schema at all) as the SECOND insight, right after the
+    # headline stat — guaranteed to render even when the per-type "missing
+    # X" bullets after it get cut for space — so the two numbers that
+    # actually do sum to 100% of crawled pages are always shown together.
     insights = [
         f"{pages_with_any_schema:,} of {total_pages:,} crawled URLs ({any_schema_pct:.0f}%) have structured data "
         "(schema.org JSON-LD or Microdata) implemented.",
     ]
+    best = max(coverage, key=lambda c: c[3])
+    gap = total_pages - pages_with_any_schema
+    if best[3] > 0 and gap > 0:
+        insights.append(
+            f"The remaining {gap:,} of {total_pages:,} pages ({100 * gap / total_pages:.0f}%) have NO structured "
+            f"data of any tracked type at all — not even {best[0]}, the site's best-covered type. Together with the "
+            f"{any_schema_pct:.0f}% above, that accounts for all {total_pages:,} crawled pages."
+        )
+    elif best[3] > 0 and len(insights) == 1:
+        insights.append(f"{best[0]} schema is your best-covered type — present on {best[3]:,} of {total_pages:,} pages.")
+
     missing = [c for c in coverage if c[3] == 0 and c[2] is not None]  # curated-only, has benefit text
     missing_insights = []
     for label, field, benefit, _pages_with in missing:
@@ -1319,16 +1342,6 @@ def add_structured_data_slide(
         if len(missing_insights) == 2:
             break
     insights += missing_insights
-    best = max(coverage, key=lambda c: c[3])
-    if best[3] > 0:
-        gap = total_pages - pages_with_any_schema
-        if gap > 0:
-            insights.append(
-                f"{gap:,} of {total_pages:,} pages ({100 * gap / total_pages:.0f}%) have no structured data "
-                f"of any tracked type at all — not even {best[0]}, the site's best-covered type."
-            )
-        elif len(insights) == 1:
-            insights.append(f"{best[0]} schema is your best-covered type — present on {best[3]:,} of {total_pages:,} pages.")
 
     # The generic _table_slide row_cap (9, once insights are shown) silently
     # dropped whichever curated type sorted last whenever a non-curated
@@ -1444,7 +1457,8 @@ def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None, analytics: 
     scored_rows.sort(key=lambda r: (r[0], r[1]))
 
     shown = scored_rows[:9]
-    rows = [(issue, path, fix_text) for _, _, issue, path, fix_text, _ in shown]
+    col_widths = [2.7, 2.3, 7.1]
+    rows = [(_truncate_cell(issue, col_widths[0]), _truncate_cell(path, col_widths[1]), fix_text) for _, _, issue, path, fix_text, _ in shown]
     unreachable_count = sum(1 for _, _, issue, _, _, _ in scored_rows if issue == "Page not reachable")
     insights = [f"{len(scored_rows)} page-level issue(s) found across the crawled pages, {unreachable_count} unreachable."]
     if len(scored_rows) > len(shown):
@@ -1459,8 +1473,27 @@ def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None, analytics: 
 
     return _table_slide(
         prs, "Tech Fixes", ["Issue", "Where", "Fix"], rows,
-        col_widths=[2.7, 2.3, 7.1], source="Site crawl", insights=insights,
+        col_widths=col_widths, source="Site crawl", insights=insights,
     )
+
+
+def _truncate_cell(text: str, width_in: float, size_pt: float = 11, max_lines: int = 1) -> str:
+    """Truncates a table cell's text (with an ellipsis) so it fits within
+    max_lines at this column width/font size. Table rows in this file get a
+    fixed height (_table_slide's row_cap * Inches(0.4)), unlike every other
+    text renderer here — there's no y-cursor to check against a max_y and
+    break early. A real page URL or joined issue list can run 60-130+
+    chars; wrapped into a narrow column that's 2-3 lines PowerPoint then
+    grows the row to fit, which pushes the table's actual rendered height
+    past what this file computed for it — overlapping the insights/footer
+    positioned below at that computed (not actual) height. Confirmed live
+    on the Priority Issues and Tech Fixes slides (long blog-post URLs and
+    page paths). Same 154-chars-per-inch-at-11pt calibration as _wrap_lines."""
+    chars_per_line = max(10, int(width_in * (154 / size_pt)))
+    limit = chars_per_line * max_lines
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 1)].rstrip() + "…"
 
 
 def _wrap_lines(text: str, width_emu, size_pt: float = 12) -> int:
@@ -2850,7 +2883,7 @@ def _build_report(
             total_views = sum(int(float(p.get("page_views", 0) or 0)) for p in top_pages)
             rows = [
                 (
-                    p["path"],
+                    _truncate_cell(p["path"], 6.0),
                     f"{int(float(p['page_views'])):,}",
                     f"{(int(float(p['page_views'])) / total_views * 100 if total_views else 0):.1f}%",
                     f"{int(float(p.get('active_users', 0) or 0)):,}",
