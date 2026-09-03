@@ -1170,12 +1170,12 @@ def _build_pptx_for_client(
     # the docstring above on why this never goes into the PPTX itself).
     data.pop("content_generation_issues", None)
 
-    # Real citation lookup for the Brand Citation Opportunities slide — a
-    # free Brave Search call (only when brave_api_key is configured; None
-    # otherwise) plus an always-free Wikipedia check. Wrapped defensively
-    # even though both service functions already swallow their own network
-    # errors — an unexpected failure here should cost this one slide, never
-    # the whole report, same as the logo fetch above.
+    # Real citation lookup for the Brand Citation Opportunities slide — free,
+    # keyless web/news search (DuckDuckGo HTML + Google News RSS) plus a
+    # Wikipedia check. Wrapped defensively even though both service functions
+    # already swallow their own network errors — an unexpected failure here
+    # should cost this one slide, never the whole report, same as the logo
+    # fetch above.
     brand_citations = None
     brand_wikipedia = None
     try:

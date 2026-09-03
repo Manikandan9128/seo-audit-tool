@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
     claude_api_key: str = ""
-    brave_api_key: str = ""
 
 
 settings = Settings()

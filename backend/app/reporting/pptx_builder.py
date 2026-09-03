@@ -2336,8 +2336,8 @@ def add_brand_mentions_slide(
 ):
     """Brand citation/directory-listing opportunities — the manual
     reference decks' "Current Brand Mentions" slide. When citations/
-    wikipedia are supplied (see brand_citation_service — a real Brave
-    Search + Wikipedia lookup, gated on a free API key), a "Where You're
+    wikipedia are supplied (see brand_citation_service — free, keyless
+    DuckDuckGo/Google News + Wikipedia lookups), a "Where You're
     Already Cited" section leads the slide with grounded, real results.
     Silently falls back to directory-recommendations-only (the original
     version of this slide) when neither is available — never invents a
