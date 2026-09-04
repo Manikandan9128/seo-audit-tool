@@ -1171,7 +1171,12 @@ def add_priority_issues_slide(
     ranked.sort(key=lambda r: r[4], reverse=True)
     headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks", "Priority Score"]
     col_widths = [3.6, 4.2, 1.3, 1.3, 1.7]
-    shown = ranked[:14]
+    # _draw_table's row_cap defaults to 9 (not 14) whenever insights is
+    # passed, which this slide always does — shown must match that or the
+    # hyperlink loop below walks past the table's actual row count.
+    # Confirmed live: IndexError on table.cell(i, 0) once ranked had more
+    # than 9 issue-affected pages.
+    shown = ranked[:9]
     rows = [
         (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1]), f"{pv:,}", f"{cl:,}", f"{score:,}")
         for url, issues, pv, cl, score in shown
