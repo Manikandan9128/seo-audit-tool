@@ -1,15 +1,33 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from google.auth.exceptions import RefreshError
 
 from app.api.routes import auth, clients, competitors, google_oauth, settings as settings_routes, site_audit
 from app.db.session import SessionLocal
 from app.services.app_settings_service import load_overrides_into_settings
 
 app = FastAPI(title="SEO Audit Tool API")
+
+
+@app.exception_handler(RefreshError)
+def _google_refresh_error_handler(request: Request, exc: RefreshError):
+    # Google's Credentials.refresh() only runs lazily, on the first actual
+    # API call that needs a fresh token — not when credentials are loaded
+    # from storage — so a revoked/expired refresh token (invalid_grant)
+    # surfaces deep inside whichever service call happens to need it
+    # (ga4_service.list_properties, gsc_service.list_sites, an analytics
+    # pull, etc.), not at the one shared _load_credentials() call site.
+    # Confirmed live: every one of those routes crashed with a bare 500
+    # for this. One handler here covers all of them instead of wrapping
+    # each call site individually.
+    return JSONResponse(
+        status_code=400,
+        content={"detail": f"Google account connection is invalid or expired — reconnect it: {exc}"},
+    )
 
 
 @app.on_event("startup")

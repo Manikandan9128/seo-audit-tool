@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from sqlalchemy.orm import Session
 
@@ -292,6 +293,18 @@ def analytics_report(
             result["traffic_sources"] = None
             result["page_performance"] = None
             result["errors"]["ga4"] = _google_error_message(e)
+        except RefreshError as e:
+            # Token revoked/expired — same "optional section, don't fail
+            # the whole combined report" treatment as an HttpError above,
+            # not the global 400 handler (that's for routes where GA4/GSC
+            # is the entire point of the call, not one section of many).
+            # Checked before the broad Exception catch below for a message
+            # that actually tells the user what to do about it.
+            result["traffic_overview"] = None
+            result["top_pages"] = None
+            result["traffic_sources"] = None
+            result["page_performance"] = None
+            result["errors"]["ga4"] = f"Google account connection is invalid or expired — reconnect it: {e}"
         except Exception as e:
             # Anything not from the Google API client itself (bad date math,
             # a malformed response shape, etc.) previously crashed this whole
@@ -324,6 +337,9 @@ def analytics_report(
         except HttpError as e:
             result["search_queries"] = None
             result["errors"]["gsc"] = _google_error_message(e)
+        except RefreshError as e:
+            result["search_queries"] = None
+            result["errors"]["gsc"] = f"Google account connection is invalid or expired — reconnect it: {e}"
         except Exception as e:
             logger.exception("GSC fetch failed for client %s", client_id)
             result["search_queries"] = None
