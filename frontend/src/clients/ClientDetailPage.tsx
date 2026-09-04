@@ -1021,9 +1021,17 @@ export default function ClientDetailPage() {
             <span className="badge success" style={{ marginBottom: 12, display: "inline-block" }}>
               Google connected
             </span>
-            <div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button className="secondary" onClick={loadProperties}>
                 Load GA4 properties / GSC sites
+              </button>
+              {/* google_connected only ever flips true on first connect and
+                  never resets, so a later revoked/expired refresh token
+                  (invalid_grant) left no way back to the OAuth flow — the
+                  "Connect Google" button above only shows pre-connect.
+                  Always-visible reconnect fixes that dead end. */}
+              <button className="secondary" onClick={connectGoogle}>
+                Reconnect Google
               </button>
             </div>
 
