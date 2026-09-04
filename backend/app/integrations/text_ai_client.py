@@ -28,7 +28,7 @@ from app.integrations.gemini_errors import friendly_gemini_error
 RATE_LIMIT_RETRY_DELAY_SECONDS = 20
 
 GEMINI_MODEL = "gemini-3.6-flash"
-XAI_MODEL = "grok-4"
+XAI_MODEL = "grok-4.5"
 CLAUDE_MODEL = "claude-sonnet-5"
 
 XAI_API_URL = "https://api.x.ai/v1/chat/completions"
@@ -109,7 +109,15 @@ def _try_xai(prompt: str, max_tokens: int) -> str:
         },
         timeout=60,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        # raise_for_status()'s default message is just the URL + status code
+        # — xAI's actual reason (bad model name, malformed body, etc.) is in
+        # the response body, and without it a 400 is an unpinnable guess.
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+            request=response.request,
+            response=response,
+        )
     data = response.json()
     return (data["choices"][0]["message"]["content"] or "").strip()
 

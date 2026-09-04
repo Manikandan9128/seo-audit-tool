@@ -97,15 +97,17 @@ def test_xai_key() -> dict:
             },
             timeout=30,
         )
-        response.raise_for_status()
+        if response.status_code == 401:
+            return {"ok": False, "message": "xAI rejected this API key — check it was copied correctly and hasn't been revoked."}
+        if response.status_code == 429:
+            return {"ok": False, "message": "xAI rate limit hit — wait a bit and try again."}
+        if response.status_code >= 400:
+            # The body carries xAI's actual reason (bad model, malformed
+            # request, etc.) — raise_for_status()'s default message is just
+            # the URL + status code, not enough to diagnose a 400.
+            return {"ok": False, "message": f"xAI request failed: {response.status_code} {response.reason_phrase}: {response.text[:300]}"}
         text = (response.json()["choices"][0]["message"]["content"] or "").strip()
         return {"ok": True, "message": f"Key works — model replied: {text[:80] or '(empty)'}"}
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            return {"ok": False, "message": "xAI rejected this API key — check it was copied correctly and hasn't been revoked."}
-        if e.response.status_code == 429:
-            return {"ok": False, "message": "xAI rate limit hit — wait a bit and try again."}
-        return {"ok": False, "message": f"xAI request failed: {str(e)[:300]}"}
     except Exception as e:
         return {"ok": False, "message": f"xAI request failed: {str(e)[:300]}"}
 
