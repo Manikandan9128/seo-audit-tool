@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
+from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from sqlalchemy.orm import Session
 
@@ -808,6 +809,18 @@ def _gather_report_data(
                         analytics[key] = future.result()
                     except HttpError:
                         pass
+                    except RefreshError:
+                        # Google's token refresh is lazy — it only runs on
+                        # the first API call that actually needs it, which
+                        # is exactly these futures, not the earlier
+                        # _load_credentials() call. A revoked/expired
+                        # refresh token previously crashed this whole
+                        # report-generation job here, uncaught — confirmed
+                        # live as the actual cause of a report stuck
+                        # un-downloadable with a Google account that needs
+                        # reconnecting. Analytics is optional; skip just
+                        # this section like the HttpError case above.
+                        logger.warning("Google token invalid/expired for client %s — skipping %s", client_id, key)
 
             if client.ga4_property_id:
                 date_range["ga4_start"], date_range["ga4_end"] = ga4_start, ga4_end
@@ -823,6 +836,8 @@ def _gather_report_data(
                         if spike:
                             analytics["traffic_spike"] = spike
                 except HttpError:
+                    pass
+                except RefreshError:
                     pass
             if client.gsc_site_url:
                 date_range["gsc_start"], date_range["gsc_end"] = gsc_start, gsc_end
