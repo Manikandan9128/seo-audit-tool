@@ -169,85 +169,134 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
     return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
+# Lets a caller pin one provider first for the lifetime of a single job's
+# thread (e.g. "run this report with Claude") without threading a
+# preferred_provider parameter through the ~10 call sites between the
+# report-generation route and generate_text() — every one of those calls
+# happens synchronously within one dedicated thread per job/request (see
+# _run_generate_report_job, report_preview), so a thread-local is exactly
+# "one preference per in-flight job" with no cross-request leakage risk,
+# as long as callers reset it when done (set_preferred_provider(None) in a
+# finally block) so a thread reused by the app server's pool doesn't carry
+# a stale preference into an unrelated later request.
+_provider_preference = threading.local()
+
+_VALID_PROVIDERS = {"groq", "gemini", "claude"}
+
+
+def set_preferred_provider(name: str | None) -> None:
+    if name is not None and name not in _VALID_PROVIDERS:
+        raise ValueError(f"Unknown provider {name!r} — must be one of {sorted(_VALID_PROVIDERS)} or None")
+    _provider_preference.value = name
+
+
+def _attempt_groq(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.groq_api_key:
+        return None
+    try:
+        text = _try_groq(prompt, max_tokens)
+        if text:
+            return text
+        errors.append("Groq returned an empty response")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            retry_after = _groq_retry_after_seconds(e.response)
+            # Groq's Retry-After tells us whether this 429 is a per-minute
+            # limit (short, recovers inside our retry window) or a
+            # daily/token-cap exhaustion (long, won't recover in 20s) —
+            # same reasoning already applied to Gemini's daily-quota case
+            # below. Confirmed real: with both providers quota-exhausted,
+            # blindly retrying every single Groq 429 after a 20s sleep
+            # (guaranteed to fail again) was the main contributor to
+            # reports stalling for minutes at the competitor-narrative AI
+            # call.
+            if retry_after is not None and retry_after > RATE_LIMIT_RETRY_DELAY_SECONDS:
+                errors.append(f"Groq rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:200]}")
+            else:
+                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                try:
+                    text = _try_groq(prompt, max_tokens)
+                    if text:
+                        return text
+                    errors.append("Groq returned an empty response")
+                except Exception as e2:
+                    errors.append(f"Groq request failed: {str(e2)[:300]}")
+        else:
+            errors.append(f"Groq request failed: {str(e)[:300]}")
+    except Exception as e:
+        errors.append(f"Groq request failed: {str(e)[:300]}")
+    return None
+
+
+def _attempt_gemini(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.gemini_api_key:
+        return None
+    try:
+        text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
+        if text:
+            return text
+        errors.append("Gemini returned an empty response")
+    except Exception as e:
+        error_text = str(e)
+        is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
+        # A burst of concurrent calls (e.g. one per competitor) can all hit
+        # Gemini's per-minute cap in the same instant — one short wait and
+        # retry is often enough since the window is per-minute, not daily.
+        # A daily-quota exhaustion won't clear in 20s, so don't bother.
+        if not is_daily_quota and ("RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
+            time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+            try:
+                text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
+                if text:
+                    return text
+                errors.append("Gemini returned an empty response")
+            except Exception as e2:
+                errors.append(friendly_gemini_error(e2))
+        else:
+            errors.append(friendly_gemini_error(e))
+    return None
+
+
+def _attempt_claude(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.claude_api_key:
+        return None
+    try:
+        text = _call_with_timeout(_try_claude, CLAUDE_TIMEOUT_SECONDS, prompt, max_tokens)
+        if text:
+            return text
+        errors.append("Claude returned an empty response")
+    except Exception as e:
+        errors.append(f"Claude request failed: {str(e)[:300]}")
+    return None
+
+
+_PROVIDER_ATTEMPTS = {"groq": _attempt_groq, "gemini": _attempt_gemini, "claude": _attempt_claude}
+_DEFAULT_PROVIDER_ORDER = ["groq", "gemini", "claude"]
+
+
 def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
     """Returns (text, provider_used) — 'gemini', 'groq', or 'claude'. Tries
-    each configured provider in that order, falling through to the next on
-    any failure (not configured, empty response, request error). Raises
-    NoAIProviderConfigured if no key is set at all, or if every configured
-    provider's call failed (message includes each provider's error).
-    max_tokens only affects the Groq/Claude paths — Gemini has no
-    equivalent cap exposed here and just returns whatever it generates."""
+    each configured provider in order, falling through to the next on any
+    failure (not configured, empty response, request error). Default order
+    is Groq, Gemini, Claude — see set_preferred_provider() to move one
+    provider to the front of that order for the current thread (e.g. one
+    report-generation job). Raises NoAIProviderConfigured if no key is set
+    at all, or if every configured provider's call failed (message
+    includes each provider's error). max_tokens only affects the
+    Groq/Claude paths — Gemini has no equivalent cap exposed here and just
+    returns whatever it generates."""
     if not settings.gemini_api_key and not settings.groq_api_key and not settings.claude_api_key:
         raise NoAIProviderConfigured("No Gemini, Groq, or Claude API key configured — add one in Settings")
 
-    errors = []
+    preferred = getattr(_provider_preference, "value", None)
+    order = _DEFAULT_PROVIDER_ORDER
+    if preferred:
+        order = [preferred] + [p for p in _DEFAULT_PROVIDER_ORDER if p != preferred]
 
-    if settings.groq_api_key:
-        try:
-            text = _try_groq(prompt, max_tokens)
-            if text:
-                return text, "groq"
-            errors.append("Groq returned an empty response")
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                retry_after = _groq_retry_after_seconds(e.response)
-                # Groq's Retry-After tells us whether this 429 is a
-                # per-minute limit (short, recovers inside our retry
-                # window) or a daily/token-cap exhaustion (long, won't
-                # recover in 20s) — same reasoning already applied to
-                # Gemini's daily-quota case below. Confirmed real: with
-                # both providers quota-exhausted, blindly retrying every
-                # single Groq 429 after a 20s sleep (guaranteed to fail
-                # again) was the main contributor to reports stalling for
-                # minutes at the competitor-narrative AI call.
-                if retry_after is not None and retry_after > RATE_LIMIT_RETRY_DELAY_SECONDS:
-                    errors.append(f"Groq rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:200]}")
-                else:
-                    time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-                    try:
-                        text = _try_groq(prompt, max_tokens)
-                        if text:
-                            return text, "groq"
-                        errors.append("Groq returned an empty response")
-                    except Exception as e2:
-                        errors.append(f"Groq request failed: {str(e2)[:300]}")
-            else:
-                errors.append(f"Groq request failed: {str(e)[:300]}")
-        except Exception as e:
-            errors.append(f"Groq request failed: {str(e)[:300]}")
-
-    if settings.gemini_api_key:
-        try:
-            text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
-            if text:
-                return text, "gemini"
-            errors.append("Gemini returned an empty response")
-        except Exception as e:
-            error_text = str(e)
-            is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
-            # A burst of concurrent calls (e.g. one per competitor) can all hit
-            # Gemini's per-minute cap in the same instant — one short wait and
-            # retry is often enough since the window is per-minute, not daily.
-            # A daily-quota exhaustion won't clear in 20s, so don't bother.
-            if not is_daily_quota and ("RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
-                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-                try:
-                    text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
-                    if text:
-                        return text, "gemini"
-                    errors.append("Gemini returned an empty response")
-                except Exception as e2:
-                    errors.append(friendly_gemini_error(e2))
-            else:
-                errors.append(friendly_gemini_error(e))
-
-    if settings.claude_api_key:
-        try:
-            text = _call_with_timeout(_try_claude, CLAUDE_TIMEOUT_SECONDS, prompt, max_tokens)
-            if text:
-                return text, "claude"
-            errors.append("Claude returned an empty response")
-        except Exception as e:
-            errors.append(f"Claude request failed: {str(e)[:300]}")
+    errors: list[str] = []
+    for provider in order:
+        text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
+        if text:
+            return text, provider
 
     raise NoAIProviderConfigured(" / ".join(errors))

@@ -113,6 +113,24 @@ export default function ClientDetailPage() {
   const [hasGenerated, setHasGenerated] = useState(false);
   const [hasDownloaded, setHasDownloaded] = useState(false);
 
+  // "" = default automatic order (Groq, then Gemini, then Claude — see
+  // text_ai_client.py). Picking one here pins it first for this report's
+  // AI calls; still falls back to the others on failure, same as the
+  // default order does. Only keys actually configured in Settings are
+  // offered — no point letting someone pick a provider with no key.
+  const [preferredProvider, setPreferredProvider] = useState("");
+  const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
+
+  useEffect(() => {
+    api.get("/settings").then((res) => {
+      const opts: { value: string; label: string }[] = [];
+      if (res.data.groq_api_key_set) opts.push({ value: "groq", label: "Groq" });
+      if (res.data.gemini_api_key_set) opts.push({ value: "gemini", label: "Gemini" });
+      if (res.data.claude_api_key_set) opts.push({ value: "claude", label: "Claude" });
+      setAvailableProviders(opts);
+    }).catch(() => {});
+  }, []);
+
   function toggleSection(key: SectionKey) {
     setSelectedSections((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
@@ -422,6 +440,7 @@ export default function ClientDetailPage() {
     const body = {
       ...(overview ? { company_overview_override: overview } : {}),
       ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
+      ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
     };
     downloadReportWithBody(Object.keys(body).length ? body : null, false);
   }
@@ -431,6 +450,7 @@ export default function ClientDetailPage() {
       company_overview_override: previewOverview,
       competitor_analysis_override: previewCompetitorAnalysis,
       ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
+      ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
     };
     downloadReportWithBody(body, true);
   }
@@ -582,6 +602,21 @@ export default function ClientDetailPage() {
               </>
             )}
           </div>
+          {availableProviders.length > 1 && (
+            <select
+              value={preferredProvider}
+              onChange={(e) => setPreferredProvider(e.target.value)}
+              title="AI provider to try first for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — still falls back to the others on failure"
+              style={{ marginRight: 8 }}
+            >
+              <option value="">Auto (default order)</option>
+              {availableProviders.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label} first
+                </option>
+              ))}
+            </select>
+          )}
           <button onClick={generateSelectedReport} disabled={generating || selectedSections.length === 0}>
             {generating ? "Generating..." : "Generate Report"}
           </button>

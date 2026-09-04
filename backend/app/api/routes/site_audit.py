@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db
 from app.config import settings
 from app.db.session import SessionLocal
-from app.integrations import google_oauth
+from app.integrations import google_oauth, text_ai_client
 from app.integrations.crypto import decrypt, encrypt
 from app.integrations.pagespeed_client import run_pagespeed
 from app.integrations.screenshot_client import capture_homepage_screenshots
@@ -1354,12 +1354,20 @@ def _run_generate_report_job(
     company_overview_override: dict | None,
     competitor_analysis_override: dict | None,
     ux_notes: str | None,
+    preferred_provider: str | None = None,
 ):
     """Builds the PPTX in a background thread with its own DB session, so a
     slow build (PageSpeed Insights, AI narratives, crawls) never has an HTTP
     request waiting on it past a gateway's timeout."""
     db = SessionLocal()
     progress_db = SessionLocal()
+    # Pins this job's AI calls to one provider first (still falls back to
+    # the others on failure) — this thread runs the whole job start to
+    # finish, so a thread-local set here is visible to every generate_text()
+    # call this job makes, with nothing to thread through the ~10 call
+    # sites in between. Reset in finally since threading.Thread doesn't
+    # tear the thread down between jobs on some deployments.
+    text_ai_client.set_preferred_provider(preferred_provider)
     try:
         job = db.get(ReportGenerationJob, job_id)
         job.status = "running"
@@ -1401,6 +1409,7 @@ def _run_generate_report_job(
             job.error = str(e)
             db.commit()
     finally:
+        text_ai_client.set_preferred_provider(None)
         db.close()
         progress_db.close()
 
@@ -1414,13 +1423,19 @@ def start_generate_report_job(
     company_overview_override: dict | None = Body(default=None),
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
+    preferred_provider: str | None = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Kicks off a background PPTX build and returns a job id to poll —
     avoids blocking on a single long request that could outlast the hosting
-    gateway's timeout."""
+    gateway's timeout. preferred_provider ('groq'/'gemini'/'claude', or
+    None for the default Groq-first order) tries that AI provider first
+    for every AI call this job makes, still falling back to the others on
+    failure."""
     _get_owned_client(client_id, db, current_user)
+    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude"):
+        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', or omitted")
     job = ReportGenerationJob(client_id=client_id, status="pending")
     db.add(job)
     db.commit()
@@ -1429,7 +1444,7 @@ def start_generate_report_job(
         target=_run_generate_report_job,
         args=(
             job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
-            company_overview_override, competitor_analysis_override, ux_notes,
+            company_overview_override, competitor_analysis_override, ux_notes, preferred_provider,
         ),
         daemon=True,
     ).start()
