@@ -3,6 +3,14 @@ export interface AnalysisIssue {
   detail: string;
   recommendation: string;
   severity: "warn" | "opportunity" | "info";
+  // URL Mapping — resolved via the 7-level hierarchy in url_mapping_service.py.
+  // Absent/null when nothing in the hierarchy produced a real answer (e.g. an
+  // "upload more data" info nudge has no page to point at).
+  target_url?: string | string[] | null;
+  url_action?: "OPTIMIZE_EXISTING" | "CREATE_NEW" | "MERGE" | "REDIRECT" | "INTERNAL_LINK" | "UPDATE_TEMPLATE" | "SITEWIDE" | null;
+  target_page_type?: string | null;
+  current_ranking_keyword?: string | null;
+  current_position?: number | null;
 }
 
 export interface CompetitorAnalysis {
@@ -61,6 +69,22 @@ export default function CompetitorAnalysisEditor({
               onChange={(e) => setIssue(i, "recommendation", e.target.value)}
             />
           </div>
+          {issue.url_action && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+              <strong>{issue.url_action}</strong>
+              {issue.target_url && (
+                <> — {Array.isArray(issue.target_url) ? `${issue.target_url.length} page(s)` : issue.target_url}</>
+              )}
+              {issue.target_page_type && <> · {issue.target_page_type}</>}
+              {issue.current_ranking_keyword && (
+                <>
+                  {" "}
+                  · ranks for "{issue.current_ranking_keyword}"
+                  {issue.current_position != null && <> at #{issue.current_position}</>}
+                </>
+              )}
+            </div>
+          )}
         </div>
       ))}
     </div>
