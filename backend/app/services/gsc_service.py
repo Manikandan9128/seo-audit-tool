@@ -35,35 +35,6 @@ def get_search_analytics(creds: Credentials, site_url: str, start_date: str, end
     return {"rows": rows}
 
 
-def get_query_page_map(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 1000) -> dict:
-    """Search Analytics dimensioned by BOTH query and page — the only way to
-    know which real page a query actually ranks/gets clicks on. The
-    query-only and page-only pulls elsewhere (get_search_analytics,
-    get_page_clicks) can't answer that on their own; this feeds the URL
-    Mapping hierarchy's "GSC query-to-page relationship" level."""
-    webmasters = build("searchconsole", "v1", credentials=creds)
-    body = {
-        "startDate": start_date,
-        "endDate": end_date,
-        "dimensions": ["query", "page"],
-        "rowLimit": row_limit,
-    }
-    response = webmasters.searchanalytics().query(siteUrl=site_url, body=body).execute()
-    rows = []
-    for row in response.get("rows", []):
-        rows.append(
-            {
-                "query": row["keys"][0],
-                "page": row["keys"][1],
-                "clicks": row["clicks"],
-                "impressions": row["impressions"],
-                "ctr": row["ctr"],
-                "position": row["position"],
-            }
-        )
-    return {"rows": rows}
-
-
 def inspect_url(creds: Credentials, site_url: str, inspection_url: str) -> dict:
     """URL Inspection API — the only Google-hosted source of real rich-result
     validation. Only works for pages on a site the connected account has

@@ -5,18 +5,6 @@ external calls."""
 
 from urllib.parse import urlparse
 
-from app.services.url_mapping_service import (
-    INTERNAL_LINK,
-    MERGE,
-    OPTIMIZE_EXISTING,
-    REDIRECT,
-    UPDATE_TEMPLATE,
-    build_context,
-    resolve_for_keyword,
-    resolve_for_pages,
-    resolve_sitewide,
-)
-
 
 def _num(v, default=0):
     try:
@@ -57,33 +45,14 @@ def _normalize_domain(d: str) -> str:
     return (d or "").strip().lower().removeprefix("www.").rstrip("/")
 
 
-_NO_MAPPING = {
-    "target_url": None,
-    "url_action": None,
-    "target_page_type": None,
-    "current_ranking_keyword": None,
-    "current_position": None,
-}
-
-
-def analyze(
-    records: list[dict],
-    own_domain: str | None = None,
-    own_organic_positions_rows: list[dict] | None = None,
-    gsc_query_page_rows: list[dict] | None = None,
-    crawl_pages: list[dict] | None = None,
-) -> dict:
+def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     """records: list of {import_type, is_own_site, domain_label, created_at, parsed_data}
     (parsed_data has "rows" and "row_count"). own_domain: the client's own
     website domain (e.g. "startek.com") — needed to tell which column in a
     real multi-domain Keyword Gap export (see semrush_parser.py's
-    domain_positions) is "you" vs a competitor. own_organic_positions_rows /
-    gsc_query_page_rows / crawl_pages feed url_mapping_service's 7-level
-    target-URL hierarchy — all optional; whichever levels lack data just
-    fall through to the next one. Returns {issues: [...], has_data: bool,
-    coverage: {...}} where each issue is {summary, detail, recommendation,
-    severity, target_url, url_action, target_page_type,
-    current_ranking_keyword, current_position}."""
+    domain_positions) is "you" vs a competitor. Returns {issues: [...],
+    has_data: bool, coverage: {...}} where each issue is {summary, detail,
+    recommendation, severity}."""
     issues = []
 
     own_overview = _latest(records, "domain_overview", own=True)
@@ -94,17 +63,6 @@ def analyze(
     organic_competitor_rows = _all_rows(records, "organic_competitors")
     keyword_gap_rows = _all_rows(records, "keyword_gap")
     own_site_audit_rows = _all_rows(records, "site_audit_pages", own=True)
-
-    url_context = build_context(
-        own_domain=own_domain,
-        own_organic_positions_rows=own_organic_positions_rows,
-        gsc_query_page_rows=gsc_query_page_rows,
-        crawl_pages=crawl_pages
-        or [{"url": r.get("page_url"), "title": r.get("page_title")} for r in own_site_audit_rows],
-        canonicalization_by_url={
-            r.get("page_url"): r.get("canonicalization") for r in own_site_audit_rows if r.get("page_url")
-        },
-    )
 
     has_data = any([
         own_overview, own_backlinks, competitor_backlinks, organic_competitor_rows,
@@ -140,7 +98,6 @@ def analyze(
                 "recommendation": "Build links from domains that link to this competitor but not to you — check its referring-domain list for guest post, directory, or partnership opportunities.",
                 "severity": "warn",
                 "domain": comp_domain,
-                **resolve_sitewide("Domain-wide (Backlinks)"),
             })
         elif own_ref_domains is None:
             issues.append({
@@ -149,7 +106,6 @@ def analyze(
                 "recommendation": "Upload a Backlinks export under \"Our Website Data\" to see the gap.",
                 "severity": "info",
                 "domain": comp_domain,
-                **_NO_MAPPING,
             })
 
     # Organic traffic / keyword gap vs each competitor row in the organic_competitors export(s)
@@ -175,7 +131,6 @@ def analyze(
                     "recommendation": "Check which keywords drive their traffic (Keyword Gap export) and target the ones with real search volume you don't rank for yet.",
                     "severity": "warn",
                     "domain": comp_domain,
-                    **resolve_sitewide("Domain-wide (Content Strategy)"),
                 })
             if comp_keywords > own_keywords:
                 issues.append({
@@ -184,7 +139,6 @@ def analyze(
                     "recommendation": "Expand content/landing pages around topics this competitor covers that you don't.",
                     "severity": "warn",
                     "domain": comp_domain,
-                    **resolve_sitewide("Domain-wide (Content Strategy)"),
                 })
     elif organic_competitor_rows and not own_overview:
         issues.append({
@@ -192,7 +146,6 @@ def analyze(
             "detail": f"{len(organic_competitor_rows)} competitor rows uploaded, but nothing to compare them against.",
             "recommendation": "Upload a Domain Overview export under \"Our Website Data\".",
             "severity": "info",
-            **_NO_MAPPING,
         })
 
     # Keyword gap opportunities (deduped across every Keyword Gap upload).
@@ -267,7 +220,6 @@ def analyze(
                 ),
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
-                **resolve_for_keyword(url_context, top_row.get("keyword"), top_row.get("intent")),
             })
             keyword_gap_result_rows = [
                 {
@@ -279,7 +231,6 @@ def analyze(
                     "keyword_difficulty": r.get("keyword_difficulty"),
                     "cpc": r.get("cpc"),
                     "gap_type": gap_type,
-                    **resolve_for_keyword(url_context, r.get("keyword"), r.get("intent")),
                 }
                 for r, best_domain, best_pos, own_pos, gap_type in real_gaps[:20]
             ]
@@ -298,14 +249,13 @@ def analyze(
             opportunities.append(r)
         total_volume = sum(_num(r.get("search_volume")) for r in opportunities)
         if opportunities:
-            opportunities.sort(key=lambda r: -_num(r.get("search_volume")))
             issues.append({
                 "summary": f"{len(opportunities)} keyword gap opportunities, {int(total_volume):,} combined monthly searches",
                 "detail": "Keywords competitors rank for that you don't, with measurable search volume.",
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
-                **resolve_for_keyword(url_context, opportunities[0].get("keyword"), opportunities[0].get("intent")),
             })
+            opportunities.sort(key=lambda r: -_num(r.get("search_volume")))
             keyword_gap_result_rows = [
                 {
                     "keyword": r.get("keyword"),
@@ -316,7 +266,6 @@ def analyze(
                     "keyword_difficulty": r.get("keyword_difficulty"),
                     "cpc": r.get("cpc"),
                     "gap_type": None,
-                    **resolve_for_keyword(url_context, r.get("keyword"), r.get("intent")),
                 }
                 for r in opportunities[:20]
             ]
@@ -331,7 +280,6 @@ def analyze(
                 "detail": f"Broken or redirecting pages found in the crawl, e.g. {examples}.",
                 "recommendation": "Fix broken links/redirects — non-200 pages waste crawl budget and lose any link equity pointing at them.",
                 "severity": "warn",
-                **resolve_for_pages(url_context, [r.get("page_url") for r in bad_status], REDIRECT),
             })
 
         not_canonical_self = [
@@ -344,7 +292,6 @@ def analyze(
                 "detail": f"Canonical tag points elsewhere on {len(not_canonical_self)} crawled page(s) — check these are intentional.",
                 "recommendation": "Confirm each of these pages is meant to defer ranking signals elsewhere; fix any accidental cross-canonicals.",
                 "severity": "warn",
-                **resolve_for_pages(url_context, [r.get("page_url") for r in not_canonical_self], MERGE),
             })
 
         not_in_sitemap = [r for r in own_site_audit_rows if _num(r.get("in_sitemap"), default=1) == 0]
@@ -354,7 +301,6 @@ def analyze(
                 "detail": "Pages Semrush found by crawling links aren't listed in the XML sitemap.",
                 "recommendation": "Add these URLs to the sitemap (if they should be indexed) so search engines discover them faster.",
                 "severity": "opportunity",
-                **resolve_for_pages(url_context, [r.get("page_url") for r in not_in_sitemap], INTERNAL_LINK),
             })
 
         high_issue_pages = [r for r in own_site_audit_rows if _num(r.get("issues")) >= 5]
@@ -366,7 +312,6 @@ def analyze(
                 "detail": f"Highest issue counts: {examples}.",
                 "recommendation": "Start with these pages — clearing the highest issue counts first fixes the most flagged problems per hour spent.",
                 "severity": "warn",
-                **resolve_for_pages(url_context, [r.get("page_url") for r in worst], OPTIMIZE_EXISTING),
             })
 
         missing_schema = [r for r in own_site_audit_rows if _num(r.get("schema_jsonld")) == 0]
@@ -376,7 +321,6 @@ def analyze(
                 "detail": f"{len(missing_schema)} of {len(own_site_audit_rows)} crawled pages have no structured data, while others do.",
                 "recommendation": "Add the same schema type used on your other pages (e.g. Product, Article) so these are eligible for rich results too.",
                 "severity": "opportunity",
-                **resolve_for_pages(url_context, [r.get("page_url") for r in missing_schema], UPDATE_TEMPLATE),
             })
 
     severity_order = {"warn": 0, "opportunity": 1, "info": 2}

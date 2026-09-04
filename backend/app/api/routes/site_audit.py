@@ -790,12 +790,6 @@ def _gather_report_data(
                     jobs["page_clicks"] = pool.submit(
                         gsc_service.get_page_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
                     )
-                    # query x page crosstab — feeds the URL Mapping hierarchy's
-                    # "GSC query-to-page relationship" level; query-only and
-                    # page-only above can't answer which page a query ranks on.
-                    jobs["query_page_map"] = pool.submit(
-                        gsc_service.get_query_page_map, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
-                    )
                 for key, future in jobs.items():
                     try:
                         analytics[key] = future.result()
@@ -1019,41 +1013,16 @@ def _gather_report_data(
     if competitor_analysis_override is not None:
         competitor_analysis_result = competitor_analysis_override
     else:
-        # Own-site Organic Positions export (keyword/position/url) — URL
-        # Mapping's highest-priority hierarchy level, "existing ranking URL
-        # from Semrush". Distinct from competitor_positions above (that's
-        # is_own_site=False, feeds the Competitor Keywords slides instead).
-        own_organic_positions_rows = _all_rows("organic_positions", own_only=True)
-        query_page_result = (analytics or {}).get("query_page_map") or {}
-        # Own crawl's own pages (this report's 20-page audit) folded in
-        # alongside the Semrush Site Audit export — analyze() already
-        # defaults crawl_pages to the Semrush rows alone when this is empty.
-        own_crawl_pages = [
-            {"url": p.get("url"), "title": (p.get("meta") or {}).get("title")}
-            for p in (page_audit_result or {}).get("pages", [])
-            if p.get("url")
-        ]
-        semrush_crawl_pages = [
-            {"url": r.get("page_url"), "title": r.get("page_title")}
-            for r in site_audit_pages_rows
-            if r.get("page_url")
-        ]
-        competitor_analysis_result = analyze_semrush_data(
-            [
-                {
-                    "import_type": r.import_type,
-                    "is_own_site": r.is_own_site,
-                    "domain_label": r.domain_label,
-                    "created_at": r.created_at,
-                    "parsed_data": r.parsed_data,
-                }
-                for r in all_imports
-            ],
-            own_domain=own_website_domain,
-            own_organic_positions_rows=own_organic_positions_rows,
-            gsc_query_page_rows=query_page_result.get("rows"),
-            crawl_pages=semrush_crawl_pages + own_crawl_pages or None,
-        )
+        competitor_analysis_result = analyze_semrush_data([
+            {
+                "import_type": r.import_type,
+                "is_own_site": r.is_own_site,
+                "domain_label": r.domain_label,
+                "created_at": r.created_at,
+                "parsed_data": r.parsed_data,
+            }
+            for r in all_imports
+        ], own_domain=own_website_domain)
 
     domain_strategy_result = check_domain_strategy(
         client.website_url, (company_overview_result or {}).get("target_country")
