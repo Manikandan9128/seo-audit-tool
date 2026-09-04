@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 import traceback
 import uuid
 from collections.abc import Callable
@@ -722,10 +723,17 @@ def _gather_report_data(
         # False) below abandons any still-running thread instead — it either
         # finishes harmlessly in the background or the process exits first.
         pool = ThreadPoolExecutor(max_workers=2)
+        psi_deadline_at = time.monotonic() + psi_deadline
         mobile_future = pool.submit(run_pagespeed, client.website_url, "mobile")
         desktop_future = pool.submit(run_pagespeed, client.website_url, "desktop")
+        # Confirmed real bug: calling .result(timeout=340) on mobile_future
+        # THEN desktop_future gives each its own fresh 340s window even
+        # though both run in the same pool at the same time — worst case
+        # was silently ~680s, not the 340s this was meant to guarantee.
+        # Racing against one shared deadline instead keeps the true
+        # worst-case bounded at psi_deadline regardless of call order.
         try:
-            psi_mobile = mobile_future.result(timeout=psi_deadline)
+            psi_mobile = mobile_future.result(timeout=max(0.0, psi_deadline_at - time.monotonic()))
         except FutureTimeoutError:
             logger.error("PageSpeed Insights mobile run timed out (>%.0fs) for %s", psi_deadline, client.website_url)
             psi_mobile = None
@@ -733,7 +741,7 @@ def _gather_report_data(
             logger.exception("PageSpeed Insights mobile run failed for %s", client.website_url)
             psi_mobile = None
         try:
-            psi_desktop = desktop_future.result(timeout=psi_deadline)
+            psi_desktop = desktop_future.result(timeout=max(0.0, psi_deadline_at - time.monotonic()))
         except FutureTimeoutError:
             logger.error("PageSpeed Insights desktop run timed out (>%.0fs) for %s", psi_deadline, client.website_url)
             psi_desktop = None
