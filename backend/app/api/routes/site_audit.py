@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import traceback
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -1303,7 +1304,13 @@ def _build_pptx_for_client(
         )
     except Exception as e:
         logger.exception("PPTX build failed for client %s", client_id)
-        raise HTTPException(status_code=500, detail=f"Report generation failed while building the PPTX: {str(e)[:300]}")
+        tb = traceback.extract_tb(e.__traceback__)
+        frame = next((f for f in reversed(tb) if "app/reporting/pptx_builder.py" in f.filename), tb[-1] if tb else None)
+        location = f" ({frame.filename.split('/app/')[-1]}:{frame.lineno} in {frame.name})" if frame else ""
+        raise HTTPException(
+            status_code=500,
+            detail=f"Report generation failed while building the PPTX: {type(e).__name__}: {str(e)[:200]}{location}",
+        )
 
     filename = f"{client.name.replace(' ', '-')}-seo-audit.pptx"
     return pptx_bytes, filename, content_issues
