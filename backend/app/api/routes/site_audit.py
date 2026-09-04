@@ -4,6 +4,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -63,7 +64,11 @@ def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
 @router.post("/{client_id}/site-audit")
 def site_audit(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     client = _get_owned_client(client_id, db, current_user)
-    result = run_site_audit(client.website_url)
+    try:
+        result = run_site_audit(client.website_url)
+    except Exception as e:
+        logger.exception("Site audit failed for client %s (%s)", client_id, client.website_url)
+        raise HTTPException(status_code=502, detail=f"Site audit failed: {str(e)[:300]}") from e
     db.add(SiteAuditRun(client_id=client_id, result=result))
     db.commit()
     return result
@@ -698,19 +703,38 @@ def _gather_report_data(
     psi_mobile = psi_desktop = None
     if include_pagespeed and settings.google_psi_api_key:
         progress("Running PageSpeed Insights...", 30)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            mobile_future = pool.submit(run_pagespeed, client.website_url, "mobile")
-            desktop_future = pool.submit(run_pagespeed, client.website_url, "desktop")
-            try:
-                psi_mobile = mobile_future.result()
-            except Exception:
-                logger.exception("PageSpeed Insights mobile run failed for %s", client.website_url)
-                psi_mobile = None
-            try:
-                psi_desktop = desktop_future.result()
-            except Exception:
-                logger.exception("PageSpeed Insights desktop run failed for %s", client.website_url)
-                psi_desktop = None
+        # Hard outer deadline on top of run_pagespeed's own httpx timeout —
+        # confirmed real: a PSI call can outlast its internal timeout (slow
+        # trickle response, proxy-level hang) and block this whole report
+        # forever with no way to recover short of restarting the process.
+        # 340s covers run_pagespeed's own worst case (150s timeout x 1 retry
+        # = 300s) plus slack, then gives up on that strategy and moves on.
+        psi_deadline = 340.0
+        # Not a `with` block deliberately: the context manager's __exit__
+        # calls shutdown(wait=True), which would block on the very same
+        # stuck thread .result(timeout=...) just gave up on. shutdown(wait=
+        # False) below abandons any still-running thread instead — it either
+        # finishes harmlessly in the background or the process exits first.
+        pool = ThreadPoolExecutor(max_workers=2)
+        mobile_future = pool.submit(run_pagespeed, client.website_url, "mobile")
+        desktop_future = pool.submit(run_pagespeed, client.website_url, "desktop")
+        try:
+            psi_mobile = mobile_future.result(timeout=psi_deadline)
+        except FutureTimeoutError:
+            logger.error("PageSpeed Insights mobile run timed out (>%.0fs) for %s", psi_deadline, client.website_url)
+            psi_mobile = None
+        except Exception:
+            logger.exception("PageSpeed Insights mobile run failed for %s", client.website_url)
+            psi_mobile = None
+        try:
+            psi_desktop = desktop_future.result(timeout=psi_deadline)
+        except FutureTimeoutError:
+            logger.error("PageSpeed Insights desktop run timed out (>%.0fs) for %s", psi_deadline, client.website_url)
+            psi_desktop = None
+        except Exception:
+            logger.exception("PageSpeed Insights desktop run failed for %s", client.website_url)
+            psi_desktop = None
+        pool.shutdown(wait=False)
 
     analytics = None
     if include_analytics and (client.ga4_property_id or client.gsc_site_url):
