@@ -333,7 +333,11 @@ def analytics_report(
         if gsc_end < gsc_start:
             gsc_start = gsc_end
         try:
-            result["search_queries"] = gsc_service.get_search_analytics(creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=20)
+            # 150, not 20 — matches site_audit.py's report-generation pull;
+            # a Branded/Non-Branded split downstream needs a bigger pool
+            # than 20 to avoid starving whichever bucket brand search
+            # dominates.
+            result["search_queries"] = gsc_service.get_search_analytics(creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=150)
         except HttpError as e:
             result["search_queries"] = None
             result["errors"]["gsc"] = _google_error_message(e)

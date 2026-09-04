@@ -57,6 +57,32 @@ def _is_branded_keyword(keyword: str, brand: str) -> bool:
     return re.search(rf"\b{re.escape(brand)}\b", keyword.lower()) is not None
 
 
+def is_branded_or_near_brand(keyword: str, brand_tokens) -> bool:
+    """True for an exact whole-word brand match, or — for a short query —
+    a likely misspelling of one (first word within edit distance 2 of a
+    brand token), e.g. "lumberfy" catching as a near-miss of "lumberfi"
+    even though it's not a whole-word match. Public so callers outside
+    this module's own AI-classification pipeline (e.g. the Search Queries
+    Branded/Non-Branded split in pptx_builder.py, which only ever did
+    exact matching and let real near-brand query variants fall into
+    Non-Branded) can reuse the same typo tolerance as the competitor-
+    keyword filter's "typo" exclude reason below."""
+    text = (keyword or "").lower().strip()
+    if not text:
+        return False
+    for brand in brand_tokens:
+        if brand and _is_branded_keyword(text, brand):
+            return True
+    words = text.split()
+    if 0 < len(words) <= 3:
+        first = words[0]
+        if len(first) > 3:
+            for brand in brand_tokens:
+                if brand and first != brand and len(brand) > 3 and _edit_distance(first, brand) <= 2:
+                    return True
+    return False
+
+
 def _edit_distance(a: str, b: str) -> int:
     if a == b:
         return 0

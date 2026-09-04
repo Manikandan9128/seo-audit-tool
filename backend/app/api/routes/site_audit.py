@@ -36,7 +36,7 @@ from app.services.company_overview_service import extract_company_overview, fetc
 from app.services.core_problem_service import generate_core_problem
 from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
-from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ux_findings, static_no_ux_pass
+from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords
@@ -799,7 +799,13 @@ def _gather_report_data(
                     )
                 if client.gsc_site_url:
                     jobs["search_queries"] = pool.submit(
-                        gsc_service.get_search_analytics, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=20
+                        # 20 was too thin once split into Branded/Non-Branded —
+                        # confirmed live: a site with strong brand search left
+                        # Non-Branded with only ~4 of the top 20 queries, since
+                        # the split happens AFTER this pull, not before it.
+                        # 150 gives both buckets enough of a pool to still hit
+                        # each slide's own 14-row cap.
+                        gsc_service.get_search_analytics, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=150
                     )
                     jobs["page_clicks"] = pool.submit(
                         gsc_service.get_page_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
@@ -1060,23 +1066,6 @@ def _gather_report_data(
         ux_findings_result = generate_ux_findings(client.name, client.website_url, ux_notes)
     else:
         ux_findings_result = static_no_ux_pass()
-
-    # Onboarding bias breakdown needs no manual QA notes — runs off the
-    # landing page's own scraped text, so it's generated unconditionally
-    # (independent of the manual-notes branch above) whenever an AI key is
-    # configured and the homepage fetch succeeds.
-    if settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key:
-        onboarding_homepage_text = fetch_homepage_text(client.website_url, max_chars=6000)
-        if onboarding_homepage_text:
-            onboarding_breakdown_result = generate_onboarding_breakdown(
-                client.name, client.website_url, onboarding_homepage_text
-            )
-            if "error" not in onboarding_breakdown_result:
-                ux_findings_result["onboarding_breakdown"] = onboarding_breakdown_result
-            else:
-                logger.warning(
-                    "Onboarding breakdown generation failed for %s: %s", client.website_url, onboarding_breakdown_result["error"]
-                )
 
     # One diagnostic thesis synthesizing everything else already gathered —
     # deliberately NOT cached (unlike Company Overview): this reflects

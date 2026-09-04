@@ -19,6 +19,7 @@ from app.services.keyword_relevance_service import (
     _brand_token,
     _classify_keyword_page_category,
     _is_branded_keyword,
+    is_branded_or_near_brand,
 )
 
 SLIDE_W = Inches(13.333)
@@ -1171,14 +1172,16 @@ def add_priority_issues_slide(
     ranked.sort(key=lambda r: r[4], reverse=True)
     headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks", "Priority Score"]
     col_widths = [3.6, 4.2, 1.3, 1.3, 1.7]
-    # _draw_table's row_cap defaults to 9 (not 14) whenever insights is
-    # passed, which this slide always does — shown must match that or the
-    # hyperlink loop below walks past the table's actual row count.
-    # Confirmed live: IndexError on table.cell(i, 0) once ranked had more
-    # than 9 issue-affected pages.
-    shown = ranked[:9]
+    # Issue(s) previously truncated to one line — "14 issues" behind a count
+    # gave no way to see what those 14 actually were. Wrapping to 3 lines
+    # (taller rows, see row_height below) shows far more of the real list;
+    # row_cap must drop from 9 to 6 so 7 taller rows (6 + header) still fit
+    # the slide instead of colliding with the insights strip below it —
+    # shown stays in sync with row_cap for the same reason noted below.
+    ROW_CAP = 6
+    shown = ranked[:ROW_CAP]
     rows = [
-        (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1]), f"{pv:,}", f"{cl:,}", f"{score:,}")
+        (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1], max_lines=3), f"{pv:,}", f"{cl:,}", f"{score:,}")
         for url, issues, pv, cl, score in shown
     ]
     top = ranked[0]
@@ -1189,12 +1192,13 @@ def add_priority_issues_slide(
     slide = _table_slide(
         prs, "Priority Issues (by Traffic Impact)", headers, rows, col_widths=col_widths,
         source="Own crawl + Google Analytics + Search Console", insights=insights,
+        row_cap=ROW_CAP, row_height=0.65, wrap_cols={1},
     )
-    # Page URL cell links out to the live page itself — the full issue list
-    # is already in the adjacent column (just truncated to fit), so this
-    # link is for seeing the issue in context on the actual page, not for
-    # more issue detail we don't otherwise have (no Semrush deep-link to
-    # reuse here).
+    # Page URL cell links out to the live page itself.
+    # shown must match ROW_CAP above — the hyperlink loop below walks
+    # exactly the table's real row count, not len(shown) unconditionally
+    # (confirmed live: IndexError once ranked had more rows than the
+    # table's own row_cap actually renders).
     for shape in slide.shapes:
         if not shape.has_table:
             continue
@@ -1451,85 +1455,53 @@ def add_structured_data_slide(
     )
 
 
-def add_structured_data_slide_from_crawl(prs: Presentation, schema_validation: dict):
-    """Same 'Structured Data' coverage slide as add_structured_data_slide,
-    but sourced from this tool's own crawl (aggregate_schema_validation)
-    instead of Semrush's Site Audit export. Semrush's per-type item counts
-    can be stale or wrong for a given crawl (confirmed on a live client
-    site: Semrush's export showed 85% Product-schema coverage while
-    Google's own Rich Results Test found zero Product items, only
-    LocalBusiness + Organization) — this crawl-based path is ground truth
-    since it parses the page's actual JSON-LD, so it's preferred whenever
-    real crawl data is available."""
+def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
+    """Structured Data coverage (type presence %, ground truth from this
+    tool's own crawl — see the prior standalone version's now-removed
+    docstring for why crawl beats Semrush's export here) and Schema
+    Validator (missing REQUIRED properties + Search Console's real
+    rich-result verdicts) on ONE slide as two half-width panels, per
+    client request — these were two separate slides covering closely
+    related findings. Both panels are sourced from the same
+    schema_validation dict (aggregate_schema_validation), so whenever one
+    would have content the other's data is already available too; the
+    Semrush-export-only fallback (add_structured_data_slide) stays a
+    separate full-width slide for the rare case no crawl-based schema
+    data exists at all."""
     total_pages = schema_validation.get("total_pages") or 0
     if not total_pages:
         return None
 
     type_coverage = schema_validation.get("type_coverage") or []
-    headers = ["Schema Type", "Pages With It", "Coverage"]
-    col_widths = [4.0, 2.5, 2.5]
-    rows = [
-        (c["type"], f"{c['pages_with_it']:,} / {total_pages:,}", f"{c['coverage_pct']}%")
-        for c in type_coverage
-    ]
-
     pages_with_schema = schema_validation.get("pages_with_schema") or 0
-    any_schema_pct = 100 * pages_with_schema / total_pages
-    insights = [
-        f"{pages_with_schema:,} of {total_pages:,} crawled URLs ({any_schema_pct:.0f}%) have structured data "
-        "(schema.org JSON-LD) implemented, per this tool's own crawl.",
-    ]
-    missing_types = schema_validation.get("missing_types") or []
-    for m in missing_types[:2]:
-        insights.append(f"{m['type']} schema is entirely missing — {m['reason']}.")
-    if type_coverage:
-        best = type_coverage[0]
-        gap = total_pages - pages_with_schema
-        if gap > 0:
-            insights.append(
-                f"{gap:,} of {total_pages:,} pages ({100 * gap / total_pages:.0f}%) have no structured data "
-                f"of any kind — not even {best['type']}, the site's best-covered type."
-            )
-
-    return _table_slide(
-        prs, "Structured Data", headers, rows, col_widths=col_widths, source="Site Audit crawl (JSON-LD)",
-        insights=insights,
-    )
-
-
-def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
-    """Missing REQUIRED PROPERTIES per Google's structured-data docs — not
-    just type presence/absence (the Semrush-sourced Structured Data slide
-    above already covers that), but "Product pages are missing 'image' on
-    12 of 15 pages" style gaps. Built from this tool's own full-site Page
-    Audit crawl (see aggregate_schema_validation), since Semrush's export
-    only tracks per-page type presence, never property-level completeness.
-
-    When schema_validation also carries "gsc_rich_results" (real verdicts
-    from Search Console's URL Inspection API — see gsc_service.inspect_urls,
-    wired in for clients with GSC connected), those rows lead the table:
-    Google's own PASS/FAIL rich-result eligibility check on real pages beats
-    this tool's local rule replica, which only exists because that API needs
-    site ownership this tool doesn't always have. Additive only — the local
-    rule-based rows still show for every type/page GSC wasn't asked about.
-
-    Skipped entirely if no Page Audit has been run for this client yet."""
-    total_pages = schema_validation.get("total_pages") or 0
-    if not total_pages:
-        return None
-
     missing_properties = schema_validation.get("missing_properties") or []
     gsc_rich_results = schema_validation.get("gsc_rich_results") or []
     missing_types = schema_validation.get("missing_types") or []
-    if not missing_properties and not gsc_rich_results and not missing_types:
+    if not type_coverage and not missing_properties and not gsc_rich_results and not missing_types:
         return None
 
-    headers = ["Schema Type", "Finding", "Pages Affected"]
-    col_widths = [4.0, 4.0, 4.0]
+    slide = _blank_slide(prs)
+    _content_header(slide, "Structured Data & Schema Validator")
+    source = "Site Audit crawl + Search Console URL Inspection" if gsc_rich_results else "Site Audit crawl (JSON-LD)"
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
+
+    half_width_in = 5.9
+    left_x, right_x = Inches(0.6), Inches(0.6 + half_width_in + 0.3)
+    top = Inches(1.1)
+    bottoms = []
+    insights = []
+
+    if type_coverage:
+        coverage_rows = [(c["type"], f"{c['pages_with_it']:,}/{total_pages:,}", f"{c['coverage_pct']}%") for c in type_coverage]
+        bottoms.append(_draw_table(
+            slide, ["Schema Type", "Pages", "Coverage"], coverage_rows, top,
+            col_widths=[2.6, 1.6, 1.7], left=left_x, width=Inches(half_width_in), row_cap=8,
+        ))
+        any_schema_pct = 100 * pages_with_schema / total_pages
+        insights.append(f"{pages_with_schema:,} of {total_pages:,} pages ({any_schema_pct:.0f}%) have structured data implemented.")
 
     gsc_rows = []
-    gsc_pass_count = 0
-    gsc_fail_count = 0
+    gsc_pass_count = gsc_fail_count = 0
     for r in gsc_rich_results:
         verdict = r.get("verdict")
         if verdict == "PASS":
@@ -1539,55 +1511,30 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
         for item in r.get("detected_items") or []:
             for sub in item.get("items") or []:
                 for issue in sub.get("issues") or []:
-                    gsc_rows.append((
-                        f"{item.get('type')} (Google-verified)",
-                        issue.get("message") or "Flagged by Google's Rich Results check",
-                        _truncate_cell(r.get("url") or "", col_widths[2]),
-                    ))
-
-    type_rows = [
-        (m["type"], "(entire type missing)", m["reason"])
-        for m in missing_types
-    ]
+                    gsc_rows.append((f"{item.get('type')} (Google)", issue.get("message") or "Flagged by Rich Results check"))
+    type_rows = [(m["type"], "(entire type missing)") for m in missing_types]
     rule_rows = [
-        (
-            m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)",
-            f"Missing {m['field']}",
-            f"{m['pages_missing']:,} of {total_pages:,}",
-        )
+        (m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)", f"Missing {m['field']} ({m['pages_missing']:,} pages)")
         for m in missing_properties
     ]
-    rows = gsc_rows + type_rows + rule_rows
+    finding_rows = gsc_rows + type_rows + rule_rows
+    if finding_rows:
+        bottoms.append(_draw_table(
+            slide, ["Schema Type", "Finding"], finding_rows, top,
+            col_widths=[2.6, 3.3], left=right_x, width=Inches(half_width_in), row_cap=8,
+        ))
+        if gsc_rich_results:
+            insights.append(f"Search Console's own rich-result check: {gsc_pass_count:,} pass, {gsc_fail_count:,} fail.")
+        if missing_types:
+            insights.append(f"{missing_types[0]['type']} schema entirely missing — {missing_types[0]['reason']}.")
+        elif missing_properties:
+            worst = missing_properties[0]
+            worst_label = "missing (required)" if worst["severity"] == "required" else "missing (recommended)"
+            insights.append(f"{worst['type']} schema {worst_label} '{worst['field']}' on {worst['pages_missing']:,} page(s).")
 
-    pages_with_schema = schema_validation.get("pages_with_schema") or 0
-    insights = []
-    if gsc_rich_results:
-        insights.append(
-            f"Cross-checked against Search Console's URL Inspection API on {len(gsc_rich_results):,} page(s) with "
-            f"structured data — Google's own rich-result eligibility check: {gsc_pass_count:,} pass, "
-            f"{gsc_fail_count:,} fail."
-        )
-    if missing_types:
-        worst_type = missing_types[0]
-        insights.append(f"{worst_type['type']} schema is entirely missing — {worst_type['reason']}.")
-    if missing_properties:
-        insights.append(
-            f"{pages_with_schema:,} of {total_pages:,} crawled pages have some structured data — this table also lists "
-            "REQUIRED property gaps (block rich-result eligibility) and RECOMMENDED gaps (e.g. Organization's 'sameAs' "
-            "entity links, which strengthen how AI engines and Google cite the site) that GSC wasn't checked against.",
-        )
-        worst = missing_properties[0]
-        worst_label = "missing (required)" if worst["severity"] == "required" else "missing (recommended)"
-        insights.append(
-            f"{worst['type']} schema is {worst_label} '{worst['field']}' on {worst['pages_missing']:,} page(s) — "
-            "the largest single local gap found."
-        )
-
-    return _table_slide(
-        prs, "Schema Validator", headers, rows, col_widths=col_widths,
-        source="Site Audit crawl + Search Console URL Inspection" if gsc_rich_results else "Site Audit crawl",
-        insights=insights,
-    )
+    if insights and bottoms:
+        _insights_strip(slide, Inches(0.6), max(bottoms) + Inches(0.2), Inches(11.9), insights)
+    return slide
 
 
 # Canned fix per page-level issue string from technical_seo_service.py's
@@ -1808,12 +1755,18 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     return y
 
 
-def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=None, width=None, insights=None):
+def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=None, width=None, insights=None, row_height=0.4, wrap_cols=None):
     """Shared table-drawing body behind _table_slide, factored out so a
     slide needing extra content above the table (e.g. a stat card) can draw
     its own header/card and still reuse this instead of duplicating the
     table + insights-strip logic. Returns the slide's own bottom y (Emu)
-    after the table (and insights strip, if any)."""
+    after the table (and insights strip, if any).
+
+    row_height/wrap_cols let a caller whose cell content needs more than
+    one line (e.g. Priority Issues' full issue list per URL, previously
+    truncated to fit a single line) request taller rows with word-wrap
+    enabled on specific columns, instead of every table being forced to
+    the same fixed single-line row height."""
     if left is None:
         left = Inches(0.6)
     if width is None:
@@ -1822,7 +1775,7 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
         row_cap = 9 if insights else 14
     n_cols = len(headers)
     n_rows = min(len(rows), row_cap) + 1
-    height = Inches(0.4) * n_rows
+    height = Inches(row_height) * n_rows
     gframe = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
     table = gframe.table
     table.first_row = False  # suppress the built-in banded-header theme so our colors apply cleanly
@@ -1847,6 +1800,7 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
             cell.text = str(val)
             cell.fill.solid()
             cell.fill.fore_color.rgb = ROW_ALT if i % 2 == 0 else WHITE
+            cell.text_frame.word_wrap = wrap_cols is not None and j in wrap_cols
             para = cell.text_frame.paragraphs[0]
             para.font.size = Pt(11)
             para.font.color.rgb = TEXT_DARK
@@ -1857,12 +1811,12 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
     return bottom
 
 
-def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None, row_cap=None):
+def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None, row_cap=None, row_height=0.4, wrap_cols=None):
     slide = _blank_slide(prs)
     _content_header(slide, title)
     if source:
         _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
-    _draw_table(slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=row_cap, insights=insights)
+    _draw_table(slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=row_cap, insights=insights, row_height=row_height, wrap_cols=wrap_cols)
     return slide
 
 
@@ -2138,7 +2092,10 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
             f"{r['avg_sessions_month']:,}",
             f"{r['pct_share']:.0f}%",
             _split_text([{"label": _abbreviate_country(c["label"]), "pct": c["pct"]} for c in countries]),
-            _split_text([{"label": d["label"].title(), "pct": d["pct"]} for d in (r.get("top_devices") or [])]),
+            # A device that rounds to 0.0% (e.g. 1 session out of 5,000) is
+            # still real but not worth a slot in an already-tight cell —
+            # drop it instead of showing "Tablet 0%".
+            _split_text([{"label": d["label"].title(), "pct": d["pct"]} for d in (r.get("top_devices") or []) if round(d["pct"]) > 0]),
         ))
     months = breakdown.get("months")
     top = rows_data[0]
@@ -2876,90 +2833,7 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
                 col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
             ))
 
-    # Independent of the manual-walkthrough branch above — runs off the
-    # landing page's own scraped text, so it can be present even when
-    # no_ux_pass_done is True (no manual notes, but onboarding breakdown
-    # still succeeded).
-    onboarding = ux_findings.get("onboarding_breakdown")
-    if onboarding and not onboarding.get("error"):
-        onboarding_slide = add_onboarding_breakdown_slide(prs, onboarding)
-        if onboarding_slide:
-            slides.append(onboarding_slide)
-
     return slides
-
-
-def add_onboarding_breakdown_slide(prs: Presentation, breakdown: dict):
-    """Onboarding cognitive-bias breakdown of the landing page (Social
-    Proof, Authority, Scarcity, etc.) plus the top 5 directional
-    suggestions — a compact bias table on top, numbered suggestions below,
-    same two-part layout style as the Backlink Profile slide's stats+list."""
-    biases = breakdown.get("biases") or []
-    suggestions = breakdown.get("top_suggestions") or []
-    if not biases and not suggestions:
-        return None
-
-    slide = _blank_slide(prs)
-    _content_header(slide, "Onboarding Breakdown")
-    y = Inches(1.1)
-
-    if biases:
-        n_rows = len(biases) + 1
-        row_h = Inches(0.35)
-        table_h = row_h * n_rows
-        left, width = Inches(0.6), Inches(12.1)
-        gframe = slide.shapes.add_table(n_rows, 3, left, y, width, table_h)
-        table = gframe.table
-        table.first_row = False
-        table.columns[0].width = Inches(2.3)
-        table.columns[1].width = Inches(1.2)
-        table.columns[2].width = Inches(8.6)
-
-        for j, h in enumerate(["Bias", "Present", "Assessment"]):
-            cell = table.cell(0, j)
-            cell.text = h
-            cell.fill.solid()
-            cell.fill.fore_color.rgb = HEADER_ROW_BG
-            para = cell.text_frame.paragraphs[0]
-            para.font.size = Pt(11)
-            para.font.bold = True
-            para.font.color.rgb = HEADER_ROW_TEXT
-
-        for i, b in enumerate(biases, start=1):
-            present = bool(b.get("present"))
-            values = [b.get("bias", ""), "Yes" if present else "No", b.get("assessment", "")]
-            for j, val in enumerate(values):
-                cell = table.cell(i, j)
-                cell.text = str(val)
-                cell.fill.solid()
-                cell.fill.fore_color.rgb = ROW_ALT if i % 2 == 0 else WHITE
-                para = cell.text_frame.paragraphs[0]
-                para.font.size = Pt(10.5)
-                para.font.color.rgb = GOOD if (j == 1 and present) else (WARN if j == 1 else TEXT_DARK)
-        y += table_h + Inches(0.25)
-
-    if suggestions:
-        _textbox(slide, Inches(0.6), y, Inches(8), Inches(0.32), "Top 5 Directional Suggestions", size=14, bold=True, color=_accent())
-        y += Inches(0.4)
-        card_top = y
-        card_bottom = Inches(6.95)
-        _card(slide, Inches(0.6), card_top, Inches(12.1), card_bottom - card_top)
-        y = card_top + Inches(0.18)
-        for i, item in enumerate(suggestions[:5], start=1):
-            lines = _wrap_lines(item, Inches(10.9), size_pt=11.5)
-            line_h = Inches(0.19) * lines
-            if y + line_h > card_bottom - Inches(0.1):
-                break
-            num = slide.shapes.add_textbox(Inches(0.85), y, Inches(0.4), Inches(0.28))
-            p = num.text_frame.paragraphs[0]
-            r = p.add_run()
-            r.text = f"{i}."
-            r.font.bold = True
-            r.font.size = Pt(11.5)
-            r.font.color.rgb = _accent()
-            _textbox(slide, Inches(1.25), y, Inches(10.9), line_h, item, size=11.5)
-            y += line_h + Inches(0.12)
-    return slide
 
 
 def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None, items: list[str]):
@@ -3369,11 +3243,9 @@ def _build_report(
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
             if schema_validation and schema_validation.get("total_pages"):
-                add_structured_data_slide_from_crawl(prs, schema_validation)
+                add_schema_combined_slide(prs, schema_validation)
             elif structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
-            if schema_validation:
-                add_schema_validation_slide(prs, schema_validation)
 
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
@@ -3493,7 +3365,12 @@ def _build_report(
             brand_tokens = {t for t in (_brand_token(client_name), _brand_token(website_url)) if t}
 
             def _is_branded(query: str) -> bool:
-                return any(_is_branded_keyword(query, token) for token in brand_tokens)
+                # is_branded_or_near_brand (not the plain whole-word
+                # _is_branded_keyword) also catches a real near-brand query
+                # variant/misspelling, e.g. "lumberfy" — confirmed live,
+                # that landed in Non-Branded since it's not an exact match
+                # for either "lumber" or "lumberfi".
+                return is_branded_or_near_brand(query, brand_tokens)
 
             def _query_table_slide(title: str, subset: list[dict]):
                 if not subset:
