@@ -243,7 +243,12 @@ def pagespeed(
     if strategy not in ("mobile", "desktop"):
         raise HTTPException(status_code=400, detail="strategy must be 'mobile' or 'desktop'")
     try:
-        return run_pagespeed(client.website_url, strategy=strategy)
+        # No retry and a tight 50s timeout, unlike the report-generation
+        # path's 150s x 1 retry — this call is a synchronous request the
+        # browser waits on through a gateway (ngrok's 60s default locally),
+        # which kills the connection with a bare 504 long before PSI's own
+        # slow Lighthouse run would ever finish, let alone a retry of it.
+        return run_pagespeed(client.website_url, strategy=strategy, retries=0, timeout=50.0)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"PageSpeed Insights request failed: {e}")
 

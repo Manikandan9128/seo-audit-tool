@@ -44,10 +44,16 @@ def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
     return issues[:limit]
 
 
-def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1) -> dict:
+def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout: float = TIMEOUT) -> dict:
     """strategy: 'mobile' or 'desktop'. Retries on timeout and on a 5xx from
     PSI itself — its own Lighthouse run is slow and flaky enough that both
-    transient timeouts and transient server errors aren't unusual."""
+    transient timeouts and transient server errors aren't unusual.
+    `timeout` defaults to the module constant but is overridable per call —
+    a caller sitting behind a synchronous request/response (a browser
+    waiting on this endpoint through a gateway with its own timeout, e.g.
+    ngrok's 60s default) needs a much tighter budget than the background
+    report-generation path, which already applies its own 340s outer
+    deadline on top of this and can afford the full retry."""
     params = {
         "url": url,
         "strategy": strategy,
@@ -55,13 +61,13 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1) -> dict:
         "key": settings.google_psi_api_key,
     }
     try:
-        resp = httpx.get(PSI_ENDPOINT, params=params, timeout=TIMEOUT)
+        resp = httpx.get(PSI_ENDPOINT, params=params, timeout=timeout)
         resp.raise_for_status()
     except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
         if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
             raise
         if retries > 0:
-            return run_pagespeed(url, strategy=strategy, retries=retries - 1)
+            return run_pagespeed(url, strategy=strategy, retries=retries - 1, timeout=timeout)
         raise
     data = resp.json()
 

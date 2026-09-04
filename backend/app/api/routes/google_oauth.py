@@ -150,14 +150,26 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
     connection = db.query(GoogleConnection).filter(GoogleConnection.client_id == client_id).first()
     if not connection:
         raise HTTPException(status_code=400, detail="Google account not connected for this client")
-    creds = google_oauth.credentials_from_stored(
-        decrypt(connection.encrypted_access_token), decrypt(connection.encrypted_refresh_token)
-    )
-    connection.encrypted_access_token = encrypt(creds.token)
-    if creds.expiry:
-        connection.token_expiry = creds.expiry.replace(tzinfo=timezone.utc)
-    db.commit()
-    return creds
+    try:
+        creds = google_oauth.credentials_from_stored(
+            decrypt(connection.encrypted_access_token), decrypt(connection.encrypted_refresh_token)
+        )
+        connection.encrypted_access_token = encrypt(creds.token)
+        if creds.expiry:
+            connection.token_expiry = creds.expiry.replace(tzinfo=timezone.utc)
+        db.commit()
+        return creds
+    except HTTPException:
+        raise
+    except Exception as e:
+        # An undecryptable/corrupt token or a failed refresh (revoked access,
+        # expired refresh token) previously blew up here as a bare 500 —
+        # confirmed live on /analytics-report. Same "stale token shouldn't
+        # take down an optional section" reasoning already applied to
+        # site_audit.py's own copy of this function; surfaced as a clear
+        # 400 here since these callers (unlike analytics-report) need an
+        # explicit signal to prompt the user to reconnect Google.
+        raise HTTPException(status_code=400, detail=f"Google account connection is invalid or expired — reconnect it: {e}")
 
 
 @router.get("/{client_id}/ga4/properties", response_model=list[GA4PropertyOut])
@@ -252,12 +264,21 @@ def analytics_report(
     """Combined GA4 + Search Console report: traffic overview, top pages,
     traffic sources, and top search queries — in one call for the report UI."""
     client = _get_owned_client(client_id, db, current_user)
-    creds = _load_credentials(client_id, db)
 
     result: dict = {"date_range": {"start": start_date, "end": end_date}}
     result["errors"] = {}
 
-    if client.ga4_property_id:
+    try:
+        creds = _load_credentials(client_id, db)
+    except HTTPException as e:
+        # Analytics is one optional section of a combined report, not the
+        # whole response — a not-connected/expired Google account (matches
+        # every other failure mode below) shouldn't fail this entire call,
+        # just report empty sections with the reason.
+        creds = None
+        result["errors"]["google_auth"] = e.detail
+
+    if creds and client.ga4_property_id:
         try:
             result["traffic_overview"] = ga4_service.get_traffic_overview(creds, client.ga4_property_id, start_date, end_date)
             result["top_pages"] = ga4_service.get_top_pages(creds, client.ga4_property_id, start_date, end_date, limit=15)
@@ -275,7 +296,7 @@ def analytics_report(
         result["traffic_sources"] = None
         result["page_performance"] = None
 
-    if client.gsc_site_url:
+    if creds and client.gsc_site_url:
         gsc_start = start_date if start_date != "30daysAgo" else _iso_days_ago(30)
         # Search Console data lags ~2-3 days behind — a range whose end date
         # is more recent than that reliably comes back empty (not partial),
