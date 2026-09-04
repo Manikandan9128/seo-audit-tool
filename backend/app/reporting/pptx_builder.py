@@ -638,122 +638,49 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     ranked = sorted(top_counts.items(), key=lambda kv: -kv[1])
     domain_total = sum(top_counts.values()) + root_count
 
-    slide = _blank_slide(prs)
-    _content_header(slide, "Website Structure")
-    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Site Audit", size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
-
-    # A real node-and-connector tree instead of an indented table — same
-    # underlying domain -> directory -> sub-directory data as before, just
-    # drawn as a hierarchy diagram (client asked for "hierarchy kind of
-    # website structure"). Slide width caps this at 6 top-level directory
-    # boxes and 2 sub-directory boxes per parent before it gets cramped;
-    # anything beyond that is called out in the insight line below instead
-    # of silently dropped.
-    MAX_TOP = 6
-    MAX_SUB = 2
-    shown = ranked[:MAX_TOP]
-
-    root_w, root_h = 3.0, 0.62
-    root_left = 0.6 + (12.1 - root_w) / 2
-    root_top = 1.05
-    _tree_box(slide, Inches(root_left), Inches(root_top), Inches(root_w), Inches(root_h), domain, domain_total, bold=True, fill=HEADER_ROW_BG, name_size=13, count_size=11)
-
-    n2 = max(len(shown), 1)
-    gap2 = 0.15
-    box2_w = (12.1 - (n2 - 1) * gap2) / n2
-    box2_h = 0.68
-    spine1_y = root_top + root_h + 0.22
-    box2_top = spine1_y + 0.15
-
-    root_center_x = root_left + root_w / 2
-    _tree_line_v(slide, Inches(root_center_x), Inches(root_top + root_h), Inches(spine1_y))
-
-    centers2 = [0.6 + box2_w / 2 + i * (box2_w + gap2) for i in range(n2)]
-    if len(centers2) > 1:
-        _tree_line_h(slide, Inches(centers2[0]), Inches(centers2[-1]), Inches(spine1_y))
-
-    for i, (directory, count) in enumerate(shown):
-        left2 = 0.6 + i * (box2_w + gap2)
-        cx = centers2[i]
-        _tree_line_v(slide, Inches(cx), Inches(spine1_y), Inches(box2_top))
-        label = _truncate_cell(directory, box2_w - 0.2, size_pt=11)
-        _tree_box(slide, Inches(left2), Inches(box2_top), Inches(box2_w), Inches(box2_h), label, count, name_size=11, count_size=9.5)
-
+    # Same 13-directory-row budget the slide always had (14 total minus the
+    # domain row) — sub-directory rows draw from the same budget so the
+    # table never overflows the slide, same as before this only showed flat
+    # top-level rows.
+    rows = [(domain, f"{domain_total:,}")]
+    budget = 13
+    child_row_indices: set[int] = set()
+    for directory, count in ranked:
+        if budget <= 0:
+            break
+        rows.append((f"    {directory}", f"{count:,}"))
+        budget -= 1
         subs = child_counts.get(directory)
-        if not subs or len(subs) < 2:
+        # Only worth expanding when the directory genuinely branches into
+        # more than one sub-directory — a single child is just that folder's
+        # one page, not a structure worth nesting.
+        if subs and len(subs) >= 2:
+            for sub_directory, sub_count in sorted(subs.items(), key=lambda kv: -kv[1])[:3]:
+                if budget <= 0:
+                    break
+                child_row_indices.add(len(rows))
+                rows.append((f"        {sub_directory}", f"{sub_count:,}"))
+                budget -= 1
+
+    slide = _table_slide(
+        prs, "Website Structure", ["Directory", "URLs"], rows,
+        col_widths=[9.6, 2.5], source="Semrush Site Audit",
+    )
+    for shape in slide.shapes:
+        if not shape.has_table:
             continue
-        top_subs = sorted(subs.items(), key=lambda kv: -kv[1])[:MAX_SUB]
-        n3 = len(top_subs)
-        gap3 = 0.1
-        box3_w = (box2_w - (n3 - 1) * gap3) / n3
-        box3_h = 0.58
-        spine2_y = box2_top + box2_h + 0.16
-        box3_top = spine2_y + 0.12
-        parent_bottom = box2_top + box2_h
-        _tree_line_v(slide, Inches(cx), Inches(parent_bottom), Inches(spine2_y))
-        centers3 = [left2 + box3_w / 2 + j * (box3_w + gap3) for j in range(n3)]
-        if len(centers3) > 1:
-            _tree_line_h(slide, Inches(centers3[0]), Inches(centers3[-1]), Inches(spine2_y))
-        for j, (sub_directory, sub_count) in enumerate(top_subs):
-            left3 = left2 + j * (box3_w + gap3)
-            _tree_line_v(slide, Inches(centers3[j]), Inches(spine2_y), Inches(box3_top))
-            sub_label = _truncate_cell(sub_directory.split("/")[-1], box3_w - 0.15, size_pt=9.5)
-            _tree_box(slide, Inches(left3), Inches(box3_top), Inches(box3_w), Inches(box3_h), f"/{sub_label}", sub_count, name_size=9.5, count_size=8.5)
-
-    insights = [f"{domain_total:,} total crawled URLs across {len(ranked)} top-level director{'y' if len(ranked) == 1 else 'ies'}."]
-    if len(ranked) > MAX_TOP:
-        insights.append(f"Showing the top {MAX_TOP} directories by URL count — {len(ranked) - MAX_TOP} more not shown here.")
-    _insights_strip(slide, Inches(0.6), Inches(5.4), Inches(11.9), insights)
+        table = shape.table
+        domain_row = table.rows[1]  # row 0 is the header, row 1 is the domain row we inserted
+        for cell in domain_row.cells:
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = HEADER_ROW_BG
+            cell.text_frame.paragraphs[0].font.bold = True
+        for row_idx in child_row_indices:
+            for cell in table.rows[row_idx + 1].cells:  # +1 to skip the header row
+                cell.text_frame.paragraphs[0].font.size = Pt(10)
+                cell.text_frame.paragraphs[0].font.color.rgb = TEXT_MUTED
+        break
     return slide
-
-
-def _tree_box(slide, left, top, width, height, name: str, count: int, bold: bool = False, fill=None, name_size: float = 11, count_size: float = 9.5):
-    """One node in the Website Structure hierarchy diagram — a compact
-    rounded box with the directory name on top and its URL count below,
-    matching the deck's existing card styling (see _card) rather than a
-    plain shape, so the tree reads as part of the same visual system."""
-    box = slide.shapes.add_shape(5, left, top, width, height)  # rounded rectangle
-    try:
-        box.adjustments[0] = 0.12
-    except (IndexError, AttributeError):
-        pass
-    box.fill.solid()
-    box.fill.fore_color.rgb = fill or WHITE
-    box.line.color.rgb = _accent() if bold else CARD_BORDER
-    box.line.width = Pt(1.25 if bold else 0.75)
-    box.shadow.inherit = False
-    tf = box.text_frame
-    tf.word_wrap = True
-    tf.margin_left = tf.margin_right = Pt(2)
-    tf.margin_top = Pt(3)
-    tf.margin_bottom = Pt(2)
-    p0 = tf.paragraphs[0]
-    p0.alignment = PP_ALIGN.CENTER
-    r0 = p0.add_run()
-    r0.text = name
-    r0.font.size = Pt(name_size)
-    r0.font.bold = bold
-    r0.font.color.rgb = TEXT_DARK
-    p1 = tf.add_paragraph()
-    p1.alignment = PP_ALIGN.CENTER
-    r1 = p1.add_run()
-    r1.text = f"{count:,} URLs"
-    r1.font.size = Pt(count_size)
-    r1.font.bold = True
-    r1.font.color.rgb = _accent() if bold else TEXT_MUTED
-    return box
-
-
-def _tree_line_v(slide, x, y1, y2):
-    line = slide.shapes.add_shape(1, x, min(y1, y2), Pt(1.5), abs(int(y2) - int(y1)) or Pt(1))
-    _fill(line, CARD_BORDER)
-    line.shadow.inherit = False
-
-
-def _tree_line_h(slide, x1, x2, y):
-    line = slide.shapes.add_shape(1, min(x1, x2), y, abs(int(x2) - int(x1)) or Pt(1), Pt(1.5))
-    _fill(line, CARD_BORDER)
-    line.shadow.inherit = False
 
 
 def add_company_overview_slide(prs: Presentation, client_name: str, summary: str):
@@ -1171,34 +1098,19 @@ def add_priority_issues_slide(
     ranked.sort(key=lambda r: r[4], reverse=True)
     headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks", "Priority Score"]
     col_widths = [3.6, 4.2, 1.3, 1.3, 1.7]
-    shown = ranked[:14]
     rows = [
         (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1]), f"{pv:,}", f"{cl:,}", f"{score:,}")
-        for url, issues, pv, cl, score in shown
+        for url, issues, pv, cl, score in ranked[:14]
     ]
     top = ranked[0]
     insights = [
         f"{len(ranked)} issue-affected page(s) cross-referenced against real traffic — ranked by pageviews + clicks×3 (a lost search click is lost demand, weighted heavier than a pageview from another channel).",
         f"Highest priority: {top[0]} — {top[2]:,} pageviews, {top[3]:,} search clicks in the reporting window, still carrying: {top[1]}",
     ]
-    slide = _table_slide(
+    return _table_slide(
         prs, "Priority Issues (by Traffic Impact)", headers, rows, col_widths=col_widths,
         source="Own crawl + Google Analytics + Search Console", insights=insights,
     )
-    # Page URL cell links out to the live page itself — the full issue list
-    # is already in the adjacent column (just truncated to fit), so this
-    # link is for seeing the issue in context on the actual page, not for
-    # more issue detail we don't otherwise have (no Semrush deep-link to
-    # reuse here).
-    for shape in slide.shapes:
-        if not shape.has_table:
-            continue
-        table = shape.table
-        for i, (url, *_rest) in enumerate(shown, start=1):
-            for run in table.cell(i, 0).text_frame.paragraphs[0].runs:
-                run.hyperlink.address = url
-        break
-    return slide
 
 
 # Semrush Site Audit's per-page Structured Data export has ~29 schema.org
@@ -1591,24 +1503,34 @@ def add_schema_validation_slide(prs: Presentation, schema_validation: dict):
 # (ISSUE | WHERE | FIX), confirmed from an EJTOY audit — more actionable
 # than the SEO Issues slide's issue-type rollup, which says how many pages
 # but not which ones or what to do about it.
-# category: "technical" = crawlability/infrastructure (page reachability,
-# mobile rendering, duplicate-content prevention) vs "seo" = on-page
-# content/metadata (title, description, headings) — client asked for Tech
-# Fixes split into these two groups instead of one mixed list.
 _PAGE_ISSUE_FIXES = {
-    "Page not reachable": ("Fix the broken link/redirect, or add a 301 redirect to a working page.", "error", "technical"),
-    "Missing <title> tag": ("Add a unique, keyword-relevant <title> tag (50-60 characters).", "error", "seo"),
-    "Missing meta description": ("Write a unique meta description (150-160 characters) summarizing the page.", "warn", "seo"),
-    "No <h1> tag found": ("Add a single <h1> heading stating the page's main topic.", "warn", "seo"),
-    "Multiple <h1> tags found": ("Keep only one <h1> per page — demote extra ones to <h2>/<h3>.", "warn", "seo"),
-    "Missing mobile viewport meta tag": ("Add a viewport meta tag so the page renders correctly on mobile.", "warn", "technical"),
-    "Missing canonical tag": ("Add a self-referencing canonical tag to prevent duplicate-content issues.", "info", "technical"),
-    "Title tag longer than 60 characters": ("Shorten the title tag so it isn't truncated in search results.", "info", "seo"),
+    "Page not reachable": ("Fix the broken link/redirect, or add a 301 redirect to a working page.", "error"),
+    "Missing <title> tag": ("Add a unique, keyword-relevant <title> tag (50-60 characters).", "error"),
+    "Missing meta description": ("Write a unique meta description (150-160 characters) summarizing the page.", "warn"),
+    "No <h1> tag found": ("Add a single <h1> heading stating the page's main topic.", "warn"),
+    "Multiple <h1> tags found": ("Keep only one <h1> per page — demote extra ones to <h2>/<h3>.", "warn"),
+    "Missing mobile viewport meta tag": ("Add a viewport meta tag so the page renders correctly on mobile.", "warn"),
+    "Missing canonical tag": ("Add a self-referencing canonical tag to prevent duplicate-content issues.", "info"),
+    "Title tag longer than 60 characters": ("Shorten the title tag so it isn't truncated in search results.", "info"),
 }
 _ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
 
 
-def _tech_fixes_scored_rows(page_audit: dict, analytics: dict | None) -> list[tuple]:
+def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None, analytics: dict | None = None):
+    """Flattens page_audit's per-page issues (up to 20 crawled pages) into
+    one Issue/Where/Fix row per (page, issue) pair, worst-severity first
+    (severity stays the primary sort — an error is still an error regardless
+    of traffic). When real GA4 pageview data is available, ties within the
+    same severity are broken by traffic — a fix on a page real visitors
+    hit sorts above the same-severity fix on a page nobody visits — and the
+    single highest-traffic affected page gets called out as an insight.
+    Sourced from our own crawl, not Semrush — Semrush's per-page x
+    per-issue-type matrix export (mega_export.csv) isn't parsed at all
+    currently (parked deliberately), would give a richer full-site version
+    of this same idea later if ever built."""
+    if not page_audit:
+        return None
+
     top_pages_by_path: dict[str, int] = {}
     for p in (analytics or {}).get("top_pages", {}).get("rows", []) if analytics else []:
         path = (p.get("path") or "").rstrip("/")
@@ -1622,20 +1544,17 @@ def _tech_fixes_scored_rows(page_audit: dict, analytics: dict | None) -> list[tu
             fix = _PAGE_ISSUE_FIXES.get(issue)
             if not fix:
                 continue
-            fix_text, severity, category = fix
-            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -page_views, issue, path, fix_text, page_views, category))
-    scored_rows.sort(key=lambda r: (r[0], r[1]))
-    return scored_rows
-
-
-def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[tuple]):
+            fix_text, severity = fix
+            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -page_views, issue, path, fix_text, page_views))
     if not scored_rows:
         return None
+    scored_rows.sort(key=lambda r: (r[0], r[1]))
+
     shown = scored_rows[:9]
     col_widths = [2.7, 2.3, 7.1]
-    rows = [(_truncate_cell(issue, col_widths[0]), _truncate_cell(path, col_widths[1]), fix_text) for _, _, issue, path, fix_text, _, _ in shown]
-    unreachable_count = sum(1 for _, _, issue, _, _, _, _ in scored_rows if issue == "Page not reachable")
-    insights = [f"{len(scored_rows)} {title.split(' — ')[-1].lower()} issue(s) found across the crawled pages" + (f", {unreachable_count} unreachable." if unreachable_count else ".")]
+    rows = [(_truncate_cell(issue, col_widths[0]), _truncate_cell(path, col_widths[1]), fix_text) for _, _, issue, path, fix_text, _ in shown]
+    unreachable_count = sum(1 for _, _, issue, _, _, _ in scored_rows if issue == "Page not reachable")
+    insights = [f"{len(scored_rows)} page-level issue(s) found across the crawled pages, {unreachable_count} unreachable."]
     if len(scored_rows) > len(shown):
         insights.append(f"Showing the {len(shown)} highest-priority — see SEO Issues for the full breakdown by type.")
     traffic_matched = [r for r in scored_rows if r[5] > 0]
@@ -1645,40 +1564,11 @@ def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[
             f"\"{top_traffic[3]}\" gets real traffic ({top_traffic[5]:,} pageviews in the reporting window) "
             f"and has a \"{top_traffic[2]}\" issue — fixing this one affects real visitors, not just crawl health."
         )
+
     return _table_slide(
-        prs, title, ["Issue", "Where", "Fix"], rows,
+        prs, "Tech Fixes", ["Issue", "Where", "Fix"], rows,
         col_widths=col_widths, source="Site crawl", insights=insights,
     )
-
-
-def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None, analytics: dict | None = None) -> list:
-    """Flattens page_audit's per-page issues (up to 20 crawled pages) into
-    one Issue/Where/Fix row per (page, issue) pair, worst-severity first
-    (severity stays the primary sort — an error is still an error regardless
-    of traffic). When real GA4 pageview data is available, ties within the
-    same severity are broken by traffic — a fix on a page real visitors
-    hit sorts above the same-severity fix on a page nobody visits — and the
-    single highest-traffic affected page gets called out as an insight.
-    Split into two slides (Technical vs SEO issues, see _PAGE_ISSUE_FIXES'
-    category field) per client request — was one mixed list before.
-    Sourced from our own crawl, not Semrush — Semrush's per-page x
-    per-issue-type matrix export (mega_export.csv) isn't parsed at all
-    currently (parked deliberately), would give a richer full-site version
-    of this same idea later if ever built."""
-    if not page_audit:
-        return []
-
-    scored_rows = _tech_fixes_scored_rows(page_audit, analytics)
-    if not scored_rows:
-        return []
-
-    technical_rows = [r for r in scored_rows if r[6] == "technical"]
-    seo_rows = [r for r in scored_rows if r[6] == "seo"]
-    slides = [
-        _tech_fixes_category_slide(prs, "Tech Fixes — Technical Issues", technical_rows),
-        _tech_fixes_category_slide(prs, "Tech Fixes — SEO Issues", seo_rows),
-    ]
-    return [s for s in slides if s]
 
 
 def _truncate_cell(text: str, width_in: float, size_pt: float = 11, max_lines: int = 1) -> str:
@@ -1891,62 +1781,42 @@ def _classify_page_branded(path: str) -> str | None:
     return None
 
 
-def add_top_pages_branded_split_slide(
-    prs: Presentation, branded_pct: float, branded_pages: list[dict], nonbranded_pct: float, nonbranded_pages: list[dict]
-):
-    """Branded and Non-Branded Top Pages on ONE slide (client asked these
-    combined rather than as two separate slides) — two half-width panels
-    side by side, each with its own compact stat strip + table. The %
-    column is each page's share of its SEGMENT's Users (not Pageviews —
-    client specifically wants Users% here), separate from the stat strip's
-    share of the FULL site's users."""
-    if not branded_pages and not nonbranded_pages:
+def add_top_pages_segment_slide(prs: Presentation, title: str, share_label: str, share_pct: float, pages: list[dict]):
+    """Same Page/Pageviews/%-of-Contribution/Users table as the overall Top
+    Pages slide, but scoped to one branded/non-branded subset — % of
+    Contribution recalculates within this subset (sums to 100% on this
+    slide alone), separate from the big stat card's share of the FULL
+    site's pageviews. A big bold stat card sits top-right per spec ("huge
+    bold... side of it") rather than folded into the insights strip below,
+    since it's a headline number, not a derived takeaway."""
+    if not pages:
         return None
     slide = _blank_slide(prs)
-    _content_header(slide, "Top Pages — Branded vs Non-Branded")
+    _content_header(slide, title)
+
+    card_left, card_top, card_w, card_h = Inches(9.5), Inches(0.15), Inches(3.4), Inches(0.72)
+    _card(slide, card_left, card_top, card_w, card_h)
+    _textbox(slide, card_left + Inches(0.15), card_top + Inches(0.05), card_w - Inches(0.3), Inches(0.2), share_label.upper(), size=9, bold=True, color=TEXT_MUTED)
+    _textbox(slide, card_left + Inches(0.15), card_top + Inches(0.24), Inches(1.4), Inches(0.42), f"{share_pct:.0f}%", size=24, bold=True, color=_accent())
+    _textbox(slide, card_left + Inches(1.5), card_top + Inches(0.37), card_w - Inches(1.65), Inches(0.3), "of total site traffic", size=8.5, color=TEXT_MUTED)
 
     def _page_label(path: str) -> str:
         return f"{path} (Home Page)" if path.strip("/") == "" else path
 
-    half_width_in = 5.9
-    lefts = [Inches(0.6), Inches(0.6 + half_width_in + 0.3)]
-    panels = [("BRANDED SHARE", branded_pct, branded_pages), ("NON-BRANDED SHARE", nonbranded_pct, nonbranded_pages)]
-    bottoms = []
-
-    for (label, share_pct, pages), left in zip(panels, lefts):
-        if not pages:
-            continue
-        card_top, card_h = Inches(1.1), Inches(0.55)
-        _card(slide, left, card_top, Inches(half_width_in), card_h)
-        _textbox(slide, left + Inches(0.15), card_top + Inches(0.07), Inches(2.2), Inches(0.22), label, size=9, bold=True, color=TEXT_MUTED)
-        _textbox(slide, left + Inches(0.15), card_top + Inches(0.26), Inches(1.2), Inches(0.28), f"{share_pct:.0f}%", size=17, bold=True, color=_accent())
-        _textbox(slide, left + Inches(1.4), card_top + Inches(0.31), Inches(half_width_in) - Inches(1.5), Inches(0.22), "of total site users", size=8, color=TEXT_MUTED)
-
-        segment_total_users = sum(int(float(p.get("active_users", 0) or 0)) for p in pages)
-        rows = [
-            (
-                _truncate_cell(_page_label(p["path"]), 2.6),
-                f"{int(float(p['page_views'])):,}",
-                f"{int(float(p.get('active_users', 0) or 0)):,}",
-                f"{(int(float(p.get('active_users', 0) or 0)) / segment_total_users * 100 if segment_total_users else 0):.1f}%",
-            )
-            for p in pages[:7]
-        ]
-        bottom = _draw_table(
-            slide, ["Page", "Pageviews", "Users", "% of Users"], rows, card_top + card_h + Inches(0.15),
-            col_widths=[2.6, 1.0, 1.0, 1.3], left=left, width=Inches(half_width_in), row_cap=7,
+    segment_total = sum(int(float(p.get("page_views", 0) or 0)) for p in pages)
+    rows = [
+        (
+            _truncate_cell(_page_label(p["path"]), 6.0),
+            f"{int(float(p['page_views'])):,}",
+            f"{(int(float(p['page_views'])) / segment_total * 100 if segment_total else 0):.1f}%",
+            f"{int(float(p.get('active_users', 0) or 0)):,}",
         )
-        bottoms.append(bottom)
-
-    insights = []
-    if branded_pages:
-        top_b = max(branded_pages, key=lambda p: float(p.get("active_users", 0) or 0))
-        insights.append(f"Branded: \"{_page_label(top_b['path'])}\" leads by users.")
-    if nonbranded_pages:
-        top_nb = max(nonbranded_pages, key=lambda p: float(p.get("active_users", 0) or 0))
-        insights.append(f"Non-Branded: \"{_page_label(top_nb['path'])}\" leads by users.")
-    if insights and bottoms:
-        _insights_strip(slide, Inches(0.6), max(bottoms) + Inches(0.25), Inches(11.9), insights)
+        for p in pages[:14]
+    ]
+    top = pages[0]
+    top_share = int(float(top["page_views"])) / segment_total * 100 if segment_total else 0
+    insights = [f"\"{_page_label(top['path'])}\" leads this segment, {top_share:.0f}% of its tracked pageviews."]
+    _draw_table(slide, ["Page", "Pageviews", "% of Contribution", "Users"], rows, Inches(1.2), col_widths=[6.0, 2.0, 2.0, 2.1], insights=insights)
     return slide
 
 
@@ -2089,27 +1959,6 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
     return slide
 
 
-# Common countries abbreviated per client spec (not strict ISO — client
-# asked for "US, IND, SG" specifically, a mix of 2- and 3-letter forms).
-# Anything not in this table falls back to its first 3 letters uppercased,
-# which is still short enough to keep the Country Split column readable.
-_COUNTRY_ABBREVIATIONS = {
-    "united states": "US", "united kingdom": "UK", "india": "IND", "singapore": "SG",
-    "canada": "CA", "australia": "AU", "germany": "DE", "france": "FR", "spain": "ES",
-    "italy": "IT", "netherlands": "NL", "ireland": "IE", "new zealand": "NZ",
-    "united arab emirates": "UAE", "south africa": "ZA", "brazil": "BR", "mexico": "MX",
-    "japan": "JP", "china": "CN", "south korea": "KR", "philippines": "PH",
-    "indonesia": "ID", "malaysia": "MY", "vietnam": "VN", "thailand": "TH",
-    "pakistan": "PK", "bangladesh": "BD", "nigeria": "NG", "kenya": "KE",
-    "saudi arabia": "SA", "sweden": "SE", "norway": "NO", "denmark": "DK",
-    "poland": "PL", "switzerland": "CH", "belgium": "BE", "portugal": "PT",
-}
-
-
-def _abbreviate_country(name: str) -> str:
-    return _COUNTRY_ABBREVIATIONS.get(name.strip().lower(), name[:3].upper())
-
-
 def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, source: str | None = None):
     """Channel is the primary key (one row per channel, per report spec) —
     country and device are folded into that same row as each channel's own
@@ -2122,19 +1971,16 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
     def _split_text(entries):
         return ", ".join(f"{e['label']} {e['pct']:.0f}%" for e in entries) if entries else "—"
 
-    used_abbreviations: dict[str, str] = {}
-    rows = []
-    for r in rows_data:
-        countries = r.get("top_countries") or []
-        for c in countries:
-            used_abbreviations[_abbreviate_country(c["label"])] = c["label"]
-        rows.append((
+    rows = [
+        (
             r["channel"],
             f"{r['avg_sessions_month']:,}",
             f"{r['pct_share']:.0f}%",
-            _split_text([{"label": _abbreviate_country(c["label"]), "pct": c["pct"]} for c in countries]),
+            _split_text(r.get("top_countries")),
             _split_text([{"label": d["label"].title(), "pct": d["pct"]} for d in (r.get("top_devices") or [])]),
-        ))
+        )
+        for r in rows_data
+    ]
     months = breakdown.get("months")
     top = rows_data[0]
     insights = [
@@ -2142,9 +1988,6 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
     ]
     if months:
         insights.append(f"Figures are monthly averages across the last {months:.1f} month(s) of tracked data.")
-    if used_abbreviations:
-        legend = ", ".join(f"{abbr} - {full}" for abbr, full in sorted(used_abbreviations.items()))
-        insights.append(f"* {legend}")
     return _table_slide(
         prs, "Traffic Breakdown — Monthly Average",
         ["Channel", "Avg Sessions/mo", "% Share", "Top Countries", "Top Devices"],
@@ -3430,20 +3273,23 @@ def _build_report(
             # explicitly classify /careers as branded, so it belongs here.
             all_pages = (analytics.get("top_pages") or {}).get("rows", [])
             classified = [(p, _classify_page_branded(p.get("path") or "")) for p in all_pages]
-            site_total_users = sum(int(float(p.get("active_users", 0) or 0)) for p, _ in classified)
-            branded_pages = sorted(
-                (p for p, c in classified if c == "branded"), key=lambda p: float(p.get("page_views", 0) or 0), reverse=True
-            )
-            nonbranded_pages = sorted(
-                (p for p, c in classified if c == "non-branded"), key=lambda p: float(p.get("page_views", 0) or 0), reverse=True
-            )
-            branded_users = sum(int(float(p.get("active_users", 0) or 0)) for p in branded_pages)
-            nonbranded_users = sum(int(float(p.get("active_users", 0) or 0)) for p in nonbranded_pages)
-            add_top_pages_branded_split_slide(
-                prs,
-                branded_users / site_total_users * 100 if site_total_users else 0, branded_pages,
-                nonbranded_users / site_total_users * 100 if site_total_users else 0, nonbranded_pages,
-            )
+            site_total_views = sum(int(float(p.get("page_views", 0) or 0)) for p, _ in classified)
+            branded_pages = [p for p, c in classified if c == "branded"]
+            nonbranded_pages = [p for p, c in classified if c == "non-branded"]
+            branded_views = sum(int(float(p.get("page_views", 0) or 0)) for p in branded_pages)
+            nonbranded_views = sum(int(float(p.get("page_views", 0) or 0)) for p in nonbranded_pages)
+            if branded_pages:
+                branded_pages = sorted(branded_pages, key=lambda p: float(p.get("page_views", 0) or 0), reverse=True)
+                add_top_pages_segment_slide(
+                    prs, "Top Pages — Branded", "Branded Share",
+                    branded_views / site_total_views * 100 if site_total_views else 0, branded_pages,
+                )
+            if nonbranded_pages:
+                nonbranded_pages = sorted(nonbranded_pages, key=lambda p: float(p.get("page_views", 0) or 0), reverse=True)
+                add_top_pages_segment_slide(
+                    prs, "Top Pages — Non-Branded", "Non-Branded Share",
+                    nonbranded_views / site_total_views * 100 if site_total_views else 0, nonbranded_pages,
+                )
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
             total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
