@@ -111,6 +111,21 @@ def _try_groq(prompt: str, max_tokens: int) -> str:
     _wait_for_groq_slot()
     estimated_prompt_tokens = len(prompt) // 4
     safe_max_tokens = max(256, min(max_tokens, _GROQ_TPM_BUDGET - estimated_prompt_tokens))
+    if safe_max_tokens < max_tokens // 2:
+        # Confirmed real: the competitor-narrative batch call (up to 16000
+        # requested tokens for 4-5 competitors' full sections in one JSON
+        # object) was silently clamped down to ~a quarter of that here,
+        # producing a truncated, unparseable JSON response — reported back
+        # as a normal 200 from Groq, not a failure, so generate_text() never
+        # knew to fall through to Gemini. It just looked like every
+        # competitor's narrative "failed" with no clue why. Below this
+        # threshold, clamping can't meaningfully serve the request — raise
+        # so the caller falls through to a provider that can actually
+        # produce a complete response instead of a guaranteed-truncated one.
+        raise RuntimeError(
+            f"prompt too large for Groq's shared TPM budget to leave room for the requested "
+            f"output ({safe_max_tokens} available vs {max_tokens} needed) — skipping to next provider"
+        )
     response = httpx.post(
         GROQ_API_URL,
         headers={"Authorization": f"Bearer {settings.groq_api_key}"},
