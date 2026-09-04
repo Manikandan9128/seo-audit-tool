@@ -1043,7 +1043,7 @@ def _gather_report_data(
     # landing page's own scraped text, so it's generated unconditionally
     # (independent of the manual-notes branch above) whenever an AI key is
     # configured and the homepage fetch succeeds.
-    if settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key:
+    if settings.gemini_api_key or settings.xai_api_key or settings.claude_api_key:
         onboarding_homepage_text = fetch_homepage_text(client.website_url, max_chars=6000)
         if onboarding_homepage_text:
             onboarding_breakdown_result = generate_onboarding_breakdown(
@@ -1191,7 +1191,7 @@ def _build_pptx_for_client(
     AI-dependent section that failed this run (keyword clustering, Core
     Problem, a competitor narrative, Next Steps) — deliberately never
     rendered into the PPTX itself (a client-facing deliverable is no place
-    for "Groq request failed: 429"), surfaced instead through the job
+    for "xAI request failed: 429"), surfaced instead through the job
     status API so the agency user sees it before handing the file over."""
     progress = on_progress or (lambda _stage, _pct: None)
     data = _gather_report_data(
@@ -1233,7 +1233,7 @@ def _build_pptx_for_client(
     # falls back to the static per-category slides automatically inside
     # build_report when this is None or a category comes back empty.
     next_steps_ai = None
-    if settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key:
+    if settings.gemini_api_key or settings.xai_api_key or settings.claude_api_key:
         progress("Writing tailored recommendations...", 90)
         client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
         findings = _build_next_steps_findings(data, competitor_narratives)
@@ -1423,7 +1423,7 @@ def get_generate_report_job(
     # OOM, crash) with nothing left alive to ever mark the row "done" or
     # "failed" — confirmed real: a job frozen at "Analyzing competitor 2 of
     # 4" / 65% for 30+ minutes, far past any realistic worst-case for that
-    # one step (Groq's own call+retry tops out around 2-3 minutes). Treat a
+    # one step (xAI's own call+retry tops out around 2-3 minutes). Treat a
     # "running" job whose progress hasn't moved in STALE_JOB_MINUTES as
     # dead rather than let the frontend poll a frozen percentage forever.
     if job.status == "running" and datetime.now(timezone.utc) - job.updated_at > timedelta(minutes=STALE_JOB_MINUTES):

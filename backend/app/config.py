@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     google_redirect_uri: str
     google_psi_api_key: str = ""
     gemini_api_key: str = ""
-    groq_api_key: str = ""
+    xai_api_key: str = ""
     claude_api_key: str = ""
 
 

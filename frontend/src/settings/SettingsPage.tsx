@@ -102,8 +102,8 @@ function ApiKeyCard({ title, description, keySet, masked, loading, saveUrl, test
 export default function SettingsPage() {
   const [geminiSet, setGeminiSet] = useState(false);
   const [geminiMasked, setGeminiMasked] = useState<string | null>(null);
-  const [groqSet, setGroqSet] = useState(false);
-  const [groqMasked, setGroqMasked] = useState<string | null>(null);
+  const [xaiSet, setXaiSet] = useState(false);
+  const [xaiMasked, setXaiMasked] = useState<string | null>(null);
   const [claudeSet, setClaudeSet] = useState(false);
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -116,8 +116,8 @@ export default function SettingsPage() {
       const res = await api.get("/settings");
       setGeminiSet(res.data.gemini_api_key_set);
       setGeminiMasked(res.data.gemini_api_key_masked);
-      setGroqSet(res.data.groq_api_key_set);
-      setGroqMasked(res.data.groq_api_key_masked);
+      setXaiSet(res.data.xai_api_key_set);
+      setXaiMasked(res.data.xai_api_key_masked);
       setClaudeSet(res.data.claude_api_key_set);
       setClaudeMasked(res.data.claude_api_key_masked);
     } catch (err: any) {
@@ -131,14 +131,14 @@ export default function SettingsPage() {
     load();
   }, []);
 
-  const eitherKeySet = geminiSet || groqSet || claudeSet;
+  const eitherKeySet = geminiSet || xaiSet || claudeSet;
 
   return (
     <div style={{ maxWidth: 600, margin: "0 auto" }}>
       <h2 style={{ marginBottom: 8 }}>Settings</h2>
       <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 20 }}>
         Company Overview extraction and the Competitor Analysis AI summary need at least one of these keys — not
-        all three. Groq is tried first (fast-recovering per-minute limit), then Gemini (its free-tier quota resets
+        all three. xAI is tried first (fast-recovering per-minute limit), then Gemini (its free-tier quota resets
         only once a day, so it's kept in reserve), then Claude last as a paid fallback. Any one key alone is enough.{" "}
         {!loading && (eitherKeySet ? <span style={{ color: "var(--success)" }}>✓ AI features are active.</span> : <span style={{ color: "#991b1b" }}>No key set yet — AI features are disabled.</span>)}
       </p>
@@ -170,25 +170,25 @@ export default function SettingsPage() {
         />
 
         <ApiKeyCard
-          title="Groq API Key"
+          title="xAI (Grok) API Key"
           description={
             <>
               Get a key at{" "}
-              <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">
-                console.groq.com/keys
+              <a href="https://console.x.ai" target="_blank" rel="noreferrer">
+                console.x.ai
               </a>
-              . Free tier, much higher per-minute limit than Gemini's.
+              .
             </>
           }
-          keySet={groqSet}
-          masked={groqMasked}
+          keySet={xaiSet}
+          masked={xaiMasked}
           loading={loading}
-          saveUrl="/settings/groq-api-key"
-          testUrl="/settings/groq-api-key/test"
-          saveField="groq_api_key"
+          saveUrl="/settings/xai-api-key"
+          testUrl="/settings/xai-api-key/test"
+          saveField="xai_api_key"
           onSaved={(set, masked) => {
-            setGroqSet(set);
-            setGroqMasked(masked);
+            setXaiSet(set);
+            setXaiMasked(masked);
           }}
         />
 
