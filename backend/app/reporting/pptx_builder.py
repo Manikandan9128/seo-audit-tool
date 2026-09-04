@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.util import Inches, Pt, Emu
 
 from app.services.keyword_relevance_service import (
@@ -82,6 +83,22 @@ def _fill(shape, color):
     shape.fill.solid()
     shape.fill.fore_color.rgb = color
     shape.line.fill.background()
+
+
+def _link_run_to_slide(run, target_slide):
+    """Internal same-deck hyperlink (jump to another slide on click) — not
+    supported by python-pptx's public Hyperlink.address setter, which only
+    ever creates an external (is_external=True) relationship. Google
+    "python-pptx internal slide hyperlink" for the underlying OOXML shape:
+    an a:hlinkClick with r:id pointing at a real (not external) part
+    relationship, plus an action="ppaction://hlinksldjump" attribute —
+    without that action attribute PowerPoint treats it as an inert link
+    with nothing to jump to. Confirmed the relationship + action round-
+    trips correctly through a save/reopen cycle."""
+    rId = run.part.relate_to(target_slide.part, RT.SLIDE, is_external=False)
+    hlink_click = run._r.get_or_add_rPr().get_or_add_hlinkClick()
+    hlink_click.rId = rId
+    hlink_click.action = "ppaction://hlinksldjump"
 
 
 def _textbox(slide, left, top, width, height, text, size=14, bold=False, color=TEXT_DARK, align=PP_ALIGN.LEFT):
@@ -634,7 +651,16 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
         if sub_directory:
             child_counts.setdefault(directory, Counter())[sub_directory] += 1
 
-    ranked = sorted(top_counts.items(), key=lambda kv: -kv[1])
+    # A first path segment with exactly 1 page under it isn't a real
+    # section/folder a client would recognize — it's just that one page's
+    # own slug (e.g. a flat-URL blog post like /1099-filing-mistakes,
+    # not nested under /blog/). Confirmed live: on a site with mostly
+    # flat post URLs, dozens of these one-off slugs tied at count=1 and,
+    # sorted stably, interleaved ahead of real recurring sections like
+    # /wiki or /product — crowding out the actual structure the client
+    # asked to see, the way Semrush's own widget (real folders only)
+    # doesn't have this problem since it isn't drowning in single pages.
+    ranked = sorted(((d, c) for d, c in top_counts.items() if c >= 2), key=lambda kv: -kv[1])
 
     slide = _blank_slide(prs)
     _content_header(slide, "Website Structure")
@@ -1017,6 +1043,20 @@ def add_priority_issues_slide(
     if not analytics:
         return None
 
+    # Semrush's Crawled Pages export only ever gives a raw ISSUE COUNT in
+    # its "Issues" column (e.g. "14") — confirmed real, Semrush doesn't
+    # export per-page issue NAMES in this file at all, so wrapping that
+    # value to more lines just showed a wrapped "14". This tool's own
+    # crawl (page_audit) already has real named issues per page (same
+    # data Tech Fixes uses) — build a path -> real-issue-list lookup so
+    # any URL we also crawled ourselves gets its actual issue names
+    # instead of Semrush's bare number.
+    real_issues_by_path: dict[str, list[str]] = {}
+    if page_audit:
+        for p in page_audit.get("pages") or []:
+            if p.get("url"):
+                real_issues_by_path[urlparse(p["url"]).path.rstrip("/") or "/"] = p.get("issues") or []
+
     url_issues: list[tuple[str, str]] = []
     if site_audit_pages_rows:
         # GA4/GSC data below is matched by path alone (pagePath has no host
@@ -1037,7 +1077,9 @@ def add_priority_issues_slide(
                 continue
             if own_domain and urlparse(page_url).netloc not in ("", own_domain):
                 continue
-            url_issues.append((page_url, str(issues)))
+            real = real_issues_by_path.get(urlparse(page_url).path.rstrip("/") or "/")
+            issue_text = ", ".join(real) if real else f"{issues} issue(s) reported by Semrush — full breakdown not available for this page in this tool's own crawl"
+            url_issues.append((page_url, issue_text))
     elif page_audit:
         for p in page_audit.get("pages") or []:
             if p.get("issues") and p.get("url"):
@@ -1106,6 +1148,12 @@ def add_priority_issues_slide(
         source="Own crawl + Google Analytics + Search Console", insights=insights,
         row_cap=ROW_CAP, row_height=0.65, wrap_cols={1},
     )
+    # Full per-URL issue text already sits in the wrapped cell (see rows
+    # above), but client also asked for a click-through so the count/text
+    # isn't the only way to see it — one appendix slide, one internal
+    # hyperlink per row from the Issue(s) cell.
+    detail_slide = add_priority_issues_detail_slide(prs, shown)
+
     # Page URL cell links out to the live page itself.
     # shown must match ROW_CAP above — the hyperlink loop below walks
     # exactly the table's real row count, not len(shown) unconditionally
@@ -1115,10 +1163,41 @@ def add_priority_issues_slide(
         if not shape.has_table:
             continue
         table = shape.table
-        for i, (url, *_rest) in enumerate(shown, start=1):
+        for i, (url, issues, *_rest) in enumerate(shown, start=1):
             for run in table.cell(i, 0).text_frame.paragraphs[0].runs:
                 run.hyperlink.address = url
+            if detail_slide:
+                for run in table.cell(i, 1).text_frame.paragraphs[0].runs:
+                    _link_run_to_slide(run, detail_slide)
         break
+    return slide
+
+
+def add_priority_issues_detail_slide(prs: Presentation, shown: list[tuple]):
+    """Full per-URL issue breakdown backing the Priority Issues table's
+    Issue(s) column — jumped to via an internal hyperlink on that cell.
+    Client asked to see the actual issue names behind a bare count, not
+    just a number with no way to expand it. shown is the same (url,
+    issues, pageviews, clicks, score) tuples already ranked/capped for
+    the main table, so this always covers exactly the rows shown there."""
+    if not shown:
+        return None
+    slide = _blank_slide(prs)
+    _content_header(slide, "Priority Issues — Full Detail")
+    y = Inches(1.05)
+    max_y = Inches(7.15)
+    for url, issues, *_rest in shown:
+        if y > max_y:
+            break
+        _textbox(slide, Inches(0.6), y, Inches(11.9), Inches(0.26), url, size=12.5, bold=True, color=TEXT_DARK)
+        y += Inches(0.3)
+        items = [i.strip() for i in issues.split(",")] if "," in issues else [issues]
+        for item in items:
+            if y > max_y:
+                break
+            _textbox(slide, Inches(0.95), y, Inches(11.4), Inches(0.24), f"•  {item}", size=11, color=TEXT_MUTED)
+            y += Inches(0.24)
+        y += Inches(0.18)
     return slide
 
 
@@ -1372,14 +1451,18 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
     tool's own crawl — see the prior standalone version's now-removed
     docstring for why crawl beats Semrush's export here) and Schema
     Validator (missing REQUIRED properties + Search Console's real
-    rich-result verdicts) on ONE slide as two half-width panels, per
-    client request — these were two separate slides covering closely
-    related findings. Both panels are sourced from the same
-    schema_validation dict (aggregate_schema_validation), so whenever one
-    would have content the other's data is already available too; the
-    Semrush-export-only fallback (add_structured_data_slide) stays a
-    separate full-width slide for the rare case no crawl-based schema
-    data exists at all."""
+    rich-result verdicts) on ONE slide, stacked full-width (Structured
+    Data on top, Schema Validator below) rather than as two separate
+    slides — per client request. Explicitly NOT two half-width side-by-
+    side panels: that version cut both tables' row_cap and column widths
+    to fit side by side, which lost real rows/truncated real column
+    content compared to the original separate full-width slides — full
+    width top-to-bottom keeps every column at its original width. Both
+    tables are sourced from the same schema_validation dict
+    (aggregate_schema_validation), so whenever one would have content the
+    other's data is already available too; the Semrush-export-only
+    fallback (add_structured_data_slide) stays a separate full-width
+    slide for the rare case no crawl-based schema data exists at all."""
     total_pages = schema_validation.get("total_pages") or 0
     if not total_pages:
         return None
@@ -1397,18 +1480,19 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
     source = "Site Audit crawl + Search Console URL Inspection" if gsc_rich_results else "Site Audit crawl (JSON-LD)"
     _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
 
-    half_width_in = 5.9
-    left_x, right_x = Inches(0.6), Inches(0.6 + half_width_in + 0.3)
-    top = Inches(1.1)
-    bottoms = []
+    left, width = Inches(0.6), Inches(12.1)
+    y = Inches(1.05)
     insights = []
+    ROW_CAP, ROW_H = 6, 0.3
 
     if type_coverage:
-        coverage_rows = [(c["type"], f"{c['pages_with_it']:,}/{total_pages:,}", f"{c['coverage_pct']}%") for c in type_coverage]
-        bottoms.append(_draw_table(
-            slide, ["Schema Type", "Pages", "Coverage"], coverage_rows, top,
-            col_widths=[2.6, 1.6, 1.7], left=left_x, width=Inches(half_width_in), row_cap=8,
-        ))
+        _textbox(slide, left, y, width, Inches(0.24), "Structured Data Coverage", size=12.5, bold=True, color=_accent())
+        y = y + Inches(0.28)
+        coverage_rows = [(c["type"], f"{c['pages_with_it']:,} / {total_pages:,}", f"{c['coverage_pct']}%") for c in type_coverage]
+        y = _draw_table(
+            slide, ["Schema Type", "Pages With It", "Coverage"], coverage_rows, y,
+            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=ROW_CAP, row_height=ROW_H,
+        ) + Inches(0.2)
         any_schema_pct = 100 * pages_with_schema / total_pages
         insights.append(f"{pages_with_schema:,} of {total_pages:,} pages ({any_schema_pct:.0f}%) have structured data implemented.")
 
@@ -1423,18 +1507,28 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
         for item in r.get("detected_items") or []:
             for sub in item.get("items") or []:
                 for issue in sub.get("issues") or []:
-                    gsc_rows.append((f"{item.get('type')} (Google)", issue.get("message") or "Flagged by Rich Results check"))
-    type_rows = [(m["type"], "(entire type missing)") for m in missing_types]
+                    gsc_rows.append((
+                        f"{item.get('type')} (Google-verified)",
+                        issue.get("message") or "Flagged by Google's Rich Results check",
+                        _truncate_cell(r.get("url") or "", 4.0),
+                    ))
+    type_rows = [(m["type"], "(entire type missing)", m["reason"]) for m in missing_types]
     rule_rows = [
-        (m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)", f"Missing {m['field']} ({m['pages_missing']:,} pages)")
+        (
+            m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)",
+            f"Missing {m['field']}",
+            f"{m['pages_missing']:,} of {total_pages:,}",
+        )
         for m in missing_properties
     ]
     finding_rows = gsc_rows + type_rows + rule_rows
     if finding_rows:
-        bottoms.append(_draw_table(
-            slide, ["Schema Type", "Finding"], finding_rows, top,
-            col_widths=[2.6, 3.3], left=right_x, width=Inches(half_width_in), row_cap=8,
-        ))
+        _textbox(slide, left, y, width, Inches(0.24), "Schema Validator Findings", size=12.5, bold=True, color=_accent())
+        y = y + Inches(0.28)
+        y = _draw_table(
+            slide, ["Schema Type", "Finding", "Pages Affected"], finding_rows, y,
+            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=ROW_CAP, row_height=ROW_H,
+        ) + Inches(0.2)
         if gsc_rich_results:
             insights.append(f"Search Console's own rich-result check: {gsc_pass_count:,} pass, {gsc_fail_count:,} fail.")
         if missing_types:
@@ -1444,8 +1538,8 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
             worst_label = "missing (required)" if worst["severity"] == "required" else "missing (recommended)"
             insights.append(f"{worst['type']} schema {worst_label} '{worst['field']}' on {worst['pages_missing']:,} page(s).")
 
-    if insights and bottoms:
-        _insights_strip(slide, Inches(0.6), max(bottoms) + Inches(0.2), Inches(11.9), insights)
+    if insights:
+        _insights_strip(slide, left, y, width, insights)
     return slide
 
 
@@ -1468,6 +1562,14 @@ _PAGE_ISSUE_FIXES = {
     "Missing mobile viewport meta tag": ("Add a viewport meta tag so the page renders correctly on mobile.", "warn", "technical"),
     "Missing canonical tag": ("Add a self-referencing canonical tag to prevent duplicate-content issues.", "info", "technical"),
     "Title tag longer than 60 characters": ("Shorten the title tag so it isn't truncated in search results.", "info", "seo"),
+    # The crawler (technical_seo_service.py's _meta_issues) emits this
+    # 8th real issue string, but it had no entry here at all — silently
+    # dropped from Tech Fixes entirely, on top of "technical" rarely
+    # having any of its other 3 issue types trip on a modern site. This
+    # is also the single most common real finding across most crawls,
+    # so leaving it out was the main reason Technical Issues so often
+    # came up empty next to a populated SEO Issues slide.
+    "Missing structured data (JSON-LD)": ("Add JSON-LD structured data matching the page's content type (Article, Product, FAQ, etc).", "warn", "technical"),
 }
 _ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
 
