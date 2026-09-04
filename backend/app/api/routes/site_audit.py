@@ -1301,9 +1301,9 @@ def _build_pptx_for_client(
             brand_wikipedia=brand_wikipedia,
             **data,
         )
-    except Exception:
+    except Exception as e:
         logger.exception("PPTX build failed for client %s", client_id)
-        raise HTTPException(status_code=500, detail="Report generation failed while building the PPTX.")
+        raise HTTPException(status_code=500, detail=f"Report generation failed while building the PPTX: {str(e)[:300]}")
 
     filename = f"{client.name.replace(' ', '-')}-seo-audit.pptx"
     return pptx_bytes, filename, content_issues
