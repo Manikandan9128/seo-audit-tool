@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -16,6 +17,7 @@ from app.schemas.client import ClientSelectProperties, GA4PropertyOut, GSCSiteOu
 from app.services import ga4_service, gsc_service
 
 router = APIRouter(prefix="/clients", tags=["google"])
+logger = logging.getLogger(__name__)
 
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
@@ -290,6 +292,17 @@ def analytics_report(
             result["traffic_sources"] = None
             result["page_performance"] = None
             result["errors"]["ga4"] = _google_error_message(e)
+        except Exception as e:
+            # Anything not from the Google API client itself (bad date math,
+            # a malformed response shape, etc.) previously crashed this whole
+            # endpoint with a blank 500 instead of degrading gracefully like
+            # the HttpError case above.
+            logger.exception("GA4 fetch failed for client %s", client_id)
+            result["traffic_overview"] = None
+            result["top_pages"] = None
+            result["traffic_sources"] = None
+            result["page_performance"] = None
+            result["errors"]["ga4"] = f"{type(e).__name__}: {str(e)[:200]}"
     else:
         result["traffic_overview"] = None
         result["top_pages"] = None
@@ -311,6 +324,10 @@ def analytics_report(
         except HttpError as e:
             result["search_queries"] = None
             result["errors"]["gsc"] = _google_error_message(e)
+        except Exception as e:
+            logger.exception("GSC fetch failed for client %s", client_id)
+            result["search_queries"] = None
+            result["errors"]["gsc"] = f"{type(e).__name__}: {str(e)[:200]}"
     else:
         result["search_queries"] = None
 
