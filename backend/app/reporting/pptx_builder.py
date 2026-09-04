@@ -615,7 +615,6 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
 
     top_counts: dict[str, int] = {}
     child_counts: dict[str, Counter] = {}
-    root_count = 0
     for r in site_audit_pages_rows:
         parsed = urlparse(r.get("page_url") or "")
         if parsed.netloc != domain:
@@ -624,7 +623,6 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
         if not segments:
             # A bare "/" page — already covered by the domain row itself, so
             # it doesn't need its own "/ (root)" child row.
-            root_count += 1
             continue
         if segments[0].lower() in _WP_ARCHIVE_PREFIXES and len(segments) > 1:
             directory = "/blog"
@@ -637,124 +635,38 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
             child_counts.setdefault(directory, Counter())[sub_directory] += 1
 
     ranked = sorted(top_counts.items(), key=lambda kv: -kv[1])
-    domain_total = sum(top_counts.values()) + root_count
 
     slide = _blank_slide(prs)
     _content_header(slide, "Website Structure")
     _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Site Audit", size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
 
-    # A real node-and-connector tree instead of an indented table — same
-    # underlying domain -> directory -> sub-directory data as before, just
-    # drawn as a hierarchy diagram (client asked for "hierarchy kind of
-    # website structure"). Slide width caps this at 6 top-level directory
-    # boxes and 2 sub-directory boxes per parent before it gets cramped;
-    # anything beyond that is called out in the insight line below instead
-    # of silently dropped.
-    MAX_TOP = 6
-    MAX_SUB = 2
-    shown = ranked[:MAX_TOP]
+    # Plain left-indented hierarchy list — matches Semrush's own Site
+    # Structure widget layout (client asked for "same like hierarchy like
+    # left side"), not the node-and-connector diagram this used to be.
+    # Structure only, deliberately no URL/Issues counts per row — those
+    # numbers already live on the SEO Issues and Priority Issues slides;
+    # the point here is showing the SHAPE of the site.
+    MAX_TOP = 12
+    MAX_SUB = 3
+    row_h = Inches(0.32)
+    max_y = Inches(6.9)
+    y = Inches(1.15)
 
-    root_w, root_h = 3.0, 0.62
-    root_left = 0.6 + (12.1 - root_w) / 2
-    root_top = 1.05
-    _tree_box(slide, Inches(root_left), Inches(root_top), Inches(root_w), Inches(root_h), domain, domain_total, bold=True, fill=HEADER_ROW_BG, name_size=13, count_size=11)
+    _textbox(slide, Inches(0.7), y, Inches(11), row_h, domain, size=15, bold=True, color=TEXT_DARK)
+    y += row_h
 
-    n2 = max(len(shown), 1)
-    gap2 = 0.15
-    box2_w = (12.1 - (n2 - 1) * gap2) / n2
-    box2_h = 0.68
-    spine1_y = root_top + root_h + 0.22
-    box2_top = spine1_y + 0.15
+    for directory, _count in ranked[:MAX_TOP]:
+        if y > max_y:
+            break
+        _textbox(slide, Inches(1.1), y, Inches(10.5), row_h, directory, size=12.5, color=TEXT_DARK)
+        y += row_h
+        for sub_directory, _sub_count in sorted((child_counts.get(directory) or {}).items(), key=lambda kv: -kv[1])[:MAX_SUB]:
+            if y > max_y:
+                break
+            _textbox(slide, Inches(1.5), y, Inches(10.1), row_h, f"/{sub_directory.split('/')[-1]}", size=11.5, color=TEXT_MUTED)
+            y += row_h
 
-    root_center_x = root_left + root_w / 2
-    _tree_line_v(slide, Inches(root_center_x), Inches(root_top + root_h), Inches(spine1_y))
-
-    centers2 = [0.6 + box2_w / 2 + i * (box2_w + gap2) for i in range(n2)]
-    if len(centers2) > 1:
-        _tree_line_h(slide, Inches(centers2[0]), Inches(centers2[-1]), Inches(spine1_y))
-
-    for i, (directory, count) in enumerate(shown):
-        left2 = 0.6 + i * (box2_w + gap2)
-        cx = centers2[i]
-        _tree_line_v(slide, Inches(cx), Inches(spine1_y), Inches(box2_top))
-        label = _truncate_cell(directory, box2_w - 0.2, size_pt=11)
-        _tree_box(slide, Inches(left2), Inches(box2_top), Inches(box2_w), Inches(box2_h), label, count, name_size=11, count_size=9.5)
-
-        subs = child_counts.get(directory)
-        if not subs or len(subs) < 2:
-            continue
-        top_subs = sorted(subs.items(), key=lambda kv: -kv[1])[:MAX_SUB]
-        n3 = len(top_subs)
-        gap3 = 0.1
-        box3_w = (box2_w - (n3 - 1) * gap3) / n3
-        box3_h = 0.58
-        spine2_y = box2_top + box2_h + 0.16
-        box3_top = spine2_y + 0.12
-        parent_bottom = box2_top + box2_h
-        _tree_line_v(slide, Inches(cx), Inches(parent_bottom), Inches(spine2_y))
-        centers3 = [left2 + box3_w / 2 + j * (box3_w + gap3) for j in range(n3)]
-        if len(centers3) > 1:
-            _tree_line_h(slide, Inches(centers3[0]), Inches(centers3[-1]), Inches(spine2_y))
-        for j, (sub_directory, sub_count) in enumerate(top_subs):
-            left3 = left2 + j * (box3_w + gap3)
-            _tree_line_v(slide, Inches(centers3[j]), Inches(spine2_y), Inches(box3_top))
-            sub_label = _truncate_cell(sub_directory.split("/")[-1], box3_w - 0.15, size_pt=9.5)
-            _tree_box(slide, Inches(left3), Inches(box3_top), Inches(box3_w), Inches(box3_h), f"/{sub_label}", sub_count, name_size=9.5, count_size=8.5)
-
-    insights = [f"{domain_total:,} total crawled URLs across {len(ranked)} top-level director{'y' if len(ranked) == 1 else 'ies'}."]
-    if len(ranked) > MAX_TOP:
-        insights.append(f"Showing the top {MAX_TOP} directories by URL count — {len(ranked) - MAX_TOP} more not shown here.")
-    _insights_strip(slide, Inches(0.6), Inches(5.4), Inches(11.9), insights)
     return slide
-
-
-def _tree_box(slide, left, top, width, height, name: str, count: int, bold: bool = False, fill=None, name_size: float = 11, count_size: float = 9.5):
-    """One node in the Website Structure hierarchy diagram — a compact
-    rounded box with the directory name on top and its URL count below,
-    matching the deck's existing card styling (see _card) rather than a
-    plain shape, so the tree reads as part of the same visual system."""
-    box = slide.shapes.add_shape(5, left, top, width, height)  # rounded rectangle
-    try:
-        box.adjustments[0] = 0.12
-    except (IndexError, AttributeError):
-        pass
-    box.fill.solid()
-    box.fill.fore_color.rgb = fill or WHITE
-    box.line.color.rgb = _accent() if bold else CARD_BORDER
-    box.line.width = Pt(1.25 if bold else 0.75)
-    box.shadow.inherit = False
-    tf = box.text_frame
-    tf.word_wrap = True
-    tf.margin_left = tf.margin_right = Pt(2)
-    tf.margin_top = Pt(3)
-    tf.margin_bottom = Pt(2)
-    p0 = tf.paragraphs[0]
-    p0.alignment = PP_ALIGN.CENTER
-    r0 = p0.add_run()
-    r0.text = name
-    r0.font.size = Pt(name_size)
-    r0.font.bold = bold
-    r0.font.color.rgb = TEXT_DARK
-    p1 = tf.add_paragraph()
-    p1.alignment = PP_ALIGN.CENTER
-    r1 = p1.add_run()
-    r1.text = f"{count:,} URLs"
-    r1.font.size = Pt(count_size)
-    r1.font.bold = True
-    r1.font.color.rgb = _accent() if bold else TEXT_MUTED
-    return box
-
-
-def _tree_line_v(slide, x, y1, y2):
-    line = slide.shapes.add_shape(1, x, min(y1, y2), Pt(1.5), abs(int(y2) - int(y1)) or Pt(1))
-    _fill(line, CARD_BORDER)
-    line.shadow.inherit = False
-
-
-def _tree_line_h(slide, x1, x2, y):
-    line = slide.shapes.add_shape(1, min(x1, x2), y, abs(int(x2) - int(x1)) or Pt(1), Pt(1.5))
-    _fill(line, CARD_BORDER)
-    line.shadow.inherit = False
 
 
 def add_company_overview_slide(prs: Presentation, client_name: str, summary: str):
