@@ -7,7 +7,7 @@ only in whatever data was actually uploaded for that competitor — same
 
 generate_competitor_narratives_batch writes narratives for ALL of a
 client's competitors in ONE AI call instead of one call per competitor —
-deliberate: this app's free-tier AI quota (Gemini's daily cap, xAI's
+deliberate: this app's free-tier AI quota (Gemini's daily cap, Groq's
 per-minute/hourly cap) is the binding constraint on report generation, and
 competitor narratives were routinely the single largest chunk of a
 report's 7-8 total AI calls (up to 5, one per competitor). Collapsing them
@@ -101,7 +101,7 @@ def _call_and_parse(prompt: str, max_tokens: int) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Some models (seen with xAI's grok models) prepend a line
+        # Some models (seen with Groq's openai/gpt-oss-120b) prepend a line
         # or two of commentary/reasoning before the JSON object despite the
         # "return ONLY valid JSON" instruction - the fence-strip above only
         # catches ``` markers at the very start/end, not stray prose. Fall

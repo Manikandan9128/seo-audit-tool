@@ -38,7 +38,7 @@ class ReportGenerationJob(Base):
     # this run (keyword clustering, Core Problem, a competitor narrative,
     # Next Steps) — e.g. a rate limit or quota message. Deliberately NEVER
     # rendered into the PPTX itself (a client-facing deliverable is no
-    # place for "xAI request failed: 429") — surfaced here instead so the
+    # place for "Groq request failed: 429") — surfaced here instead so the
     # agency user sees it in the app before deciding whether to regenerate
     # or send the file as-is.
     content_generation_issues: Mapped[list | None] = mapped_column(JSONB, nullable=True)

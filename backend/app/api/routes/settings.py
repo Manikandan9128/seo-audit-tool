@@ -7,13 +7,13 @@ from app.models.user import User
 from app.services.app_settings_service import (
     masked_claude_api_key,
     masked_gemini_api_key,
-    masked_xai_api_key,
+    masked_groq_api_key,
     set_claude_api_key,
     set_gemini_api_key,
-    set_xai_api_key,
+    set_groq_api_key,
     test_claude_key,
     test_gemini_key,
-    test_xai_key,
+    test_groq_key,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -23,8 +23,8 @@ class GeminiKeyIn(BaseModel):
     gemini_api_key: str
 
 
-class XaiKeyIn(BaseModel):
-    xai_api_key: str
+class GroqKeyIn(BaseModel):
+    groq_api_key: str
 
 
 class ClaudeKeyIn(BaseModel):
@@ -34,13 +34,13 @@ class ClaudeKeyIn(BaseModel):
 @router.get("")
 def get_settings(current_user: User = Depends(get_current_user)):
     gemini_masked = masked_gemini_api_key()
-    xai_masked = masked_xai_api_key()
+    groq_masked = masked_groq_api_key()
     claude_masked = masked_claude_api_key()
     return {
         "gemini_api_key_set": gemini_masked is not None,
         "gemini_api_key_masked": gemini_masked,
-        "xai_api_key_set": xai_masked is not None,
-        "xai_api_key_masked": xai_masked,
+        "groq_api_key_set": groq_masked is not None,
+        "groq_api_key_masked": groq_masked,
         "claude_api_key_set": claude_masked is not None,
         "claude_api_key_masked": claude_masked,
     }
@@ -72,31 +72,32 @@ def test_gemini_api_key(current_user: User = Depends(get_current_user)):
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
-@router.put("/xai-api-key")
-def update_xai_api_key(
-    payload: XaiKeyIn,
+@router.put("/groq-api-key")
+def update_groq_api_key(
+    payload: GroqKeyIn,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Saves the key, then immediately makes one real xAI call to confirm
+    """Saves the key, then immediately makes one real Groq call to confirm
     it actually works — so a bad key is caught right here instead of
-    failing later on some client's report. xAI is tried first — covers
-    the report-generation burst of ~8-10 AI calls before falling back to
-    Gemini's scarcer daily quota."""
-    set_xai_api_key(db, payload.xai_api_key)
-    test = test_xai_key()
+    failing later on some client's report. Groq's free tier has much
+    higher per-minute limits than Gemini's, so it's tried first — covers
+    the report-generation burst of ~8-10 AI calls that can trip Gemini's
+    per-minute cap even on the same day the daily quota reset."""
+    set_groq_api_key(db, payload.groq_api_key)
+    test = test_groq_key()
     return {
-        "xai_api_key_set": True,
-        "xai_api_key_masked": masked_xai_api_key(),
+        "groq_api_key_set": True,
+        "groq_api_key_masked": masked_groq_api_key(),
         "test_ok": test["ok"],
         "test_message": test["message"],
     }
 
 
-@router.post("/xai-api-key/test")
-def test_xai_api_key(current_user: User = Depends(get_current_user)):
+@router.post("/groq-api-key/test")
+def test_groq_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
-    test = test_xai_key()
+    test = test_groq_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 

@@ -1,4 +1,4 @@
-"""Runtime-editable settings (Gemini + xAI + Claude API keys) backed by the
+"""Runtime-editable settings (Gemini + Groq + Claude API keys) backed by the
 app_settings table, so the user can change them from the UI without editing
 .env or restarting the server. Any one key alone is enough — see
 app.integrations.text_ai_client for the fallback logic that picks whichever
@@ -11,12 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.integrations.gemini_errors import friendly_gemini_error
-from app.integrations.text_ai_client import XAI_API_URL, XAI_MODEL
+from app.integrations.text_ai_client import GROQ_API_URL, GROQ_MODEL
 from app.models.app_setting import AppSetting
 
 GEMINI_API_KEY = "gemini_api_key"
 GEMINI_MODEL = "gemini-3.6-flash"
-XAI_API_KEY = "xai_api_key"
+GROQ_API_KEY = "groq_api_key"
 CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
 
@@ -27,9 +27,9 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, GEMINI_API_KEY)
     if row and row.value:
         settings.gemini_api_key = row.value
-    row = db.get(AppSetting, XAI_API_KEY)
+    row = db.get(AppSetting, GROQ_API_KEY)
     if row and row.value:
-        settings.xai_api_key = row.value
+        settings.groq_api_key = row.value
     row = db.get(AppSetting, CLAUDE_API_KEY)
     if row and row.value:
         settings.claude_api_key = row.value
@@ -77,43 +77,49 @@ def masked_gemini_api_key() -> str | None:
     return _mask(settings.gemini_api_key)
 
 
-def set_xai_api_key(db: Session, value: str) -> None:
-    settings.xai_api_key = _set_key(db, XAI_API_KEY, value)
+def set_groq_api_key(db: Session, value: str) -> None:
+    settings.groq_api_key = _set_key(db, GROQ_API_KEY, value)
 
 
-def test_xai_key() -> dict:
+def test_groq_key() -> dict:
     """Makes one minimal real call to confirm the currently-configured key
     actually works — not just that it was saved. Returns {ok, message}."""
-    if not settings.xai_api_key:
-        return {"ok": False, "message": "No xAI API key configured"}
+    if not settings.groq_api_key:
+        return {"ok": False, "message": "No Groq API key configured"}
     try:
         response = httpx.post(
-            XAI_API_URL,
-            headers={"Authorization": f"Bearer {settings.xai_api_key}"},
+            GROQ_API_URL,
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
             json={
-                "model": XAI_MODEL,
+                "model": GROQ_MODEL,
                 "messages": [{"role": "user", "content": "Reply with just: OK"}],
+                # GROQ_MODEL (openai/gpt-oss-120b) is a reasoning model that
+                # can spend its token budget on internal reasoning before
+                # emitting the visible answer — a tight budget here
+                # previously cut it off before any visible content came
+                # through, misreporting a genuinely working key as
+                # returning "(empty)".
                 "max_tokens": 200,
             },
             timeout=30,
         )
         if response.status_code == 401:
-            return {"ok": False, "message": "xAI rejected this API key — check it was copied correctly and hasn't been revoked."}
+            return {"ok": False, "message": "Groq rejected this API key — check it was copied correctly and hasn't been revoked."}
         if response.status_code == 429:
-            return {"ok": False, "message": "xAI rate limit hit — wait a bit and try again."}
+            return {"ok": False, "message": "Groq rate limit hit — wait a bit and try again."}
         if response.status_code >= 400:
-            # The body carries xAI's actual reason (bad model, malformed
+            # The body carries Groq's actual reason (bad model, malformed
             # request, etc.) — raise_for_status()'s default message is just
-            # the URL + status code, not enough to diagnose a 400.
-            return {"ok": False, "message": f"xAI request failed: {response.status_code} {response.reason_phrase}: {response.text[:300]}"}
+            # the URL + status code, not enough to diagnose a 4xx.
+            return {"ok": False, "message": f"Groq request failed: {response.status_code} {response.reason_phrase}: {response.text[:300]}"}
         text = (response.json()["choices"][0]["message"]["content"] or "").strip()
         return {"ok": True, "message": f"Key works — model replied: {text[:80] or '(empty)'}"}
     except Exception as e:
-        return {"ok": False, "message": f"xAI request failed: {str(e)[:300]}"}
+        return {"ok": False, "message": f"Groq request failed: {str(e)[:300]}"}
 
 
-def masked_xai_api_key() -> str | None:
-    return _mask(settings.xai_api_key)
+def masked_groq_api_key() -> str | None:
+    return _mask(settings.groq_api_key)
 
 
 def set_claude_api_key(db: Session, value: str) -> None:
