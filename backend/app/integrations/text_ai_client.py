@@ -97,15 +97,27 @@ def _wait_for_groq_slot():
         _last_groq_call_at = time.monotonic()
 
 
+# Some free-tier Groq orgs are capped as low as 8000 tokens-per-minute
+# total (prompt + completion combined) — confirmed real: a 413 "Request
+# too large" hit at prompt≈4900 + max_tokens=4096 defaulted by an unrelated
+# caller. Callers pass max_tokens sized for the completion they actually
+# need, with no idea what the prompt costs against this shared budget, so
+# clamp here using a rough chars/4 token estimate rather than trusting the
+# caller's number outright.
+_GROQ_TPM_BUDGET = 7500  # stays under the observed 8000 cap with slack
+
+
 def _try_groq(prompt: str, max_tokens: int) -> str:
     _wait_for_groq_slot()
+    estimated_prompt_tokens = len(prompt) // 4
+    safe_max_tokens = max(256, min(max_tokens, _GROQ_TPM_BUDGET - estimated_prompt_tokens))
     response = httpx.post(
         GROQ_API_URL,
         headers={"Authorization": f"Bearer {settings.groq_api_key}"},
         json={
             "model": GROQ_MODEL,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
+            "max_tokens": safe_max_tokens,
         },
         timeout=60,
     )
