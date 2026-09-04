@@ -686,7 +686,13 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
             break
         _textbox(slide, Inches(1.1), y, Inches(10.5), row_h, directory, size=12.5, color=TEXT_DARK)
         y += row_h
-        for sub_directory, _sub_count in sorted((child_counts.get(directory) or {}).items(), key=lambda kv: -kv[1])[:MAX_SUB]:
+        # Same reasoning as the top-level filter above, one level down:
+        # a sub-path with only 1 page under it is a single leaf page
+        # (e.g. one blog post at /blog/some-post-slug), not a real
+        # sub-section — confirmed live, individual post slugs were
+        # showing up as if they were meaningful /blog sub-folders.
+        real_subs = [(d, c) for d, c in child_counts.get(directory, {}).items() if c >= 2]
+        for sub_directory, _sub_count in sorted(real_subs, key=lambda kv: -kv[1])[:MAX_SUB]:
             if y > max_y:
                 break
             _textbox(slide, Inches(1.5), y, Inches(10.1), row_h, f"/{sub_directory.split('/')[-1]}", size=11.5, color=TEXT_MUTED)
