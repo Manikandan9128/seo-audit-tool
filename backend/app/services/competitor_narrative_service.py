@@ -20,7 +20,7 @@ response is still recovered per-domain (see _parse_batch_result)."""
 import json
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, generate_text
 
 BATCH_PROMPT_TEMPLATE = """You are an SEO/growth consultant writing competitive-analysis sections for \
 {client_name} ({client_domain}), comparing them against {competitor_count} competitors. Write ONE independent \
@@ -115,21 +115,47 @@ def _call_and_parse(prompt: str, max_tokens: int) -> dict:
         return {"error": "AI did not return valid JSON", "raw": raw[:500]}
 
 
-def generate_competitor_narratives_batch(
-    client_name: str, client_domain: str, competitors_facts: dict[str, dict]
-) -> dict[str, dict]:
-    """One AI call covering every competitor at once. Returns {domain:
-    {"best_at", "areas_of_focus", "growth_opportunity"}} for each domain
-    that came back well-formed, and {domain: {"error": ...}} for any that
-    didn't — a domain missing entirely from the response, or present but
-    missing one of the three required keys, is reported as failed for
-    just that domain rather than silently dropped or treated as a total
-    failure. If the call fails outright (no valid JSON at all), every
-    domain in competitors_facts gets the same error."""
-    if not competitors_facts:
-        return {}
+# Sizing a chunk against Groq's own TPM budget (not some independent
+# number) means a chunk that fits is one Groq can actually serve outright
+# instead of raising and falling through to Gemini/Claude every time — the
+# rolling-window reserve in text_ai_client.py then naturally spaces
+# multiple Groq-served chunks across successive minutes as needed. A chunk
+# that still doesn't fit (one competitor's own homepage_text alone is huge)
+# still falls through per-call exactly as before; this is a sizing target,
+# not a hard guarantee.
+_CHUNK_OUTPUT_TOKENS_PER_DOMAIN = 4096  # matches the pre-batching per-competitor budget
 
-    domains = list(competitors_facts.keys())
+
+def _chunk_domains(competitors_facts: dict[str, dict], template_overhead_chars: int) -> list[list[str]]:
+    """Greedily groups domains so each chunk's estimated prompt+output stays
+    within GROQ_TPM_BUDGET — one domain that alone exceeds it still gets its
+    own (oversized) chunk rather than being split further, since a single
+    competitor's narrative can't meaningfully shrink below that."""
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    current_data_chars = 0
+    for domain, facts in competitors_facts.items():
+        domain_chars = len(json.dumps({domain: facts}, default=str))
+        candidate_chars = current_data_chars + domain_chars
+        candidate_tokens = (template_overhead_chars + candidate_chars) // 4 + _CHUNK_OUTPUT_TOKENS_PER_DOMAIN * (len(current) + 1)
+        if current and candidate_tokens > GROQ_TPM_BUDGET:
+            chunks.append(current)
+            current, current_data_chars = [], 0
+        current.append(domain)
+        current_data_chars += domain_chars
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _generate_chunk(
+    client_name: str, client_domain: str, chunk_facts: dict[str, dict]
+) -> dict[str, dict]:
+    """One AI call covering just this chunk's competitors — same retry-once
+    discipline as the old single-batch call, scoped to a subset of domains
+    small enough that Groq can actually serve it instead of always
+    overflowing to the next provider."""
+    domains = list(chunk_facts.keys())
     prompt = BATCH_PROMPT_TEMPLATE.format(
         client_name=client_name,
         client_domain=client_domain,
@@ -138,13 +164,9 @@ def generate_competitor_narratives_batch(
         # up per-domain here (capped higher overall) so richer per-domain
         # data — especially homepage_text — isn't starved just because
         # several competitors now share one prompt.
-        data_json=json.dumps(competitors_facts, indent=2, default=str)[:8000 * len(domains)],
+        data_json=json.dumps(chunk_facts, indent=2, default=str)[:8000 * len(domains)],
     )
-    # Output now covers up to 5 competitors' full narratives in one
-    # response instead of one competitor's — the default 4096-token budget
-    # (sized for a single narrative) would truncate a multi-competitor
-    # response well before every domain gets its full section.
-    max_tokens = min(4096 * len(domains), 16000)
+    max_tokens = min(_CHUNK_OUTPUT_TOKENS_PER_DOMAIN * len(domains), 16000)
 
     def _parse_batch_result(result: dict) -> dict[str, dict] | None:
         """Returns {domain: narrative-or-error} if the response was usable
@@ -171,8 +193,8 @@ def generate_competitor_narratives_batch(
 
     # A single malformed-JSON (or unusable-shape) response is a
     # non-deterministic model hiccup, not a systemic failure — same
-    # discipline as the old per-competitor retry, now applied to the whole
-    # batch: one retry on a fresh sample before giving up on everyone.
+    # discipline as the old per-competitor retry, now applied per chunk:
+    # one retry on a fresh sample before giving up on this chunk's domains.
     retry_result = _call_and_parse(prompt, max_tokens)
     if "error" not in retry_result:
         parsed = _parse_batch_result(retry_result)
@@ -182,3 +204,38 @@ def generate_competitor_narratives_batch(
 
     error = result.get("error", "Unknown error")
     return {domain: {"error": error} for domain in domains}
+
+
+def generate_competitor_narratives_batch(
+    client_name: str, client_domain: str, competitors_facts: dict[str, dict]
+) -> dict[str, dict]:
+    """Returns {domain: {"best_at", "areas_of_focus", "growth_opportunity"}}
+    for each domain that came back well-formed, and {domain: {"error": ...}}
+    for any that didn't — a domain missing entirely from its chunk's
+    response, or present but missing one of the three required keys, is
+    reported as failed for just that domain rather than silently dropped or
+    treated as a total failure.
+
+    Splits competitors_facts into GROQ_TPM_BUDGET-sized chunks (one AI call
+    per chunk, not per competitor) rather than one call for all of them —
+    confirmed real: a single call covering 4-5 competitors needs up to
+    16000 output tokens, which Groq's ~7500 tokens/minute shared budget can
+    never serve regardless of retries or provider order, so it always fell
+    through past Groq (or worse, got silently truncated before that
+    fallthrough existed). Chunking keeps each call within what Groq can
+    actually deliver, and text_ai_client's rolling-window budget reservation
+    naturally spaces multiple Groq-served chunks across successive minutes
+    instead of bursting past the shared limit."""
+    if not competitors_facts:
+        return {}
+
+    template_overhead_chars = len(BATCH_PROMPT_TEMPLATE.format(
+        client_name=client_name, client_domain=client_domain, competitor_count=1, data_json="",
+    ))
+    chunks = _chunk_domains(competitors_facts, template_overhead_chars)
+
+    results: dict[str, dict] = {}
+    for chunk_domains in chunks:
+        chunk_facts = {d: competitors_facts[d] for d in chunk_domains}
+        results.update(_generate_chunk(client_name, client_domain, chunk_facts))
+    return results

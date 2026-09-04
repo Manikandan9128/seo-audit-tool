@@ -60,19 +60,40 @@ def _call_with_timeout(fn, timeout_seconds: float, *args, **kwargs):
     finally:
         pool.shutdown(wait=False)
 
-# A single report generation makes 7-8 sequential AI calls (company
-# overview, core problem, keyword clustering, up to 5 competitor
-# narratives, next steps). Whenever Gemini's DAILY quota is exhausted
-# (confirmed on a real report), every one of those calls falls through to
-# Groq — with no spacing, that's enough back-to-back requests to burst past
-# Groq's free-tier per-minute token limit, and the existing single 20s
-# retry on 429 isn't always enough once several calls are already queued
-# right behind each other. This tracks the last Groq call's timestamp
-# process-wide and waits out the minimum interval before the next one, so
-# Groq calls spread out across the run instead of bursting.
+# A single report generation makes several sequential AI calls (company
+# overview, core problem, keyword clustering, competitor narratives, next
+# steps) that can all land on Groq back-to-back. Groq's real constraint is
+# a rolling 60s token budget (prompt + completion combined, see
+# GROQ_TPM_BUDGET below) — not a fixed gap between calls — so this tracks
+# every Groq call's (timestamp, tokens_used) in the trailing window and
+# blocks a new call only long enough for enough of that window to age out
+# and free the budget it needs, then lets it through immediately. A caller
+# that needs more than one Groq call's worth of tokens (e.g. competitor
+# narratives split into several budget-sized chunks) naturally spreads
+# across the next minute's budget instead of bursting past it.
 _groq_pacing_lock = threading.Lock()
-_last_groq_call_at: float | None = None
-_GROQ_MIN_INTERVAL_SECONDS = 4.0
+_groq_usage_window: list[tuple[float, int]] = []
+_GROQ_WINDOW_SECONDS = 60.0
+
+
+def _reserve_groq_budget(needed_tokens: int) -> None:
+    while True:
+        with _groq_pacing_lock:
+            now = time.monotonic()
+            cutoff = now - _GROQ_WINDOW_SECONDS
+            while _groq_usage_window and _groq_usage_window[0][0] < cutoff:
+                _groq_usage_window.pop(0)
+            used = sum(tokens for _, tokens in _groq_usage_window)
+            # The "used == 0" case lets a single oversized-but-otherwise-
+            # allowed call through once nothing else is in the window,
+            # rather than looping forever — _try_groq's own too-small-to-
+            # serve-at-all check runs before this and already routes a
+            # request that can never fit to the next provider instead.
+            if used == 0 or used + needed_tokens <= GROQ_TPM_BUDGET:
+                _groq_usage_window.append((now, needed_tokens))
+                return
+            wait_seconds = _groq_usage_window[0][0] + _GROQ_WINDOW_SECONDS - now
+        time.sleep(max(wait_seconds, 0.5))
 
 
 class NoAIProviderConfigured(Exception):
@@ -85,32 +106,21 @@ def _try_gemini(prompt: str) -> str:
     return (response.text or "").strip()
 
 
-def _wait_for_groq_slot():
-    """Blocks until at least _GROQ_MIN_INTERVAL_SECONDS have passed since
-    the last Groq call anywhere in this process."""
-    global _last_groq_call_at
-    with _groq_pacing_lock:
-        if _last_groq_call_at is not None:
-            elapsed = time.monotonic() - _last_groq_call_at
-            if elapsed < _GROQ_MIN_INTERVAL_SECONDS:
-                time.sleep(_GROQ_MIN_INTERVAL_SECONDS - elapsed)
-        _last_groq_call_at = time.monotonic()
-
-
 # Some free-tier Groq orgs are capped as low as 8000 tokens-per-minute
 # total (prompt + completion combined) — confirmed real: a 413 "Request
 # too large" hit at prompt≈4900 + max_tokens=4096 defaulted by an unrelated
 # caller. Callers pass max_tokens sized for the completion they actually
 # need, with no idea what the prompt costs against this shared budget, so
 # clamp here using a rough chars/4 token estimate rather than trusting the
-# caller's number outright.
-_GROQ_TPM_BUDGET = 7500  # stays under the observed 8000 cap with slack
+# caller's number outright. Public (no leading underscore) so a caller that
+# needs more output than fits one call — e.g. competitor narratives — can
+# size its own chunks against the same number instead of guessing.
+GROQ_TPM_BUDGET = 7500  # stays under the observed 8000 cap with slack
 
 
 def _try_groq(prompt: str, max_tokens: int) -> str:
-    _wait_for_groq_slot()
     estimated_prompt_tokens = len(prompt) // 4
-    safe_max_tokens = max(256, min(max_tokens, _GROQ_TPM_BUDGET - estimated_prompt_tokens))
+    safe_max_tokens = max(256, min(max_tokens, GROQ_TPM_BUDGET - estimated_prompt_tokens))
     if safe_max_tokens < max_tokens // 2:
         # Confirmed real: the competitor-narrative batch call (up to 16000
         # requested tokens for 4-5 competitors' full sections in one JSON
@@ -126,6 +136,7 @@ def _try_groq(prompt: str, max_tokens: int) -> str:
             f"prompt too large for Groq's shared TPM budget to leave room for the requested "
             f"output ({safe_max_tokens} available vs {max_tokens} needed) — skipping to next provider"
         )
+    _reserve_groq_budget(estimated_prompt_tokens + safe_max_tokens)
     response = httpx.post(
         GROQ_API_URL,
         headers={"Authorization": f"Bearer {settings.groq_api_key}"},
