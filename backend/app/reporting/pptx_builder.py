@@ -12,7 +12,6 @@ from urllib.parse import urlparse
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
-from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.util import Inches, Pt, Emu
 
 from app.services.keyword_relevance_service import (
@@ -83,22 +82,6 @@ def _fill(shape, color):
     shape.fill.solid()
     shape.fill.fore_color.rgb = color
     shape.line.fill.background()
-
-
-def _link_run_to_slide(run, target_slide):
-    """Internal same-deck hyperlink (jump to another slide on click) — not
-    supported by python-pptx's public Hyperlink.address setter, which only
-    ever creates an external (is_external=True) relationship. Google
-    "python-pptx internal slide hyperlink" for the underlying OOXML shape:
-    an a:hlinkClick with r:id pointing at a real (not external) part
-    relationship, plus an action="ppaction://hlinksldjump" attribute —
-    without that action attribute PowerPoint treats it as an inert link
-    with nothing to jump to. Confirmed the relationship + action round-
-    trips correctly through a save/reopen cycle."""
-    rId = run.part.relate_to(target_slide.part, RT.SLIDE, is_external=False)
-    hlink_click = run._r.get_or_add_rPr().get_or_add_hlinkClick()
-    hlink_click.rId = rId
-    hlink_click.action = "ppaction://hlinksldjump"
 
 
 def _textbox(slide, left, top, width, height, text, size=14, bold=False, color=TEXT_DARK, align=PP_ALIGN.LEFT):
@@ -855,22 +838,6 @@ def add_solutions_products_slide(prs: Presentation, overview: dict):
             run.font.color.rgb = TEXT_MUTED
             y += line_h * lines + Inches(0.2)
 
-    if industries:
-        if y < Inches(6.7):
-            _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Industries", size=15, bold=True, color=_accent())
-            y += Inches(0.4)
-            _textbox(slide, Inches(0.9), y, Inches(11.3), Inches(0.5), ", ".join(industries[:12]), size=12)
-        else:
-            # Didn't fit on the main slide — a long Solutions/Products list
-            # can push y past the card before Industries even starts (seen
-            # live on a real report: Industries vanished with no trace).
-            # Real client data never gets silently dropped for lack of
-            # room — give it its own slide instead.
-            overflow_slide = _blank_slide(prs)
-            _content_header(overflow_slide, "Industries Served")
-            _card(overflow_slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(1.6))
-            _textbox(overflow_slide, Inches(0.9), Inches(1.4), Inches(11.3), Inches(1.0), ", ".join(industries[:12]), size=14)
-
     return slide
 
 
@@ -1133,15 +1100,15 @@ def add_priority_issues_slide(
     headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks", "Priority Score"]
     col_widths = [3.6, 4.2, 1.3, 1.3, 1.7]
     # Issue(s) previously truncated to one line — "14 issues" behind a count
-    # gave no way to see what those 14 actually were. Wrapping to 3 lines
-    # (taller rows, see row_height below) shows far more of the real list;
-    # row_cap must drop from 9 to 6 so 7 taller rows (6 + header) still fit
-    # the slide instead of colliding with the insights strip below it —
-    # shown stays in sync with row_cap for the same reason noted below.
+    # gave no way to see what those 14 actually were. A separate "Full
+    # Detail" appendix slide used to carry the untruncated text, but it just
+    # repeated this same table's rows in bullet form — merged back into this
+    # slide instead: taller rows (row_height 0.72) + a 4-line wrap cap on
+    # the Issue(s) column show the real list directly, no second slide.
     ROW_CAP = 6
     shown = ranked[:ROW_CAP]
     rows = [
-        (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1], max_lines=3), f"{pv:,}", f"{cl:,}", f"{score:,}")
+        (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1], max_lines=4), f"{pv:,}", f"{cl:,}", f"{score:,}")
         for url, issues, pv, cl, score in shown
     ]
     top = ranked[0]
@@ -1152,13 +1119,8 @@ def add_priority_issues_slide(
     slide = _table_slide(
         prs, "Priority Issues (by Traffic Impact)", headers, rows, col_widths=col_widths,
         source="Own crawl + Google Analytics + Search Console", insights=insights,
-        row_cap=ROW_CAP, row_height=0.65, wrap_cols={1},
+        row_cap=ROW_CAP, row_height=0.72, wrap_cols={1},
     )
-    # Full per-URL issue text already sits in the wrapped cell (see rows
-    # above), but client also asked for a click-through so the count/text
-    # isn't the only way to see it — one appendix slide, one internal
-    # hyperlink per row from the Issue(s) cell.
-    detail_slide = add_priority_issues_detail_slide(prs, shown)
 
     # Page URL cell links out to the live page itself.
     # shown must match ROW_CAP above — the hyperlink loop below walks
@@ -1172,38 +1134,7 @@ def add_priority_issues_slide(
         for i, (url, issues, *_rest) in enumerate(shown, start=1):
             for run in table.cell(i, 0).text_frame.paragraphs[0].runs:
                 run.hyperlink.address = url
-            if detail_slide:
-                for run in table.cell(i, 1).text_frame.paragraphs[0].runs:
-                    _link_run_to_slide(run, detail_slide)
         break
-    return slide
-
-
-def add_priority_issues_detail_slide(prs: Presentation, shown: list[tuple]):
-    """Full per-URL issue breakdown backing the Priority Issues table's
-    Issue(s) column — jumped to via an internal hyperlink on that cell.
-    Client asked to see the actual issue names behind a bare count, not
-    just a number with no way to expand it. shown is the same (url,
-    issues, pageviews, clicks, score) tuples already ranked/capped for
-    the main table, so this always covers exactly the rows shown there."""
-    if not shown:
-        return None
-    slide = _blank_slide(prs)
-    _content_header(slide, "Priority Issues — Full Detail")
-    y = Inches(1.05)
-    max_y = Inches(7.15)
-    for url, issues, *_rest in shown:
-        if y > max_y:
-            break
-        _textbox(slide, Inches(0.6), y, Inches(11.9), Inches(0.26), url, size=12.5, bold=True, color=TEXT_DARK)
-        y += Inches(0.3)
-        items = [i.strip() for i in issues.split(",")] if "," in issues else [issues]
-        for item in items:
-            if y > max_y:
-                break
-            _textbox(slide, Inches(0.95), y, Inches(11.4), Inches(0.24), f"•  {item}", size=11, color=TEXT_MUTED)
-            y += Inches(0.24)
-        y += Inches(0.18)
     return slide
 
 
@@ -2425,65 +2356,53 @@ def _opportunity_quadrant(slide, left, top, width, height, label, items, color):
 
 
 def add_competitor_opportunity_slide(prs: Presentation, client_name: str, competitor_domain: str, narrative: dict):
-    """Competitor Opportunity Analysis — the manual-deck-style bridge
-    between "What {Competitor} Does Well" (evidence) and "Areas of Focus"
-    (prescriptive advice): a four-quadrant WHAT COMPETITOR HAS / WHAT
-    CLIENT LACKS / WHY IT MATTERS / WHAT CLIENT SHOULD BUILD layout.
-    Grounded only in narrative["opportunity_analysis"] (produced in the
-    same batched AI call as best_at/areas_of_focus, see
-    competitor_narrative_service) — absent (no slide) if the AI didn't
-    produce it, same silent-skip pattern as every other AI-derived slide
+    """Competitor Opportunity Analysis — merged with the former standalone
+    "Areas of Focus for {Client} (vs {Competitor})" slide (2026-09-07, per
+    SEO team + account manager review: the two slides said the same thing
+    twice — opportunity_analysis's "client_should_build" quadrant was just
+    a shorter restatement of the areas_of_focus bullets below it, so that
+    quadrant is dropped and the two slides folded into one instead of
+    trimming content). Top: three quadrants (WHAT COMPETITOR HAS / WHAT
+    CLIENT LACKS / WHY IT MATTERS) — the evidence/reasoning. Bottom: the
+    areas_of_focus bulleted recommendation list plus a closing "Strategic
+    Growth Opportunity" paragraph — the prescriptive advice, in Cyces'
+    own brand red (not the client's brand color) since this is
+    agency-authored strategic content. Height-budgeted throughout so long
+    AI-generated text can't overflow into the footer. Grounded only in
+    narrative["opportunity_analysis"] / ["areas_of_focus"] /
+    ["growth_opportunity"] (same batched AI call, see
+    competitor_narrative_service) — absent (no slide) if the AI produced
+    none of it, same silent-skip pattern as every other AI-derived slide
     in this file."""
     opp = narrative.get("opportunity_analysis") or {}
     has = opp.get("competitor_has") or []
     lacks = opp.get("client_lacks") or []
     why = opp.get("why_it_matters") or []
-    build = opp.get("client_should_build") or []
-    if not any([has, lacks, why, build]):
-        return None
-
-    slide = _blank_slide(prs)
-    _content_header(slide, f"Competitor Opportunity Analysis: {competitor_domain}")
-
-    gutter = Inches(0.3)
-    left0, top0 = Inches(0.6), Inches(1.1)
-    total_w, total_h = Inches(12.1), Inches(5.9)
-    col_w = int((total_w - gutter) / 2)
-    row_h = int((total_h - gutter) / 2)
-
-    _opportunity_quadrant(slide, left0, top0, col_w, row_h, f"What {competitor_domain} Has", has[:4], _accent())
-    _opportunity_quadrant(slide, left0 + col_w + gutter, top0, col_w, row_h, f"What {client_name} Lacks", lacks[:4], BAD)
-    _opportunity_quadrant(slide, left0, top0 + row_h + gutter, col_w, row_h, "Why It Matters", why[:4], WARN)
-    _opportunity_quadrant(slide, left0 + col_w + gutter, top0 + row_h + gutter, col_w, row_h, f"What {client_name} Should Build", build[:4], GOOD)
-    return slide
-
-
-def add_competitor_narrative_slide(prs: Presentation, client_name: str, competitor_domain: str, narrative: dict):
-    """Matches the reference deck's "Areas of Focus for {Client} (vs
-    {Competitor})" slide — a bulleted recommendation list followed by a
-    closing "Strategic Growth Opportunity" paragraph. Always rendered in
-    Cyces' own brand red (not the client's brand color) — this is
-    agency-authored strategic content, not the client-branded data slides.
-    Height-budgeted so long AI-generated bullets can't overflow into the
-    footer: bullets stop once the budget is spent, and the closing
-    paragraph is truncated with an ellipsis rather than overflowing.
-    When narrative["screenshot"] (best-effort PNG bytes, may be absent if
-    capture failed/was blocked) is present, narrows the text card to make
-    room for the competitor's homepage screenshot on the right — matches
-    the manual reference deck's visual grounding for this slide."""
     areas = narrative.get("areas_of_focus") or []
     opportunity = narrative.get("growth_opportunity")
-    if not areas and not opportunity:
+    if not any([has, lacks, why, areas, opportunity]):
         return None
     screenshot = narrative.get("screenshot")
 
     slide = _blank_slide(prs)
-    _content_header(slide, f"Areas of Focus for {client_name} (vs {competitor_domain})")
-    card_top, card_height = Inches(1.1), Inches(5.9)
+    _content_header(slide, f"Competitor Opportunity Analysis: {competitor_domain}")
+
+    gutter = Inches(0.25)
+    left0, quad_top = Inches(0.6), Inches(1.1)
+    total_w, quad_h = Inches(12.1), Inches(1.85)
+    col_w = int((total_w - gutter * 2) / 3)
+    if any([has, lacks, why]):
+        _opportunity_quadrant(slide, left0, quad_top, col_w, quad_h, f"What {competitor_domain} Has", has[:3], _accent())
+        _opportunity_quadrant(slide, left0 + col_w + gutter, quad_top, col_w, quad_h, f"What {client_name} Lacks", lacks[:3], BAD)
+        _opportunity_quadrant(slide, left0 + (col_w + gutter) * 2, quad_top, col_w, quad_h, "Why It Matters", why[:3], WARN)
+        card_top = quad_top + quad_h + Inches(0.2)
+    else:
+        card_top = quad_top
+    card_height = Inches(7.15) - card_top
     card_width = Inches(7.8) if screenshot else Inches(12.1)
     text_width = card_width - Inches(0.75)
     _card(slide, Inches(0.6), card_top, card_width, card_height)
-    y = Inches(1.35)
+    y = card_top + Inches(0.25)
 
     if screenshot:
         img_left, img_width = Inches(8.7), Inches(3.9)
@@ -2494,31 +2413,31 @@ def add_competitor_narrative_slide(prs: Presentation, client_name: str, competit
         else:
             _textbox(slide, img_left, card_top + Inches(2.6), img_width, Inches(0.3), competitor_domain, size=10.5, color=TEXT_MUTED, align=PP_ALIGN.CENTER)
 
-    # Reserve room for the heading + at least 2 lines of the closing
-    # paragraph before bullets are allowed to eat into that space.
+    # Reserve room for at least 2 lines of the closing paragraph before
+    # bullets are allowed to eat into that space.
     bullets_max_y = card_top + card_height - (Inches(0.7) if opportunity else Inches(0.15))
     chars_per_line = max(20, int(text_width / 914400 * 14))
-    line_h = Inches(0.24)
-    for item in areas[:9]:
+    line_h = Inches(0.22)
+    for item in areas[:7]:
         lines = max(1, -(-len(item) // chars_per_line))
-        item_h = line_h * lines + Inches(0.08)
+        item_h = line_h * lines + Inches(0.06)
         if y + item_h > bullets_max_y:
             break
-        _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), DEFAULT_ACCENT)
-        _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, item, size=12.5)
+        _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), DEFAULT_ACCENT)
+        _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, item, size=11.5)
         y += item_h
 
     if opportunity:
-        y += Inches(0.15)
-        _textbox(slide, Inches(0.9), y, text_width, Inches(0.3), "Strategic Growth Opportunity:", size=13, bold=True, color=DEFAULT_ACCENT)
-        y += Inches(0.34)
+        y += Inches(0.12)
+        _textbox(slide, Inches(0.9), y, text_width, Inches(0.26), "Strategic Growth Opportunity:", size=12, bold=True, color=DEFAULT_ACCENT)
+        y += Inches(0.3)
         chars_per_line = max(20, int(text_width / 914400 * 15))
         available_h = (card_top + card_height) - y - Inches(0.1)
-        max_lines = max(1, int(available_h / Inches(0.24)))
+        max_lines = max(1, int(available_h / Inches(0.22)))
         max_chars = max_lines * chars_per_line
         text = opportunity if len(opportunity) <= max_chars else opportunity[: max(0, max_chars - 1)].rsplit(" ", 1)[0] + "…"
         lines = max(1, -(-len(text) // chars_per_line))
-        _textbox(slide, Inches(0.9), y, text_width, Inches(0.24) * lines, text, size=12, color=TEXT_DARK)
+        _textbox(slide, Inches(0.9), y, text_width, Inches(0.22) * lines, text, size=11, color=TEXT_DARK)
     return slide
 
 
@@ -3427,7 +3346,6 @@ def _build_report(
                 if "error" not in narrative:
                     add_competitor_best_at_slide(prs, domain, narrative)
                     add_competitor_opportunity_slide(prs, client_name, domain, narrative)
-                    add_competitor_narrative_slide(prs, client_name, domain, narrative)
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
             add_keyword_gap_slide(prs, competitor_analysis)
 
