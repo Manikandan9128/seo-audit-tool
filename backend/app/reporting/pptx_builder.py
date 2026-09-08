@@ -3322,38 +3322,12 @@ def _build_report(
         top_pages = (analytics.get("top_pages") or {}).get("rows", [])
         top_pages = [p for p in top_pages if "career" not in (p.get("path") or "").lower()]
         if top_pages:
-            total_views = sum(int(float(p.get("page_views", 0) or 0)) for p in top_pages)
-
-            def _page_label(path: str) -> str:
-                # A bare "/" reads as an unlabeled empty path to anyone without
-                # an SEO background — spell out that it's the home page.
-                return f"{path} (Home Page)" if path.strip("/") == "" else path
-
-            rows = [
-                (
-                    _truncate_cell(_page_label(p["path"]), 6.0),
-                    f"{int(float(p['page_views'])):,}",
-                    f"{(int(float(p['page_views'])) / total_views * 100 if total_views else 0):.1f}%",
-                    f"{int(float(p.get('active_users', 0) or 0)):,}",
-                )
-                for p in top_pages[:14]
-            ]
-            top = top_pages[0]
-            top_share = int(float(top["page_views"])) / total_views * 100 if total_views else 0
-            insights = [
-                f"\"{_page_label(top['path'])}\" is the top page, {top_share:.0f}% of all tracked pageviews.",
-                f"Top {min(3, len(top_pages))} pages account for {sum(int(float(p['page_views'])) for p in top_pages[:3]) / total_views * 100:.0f}% of total traffic." if total_views else "",
-            ]
-            insights = [i for i in insights if i]
-            _table_slide(
-                prs, "Top Pages", ["Page", "Pageviews", "% of Contribution", "Users"], rows,
-                col_widths=[6.0, 2.0, 2.0, 2.1], source=ga4_source, insights=insights,
-            )
-
-            # Full (unfiltered) page list for the branded/non-branded split —
-            # career pages are excluded from the overall Top Pages slide
-            # above as a non-signal, but the client's own branded rules
-            # explicitly classify /careers as branded, so it belongs here.
+            # Plain "Top Pages" table cut per user request 2026-09-08 — same
+            # underlying GA4 top_pages data as the branded/non-branded split
+            # below, just a flat top-14 cut instead of segmented by brand.
+            # Uses the FULL (unfiltered) page list, not the career-filtered
+            # top_pages above — the client's own branded rules explicitly
+            # classify /careers as branded, so it belongs in this split.
             all_pages = (analytics.get("top_pages") or {}).get("rows", [])
             classified = [(p, _classify_page_branded(p.get("path") or "")) for p in all_pages]
             site_total_users = sum(int(float(p.get("active_users", 0) or 0)) for p, _ in classified)
