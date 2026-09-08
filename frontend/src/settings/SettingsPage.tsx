@@ -109,6 +109,166 @@ function ApiKeyCard({ title, description, keySet, masked, loading, saveUrl, test
   );
 }
 
+function SheetsOAuthCard({
+  email,
+  clientId,
+  loading,
+  onChanged,
+}: {
+  email: string | null;
+  clientId: string | null;
+  loading: boolean;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [error, setError] = useState("");
+  const [clientIdInput, setClientIdInput] = useState("");
+  const [clientSecretInput, setClientSecretInput] = useState("");
+  const [savingClient, setSavingClient] = useState(false);
+
+  const redirectUri = `${window.location.origin}/api/settings/google-sheets-oauth/callback`;
+
+  async function saveClient() {
+    if (!clientIdInput.trim() || !clientSecretInput.trim()) return;
+    setSavingClient(true);
+    setError("");
+    try {
+      await api.put("/settings/google-sheets-oauth-client", {
+        google_sheets_oauth_client_id: clientIdInput.trim(),
+        google_sheets_oauth_client_secret: clientSecretInput.trim(),
+      });
+      setClientIdInput("");
+      setClientSecretInput("");
+      onChanged();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't save the OAuth client");
+    } finally {
+      setSavingClient(false);
+    }
+  }
+
+  async function connect() {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api.get("/settings/google-sheets-oauth/connect");
+      window.location.href = res.data.auth_url;
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't start Google connect");
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!confirm("Disconnect this Google account? Competitor keyword Sheets will stop generating until reconnected or a service account is configured instead.")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.post("/settings/google-sheets-oauth/disconnect");
+      onChanged();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't disconnect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function test() {
+    setBusy(true);
+    setTestResult(null);
+    try {
+      const res = await api.post("/settings/google-sheets-oauth/test");
+      setTestResult({ ok: res.data.test_ok, message: res.data.test_message });
+    } catch (err: any) {
+      setTestResult({ ok: false, message: err?.response?.data?.detail || "Test failed" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ margin: 0, fontSize: 18 }}>Google Account for Sheets (recommended)</h3>
+      <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
+        Connect your own Google account to create competitor keyword Sheets directly under it — no service account,
+        no shared folder, no storage-quota edge cases. This is the simplest path, especially with a plain personal
+        Gmail account (a bare service account has no Drive storage of its own and can fail even when set up
+        correctly).
+      </p>
+
+      {!clientId && !loading && (
+        <div style={{ background: "var(--card-bg-alt, #f7f7f7)", border: "1px solid var(--card-border, #e5e5e5)", borderRadius: 8, padding: 12, marginTop: 10 }}>
+          <p style={{ fontSize: 13, margin: 0, fontWeight: 600 }}>One-time setup: create a Web application OAuth client</p>
+          <ol style={{ fontSize: 13, margin: "6px 0 10px 18px", padding: 0 }}>
+            <li>Google Cloud Console → APIs & Services → Credentials → Create Credentials → OAuth client ID</li>
+            <li>Application type: <strong>Web application</strong></li>
+            <li>
+              Authorized redirect URI — paste exactly:
+              <br />
+              <code style={{ wordBreak: "break-all" }}>{redirectUri}</code>
+            </li>
+            <li>Create → copy the Client ID and Client Secret it gives you, paste below</li>
+          </ol>
+          <input
+            type="text"
+            placeholder="Client ID"
+            style={{ width: "100%", marginBottom: 6 }}
+            value={clientIdInput}
+            onChange={(e) => setClientIdInput(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="password"
+              placeholder="Client Secret"
+              style={{ flex: 1 }}
+              value={clientSecretInput}
+              onChange={(e) => setClientSecretInput(e.target.value)}
+            />
+            <button onClick={saveClient} disabled={savingClient || !clientIdInput.trim() || !clientSecretInput.trim()}>
+              {savingClient ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <p style={{ fontSize: 13 }}>Loading...</p>
+      ) : (
+        <p style={{ fontSize: 13, margin: "10px 0 0" }}>
+          Current:{" "}
+          {email ? <code>{email}</code> : <span style={{ color: "var(--text-muted)" }}>not connected</span>}
+        </p>
+      )}
+
+      {clientId && (
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button onClick={connect} disabled={busy}>
+            {email ? "Reconnect" : "Connect Google Account"}
+          </button>
+          {email && (
+            <>
+              <button className="secondary" onClick={test} disabled={busy}>
+                Test key
+              </button>
+              <button className="secondary" onClick={disconnect} disabled={busy}>
+                Disconnect
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {error && <p style={{ fontSize: 13, color: "#991b1b", marginTop: 8 }}>{error}</p>}
+      {testResult && (
+        <p style={{ fontSize: 13, marginTop: 8, color: testResult.ok ? "var(--success)" : "#991b1b" }}>
+          {testResult.ok ? "✓ " : "✗ "}
+          {testResult.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function DriveFolderCard({
   value,
   loading,
@@ -182,6 +342,8 @@ export default function SettingsPage() {
   const [gsaMasked, setGsaMasked] = useState<string | null>(null);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [folderTestResult, setFolderTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [sheetsOauthEmail, setSheetsOauthEmail] = useState<string | null>(null);
+  const [sheetsOauthClientId, setSheetsOauthClientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -199,6 +361,8 @@ export default function SettingsPage() {
       setGsaSet(res.data.google_service_account_json_set);
       setGsaMasked(res.data.google_service_account_json_masked);
       setDriveFolderId(res.data.google_drive_folder_id);
+      setSheetsOauthEmail(res.data.google_sheets_oauth_email);
+      setSheetsOauthClientId(res.data.google_sheets_oauth_client_id);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Couldn't load settings");
     } finally {
@@ -293,6 +457,12 @@ export default function SettingsPage() {
             setClaudeMasked(masked);
           }}
         />
+
+        <SheetsOAuthCard email={sheetsOauthEmail} clientId={sheetsOauthClientId} loading={loading} onChanged={load} />
+
+        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
+          Advanced / Google Workspace domains only — skip this if you connected your Google account above:
+        </p>
 
         <ApiKeyCard
           title="Google Service Account JSON"

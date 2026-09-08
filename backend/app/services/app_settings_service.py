@@ -21,6 +21,11 @@ CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
 GOOGLE_SERVICE_ACCOUNT_JSON = "google_service_account_json"
 GOOGLE_DRIVE_FOLDER_ID = "google_drive_folder_id"
+GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN = "google_sheets_oauth_access_token"
+GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN = "google_sheets_oauth_refresh_token"
+GOOGLE_SHEETS_OAUTH_EMAIL = "google_sheets_oauth_email"
+GOOGLE_SHEETS_OAUTH_CLIENT_ID = "google_sheets_oauth_client_id"
+GOOGLE_SHEETS_OAUTH_CLIENT_SECRET = "google_sheets_oauth_client_secret"
 
 
 def load_overrides_into_settings(db: Session) -> None:
@@ -41,6 +46,12 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, GOOGLE_DRIVE_FOLDER_ID)
     if row and row.value:
         settings.google_drive_folder_id = row.value
+    row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_CLIENT_ID)
+    if row and row.value:
+        settings.google_sheets_oauth_client_id = row.value
+    row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_CLIENT_SECRET)
+    if row and row.value:
+        settings.google_sheets_oauth_client_secret = row.value
 
 
 def _set_key(db: Session, setting_key: str, value: str) -> str:
@@ -191,6 +202,24 @@ def test_google_service_account_json() -> dict:
         return {"ok": False, "message": str(e)[:300]}
 
 
+def test_sheets_connection(db: Session) -> dict:
+    """Tests whichever credentials google_sheets_service resolves — the
+    OAuth connection if present (preferred), else the service account.
+    Used by the OAuth card's own test button and by the Drive-folder-ID
+    save (which only matters for the service-account path, but a general
+    test is more useful feedback than one hardcoded to that path)."""
+    try:
+        from app.services.google_sheets_service import _test_connection
+
+        mode = _test_connection(db)
+        if mode == "oauth":
+            email = get_sheets_oauth_email(db)
+            return {"ok": True, "message": f"Connected — Sheets are created under {email}"}
+        return {"ok": True, "message": "Service account works — Sheets + Drive API reachable"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:300]}
+
+
 def masked_google_service_account_json() -> str | None:
     if not settings.google_service_account_json:
         return None
@@ -209,3 +238,52 @@ def set_google_drive_folder_id(db: Session, value: str) -> None:
 
 def get_google_drive_folder_id() -> str | None:
     return settings.google_drive_folder_id or None
+
+
+def set_sheets_oauth_client(db: Session, client_id: str, client_secret: str) -> None:
+    settings.google_sheets_oauth_client_id = _set_key(db, GOOGLE_SHEETS_OAUTH_CLIENT_ID, client_id)
+    settings.google_sheets_oauth_client_secret = _set_key(db, GOOGLE_SHEETS_OAUTH_CLIENT_SECRET, client_secret)
+
+
+def get_sheets_oauth_client_id() -> str | None:
+    return settings.google_sheets_oauth_client_id or None
+
+
+def set_sheets_oauth_tokens(db: Session, access_token: str, refresh_token: str, email: str) -> None:
+    from app.integrations.crypto import encrypt
+
+    _set_key(db, GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN, encrypt(access_token))
+    if refresh_token:
+        _set_key(db, GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN, encrypt(refresh_token))
+    _set_key(db, GOOGLE_SHEETS_OAUTH_EMAIL, email)
+
+
+def get_sheets_oauth_email(db: Session) -> str | None:
+    row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_EMAIL)
+    return row.value if row and row.value else None
+
+
+def get_sheets_oauth_credentials(db: Session):
+    """Loads the app-owned Google account connected for creating competitor
+    keyword Sheets (see google_sheets_service.py), refreshing the access
+    token if expired and persisting the refreshed token back. Returns None
+    if not connected — caller falls back to the service-account path."""
+    from app.integrations import google_oauth
+    from app.integrations.crypto import decrypt, encrypt
+
+    access_row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN)
+    refresh_row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN)
+    if not access_row or not refresh_row or not access_row.value or not refresh_row.value:
+        return None
+    creds = google_oauth.sheets_credentials_from_stored(decrypt(access_row.value), decrypt(refresh_row.value))
+    access_row.value = encrypt(creds.token)
+    db.commit()
+    return creds
+
+
+def disconnect_sheets_oauth(db: Session) -> None:
+    for key in (GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN, GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN, GOOGLE_SHEETS_OAUTH_EMAIL):
+        row = db.get(AppSetting, key)
+        if row:
+            db.delete(row)
+    db.commit()

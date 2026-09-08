@@ -1,11 +1,15 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
 from app.models.user import User
 from app.services.app_settings_service import (
+    disconnect_sheets_oauth,
     get_google_drive_folder_id,
+    get_sheets_oauth_client_id,
+    get_sheets_oauth_email,
     masked_claude_api_key,
     masked_gemini_api_key,
     masked_google_service_account_json,
@@ -15,13 +19,22 @@ from app.services.app_settings_service import (
     set_google_drive_folder_id,
     set_google_service_account_json,
     set_groq_api_key,
+    set_sheets_oauth_client,
+    set_sheets_oauth_tokens,
     test_claude_key,
     test_gemini_key,
     test_google_service_account_json,
     test_groq_key,
+    test_sheets_connection,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+
+def _sheets_oauth_redirect_uri(request: Request) -> str:
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    return f"{scheme}://{host}/api/settings/google-sheets-oauth/callback"
 
 
 class GeminiKeyIn(BaseModel):
@@ -44,8 +57,13 @@ class GoogleDriveFolderIdIn(BaseModel):
     google_drive_folder_id: str
 
 
+class GoogleSheetsOAuthClientIn(BaseModel):
+    google_sheets_oauth_client_id: str
+    google_sheets_oauth_client_secret: str
+
+
 @router.get("")
-def get_settings(current_user: User = Depends(get_current_user)):
+def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     gemini_masked = masked_gemini_api_key()
     groq_masked = masked_groq_api_key()
     claude_masked = masked_claude_api_key()
@@ -60,6 +78,8 @@ def get_settings(current_user: User = Depends(get_current_user)):
         "google_service_account_json_set": gsa_masked is not None,
         "google_service_account_json_masked": gsa_masked,
         "google_drive_folder_id": get_google_drive_folder_id(),
+        "google_sheets_oauth_email": get_sheets_oauth_email(db),
+        "google_sheets_oauth_client_id": get_sheets_oauth_client_id(),
     }
 
 
@@ -184,9 +204,76 @@ def update_google_drive_folder_id(
     Google Service Account JSON card's "Test key" button, which now
     exercises this folder too."""
     set_google_drive_folder_id(db, payload.google_drive_folder_id)
-    test = test_google_service_account_json()
+    test = test_sheets_connection(db)
     return {
         "google_drive_folder_id": get_google_drive_folder_id(),
         "test_ok": test["ok"],
         "test_message": test["message"],
     }
+
+
+@router.get("/google-sheets-oauth/connect")
+def google_sheets_oauth_connect(request: Request, current_user: User = Depends(get_current_user)):
+    """Recommended alternative to the service account for a plain personal
+    Gmail account (see google_sheets_service.py's OAuth path) — connects
+    the app to create competitor keyword Sheets directly under your own
+    Google account instead of a bare service account, which has no
+    storage of its own and can hit a confirmed-real "storage quota
+    exceeded" error even inside a folder you've shared with it."""
+    from app.integrations import google_oauth
+
+    redirect_uri = _sheets_oauth_redirect_uri(request)
+    try:
+        auth_url = google_oauth.build_sheets_auth_url(redirect_uri)
+    except google_oauth.NoSheetsOAuthClientConfigured as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"auth_url": auth_url}
+
+
+@router.put("/google-sheets-oauth-client")
+def update_google_sheets_oauth_client(
+    payload: GoogleSheetsOAuthClientIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """A dedicated Web-application OAuth client for the Sheets connection —
+    see config.py's google_sheets_oauth_client_id/secret docstring for why
+    this is separate from the per-client GA4/GSC OAuth client."""
+    set_sheets_oauth_client(db, payload.google_sheets_oauth_client_id, payload.google_sheets_oauth_client_secret)
+    return {"google_sheets_oauth_client_id": get_sheets_oauth_client_id()}
+
+
+@router.get("/google-sheets-oauth/callback")
+def google_sheets_oauth_callback(code: str, state: str, request: Request, db: Session = Depends(get_db)):
+    from app.integrations import google_oauth
+    from googleapiclient.discovery import build as gbuild
+
+    try:
+        google_oauth.parse_sheets_state(state)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+
+    redirect_uri = _sheets_oauth_redirect_uri(request)
+    creds = google_oauth.exchange_sheets_code(code, redirect_uri)
+
+    oauth2 = gbuild("oauth2", "v2", credentials=creds)
+    userinfo = oauth2.userinfo().get().execute()
+    email = userinfo.get("email", "unknown")
+
+    set_sheets_oauth_tokens(db, creds.token, creds.refresh_token or "", email)
+
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    return RedirectResponse(url=f"{scheme}://{host}/settings?sheets_oauth_connected=1")
+
+
+@router.post("/google-sheets-oauth/disconnect")
+def google_sheets_oauth_disconnect(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    disconnect_sheets_oauth(db)
+    return {"ok": True}
+
+
+@router.post("/google-sheets-oauth/test")
+def google_sheets_oauth_test(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    test = test_sheets_connection(db)
+    return {"test_ok": test["ok"], "test_message": test["message"]}
