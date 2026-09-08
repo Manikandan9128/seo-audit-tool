@@ -7,12 +7,15 @@ from app.models.user import User
 from app.services.app_settings_service import (
     masked_claude_api_key,
     masked_gemini_api_key,
+    masked_google_service_account_json,
     masked_groq_api_key,
     set_claude_api_key,
     set_gemini_api_key,
+    set_google_service_account_json,
     set_groq_api_key,
     test_claude_key,
     test_gemini_key,
+    test_google_service_account_json,
     test_groq_key,
 )
 
@@ -31,11 +34,16 @@ class ClaudeKeyIn(BaseModel):
     claude_api_key: str
 
 
+class GoogleServiceAccountJsonIn(BaseModel):
+    google_service_account_json: str
+
+
 @router.get("")
 def get_settings(current_user: User = Depends(get_current_user)):
     gemini_masked = masked_gemini_api_key()
     groq_masked = masked_groq_api_key()
     claude_masked = masked_claude_api_key()
+    gsa_masked = masked_google_service_account_json()
     return {
         "gemini_api_key_set": gemini_masked is not None,
         "gemini_api_key_masked": gemini_masked,
@@ -43,6 +51,8 @@ def get_settings(current_user: User = Depends(get_current_user)):
         "groq_api_key_masked": groq_masked,
         "claude_api_key_set": claude_masked is not None,
         "claude_api_key_masked": claude_masked,
+        "google_service_account_json_set": gsa_masked is not None,
+        "google_service_account_json_masked": gsa_masked,
     }
 
 
@@ -124,4 +134,31 @@ def update_claude_api_key(
 def test_claude_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_claude_key()
+    return {"test_ok": test["ok"], "test_message": test["message"]}
+
+
+@router.put("/google-service-account-json")
+def update_google_service_account_json(
+    payload: GoogleServiceAccountJsonIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Saves the service account key JSON, then makes a real Sheets+Drive
+    API call (create + delete a throwaway spreadsheet) to confirm it
+    actually works — enables the competitor keyword Google Sheet links in
+    the report."""
+    set_google_service_account_json(db, payload.google_service_account_json)
+    test = test_google_service_account_json()
+    return {
+        "google_service_account_json_set": True,
+        "google_service_account_json_masked": masked_google_service_account_json(),
+        "test_ok": test["ok"],
+        "test_message": test["message"],
+    }
+
+
+@router.post("/google-service-account-json/test")
+def test_google_service_account_json_route(current_user: User = Depends(get_current_user)):
+    """Re-runs the connectivity test on demand, without changing the key."""
+    test = test_google_service_account_json()
     return {"test_ok": test["ok"], "test_message": test["message"]}

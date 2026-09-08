@@ -11,6 +11,7 @@ from app.models.user import User
 from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.semrush_ai_summary_service import generate_ai_summary
 from app.services.semrush_parser import parse_semrush_file
+from app.services.geopulse_parser import parse_geopulse_file
 
 router = APIRouter(prefix="/clients", tags=["competitors"])
 
@@ -67,6 +68,44 @@ async def upload_semrush_file(
         "is_own_site": record.is_own_site,
         "domain_label": record.domain_label,
         "database": database,
+    }
+
+
+@router.post("/{client_id}/geopulse-upload")
+async def upload_geopulse_file(
+    client_id: uuid.UUID,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stores a GeoPulse (client's own AI-visibility tool) export, any file
+    format, as a SemrushImport row with import_type="geopulse" — reuses the
+    existing generic import table/list/delete endpoints rather than a new
+    model. The report-generation route feeds the extracted text to
+    geopulse_ai_service to ground the AEO/GEO slide content."""
+    _get_owned_client(client_id, db, current_user)
+    content = await file.read()
+    try:
+        parsed_data = parse_geopulse_file(file.filename or "upload", content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    record = SemrushImport(
+        client_id=client_id,
+        uploaded_by_user_id=current_user.id,
+        original_filename=file.filename or "upload",
+        import_type="geopulse",
+        is_own_site=True,
+        parsed_data=parsed_data,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {
+        "id": record.id,
+        "import_type": record.import_type,
+        "row_count": parsed_data["row_count"],
+        "original_filename": record.original_filename,
     }
 
 

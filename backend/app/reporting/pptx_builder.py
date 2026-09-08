@@ -2233,6 +2233,101 @@ def add_competitor_positions_slides(prs: Presentation, competitor_positions: dic
     return slides
 
 
+def _cross_competitor_keyword_insights(competitor_positions: dict[str, list[dict]]) -> list[str]:
+    """Deterministic (no AI — same reliability bar as the rest of this
+    file's insight bullets) findings computed across ALL competitors' FULL
+    keyword sets at once, not just each one's individual top-14 table.
+    Branded keywords already excluded per-domain by the caller before this
+    runs, matching the non-branded-opportunities-only convention used
+    elsewhere in this section."""
+    non_empty = {d: rows for d, rows in competitor_positions.items() if rows}
+    if len(non_empty) < 2:
+        return []
+
+    insights = []
+    footprint = {
+        d: sum(1 for r in rows if 0 < _num(r.get("position")) <= 10)
+        for d, rows in non_empty.items()
+    }
+    leader = max(footprint, key=footprint.get)
+    insights.append(
+        f"{leader} has the largest page-1 footprint across all tracked competitors — "
+        f"{footprint[leader]} keywords in the top 10 (out of {len(non_empty[leader])} tracked)."
+    )
+
+    keyword_sets = {d: {r.get("keyword", "").lower() for r in rows if r.get("keyword")} for d, rows in non_empty.items()}
+    shared_all = set.intersection(*keyword_sets.values())
+    if shared_all:
+        insights.append(
+            f"{len(shared_all)} keyword(s) are contested by every tracked competitor — "
+            "the core battleground terms for this category."
+        )
+
+    keyword_counts: dict[str, int] = {}
+    for kws in keyword_sets.values():
+        for kw in kws:
+            keyword_counts[kw] = keyword_counts.get(kw, 0) + 1
+    majority = len(non_empty) // 2 + 1
+    contested_by_most = sum(1 for count in keyword_counts.values() if count >= majority)
+    if contested_by_most:
+        insights.append(
+            f"{contested_by_most} keyword(s) rank for {majority}+ of the {len(non_empty)} tracked competitors — "
+            "strong signal these are worth targeting directly."
+        )
+
+    total_tracked = sum(len(rows) for rows in non_empty.values())
+    insights.append(f"{total_tracked:,} competitor keyword rows tracked in total across {len(non_empty)} domains — see the linked sheets for the full lists.")
+    return insights
+
+
+def add_competitor_keyword_sheets_slide(
+    prs: Presentation,
+    competitor_positions: dict[str, list[dict]],
+    sheet_links: dict[str, str],
+):
+    """Replaces the old one-slide-per-competitor capped-at-14-rows table
+    (add_competitor_positions_slides, kept above for the no-Sheets-
+    configured fallback) with a single slide: one link per competitor to a
+    Google Sheet holding that competitor's FULL keyword list (keyword,
+    search volume, KD, position, previous position — everything, not just
+    the top rows), plus insights computed across all competitors' complete
+    keyword sets rather than just each one's truncated table."""
+    slide = _blank_slide(prs)
+    _content_header(slide, "Competitor Keywords — Full Data")
+    _textbox(
+        slide, Inches(0.4), Inches(1.05), Inches(11), Inches(0.4),
+        "Complete keyword lists (not just top 10) — click a link to open the full sheet.",
+        size=13, color=TEXT_MUTED,
+    )
+
+    y = Inches(1.6)
+    for domain, url in sheet_links.items():
+        rows = competitor_positions.get(domain) or []
+        card = _card(slide, Inches(0.6), y, Inches(11.1), Inches(0.7))
+        _textbox(slide, Inches(0.8), y + Inches(0.08), Inches(4), Inches(0.3), domain, size=14, bold=True)
+        _textbox(slide, Inches(0.8), y + Inches(0.38), Inches(3), Inches(0.25), f"{len(rows):,} keywords tracked", size=11, color=TEXT_MUTED)
+        link_box = slide.shapes.add_textbox(Inches(5.2), y + Inches(0.08), Inches(6.3), Inches(0.55))
+        tf = link_box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        run = p.add_run()
+        run.text = "Open full keyword list →"
+        run.font.size = Pt(13)
+        run.font.color.rgb = _accent()
+        run.hyperlink.address = url
+        y += Inches(0.85)
+
+    insights = _cross_competitor_keyword_insights(competitor_positions)
+    if insights:
+        insight_y = y + Inches(0.2)
+        _textbox(slide, Inches(0.6), insight_y, Inches(4), Inches(0.3), "Key Insights", size=14, bold=True)
+        insight_y += Inches(0.4)
+        for text in insights:
+            _textbox(slide, Inches(0.6), insight_y, Inches(11.1), Inches(0.5), f"• {text}", size=12)
+            insight_y += Inches(0.45)
+    return slide
+
+
 def _num(v, default=0.0):
     try:
         return float(v)
@@ -3089,6 +3184,9 @@ def build_report(
     schema_validation: dict | None = None,
     brand_citations: list[dict] | None = None,
     brand_wikipedia: dict | None = None,
+    geopulse_analysis: dict | None = None,
+    competitor_keyword_sheet_links: dict[str, str] | None = None,
+    competitor_positions_full: dict[str, list[dict]] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -3109,7 +3207,8 @@ def build_report(
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
             site_audit_pages_rows, next_steps_ai, schema_validation,
-            brand_citations, brand_wikipedia,
+            brand_citations, brand_wikipedia, geopulse_analysis, competitor_keyword_sheet_links,
+            competitor_positions_full,
         )
     finally:
         _theme["footer"] = ""
@@ -3147,6 +3246,9 @@ def _build_report(
     schema_validation: dict | None = None,
     brand_citations: list[dict] | None = None,
     brand_wikipedia: dict | None = None,
+    geopulse_analysis: dict | None = None,
+    competitor_keyword_sheet_links: dict[str, str] | None = None,
+    competitor_positions_full: dict[str, list[dict]] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -3192,8 +3294,12 @@ def _build_report(
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
 
-    if backlink_rows or backlink_summary or own_domain_rating is not None:
-        add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
+    # Backlink Profile slide temporarily pulled from the report per user
+    # request 2026-09-08 — re-enable this call (function untouched below)
+    # once the backlink-total inconsistency (see pending_data_inconsistencies
+    # memory) is resolved.
+    # if backlink_rows or backlink_summary or own_domain_rating is not None:
+    #     add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
 
     add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
 
@@ -3340,7 +3446,17 @@ def _build_report(
         if competitor_rows:
             add_competitor_table_slide(prs, competitor_rows)
         if competitor_positions:
-            add_competitor_positions_slides(prs, competitor_positions)
+            # Google Sheet links (full, uncapped keyword lists) take
+            # priority over the old per-competitor capped-table slides —
+            # falls back automatically when no service account is
+            # configured or sheet creation failed for every domain, see
+            # site_audit.py._build_pptx_for_client.
+            if competitor_keyword_sheet_links:
+                add_competitor_keyword_sheets_slide(
+                    prs, competitor_positions_full or competitor_positions, competitor_keyword_sheet_links
+                )
+            else:
+                add_competitor_positions_slides(prs, competitor_positions)
         if competitor_narratives:
             for domain, narrative in competitor_narratives.items():
                 if "error" not in narrative:
@@ -3405,8 +3521,19 @@ def _build_report(
     add_content_seo_next_steps_slide(prs, keyword_rows)
     add_programmatic_seo_slide(prs, keyword_rows)
     _next_steps_slide("conversion_seo", add_conversion_seo_next_steps_slide, prs, ux_findings, backlink_row_count)
-    _next_steps_slide("aeo", add_aeo_slide, prs, site_audit, page_audit)
-    _next_steps_slide("geo", add_geo_slide, prs)
+    # GeoPulse-grounded content (the client's own AI-visibility tool export)
+    # outranks both the generic next_steps_ai category AND the static
+    # schema-only fallback below — it's the only source of these two slides
+    # actually backed by real AI-search-visibility data rather than an LLM
+    # guessing from site/competitor data alone.
+    if geopulse_analysis and geopulse_analysis.get("aeo_items"):
+        _next_steps_category_slide(prs, "Answer Engine Optimization (AEO)", None, geopulse_analysis["aeo_items"])
+    else:
+        _next_steps_slide("aeo", add_aeo_slide, prs, site_audit, page_audit)
+    if geopulse_analysis and geopulse_analysis.get("geo_items"):
+        _next_steps_category_slide(prs, "Generative Engine Optimization (GEO)", None, geopulse_analysis["geo_items"])
+    else:
+        _next_steps_slide("geo", add_geo_slide, prs)
     _next_steps_slide("goals", add_goals_slide, prs, own_domain_rating, competitor_rows, keyword_rows)
 
     buf = BytesIO()

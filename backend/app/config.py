@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
     claude_api_key: str = ""
+    # Raw JSON content of a Google Cloud service account key (Sheets API +
+    # Drive API enabled) — separate from google_client_id/secret above,
+    # which is the per-client GA4/GSC OAuth flow. This one is app-owned, not
+    # tied to any client, and creates+shares one Google Sheet per competitor
+    # per report so the full (uncapped) keyword list can be linked from a
+    # slide instead of rendered as a table capped at ~14 rows.
+    google_service_account_json: str = ""
 
 
 settings = Settings()

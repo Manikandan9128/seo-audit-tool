@@ -32,6 +32,8 @@ from app.reporting.pptx_builder import build_report
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
+from app.services.geopulse_ai_service import generate_aeo_geo_content
+from app.services.google_sheets_service import create_competitor_keyword_sheet
 from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
@@ -936,6 +938,22 @@ def _gather_report_data(
     backlink_summary_rows = _all_rows("backlink_summary", own_only=True)
     backlink_summary = backlink_summary_rows[-1] if backlink_summary_rows else None
 
+    # GeoPulse (client's own AI-visibility tool) export, any file format —
+    # grounds the AEO/GEO Next Steps slides in the client's actual AI-search
+    # findings instead of the generic boilerplate those slides otherwise
+    # render. Multiple uploads get concatenated so the AI sees everything.
+    geopulse_rows = _all_rows("geopulse", own_only=True)
+    geopulse_analysis_result = None
+    if geopulse_rows and (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
+        combined_geopulse_text = "\n\n---\n\n".join(
+            r.get("raw_text", "") for r in geopulse_rows if r.get("raw_text")
+        )
+        try:
+            geopulse_analysis_result = generate_aeo_geo_content(combined_geopulse_text) or None
+        except Exception as e:
+            logger.warning("GeoPulse AEO/GEO content generation failed for client %s: %s", client.id, e)
+            content_issues.append(f"AEO/GEO content (GeoPulse): {e}")
+
     # Competitor Analysis comparison table: prefer Domain Overview rows (own +
     # competitors) when uploaded — they carry DR/backlinks/top-countries/
     # branded-split that Organic Competitors exports don't. Own site's row
@@ -1157,6 +1175,7 @@ def _gather_report_data(
         "competitor_analysis": competitor_analysis_result,
         "domain_strategy": domain_strategy_result,
         "ux_findings": ux_findings_result,
+        "geopulse_analysis": geopulse_analysis_result,
         "content_generation_issues": content_issues,
     }
 
@@ -1210,6 +1229,17 @@ def _build_pptx_for_client(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
         company_overview_override, competitor_analysis_override, ux_notes, on_progress,
     )
+    # Snapshot BEFORE _filter_competitor_keywords below caps/strips this in
+    # place — the competitor keyword Google Sheets are meant to hold
+    # EVERYTHING Semrush returned for that domain (per explicit request: "not
+    # only top 10 ... show everything"), not the same relevance-filtered,
+    # 40-per-domain-capped set the in-report slides use. Row dicts
+    # themselves aren't mutated by the filter (it reassigns new lists), so a
+    # shallow per-domain list copy is enough to isolate this from that
+    # later mutation.
+    full_competitor_positions = {
+        domain: list(rows) for domain, rows in (data.get("competitor_positions") or {}).items()
+    }
 
     logo_bytes = None
     logo_url = (data.get("site_audit") or {}).get("logo_url")
@@ -1277,6 +1307,25 @@ def _build_pptx_for_client(
     except Exception:
         logger.exception("Wikipedia check failed for client %s — continuing without it", client_id)
 
+    # One Google Sheet per competitor holding their FULL (uncapped) keyword
+    # list — replaces the old per-competitor slide capped at ~14 rows when a
+    # service account is configured. Created fresh each report generation
+    # (not in report-preview — see _gather_report_data — since a preview can
+    # be re-run repeatedly and shouldn't spam new sheets each time). Any
+    # single domain's failure (network error, unconfigured) just drops that
+    # domain's link — the whole section falls back to the old capped-table
+    # slides automatically in pptx_builder when this dict ends up empty.
+    competitor_keyword_sheet_links: dict[str, str] = {}
+    if full_competitor_positions and settings.google_service_account_json:
+        for domain, rows in full_competitor_positions.items():
+            if not rows:
+                continue
+            try:
+                competitor_keyword_sheet_links[domain] = create_competitor_keyword_sheet(client.name, domain, rows)
+            except Exception as e:
+                logger.warning("Competitor keyword sheet creation failed for %s / %s: %s", client.id, domain, e)
+                content_issues.append(f"Competitor keyword sheet ({domain}): {e}")
+
     progress("Building presentation...", 96)
     try:
         pptx_bytes = build_report(
@@ -1287,6 +1336,8 @@ def _build_pptx_for_client(
             next_steps_ai=next_steps_ai,
             brand_citations=brand_citations,
             brand_wikipedia=brand_wikipedia,
+            competitor_keyword_sheet_links=competitor_keyword_sheet_links or None,
+            competitor_positions_full=full_competitor_positions or None,
             **data,
         )
     except Exception as e:

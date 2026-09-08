@@ -9,6 +9,7 @@ import AnalyticsReport from "../components/AnalyticsReport";
 import CompanyOverviewEditor from "../components/CompanyOverviewEditor";
 import type { CompanyOverview } from "../components/CompanyOverviewEditor";
 import SemrushImportCard from "../components/SemrushImportCard";
+import GeoPulseImportCard from "../components/GeoPulseImportCard";
 import SemrushChecklist from "../components/SemrushChecklist";
 import DomainRatingEditor from "../components/DomainRatingEditor";
 import SemrushAnalysis from "../components/SemrushAnalysis";
@@ -1042,6 +1043,7 @@ export default function ClientDetailPage() {
           imports={imports}
           onChanged={loadImports}
         />
+        <GeoPulseImportCard clientId={clientId!} imports={imports} onChanged={loadImports} />
       </div>
 
       <SemrushAnalysis clientId={clientId!} />

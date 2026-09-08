@@ -12,9 +12,10 @@ interface ApiKeyCardProps {
   testUrl: string;
   saveField: string;
   onSaved: (setFlag: boolean, masked: string | null) => void;
+  multiline?: boolean;
 }
 
-function ApiKeyCard({ title, description, keySet, masked, loading, saveUrl, testUrl, saveField, onSaved }: ApiKeyCardProps) {
+function ApiKeyCard({ title, description, keySet, masked, loading, saveUrl, testUrl, saveField, onSaved, multiline }: ApiKeyCardProps) {
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
@@ -74,14 +75,23 @@ function ApiKeyCard({ title, description, keySet, masked, loading, saveUrl, test
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <input
-          type="password"
-          placeholder={`Paste new ${title.replace(" API Key", "")} API key`}
-          style={{ flex: 1 }}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
+      <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: multiline ? "flex-start" : "center" }}>
+        {multiline ? (
+          <textarea
+            placeholder={`Paste the full ${title} JSON here`}
+            style={{ flex: 1, minHeight: 90, fontFamily: "monospace", fontSize: 12 }}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        ) : (
+          <input
+            type="password"
+            placeholder={`Paste new ${title.replace(" API Key", "")} API key`}
+            style={{ flex: 1 }}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        )}
         <button onClick={save} disabled={saving || !value.trim()}>
           {saving ? "Saving..." : "Save"}
         </button>
@@ -106,6 +116,8 @@ export default function SettingsPage() {
   const [groqMasked, setGroqMasked] = useState<string | null>(null);
   const [claudeSet, setClaudeSet] = useState(false);
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
+  const [gsaSet, setGsaSet] = useState(false);
+  const [gsaMasked, setGsaMasked] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -120,6 +132,8 @@ export default function SettingsPage() {
       setGroqMasked(res.data.groq_api_key_masked);
       setClaudeSet(res.data.claude_api_key_set);
       setClaudeMasked(res.data.claude_api_key_masked);
+      setGsaSet(res.data.google_service_account_json_set);
+      setGsaMasked(res.data.google_service_account_json_masked);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Couldn't load settings");
     } finally {
@@ -212,6 +226,31 @@ export default function SettingsPage() {
           onSaved={(set, masked) => {
             setClaudeSet(set);
             setClaudeMasked(masked);
+          }}
+        />
+
+        <ApiKeyCard
+          title="Google Service Account JSON"
+          description={
+            <>
+              Enables full (uncapped) competitor keyword lists as linked Google Sheets in the report, instead of a
+              table capped at ~14 rows. Create one at{" "}
+              <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noreferrer">
+                console.cloud.google.com
+              </a>{" "}
+              with the Sheets API and Drive API enabled, then paste the downloaded key's JSON content here.
+            </>
+          }
+          keySet={gsaSet}
+          masked={gsaMasked}
+          loading={loading}
+          saveUrl="/settings/google-service-account-json"
+          testUrl="/settings/google-service-account-json/test"
+          saveField="google_service_account_json"
+          multiline
+          onSaved={(set, masked) => {
+            setGsaSet(set);
+            setGsaMasked(masked);
           }}
         />
       </div>
