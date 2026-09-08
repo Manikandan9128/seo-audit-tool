@@ -3280,7 +3280,11 @@ def _build_report(
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
-            add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
+            # Critical Issues cut per user request 2026-09-08 — pure subset
+            # duplicate of the SEO Issues slide's Errors column (same
+            # site_audit_issues data, ERROR type only, just reformatted as a
+            # table). Function kept below for fast re-enable if ever needed.
+            # add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
             if schema_validation and schema_validation.get("total_pages"):
