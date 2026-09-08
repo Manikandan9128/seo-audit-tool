@@ -2558,6 +2558,12 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         easy_wins = [r for r in rows_for_group if _num(r.get("keyword_difficulty"), default=100) < 20 and _num(r.get("search_volume")) > 0]
         out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
         out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month, KD {top.get('keyword_difficulty', 'n/a')}.")
+        page_category = top.get("page_category")
+        existing_url = top.get("existing_page_url")
+        if page_category and existing_url:
+            out.append(f"Recommended format: {page_category} — an existing page already covers this: {existing_url}.")
+        elif page_category:
+            out.append(f"Recommended format: {page_category} — no existing page covers this yet, new page opportunity.")
         if kds:
             out.append(f"Avg. keyword difficulty {sum(kds) / len(kds):.0f} — {'competitive cluster, prioritize content depth over volume' if sum(kds) / len(kds) > 40 else 'low-competition cluster, faster to rank in'}.")
         if easy_wins:

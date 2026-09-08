@@ -41,7 +41,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, match_existing_page
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -929,6 +929,15 @@ def _gather_report_data(
                 if intent:
                     r["intent"] = intent
 
+        # Page/Content Type per keyword — deterministic, no AI call needed
+        # (reuses the same classifier the Content SEO Next Steps slide
+        # already relies on), now that real intent is filled in above where
+        # Semrush didn't provide it.
+        for r in keyword_rows_all:
+            category = _classify_keyword_page_category(r.get("keyword") or "", r.get("intent"))
+            if category:
+                r["page_category"] = category
+
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
     # checks) — a real multi-page crawl result, richer than our own
@@ -947,6 +956,28 @@ def _gather_report_data(
     # roll them up by top-level directory (Directory/URLs/Issues), matching
     # the manual report's "Site Structure" table.
     site_audit_pages_rows = _all_rows("site_audit_pages", own_only=True)
+    # Existing-URL check (lead's reference flow, doc 2) — does a page we've
+    # already crawled cover this keyword's terms, or is it a genuine New
+    # Page Opportunity? Word-overlap match only, no AI — see
+    # match_existing_page's docstring for why. Bounded to the same top-100
+    # highest-volume keywords already used for clustering/intent above (a
+    # cluster's primary keyword — the one actually rendered — always comes
+    # from this same set, so nothing rendered is left unmatched).
+    if keyword_rows_all and site_audit_pages_rows:
+        seen_for_match = set()
+        for r in sorted(keyword_rows_all, key=lambda r: _num_for_sort(r.get("search_volume")), reverse=True):
+            kw = r.get("keyword")
+            if not kw or kw in seen_for_match:
+                continue
+            seen_for_match.add(kw)
+            if len(seen_for_match) > 100:
+                break
+            match = match_existing_page(kw, site_audit_pages_rows)
+            if match:
+                for other in keyword_rows_all:
+                    if other.get("keyword") == kw:
+                        other["existing_page_url"] = match["url"]
+                        other["existing_page_title"] = match["title"]
     # Semrush Site Audit's own crawl-health summary (Site Health %, AI Search
     # Health %, Blocked/Redirect/Have issues/Broken/Healthy page counts) — a
     # real full-site crawl, replaces our own homepage + 20-page approximation

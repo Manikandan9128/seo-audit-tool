@@ -309,3 +309,52 @@ def _classify_keyword_page_category(keyword: str, intent: str | None = None) -> 
         if any(re.search(rf"\b{re.escape(signal)}\b", text) for signal in signals):
             return label
     return None
+
+
+_MATCH_STOPWORDS = {
+    "the", "a", "an", "for", "to", "of", "in", "on", "and", "or", "with", "is", "are",
+    "how", "what", "why", "do", "does", "best", "top", "your", "you", "vs",
+}
+
+
+def _match_tokens(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {w for w in words if w not in _MATCH_STOPWORDS and len(w) > 2}
+
+
+def match_existing_page(primary_keyword: str, site_audit_pages_rows: list[dict] | None) -> dict | None:
+    """Best-effort match between a keyword's core terms and an
+    already-crawled page's title/URL — word-overlap only, no AI, no
+    embeddings (keeps this deterministic and free, like
+    _classify_keyword_page_category above). Returns {"url", "title"} for
+    the best-scoring page if it shares enough terms with the keyword, else
+    None — meaning no existing page covers it, i.e. a New Page Opportunity
+    per the lead's reference flow's "Existing URL check" branch. A false
+    negative here just means the Next Steps recommendation reads "create
+    new page" when a decent page already existed — safer than a false
+    positive claiming an unrelated page already covers the keyword."""
+    if not site_audit_pages_rows:
+        return None
+    kw_tokens = _match_tokens(primary_keyword)
+    if not kw_tokens:
+        return None
+
+    best = None
+    best_score = 0
+    for row in site_audit_pages_rows:
+        url = row.get("page_url") or ""
+        title = row.get("page_title") or ""
+        path = re.sub(r"[/\-_]", " ", url)
+        page_tokens = _match_tokens(title) | _match_tokens(path)
+        score = len(kw_tokens & page_tokens)
+        if score > best_score:
+            best_score = score
+            best = {"url": url, "title": title}
+
+    # Require at least half the keyword's significant terms to match (min
+    # 1) — a single incidental shared word shouldn't count as "this page
+    # already covers it".
+    min_required = max(1, len(kw_tokens) // 2)
+    if best and best_score >= min_required:
+        return best
+    return None
