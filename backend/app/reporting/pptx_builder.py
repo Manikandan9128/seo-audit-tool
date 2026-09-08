@@ -2568,6 +2568,21 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             out.append(f"Recommended format: {page_category} — an existing page already covers this: {existing_url}.")
         elif page_category:
             out.append(f"Recommended format: {page_category} — no existing page covers this yet, new page opportunity.")
+        # Cluster validation (lead's reference flow, doc 1 final step): can
+        # one page realistically satisfy every keyword in this cluster?
+        # Deterministic — reuses page_category already computed per
+        # keyword, no extra AI call. A single stray keyword in a different
+        # format isn't treated as a real split signal (min_count=2) —
+        # only flagged when there's a genuine second sub-group worth its
+        # own page.
+        categories_present = [r.get("page_category") for r in rows_for_group if r.get("page_category")]
+        if categories_present:
+            cat_counts = Counter(categories_present).most_common()
+            if len(cat_counts) > 1 and cat_counts[1][1] >= 2:
+                cats_text = ", ".join(f"{c} ({n})" for c, n in cat_counts)
+                out.append(f"Cluster validation: mixed page formats — {cats_text}. One page likely can't satisfy all of these; consider splitting into separate pages.")
+            else:
+                out.append(f"Cluster validation: consistent format ({cat_counts[0][0]}) — one page can reasonably target every keyword here.")
         if kds:
             out.append(f"Avg. keyword difficulty {sum(kds) / len(kds):.0f} — {'competitive cluster, prioritize content depth over volume' if sum(kds) / len(kds) > 40 else 'low-competition cluster, faster to rank in'}.")
         if easy_wins:

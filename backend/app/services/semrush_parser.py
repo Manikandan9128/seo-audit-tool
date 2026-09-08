@@ -797,14 +797,18 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
     else:
         mapped = df
 
-    if import_type not in ("structured_data", "site_audit_pages"):
+    if import_type not in ("structured_data", "site_audit_pages", "organic_positions"):
         # Cap rows stored to keep JSONB payload reasonable for wide/text-heavy
-        # exports (keyword gap, backlinks, etc). Structured Data and Site
-        # Audit Pages rows both feed slides that need the TRUE total-pages-
-        # crawled count (Structured Data's coverage %; Site Audit Pages'
+        # exports (keyword gap, backlinks, etc). Structured Data, Site Audit
+        # Pages, and Organic Positions all feed features that need the TRUE
+        # total row count (Structured Data's coverage %; Site Audit Pages'
         # Website Structure directory rollup and SEO Issues/Critical/Priority
-        # Issues aggregates) — a real client export can have 1200+ rows, and
-        # capping at 500 silently understated every one of those counts.
+        # Issues aggregates; Organic Positions feeds the competitor keyword
+        # Google Sheets, whose entire point is showing a competitor's FULL
+        # ranking keyword list — a real client export can have 1000s of
+        # rows, and capping at 500 silently understated every one of these
+        # (confirmed real: a competitor's Sheet showed exactly "500
+        # keywords tracked", an upload-cap artifact, not their true total).
         mapped = mapped.head(500)
 
     if import_type == "keyword_gap":
