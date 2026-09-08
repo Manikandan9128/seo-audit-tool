@@ -3015,7 +3015,13 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     skipping the dimension (report spec Rule 8). Conversion Opportunities
     (from the same ux_findings dict) now render on their own "Next Steps:
     Conversion SEO" slide instead, alongside the other Next Steps categories
-    — see add_conversion_seo_next_steps_slide."""
+    — see add_conversion_seo_next_steps_slide.
+
+    Onboarding Breakdown (below) is rendered independently of whether a
+    manual UX pass happened — it's a vision pass over a real homepage
+    screenshot (see ux_findings_service.generate_onboarding_breakdown), not
+    dependent on a reviewer typing notes in, so it can show up even when
+    UI-Level Fixes above is the "no manual pass done" fallback slide."""
     slides = []
 
     if ux_findings.get("no_ux_pass_done"):
@@ -3037,20 +3043,20 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
                 col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
             ))
 
-        # Onboarding-bias breakdown of the landing page — separate slide
-        # from UI-Level Fixes (that one is broken/missing things; this one
-        # is "the page works but is fighting the visitor's psychology"),
-        # per the team-lead prompt: cover onboarding biases, top 5,
-        # directional suggestions. Grounded in the same manual QA notes,
-        # not a second AI pass.
-        breakdown = ux_findings.get("onboarding_breakdown") or []
-        if breakdown:
-            rows = [(b.get("bias", ""), b.get("where", ""), b.get("suggestion", "")) for b in breakdown[:5]]
-            slides.append(_table_slide(
-                prs, "Onboarding Breakdown — Landing Page", ["Bias", "Where It Shows Up", "Directional Suggestion"], rows,
-                col_widths=[2.6, 3.6, 5.9], source="Manual UX walkthrough", row_height=0.6, wrap_cols={0, 1, 2},
-                insights=[f"Top {len(rows)} onboarding-psychology gap(s) on the landing page, ranked by likely impact on sign-up/purchase completion."],
-            ))
+    # Onboarding-bias breakdown of the landing page — separate slide from
+    # UI-Level Fixes (that one is broken/missing things; this one is "the
+    # page works but is fighting the visitor's psychology"), per the
+    # team-lead prompt: cover onboarding biases, top 5, directional
+    # suggestions. Sourced from a real homepage screenshot when the manual
+    # notes above didn't already supply one — see the module docstring.
+    breakdown = ux_findings.get("onboarding_breakdown") or []
+    if breakdown:
+        rows = [(b.get("bias", ""), b.get("where", ""), b.get("suggestion", "")) for b in breakdown[:5]]
+        slides.append(_table_slide(
+            prs, "Onboarding Breakdown — Landing Page", ["Bias", "Where It Shows Up", "Directional Suggestion"], rows,
+            col_widths=[2.6, 3.6, 5.9], source="Homepage screenshot analysis", row_height=0.6, wrap_cols={0, 1, 2},
+            insights=[f"Top {len(rows)} onboarding-psychology gap(s) on the landing page, ranked by likely impact on sign-up/purchase completion."],
+        ))
 
     return slides
 

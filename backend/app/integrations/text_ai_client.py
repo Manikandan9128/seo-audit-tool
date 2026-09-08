@@ -18,9 +18,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
+import base64
+
 import httpx
 from anthropic import Anthropic
 from google import genai
+from google.genai import types as genai_types
 
 from app.config import settings
 from app.integrations.gemini_errors import friendly_gemini_error
@@ -309,5 +312,59 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
         text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
         if text:
             return text, provider
+
+    raise NoAIProviderConfigured(" / ".join(errors))
+
+
+def _try_gemini_vision(prompt: str, image_bytes: bytes, mime_type: str) -> str:
+    client = genai.Client(api_key=settings.gemini_api_key)
+    image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=[image_part, prompt])
+    return (response.text or "").strip()
+
+
+def _try_claude_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens: int) -> str:
+    client = Anthropic(api_key=settings.claude_api_key)
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=max_tokens,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": base64.b64encode(image_bytes).decode()}},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+    )
+    return "".join(block.text for block in response.content if block.type == "text").strip()
+
+
+def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "image/png", max_tokens: int = 2048) -> tuple[str, str]:
+    """Same fallback shape as generate_text(), but for a prompt grounded in
+    a real screenshot (e.g. the client's own homepage) instead of text
+    alone. Groq is skipped entirely here — GROQ_MODEL is a text-only model,
+    not a vision one; Gemini then Claude are the only two providers here
+    that actually accept an image input. Raises NoAIProviderConfigured if
+    neither key is set or both calls fail."""
+    if not settings.gemini_api_key and not settings.claude_api_key:
+        raise NoAIProviderConfigured("No Gemini or Claude API key configured — vision calls need one of these two")
+
+    errors: list[str] = []
+    if settings.gemini_api_key:
+        try:
+            text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
+            if text:
+                return text, "gemini"
+            errors.append("Gemini returned an empty response")
+        except Exception as e:
+            errors.append(friendly_gemini_error(e))
+    if settings.claude_api_key:
+        try:
+            text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
+            if text:
+                return text, "claude"
+            errors.append("Claude returned an empty response")
+        except Exception as e:
+            errors.append(f"Claude vision request failed: {str(e)[:300]}")
 
     raise NoAIProviderConfigured(" / ".join(errors))
