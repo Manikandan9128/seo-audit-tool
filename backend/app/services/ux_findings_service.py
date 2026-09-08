@@ -22,17 +22,29 @@ mention that you are an AI, a language model, or any tool by name. Every sentenc
 terminal punctuation — if you're about to run out of room, drop a less-important point entirely rather than \
 truncate one mid-sentence.
 
+Also do an onboarding breakdown of the landing page: walk it the way a first-time visitor experiences it and \
+flag where recognized onboarding/conversion psychology biases (e.g. cognitive load / Hick's law, choice \
+overload, social proof, anchoring, loss aversion, scarcity/urgency, default bias, Zeigarnik effect / \
+incomplete-task tension, framing, primacy-recency) are either missing where they'd help or working against \
+the visitor. Only report biases you can actually ground in the notes above — do not invent generic advice \
+that isn't tied to something described. Return the top 5, ranked by likely impact on sign-up/purchase \
+completion.
+
 Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
   "ui_fixes": [
     {{"issue": string, "where": string, "fix": string, "severity": "Critical" | "High" | "Medium" | "Low"}}
   ],
-  "conversion_opportunities": [string]
+  "conversion_opportunities": [string],
+  "onboarding_breakdown": [
+    {{"bias": string, "where": string, "suggestion": string}}
+  ]
 }}
 
 Mark anything that blocks a purchase (broken checkout, dead call-to-action, broken form) as "Critical" \
 severity. conversion_opportunities should cover trust signals, reviews, bundling, and engagement content —
-3 to 6 items.
+3 to 6 items. onboarding_breakdown must have at most 5 items, each a real bias name (not a generic UX tip), \
+where it shows up on the page, and one directional (not prescriptive-pixel-level) suggestion.
 """
 
 

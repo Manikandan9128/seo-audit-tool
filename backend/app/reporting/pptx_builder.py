@@ -652,22 +652,25 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     # Plain left-indented hierarchy list — matches Semrush's own Site
     # Structure widget layout (client asked for "same like hierarchy like
     # left side"), not the node-and-connector diagram this used to be.
-    # Structure only, deliberately no URL/Issues counts per row — those
-    # numbers already live on the SEO Issues and Priority Issues slides;
-    # the point here is showing the SHAPE of the site.
+    # URL count per row restored per user request 2026-09-08 (client wants
+    # the per-directory/sub-directory URL counts, same as Semrush's widget)
+    # — each row now shows its page count, root row shows the site total.
     MAX_TOP = 12
     MAX_SUB = 3
     row_h = Inches(0.32)
     max_y = Inches(6.9)
     y = Inches(1.15)
 
-    _textbox(slide, Inches(0.7), y, Inches(11), row_h, domain, size=15, bold=True, color=TEXT_DARK)
+    site_total = sum(top_counts.values())
+    _textbox(slide, Inches(0.7), y, Inches(9), row_h, domain, size=15, bold=True, color=TEXT_DARK)
+    _textbox(slide, Inches(9.7), y, Inches(1.9), row_h, f"{site_total:,} URLs", size=12, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
     y += row_h
 
-    for directory, _count in ranked[:MAX_TOP]:
+    for directory, count in ranked[:MAX_TOP]:
         if y > max_y:
             break
-        _textbox(slide, Inches(1.1), y, Inches(10.5), row_h, directory, size=12.5, color=TEXT_DARK)
+        _textbox(slide, Inches(1.1), y, Inches(8.5), row_h, directory, size=12.5, color=TEXT_DARK)
+        _textbox(slide, Inches(9.7), y, Inches(1.9), row_h, f"{count:,} URLs", size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
         y += row_h
         # Same reasoning as the top-level filter above, one level down:
         # a sub-path with only 1 page under it is a single leaf page
@@ -675,10 +678,11 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
         # sub-section — confirmed live, individual post slugs were
         # showing up as if they were meaningful /blog sub-folders.
         real_subs = [(d, c) for d, c in child_counts.get(directory, {}).items() if c >= 2]
-        for sub_directory, _sub_count in sorted(real_subs, key=lambda kv: -kv[1])[:MAX_SUB]:
+        for sub_directory, sub_count in sorted(real_subs, key=lambda kv: -kv[1])[:MAX_SUB]:
             if y > max_y:
                 break
-            _textbox(slide, Inches(1.5), y, Inches(10.1), row_h, f"/{sub_directory.split('/')[-1]}", size=11.5, color=TEXT_MUTED)
+            _textbox(slide, Inches(1.5), y, Inches(8.1), row_h, f"/{sub_directory.split('/')[-1]}", size=11.5, color=TEXT_MUTED)
+            _textbox(slide, Inches(9.7), y, Inches(1.9), row_h, f"{sub_count:,} URLs", size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
             y += row_h
 
     return slide
@@ -1097,8 +1101,8 @@ def add_priority_issues_slide(
         return None
 
     ranked.sort(key=lambda r: r[4], reverse=True)
-    headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks", "Priority Score"]
-    col_widths = [3.6, 4.2, 1.3, 1.3, 1.7]
+    headers = ["Page URL", "Issue(s)", "Pageviews", "GSC Clicks"]
+    col_widths = [3.9, 5.0, 1.5, 1.5]
     # Issue(s) previously truncated to one line — "14 issues" behind a count
     # gave no way to see what those 14 actually were. A separate "Full
     # Detail" appendix slide used to carry the untruncated text, but it just
@@ -1108,7 +1112,7 @@ def add_priority_issues_slide(
     ROW_CAP = 6
     shown = ranked[:ROW_CAP]
     rows = [
-        (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1], max_lines=4), f"{pv:,}", f"{cl:,}", f"{score:,}")
+        (_truncate_cell(url, col_widths[0]), _truncate_cell(issues, col_widths[1], max_lines=4), f"{pv:,}", f"{cl:,}")
         for url, issues, pv, cl, score in shown
     ]
     top = ranked[0]
@@ -1830,7 +1834,7 @@ def add_top_pages_branded_split_slide(
         _card(slide, left, card_top, Inches(half_width_in), card_h)
         _textbox(slide, left + Inches(0.15), card_top + Inches(0.07), Inches(2.2), Inches(0.22), label, size=9, bold=True, color=TEXT_MUTED)
         _textbox(slide, left + Inches(0.15), card_top + Inches(0.26), Inches(1.2), Inches(0.28), f"{share_pct:.0f}%", size=17, bold=True, color=_accent())
-        _textbox(slide, left + Inches(1.4), card_top + Inches(0.31), Inches(half_width_in) - Inches(1.5), Inches(0.22), "of total site users", size=8, color=TEXT_MUTED)
+        _textbox(slide, left + Inches(1.4), card_top + Inches(0.31), Inches(half_width_in) - Inches(1.5), Inches(0.22), "of branded + non-branded users", size=8, color=TEXT_MUTED)
 
         segment_total_users = sum(int(float(p.get("active_users", 0) or 0)) for p in pages)
         rows = [
@@ -3033,6 +3037,21 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
                 col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
             ))
 
+        # Onboarding-bias breakdown of the landing page — separate slide
+        # from UI-Level Fixes (that one is broken/missing things; this one
+        # is "the page works but is fighting the visitor's psychology"),
+        # per the team-lead prompt: cover onboarding biases, top 5,
+        # directional suggestions. Grounded in the same manual QA notes,
+        # not a second AI pass.
+        breakdown = ux_findings.get("onboarding_breakdown") or []
+        if breakdown:
+            rows = [(b.get("bias", ""), b.get("where", ""), b.get("suggestion", "")) for b in breakdown[:5]]
+            slides.append(_table_slide(
+                prs, "Onboarding Breakdown — Landing Page", ["Bias", "Where It Shows Up", "Directional Suggestion"], rows,
+                col_widths=[2.6, 3.6, 5.9], source="Manual UX walkthrough", row_height=0.6, wrap_cols={0, 1, 2},
+                insights=[f"Top {len(rows)} onboarding-psychology gap(s) on the landing page, ranked by likely impact on sign-up/purchase completion."],
+            ))
+
     return slides
 
 
@@ -3428,8 +3447,11 @@ def _build_report(
     elif site_audit and site_audit.get("company_summary"):
         add_company_overview_slide(prs, client_name, site_audit["company_summary"])
 
-    if domain_strategy:
-        add_domain_strategy_slide(prs, domain_strategy)
+    # Domain Strategy slide cut per user request 2026-09-08 — function kept
+    # below for fast re-enable if ever needed; domain_strategy is still
+    # threaded into the Technical SEO Next Steps slide separately.
+    # if domain_strategy:
+    #     add_domain_strategy_slide(prs, domain_strategy)
 
     # Understanding Current Scenario section — template order: Website
     # Performance (PageSpeed) first, then the rest of the crawl-based
@@ -3471,7 +3493,9 @@ def _build_report(
     # if backlink_rows or backlink_summary or own_domain_rating is not None:
     #     add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
 
-    add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
+    # Brand Citation Opportunities slide cut per user request 2026-09-08 —
+    # function kept below for fast re-enable if ever needed.
+    # add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
@@ -3496,7 +3520,6 @@ def _build_report(
             # classify /careers as branded, so it belongs in this split.
             all_pages = (analytics.get("top_pages") or {}).get("rows", [])
             classified = [(p, _classify_page_branded(p.get("path") or "")) for p in all_pages]
-            site_total_users = sum(int(float(p.get("active_users", 0) or 0)) for p, _ in classified)
             branded_pages = sorted(
                 (p for p, c in classified if c == "branded"), key=lambda p: float(p.get("page_views", 0) or 0), reverse=True
             )
@@ -3505,10 +3528,17 @@ def _build_report(
             )
             branded_users = sum(int(float(p.get("active_users", 0) or 0)) for p in branded_pages)
             nonbranded_users = sum(int(float(p.get("active_users", 0) or 0)) for p in nonbranded_pages)
+            # Denominator is branded+nonbranded users, NOT the full site's
+            # user total — pages matching neither signal list are dropped
+            # from both segments above (_classify_page_branded returns None),
+            # so dividing by the unfiltered site total left the two shares
+            # summing to well under 100%. Each share is now "of the pages
+            # this split actually classifies," so they always sum to 100%.
+            classified_total = branded_users + nonbranded_users
             add_top_pages_branded_split_slide(
                 prs,
-                branded_users / site_total_users * 100 if site_total_users else 0, branded_pages,
-                nonbranded_users / site_total_users * 100 if site_total_users else 0, nonbranded_pages,
+                branded_users / classified_total * 100 if classified_total else 0, branded_pages,
+                nonbranded_users / classified_total * 100 if classified_total else 0, nonbranded_pages,
             )
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
@@ -3569,13 +3599,46 @@ def _build_report(
                 total_clicks = sum(q.get("clicks", 0) for q in subset)
                 total_impressions = sum(q.get("impressions", 0) for q in subset)
                 avg_ctr = total_clicks / total_impressions * 100 if total_impressions else 0
+                # Impression-weighted, not a plain per-row average — matches
+                # how GSC itself reports the period average position.
+                avg_position = (
+                    sum(q.get("position", 0) * q.get("impressions", 0) for q in subset) / total_impressions
+                    if total_impressions else 0
+                )
                 best_positioned = min((q for q in subset if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None)
                 insights = [f"Average CTR is {avg_ctr:.1f}% across {total_impressions:,} impressions — {'strong' if avg_ctr > 3 else 'below the ~3% search-average, titles/descriptions may need work'}."]
                 if best_positioned:
                     insights.append(f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}.")
-                _table_slide(
-                    prs, title, ["Query", "Clicks", "Impressions", "CTR", "Avg. position"], rows,
-                    col_widths=[5.5, 1.5, 1.9, 1.5, 1.7], source=gsc_source, insights=insights,
+
+                # Overall summary card strip (Total Clicks/Impressions/CTR/
+                # Avg. position) across the FULL branded/non-branded subset,
+                # not just the top-14 shown in the table below — added per
+                # user request 2026-09-08, same pattern as the KPI cards on
+                # the Traffic Overview slide.
+                slide = _blank_slide(prs)
+                _content_header(slide, title)
+                _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {gsc_source}", size=11, color=TEXT_MUTED)
+                metrics = [
+                    ("Total Clicks", f"{total_clicks:,}"),
+                    ("Total Impressions", f"{total_impressions:,}"),
+                    ("Avg. CTR", f"{avg_ctr:.1f}%"),
+                    ("Avg. Position", f"{avg_position:.1f}"),
+                ]
+                gap = Inches(0.15)
+                total_width = Inches(12.1)
+                card_width = Emu(int((total_width - gap * (len(metrics) - 1)) / len(metrics)))
+                card_height = Inches(0.95)
+                card_top = Inches(1.1)
+                for i, (label, value) in enumerate(metrics):
+                    left = Inches(0.6) + Emu(i * (card_width + gap))
+                    _card(slide, left, card_top, card_width, card_height)
+                    _textbox(slide, left + Inches(0.15), card_top + Inches(0.12), card_width - Inches(0.3), Inches(0.35), label, size=11, color=TEXT_MUTED)
+                    _textbox(slide, left + Inches(0.15), card_top + Inches(0.42), card_width - Inches(0.3), Inches(0.45), value, size=18, bold=True, color=_accent())
+
+                _draw_table(
+                    slide, ["Query", "Clicks", "Impressions", "CTR", "Avg. position"], rows,
+                    card_top + card_height + Inches(0.2), col_widths=[5.5, 1.5, 1.9, 1.5, 1.7],
+                    row_cap=14, insights=insights,
                 )
 
             branded_queries = [q for q in queries if _is_branded(q.get("query", ""))]
