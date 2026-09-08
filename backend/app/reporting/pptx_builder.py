@@ -954,7 +954,18 @@ def add_critical_issues_slide(
     manual report's dedicated Critical Issues page. Distinct from the
     combined SEO Issues slide above, which mixes Errors + Warnings in one
     2-column layout — this is Errors alone, full width, so the most severe
-    findings aren't sharing space with lower-priority warnings."""
+    findings aren't sharing space with lower-priority warnings.
+
+    Columns distinguish the two counts Semrush's rollup actually gives per
+    issue type: Affected Pages (failed_checks, how many pages have it) vs
+    Total Checked (total_checks, how many pages were eligible for the
+    check) — NOT the same number, e.g. a canonical-tag check only runs
+    against indexable pages. Organic exposure below is a SITE-WIDE
+    broken/non-200 total, not broken out per individual issue type —
+    Semrush's Site Audit issue export is an aggregate rollup only (issue
+    name + failed/total counts), it does not include the per-issue list of
+    affected URLs, so there's no real per-issue traffic number to compute
+    without a per-issue URL export Semrush doesn't currently give us."""
     if not site_audit_issues:
         return None
     errors = [
@@ -976,10 +987,12 @@ def add_critical_issues_slide(
         f"Most widespread: \"{top.get('issue')}\" — {top.get('failed_checks', 0):,} pages affected.",
     ]
 
-    # Business-impact cross-reference: real GA4 pageviews that landed on
-    # pages which are now broken/non-200, per the same Site Audit per-page
-    # export the Website Structure slide uses. Only added when BOTH real
-    # datasets are present and actually overlap — never estimated.
+    # Business-impact cross-reference: real GA4 pageviews AND GSC clicks
+    # that landed on pages which are now broken/non-200, per the same Site
+    # Audit per-page export the Website Structure slide uses. Only added
+    # when the relevant real dataset is present and actually overlaps —
+    # never estimated. Site-wide across all broken pages, not per-issue —
+    # see the docstring above for why a per-issue split isn't possible yet.
     if site_audit_pages_rows and analytics:
         broken_paths = {
             urlparse(r.get("page_url") or "").path.rstrip("/")
@@ -992,9 +1005,20 @@ def add_critical_issues_slide(
             for p in top_pages
             if (p.get("path") or "").rstrip("/") in broken_paths
         )
-        if matched_views > 0:
+        page_clicks = (analytics.get("page_clicks") or {}).get("rows", [])
+        matched_clicks = sum(
+            int(float(r.get("clicks", 0) or 0))
+            for r in page_clicks
+            if urlparse(r.get("page") or "").path.rstrip("/") in broken_paths
+        )
+        if matched_views > 0 or matched_clicks > 0:
+            parts = []
+            if matched_views > 0:
+                parts.append(f"{matched_views:,} real pageviews")
+            if matched_clicks > 0:
+                parts.append(f"{matched_clicks:,} organic search clicks")
             insights.append(
-                f"These broken/non-200 pages received {matched_views:,} real pageviews in the reporting window — "
+                f"These broken/non-200 pages received {' and '.join(parts)} in the reporting window — "
                 "that traffic (and any ranking credit) is being lost right now."
             )
 
@@ -3478,11 +3502,7 @@ def _build_report(
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
-            # Critical Issues cut per user request 2026-09-08 — pure subset
-            # duplicate of the SEO Issues slide's Errors column (same
-            # site_audit_issues data, ERROR type only, just reformatted as a
-            # table). Function kept below for fast re-enable if ever needed.
-            # add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
+            add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
             if schema_validation and schema_validation.get("total_pages"):
