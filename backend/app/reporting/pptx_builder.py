@@ -2541,14 +2541,45 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     bullets_max_y = card_top + card_height - (Inches(0.7) if opportunity else Inches(0.15))
     chars_per_line = max(20, int(text_width / 914400 * 14))
     line_h = Inches(0.22)
+    # Each area_of_focus item is now a structured recommendation object
+    # (recommendation/evidence/lumber_applicability/impact/effort/kpi/
+    # status — see competitor_narrative_service's prompt schema), not a
+    # plain string: impact/effort/KPI/status render as a compact tag line
+    # under the recommendation itself so the priority/testability info a
+    # reader needs to act on it doesn't require re-deriving it elsewhere.
+    # A malformed item (missing the required fields — an off-spec AI
+    # response) is skipped rather than guessed at, same silent-skip
+    # discipline as every other AI-derived slide in this file.
+    STATUS_COLOR = {
+        "Already exists": TEXT_MUTED,
+        "Quick win": GOOD,
+        "Not applicable": TEXT_MUTED,
+    }
     for item in areas[:7]:
-        lines = max(1, -(-len(item) // chars_per_line))
-        item_h = line_h * lines + Inches(0.06)
+        if not isinstance(item, dict):
+            continue
+        rec = item.get("recommendation")
+        if not rec:
+            continue
+        lines = max(1, -(-len(rec) // chars_per_line))
+        tag_parts = [p for p in [
+            f"Impact: {item['impact']}" if item.get("impact") else None,
+            f"Effort: {item['effort']}" if item.get("effort") else None,
+            item.get("status"),
+            f"KPI: {item['kpi']}" if item.get("kpi") else None,
+        ] if p]
+        tag_line = "  ·  ".join(tag_parts)
+        item_h = line_h * lines + (Inches(0.19) if tag_line else 0) + Inches(0.06)
         if y + item_h > bullets_max_y:
             break
-        _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), DEFAULT_ACCENT)
-        _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, item, size=11.5)
-        y += item_h
+        dot_color = STATUS_COLOR.get(item.get("status"), DEFAULT_ACCENT)
+        _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), dot_color)
+        _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, rec, size=11.5)
+        y += line_h * lines
+        if tag_line:
+            _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), Inches(0.19), tag_line, size=8.5, color=TEXT_MUTED)
+            y += Inches(0.19)
+        y += Inches(0.06)
 
     if opportunity:
         y += Inches(0.12)

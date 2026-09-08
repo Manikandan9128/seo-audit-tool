@@ -37,11 +37,32 @@ above the fold (homepage_url)." Each bullet should name the specific tactic and 
 source. If homepage_text is thin or absent for a competitor, fall back to what its metrics alone support \
 (e.g. a clear traffic or keyword-volume lead) rather than inventing on-site tactics.
 
-Then, separately per competitor, write "areas_of_focus": specific, actionable steps {client_name} should take \
-in response to THAT competitor — grounded in both its best_at findings and its metric gaps, not just a \
-restatement of what it does. Metrics alone are not a substitute for what a competitor is actually doing \
+Then, separately per competitor, write "areas_of_focus": specific, actionable recommendations {client_name} \
+should take in response to THAT competitor — grounded in both its best_at findings and its metric gaps, not \
+just a restatement of what it does. Metrics alone are not a substitute for what a competitor is actually doing \
 on-site — prioritize recommendations that respond to a concrete best_at tactic over pure metric comparisons \
-whenever that competitor's homepage_text gave you something to work with.
+whenever that competitor's homepage_text gave you something to work with. Each recommendation is an object, \
+not a plain string — the "recommendation" text is the same short, specific, actionable statement as before, \
+but it now carries five more fields alongside it so a reader can act on it without re-deriving the reasoning:
+- "evidence": the exact competitor fact this is based on — its URL/page, page or template type, target \
+  keyword or topic, and the specific tactic observed (e.g. "miter.com/compare — dedicated comparison page \
+  targeting 'miter vs rippling'"). Never write a recommendation whose evidence field would just be empty or \
+  restate the recommendation itself — if there's no concrete competitor fact behind it, don't include it.
+- "lumber_applicability": one sentence on whether and how this tactic actually fits {client_name}'s own \
+  business, product lineup, target audience, and search intent — not every competitor tactic transfers, say \
+  so plainly when applicability is partial or conditional rather than assuming it always applies.
+- "impact": "High", "Medium", or "Low" — judged from search demand for the target keyword/topic, \
+  {client_name}'s current visibility there, and business relevance, not just "this seems good."
+- "effort": "Low", "Medium", or "High" — the real build cost (a metadata tweak is Low; a new page template \
+  or tool/calculator is High).
+- "kpi": the ONE metric this is expected to move — e.g. "organic rankings", "impressions", "CTR", \
+  "organic clicks", "conversions", or "assisted conversions" — not a vague "SEO performance."
+- "status": exactly one of "Already exists", "Quick win", "Content build", "Technical change", or \
+  "Product-CRO dependency" — "Already exists" if {client_name}'s own data shows they already do this; \
+  "Not applicable" is also allowed here ONLY if lumber_applicability concluded the tactic doesn't transfer, \
+  in which case still include the item (don't silently drop it) so the reader sees it was considered and ruled out.
+Order the list by priority — High impact + Low/Medium effort items first, "Not applicable" items last — not \
+just by impact alone.
 
 Also write "opportunity_analysis" for that competitor, a structured WHAT COMPETITOR HAS -> WHAT CLIENT LACKS -> \
 WHY IT MATTERS -> WHAT CLIENT SHOULD BUILD breakdown, covering (whichever of these the data actually supports — \
@@ -73,7 +94,17 @@ domain listed above, using the EXACT domain string as the key:
   "narratives": {{
     "<competitor-domain>": {{
       "best_at": [string],          // 3-6 short, objective bullets naming concrete tactics/strengths this competitor actually uses — written about the competitor, not advice for {client_name}
-      "areas_of_focus": [string],   // 6-9 short, specific, actionable bullets — what {client_name} should do in response to this competitor, ordered by impact
+      "areas_of_focus": [           // 6-9 recommendation objects, ordered by priority (high impact + low/medium effort first)
+        {{
+          "recommendation": string,          // short, specific, actionable statement
+          "evidence": string,                // exact competitor URL/page/template/keyword + tactic observed this is based on
+          "lumber_applicability": string,     // one sentence: does/how this fits {client_name}'s business, products, audience, intent
+          "impact": "High" | "Medium" | "Low",
+          "effort": "Low" | "Medium" | "High",
+          "kpi": string,                       // the one metric this should move — rankings, impressions, CTR, organic clicks, conversions, or assisted conversions
+          "status": "Already exists" | "Quick win" | "Content build" | "Technical change" | "Product-CRO dependency" | "Not applicable"
+        }}
+      ],
       "growth_opportunity": string, // 2-4 sentence closing paragraph naming the strategic opening {client_name} has vs. this specific competitor
       "opportunity_analysis": {{    // OPTIONAL — omit entirely for a competitor if the data is too thin to support it
         "competitor_has": [string],       // at most 4 short bullets: concrete things this competitor has (page types, audiences/industries targeted, content formats, tools/calculators, comparison pages, FAQs, trust signals, commercial pages) — only ones the data actually evidences
