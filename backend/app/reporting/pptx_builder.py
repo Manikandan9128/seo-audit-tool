@@ -1451,6 +1451,7 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
     missing_properties = schema_validation.get("missing_properties") or []
     gsc_rich_results = schema_validation.get("gsc_rich_results") or []
     missing_types = schema_validation.get("missing_types") or []
+    by_page_type = schema_validation.get("by_page_type") or []
     if not type_coverage and not missing_properties and not gsc_rich_results and not missing_types:
         return None
 
@@ -1464,7 +1465,37 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
     insights = []
     ROW_CAP, ROW_H = 6, 0.3
 
-    if type_coverage:
+    if by_page_type:
+        # Presence, validity, and business value split by PAGE TYPE (not
+        # one blended site-wide number) — teammate QA on the last report
+        # asked for exactly this: Page Type -> Applicable Schema -> Schema
+        # Count -> Validation -> SEO Priority. Rows are already sorted by
+        # real GA4 pageviews (the traffic a gap here would actually cost),
+        # page count as tiebreaker — the highest-priority gap is always
+        # row one, not something the reader has to work out themselves.
+        _textbox(slide, left, y, width, Inches(0.24), "Structured Data Coverage by Page Type", size=12.5, bold=True, color=_accent())
+        y = y + Inches(0.28)
+        coverage_rows = [
+            (
+                r["page_type"], r["applicable_schema"], f"{r['pages']:,}",
+                f"{r['coverage_pct']}%", f"{r['valid_pct']}%",
+                f"{r['pageviews']:,}" if r["pageviews"] else "—",
+            )
+            for r in by_page_type
+        ]
+        y = _draw_table(
+            slide, ["Page Type", "Applicable Schema", "Pages", "Coverage", "Valid", "Pageviews"], coverage_rows, y,
+            col_widths=[2.2, 2.6, 1.2, 1.7, 1.6, 2.8], left=left, width=width, row_cap=ROW_CAP, row_height=ROW_H,
+        ) + Inches(0.2)
+        any_schema_pct = 100 * pages_with_schema / total_pages
+        insights.append(f"{pages_with_schema:,} of {total_pages:,} pages ({any_schema_pct:.0f}%) have structured data implemented.")
+        top_gap = next((r for r in by_page_type if r["page_type"] != "Other Pages" and r["coverage_pct"] < 100), None)
+        if top_gap:
+            insights.append(
+                f"Highest-priority gap: {top_gap['page_type']} pages are only {top_gap['coverage_pct']}% covered"
+                + (f", {top_gap['pageviews']:,} real pageviews behind that gap." if top_gap["pageviews"] else ".")
+            )
+    elif type_coverage:
         _textbox(slide, left, y, width, Inches(0.24), "Structured Data Coverage", size=12.5, bold=True, color=_accent())
         y = y + Inches(0.28)
         coverage_rows = [(c["type"], f"{c['pages_with_it']:,} / {total_pages:,}", f"{c['coverage_pct']}%") for c in type_coverage]

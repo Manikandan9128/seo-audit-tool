@@ -1221,7 +1221,7 @@ def _gather_report_data(
         .first()
     )
     schema_validation_result = (
-        aggregate_schema_validation(latest_page_audit_job.result.get("pages", []))
+        aggregate_schema_validation(latest_page_audit_job.result.get("pages", []), analytics)
         if latest_page_audit_job and latest_page_audit_job.result
         else None
     )

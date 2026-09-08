@@ -181,11 +181,23 @@ _SCHEMA_TYPE_GROUP_MEMBERS: dict[str, set[str]] = {
 _SITE_WIDE_SCHEMA_TYPES = ["Organization", "WebSite", "BreadcrumbList"]
 
 
-def aggregate_schema_validation(pages: list[dict]) -> dict:
+def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None) -> dict:
     """Whole-site schema.org coverage + missing-required-property counts,
     built from a multi-page crawl's already-computed per-page meta (see
     _extract_meta) — no extra crawling, just tallying what run_multi_page_audit*
-    already collected. Powers both the live UI panel and the PPTX slide."""
+    already collected. Powers both the live UI panel and the PPTX slide.
+
+    Also builds "by_page_type": presence, validity, Google eligibility, and
+    business value (real GA4 pageviews) segmented by page TYPE instead of
+    one blended site-wide number — teammate QA on the last report asked for
+    this exact split: "Flow: All Crawled URLs -> Canonical URL -> Page Type
+    -> Applicable Schema Types -> Schema Count -> Validation -> Google
+    Eligibility -> SEO Priority." Page type is the same URL-shape detection
+    _site_wide_missing_types already used (Article/Product/LocalBusiness/
+    JobPosting/Event/FAQPage) — reused here instead of inventing a second
+    classifier, now applied to bucket EVERY crawled page (not just to ask
+    "does at least one exist"), with pages matching no known shape grouped
+    as "Other Pages" rather than dropped."""
     from collections import Counter
 
     total_pages = 0
@@ -194,6 +206,14 @@ def aggregate_schema_validation(pages: list[dict]) -> dict:
     missing_field_counts: Counter = Counter()
     shape_page_counts: Counter = Counter()
     shape_type_found_counts: Counter = Counter()
+
+    # by_page_type bucket state: page_type -> {pages, with_schema, valid,
+    # urls} — "valid" means the applicable schema type is present AND none
+    # of its required-field issues were raised for THIS page.
+    by_type: dict[str, dict] = {}
+
+    def _bucket(label: str) -> dict:
+        return by_type.setdefault(label, {"pages": 0, "with_schema": 0, "valid": 0, "urls": []})
 
     for page in pages:
         meta = page.get("meta")
@@ -205,18 +225,38 @@ def aggregate_schema_validation(pages: list[dict]) -> dict:
             pages_with_schema += 1
         for t in types_found:
             type_counts[t] += 1
-        for issue in meta.get("schema_field_issues") or []:
+        page_field_issues = meta.get("schema_field_issues") or []
+        for issue in page_field_issues:
             match = _SCHEMA_FIELD_ISSUE_RE.match(issue)
             if match:
                 missing_field_counts[(match.group(1), match.group(2), match.group(3))] += 1
 
         url = page.get("url") or ""
+        matched_shape = None
         for label, shape_re in _SCHEMA_TYPE_SHAPE_RE.items():
             if shape_re.search(url):
+                matched_shape = label
                 shape_page_counts[label] += 1
                 members = _SCHEMA_TYPE_GROUP_MEMBERS.get(label, {label})
                 if types_found & members:
                     shape_type_found_counts[label] += 1
+                break  # first matching shape wins — a URL only gets one page-type bucket
+
+        page_type = matched_shape or "Other Pages"
+        bucket = _bucket(page_type)
+        bucket["pages"] += 1
+        expected_members = _SCHEMA_TYPE_GROUP_MEMBERS.get(matched_shape, {matched_shape}) if matched_shape else None
+        has_applicable = bool(types_found & expected_members) if expected_members else bool(types_found)
+        if has_applicable:
+            bucket["with_schema"] += 1
+            required_gap_for_type = any(
+                m.group(1) in (expected_members or types_found) and m.group(2) == "required"
+                for m in (_SCHEMA_FIELD_ISSUE_RE.match(i) for i in page_field_issues) if m
+            )
+            if not required_gap_for_type:
+                bucket["valid"] += 1
+        if url:
+            bucket["urls"].append(url)
 
     type_coverage = [
         {"type": t, "pages_with_it": c, "coverage_pct": round(100 * c / total_pages) if total_pages else 0}
@@ -244,12 +284,46 @@ def aggregate_schema_validation(pages: list[dict]) -> dict:
         if total_pages > 0 and type_counts[t] == 0:
             missing_types.append({"type": t, "reason": f"not found on any of the {total_pages} crawled pages"})
 
+    # Business value per page type: real GA4 pageviews summed across that
+    # bucket's URLs — path-matched, same convention as the rest of this
+    # codebase's analytics cross-references (e.g. Critical Issues, Priority
+    # Issues). Absent (0) rather than estimated when analytics wasn't
+    # uploaded or a bucket's pages simply weren't in the top_pages export.
+    pageviews_by_path: dict[str, int] = {}
+    if analytics:
+        pageviews_by_path = {
+            (p.get("path") or "").rstrip("/"): int(float(p.get("page_views", 0) or 0))
+            for p in (analytics.get("top_pages") or {}).get("rows", [])
+        }
+
+    def _applicable_schema_label(page_type: str) -> str:
+        if page_type == "Other Pages":
+            return "—"
+        return "/".join(sorted(_SCHEMA_TYPE_GROUP_MEMBERS.get(page_type, {page_type})))
+
+    by_page_type = []
+    for page_type, b in by_type.items():
+        pageviews = sum(pageviews_by_path.get(urlparse(u).path.rstrip("/"), 0) for u in b["urls"])
+        by_page_type.append({
+            "page_type": page_type,
+            "applicable_schema": _applicable_schema_label(page_type),
+            "pages": b["pages"],
+            "coverage_pct": round(100 * b["with_schema"] / b["pages"]) if b["pages"] else 0,
+            "valid_pct": round(100 * b["valid"] / b["pages"]) if b["pages"] else 0,
+            "pageviews": pageviews,
+        })
+    # SEO priority proxy: real traffic first (business value is what makes
+    # a gap worth fixing), page count as tiebreaker for buckets analytics
+    # didn't cover.
+    by_page_type.sort(key=lambda r: (-r["pageviews"], -r["pages"]))
+
     return {
         "total_pages": total_pages,
         "pages_with_schema": pages_with_schema,
         "type_coverage": type_coverage,
         "missing_properties": missing_properties,
         "missing_types": missing_types,
+        "by_page_type": by_page_type,
     }
 
 
