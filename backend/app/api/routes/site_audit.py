@@ -41,7 +41,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, match_existing_page
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, is_branded_or_near_brand, match_existing_page
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -395,6 +395,56 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
             r for r in gap_candidates
             if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
         ]
+
+
+def _filter_search_queries(client: Client, data: dict) -> None:
+    """Classifies GSC non-branded search queries for real business relevance
+    before they become an "opportunity set" — teammate QA on the last
+    report flagged Search Queries - Non-Branded as unfiltered: any
+    non-branded query GSC returned was treated as an opportunity, with no
+    check that it actually had anything to do with the client's business
+    (per the reference flow: GSC Query -> Topic -> Intent -> Business
+    Relevance -> Brand Exclusion -> Commercial Value -> Existing/Target
+    URL -> SEO Action — brand exclusion already happens via the branded/
+    non-branded split itself; this fills in the missing "Business
+    Relevance" step). Branded queries are left untouched — brand demand
+    doesn't need a relevance judgment. Same classify_keywords call, top-
+    _CLASSIFY_CANDIDATE_CAP-by-clicks candidate scoping, and fail-open
+    discipline as _filter_competitor_keywords above."""
+    analytics = data.get("analytics") or {}
+    queries = (analytics.get("search_queries") or {}).get("rows") or []
+    if not queries:
+        return
+
+    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client_domain)) if t}
+
+    nonbranded_rows = [r for r in queries if not is_branded_or_near_brand(r.get("query") or "", brand_tokens)]
+    if not nonbranded_rows:
+        return
+
+    candidates = sorted(nonbranded_rows, key=lambda r: _num_for_sort(r.get("clicks")), reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
+    candidate_keywords = [r.get("query", "") for r in candidates]
+    if not candidate_keywords:
+        return
+
+    client_description = (data.get("company_overview") or {}).get("description")
+    classifications = classify_keywords(client.name, client_domain, brand_tokens, candidate_keywords, client_description)
+    if not classifications:
+        return
+    keep = {"highly_relevant", "potentially_relevant"}
+    candidate_query_texts = {(r.get("query") or "").lower() for r in candidates}
+
+    # Only queries actually sent to classification (the top-clicks
+    # candidate pool) are ever dropped — a non-branded query outside that
+    # pool was never going to reach the slide's own top-14-by-clicks cap
+    # anyway, so it's left as-is rather than silently judged without ever
+    # being sent to the classifier.
+    analytics["search_queries"]["rows"] = [
+        r for r in queries
+        if (r.get("query") or "").lower() not in candidate_query_texts
+        or classifications.get((r.get("query") or "").lower(), "potentially_relevant") in keep
+    ]
 
 
 def _generate_competitor_narratives(
@@ -1361,6 +1411,7 @@ def _build_pptx_for_client(
     # unrelated industries) before anything downstream — PPTX slides, the
     # ranking_page_types signal below, Next Steps findings — ever sees them.
     _filter_competitor_keywords(client, data)
+    _filter_search_queries(client, data)
 
     competitor_narratives = _generate_competitor_narratives(
         client, data, on_progress=on_progress, content_issues=content_issues
