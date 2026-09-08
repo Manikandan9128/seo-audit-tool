@@ -4,6 +4,7 @@ from datetime import date as _date
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 
 def list_properties(creds: Credentials) -> list[dict]:
@@ -189,17 +190,42 @@ def _single_dimension_breakdown(client, property_id: str, iso_date: str, dimensi
     ]
 
 
+def _daily_metric_totals(client, property_id: str, start_date: str, end_date: str, metric_name: str) -> dict[str, float]:
+    """date (YYYYMMDD) -> metric total, one query for the whole period —
+    same shape as get_traffic_overview's per-day rows but for a metric
+    that isn't pulled there (keyEvents), so the spike-day value and the
+    period average can both be read off one call."""
+    body = {
+        "dimensions": [{"name": "date"}],
+        "metrics": [{"name": metric_name}],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+    }
+    response = client.properties().runReport(property=property_id, body=body).execute()
+    return {row["dimensionValues"][0]["value"]: float(row["metricValues"][0]["value"]) for row in response.get("rows", [])}
+
+
 def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows: list[dict]) -> dict | None:
     """Finds the single biggest single-day traffic spike in the period (a day
     well above the period average — not just the highest day, since every
     period has *a* highest day even with near-zero real variance) and breaks
-    down who drove it: age bracket, gender, country, and acquisition
-    channel. Returns None when there's no real spike (flat traffic) or too
-    few days to judge against.
+    down who drove it: age bracket, gender, country, acquisition channel,
+    and (for the causal-hypothesis evidence chain below) landing page,
+    engagement rate, and key events. Returns None when there's no real
+    spike (flat traffic) or too few days to judge against.
 
     Age/gender need Google Signals / demographics enabled on the GA4
     property — on a property without it those two come back empty and are
-    dropped, but country and channel (neither needs Signals) still show."""
+    dropped, but country and channel (neither needs Signals) still show.
+
+    channel -> landing_page -> engagement -> key_event evidence chain:
+    teammate QA on the last report flagged this slide as a plain date/
+    country/channel dump with no causal reasoning. by_landing_page (same
+    per-day dimension query pattern as by_channel/by_country) plus spike-day
+    vs period-average engagement rate and key events give pptx_builder's
+    add_traffic_spike_slide real numbers to build a testable hypothesis
+    from — genuine demand (engagement/key events rose with sessions) vs.
+    low-intent/bot traffic (sessions rose but engagement/key events didn't)
+    — instead of just listing who showed up."""
     days = [
         (r["date"], int(float(r["sessions"])))
         for r in daily_rows
@@ -223,6 +249,29 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     iso_date = f"{spike_date[0:4]}-{spike_date[4:6]}-{spike_date[6:8]}"
     client = _data_client(creds)
 
+    # Period engagement-rate average and spike-day value both come straight
+    # off daily_rows (get_traffic_overview already pulls engagementRate per
+    # day) — no extra API call needed for that half of the evidence chain.
+    engagement_by_date = {
+        r["date"]: float(r["engagement_rate"]) for r in daily_rows if r.get("date") and r.get("engagement_rate") not in (None, "")
+    }
+    avg_engagement_rate = statistics.mean(engagement_by_date.values()) if engagement_by_date else None
+    spike_engagement_rate = engagement_by_date.get(spike_date)
+
+    all_dates = [d for d, _ in days]
+    period_start = f"{min(all_dates)[0:4]}-{min(all_dates)[4:6]}-{min(all_dates)[6:8]}"
+    period_end = f"{max(all_dates)[0:4]}-{max(all_dates)[4:6]}-{max(all_dates)[6:8]}"
+    try:
+        key_events_by_date = _daily_metric_totals(client, property_id, period_start, period_end, "keyEvents")
+    except HttpError:
+        # Properties with no key events configured reject the metric
+        # outright rather than returning zeros — the rest of the spike
+        # breakdown (channel/landing page/engagement) is still real and
+        # worth keeping, so this piece degrades to absent, not a hard fail.
+        key_events_by_date = {}
+    avg_key_events = statistics.mean(key_events_by_date.values()) if key_events_by_date else None
+    spike_key_events = key_events_by_date.get(spike_date)
+
     return {
         "date": iso_date,
         "day_of_week": _date.fromisoformat(iso_date).strftime("%A"),
@@ -233,6 +282,11 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
         "by_gender": _single_dimension_breakdown(client, property_id, iso_date, "userGender", 3),
         "by_country": _single_dimension_breakdown(client, property_id, iso_date, "country", 5),
         "by_channel": _single_dimension_breakdown(client, property_id, iso_date, "sessionDefaultChannelGroup", 5),
+        "by_landing_page": _single_dimension_breakdown(client, property_id, iso_date, "landingPage", 5),
+        "avg_engagement_rate": avg_engagement_rate,
+        "spike_engagement_rate": spike_engagement_rate,
+        "avg_key_events": avg_key_events,
+        "spike_key_events": spike_key_events,
     }
 
 

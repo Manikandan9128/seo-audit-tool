@@ -1996,6 +1996,55 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     return slide
 
 
+def _traffic_spike_hypothesis(spike: dict) -> list[str]:
+    """Channel -> landing page -> engagement -> key event evidence chain,
+    ending in one testable causal hypothesis — teammate QA on the last
+    report flagged this slide as a plain date/country/channel dump with no
+    reasoning. Every clause here traces to a real number ga4_service.
+    get_traffic_spike_breakdown returned; when engagement/key-event data
+    isn't available (property has no Google Signals / key events
+    configured) the hypothesis narrows to what evidence actually exists
+    rather than guessing at the missing half."""
+    lines: list[str] = []
+    top_channel = (spike.get("by_channel") or [None])[0]
+    top_landing = (spike.get("by_landing_page") or [None])[0]
+    if top_channel and top_landing:
+        lines.append(
+            f"{top_channel['label']} drove {top_channel['pct']:.0f}% of the spike, landing mostly on "
+            f"\"{top_landing['label']}\" ({top_landing['pct']:.0f}% of that day's sessions)."
+        )
+    elif top_channel:
+        lines.append(f"{top_channel['label']} drove {top_channel['pct']:.0f}% of the spike.")
+
+    avg_eng, spike_eng = spike.get("avg_engagement_rate"), spike.get("spike_engagement_rate")
+    avg_ke, spike_ke = spike.get("avg_key_events"), spike.get("spike_key_events")
+    have_engagement = avg_eng is not None and spike_eng is not None
+    have_key_events = avg_ke is not None and spike_ke is not None
+
+    if have_engagement:
+        eng_pct, avg_eng_pct = spike_eng * 100, avg_eng * 100
+        eng_delta = eng_pct - avg_eng_pct
+        eng_verdict = "held up" if eng_delta >= -5 else "dropped noticeably"
+        lines.append(f"Engagement rate that day was {eng_pct:.0f}% vs a {avg_eng_pct:.0f}% period average — {eng_verdict}.")
+    if have_key_events:
+        ke_verdict = "rose with it" if spike_ke >= avg_ke * 1.1 else ("stayed flat" if spike_ke >= avg_ke * 0.9 else "did not follow")
+        lines.append(f"Key events that day: {spike_ke:.0f} vs a {avg_ke:.0f}/day average — {ke_verdict}.")
+
+    # The hypothesis itself: only stated when there's enough evidence to
+    # actually distinguish "real demand" from "low-quality traffic" —
+    # engagement AND key events both present and pointing the same
+    # direction. Anything thinner than that stays as the raw evidence
+    # lines above without a claimed verdict, rather than guessing.
+    if have_engagement and have_key_events:
+        engagement_held = spike_eng >= avg_eng * 0.9
+        key_events_held = spike_ke >= avg_ke * 0.9
+        if engagement_held and key_events_held:
+            lines.append("Hypothesis: this looks like genuine demand, not bot/referral noise — engagement and key events moved with sessions, not against them.")
+        elif not engagement_held and not key_events_held:
+            lines.append("Hypothesis: this spike is likely low-intent or referral/bot traffic — sessions rose but engagement and key events didn't follow, worth checking the top landing page's referrer detail.")
+    return lines
+
+
 def add_traffic_spike_slide(prs: Presentation, spike: dict):
     """One slide: the single biggest single-day traffic spike in the period,
     and which age/gender/country/channel segments drove it — mechanically
@@ -2037,7 +2086,7 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
     # data (2-4 in practice) rather than a fixed per-column width, so a
     # 4th column (Channel) fits without redesigning the layout, and a
     # client with only 2 populated columns still fills the row width.
-    col_top, col_height = Inches(2.55), Inches(4.1)
+    col_top, col_height = Inches(2.55), Inches(3.7)
     gap = Inches(0.2)
     total_width = Inches(12.1)
     col_width = Emu(int((total_width - gap * (len(columns) - 1)) / len(columns)))
@@ -2058,6 +2107,10 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
             )
             y += Inches(0.36)
         left += col_width + gap
+
+    hypothesis = _traffic_spike_hypothesis(spike)
+    if hypothesis:
+        _insights_strip(slide, Inches(0.6), col_top + col_height + Inches(0.15), Inches(11.9), hypothesis, title="Causal Hypothesis")
     return slide
 
 
