@@ -34,7 +34,9 @@ from app.services.company_overview_service import extract_company_overview, fetc
 from app.services.core_problem_service import generate_core_problem
 from app.services.geopulse_ai_service import generate_aeo_geo_content
 from app.services.google_sheets_service import create_competitor_keyword_sheet
+from app.services.app_settings_service import get_sheets_oauth_email
 from app.services.keyword_cluster_service import generate_keyword_clusters
+from app.services.search_intent_service import generate_search_intents
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
@@ -882,7 +884,7 @@ def _gather_report_data(
     # the 100 highest-volume keywords to keep the prompt bounded; any
     # keyword beyond that just renders without a cluster label, same as
     # when no clustering happens at all.
-    if keyword_rows_all and not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
+    if keyword_rows_all:
         def _kw_volume(r: dict) -> float:
             try:
                 return float(r.get("search_volume") or 0)
@@ -896,16 +898,36 @@ def _gather_report_data(
             if kw and kw not in seen_kw:
                 seen_kw.add(kw)
                 unique_keywords.append(kw)
-        try:
-            cluster_map = generate_keyword_clusters(unique_keywords[:100])
-        except Exception as e:
-            logger.warning("Keyword clustering failed for client %s: %s", client_id, e)
-            content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
-            cluster_map = {}
-        for r in keyword_rows_all:
-            label = cluster_map.get(r.get("keyword"))
-            if label:
-                r["cluster"] = label
+
+        if not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
+            try:
+                cluster_map = generate_keyword_clusters(unique_keywords[:100])
+            except Exception as e:
+                logger.warning("Keyword clustering failed for client %s: %s", client_id, e)
+                content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
+                cluster_map = {}
+            for r in keyword_rows_all:
+                label = cluster_map.get(r.get("keyword"))
+                if label:
+                    r["cluster"] = label
+
+        # Semrush's own "Intent" column doesn't always survive into the
+        # uploaded export either (same gap as Cluster above) — fill it via
+        # AI when missing so _classify_keyword_page_category and the Target
+        # Keywords slide's commercial/transactional insight (both already
+        # read this field) get real search-intent data instead of falling
+        # back to their cruder keyword-text word-list heuristic.
+        if not any((r.get("intent") or "").strip() for r in keyword_rows_all):
+            try:
+                intent_map = generate_search_intents(unique_keywords[:100])
+            except Exception as e:
+                logger.warning("Search intent classification failed for client %s: %s", client_id, e)
+                content_issues.append(f"Search intent classification: {e}")
+                intent_map = {}
+            for r in keyword_rows_all:
+                intent = intent_map.get(r.get("keyword"))
+                if intent:
+                    r["intent"] = intent
 
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
@@ -1316,12 +1338,13 @@ def _build_pptx_for_client(
     # domain's link — the whole section falls back to the old capped-table
     # slides automatically in pptx_builder when this dict ends up empty.
     competitor_keyword_sheet_links: dict[str, str] = {}
-    if full_competitor_positions and settings.google_service_account_json:
+    sheets_configured = bool(settings.google_service_account_json) or bool(get_sheets_oauth_email(db))
+    if full_competitor_positions and sheets_configured:
         for domain, rows in full_competitor_positions.items():
             if not rows:
                 continue
             try:
-                competitor_keyword_sheet_links[domain] = create_competitor_keyword_sheet(client.name, domain, rows)
+                competitor_keyword_sheet_links[domain] = create_competitor_keyword_sheet(client.name, domain, rows, db=db)
             except Exception as e:
                 logger.warning("Competitor keyword sheet creation failed for %s / %s: %s", client.id, domain, e)
                 content_issues.append(f"Competitor keyword sheet ({domain}): {e}")
