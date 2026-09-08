@@ -2776,10 +2776,14 @@ def add_keyword_opportunity_slide(prs: Presentation, keyword_rows: list[dict], m
         f"Top opportunity: \"{top['keyword']}\" — {top_position_text}, targeting #{top['target_position']}, est. {top['expected_clicks']:,.0f} monthly clicks.",
         "Expected clicks use industry-average CTR by position (Backlinko study), not this client's measured data — a projection, not a guarantee.",
     ]
+    # col_widths previously summed to 13.1in — on a 12.1in-wide table area
+    # (left margin 0.6in on a 13.33in-wide slide) that ran the table's right
+    # edge to 13.7in, off the slide's right edge. Rescaled to sum to 12.1in,
+    # matching every other table in this file.
     return _table_slide(
         prs, "Keyword Opportunity Analysis",
         ["Keyword", "Current Position", "Priority", "Recommendation", "Target", "Est. Monthly Clicks", "Growth"],
-        rows, col_widths=[3.4, 1.7, 1.3, 2.2, 1.1, 1.9, 1.5],
+        rows, col_widths=[3.1, 1.6, 1.2, 2.0, 1.0, 1.8, 1.4],
         source="Semrush Keyword Gap + industry-benchmark CTR", insights=insights,
     )
 
@@ -3641,10 +3645,18 @@ def _build_report(
                     _textbox(slide, left + Inches(0.15), card_top + Inches(0.12), card_width - Inches(0.3), Inches(0.35), label, size=11, color=TEXT_MUTED)
                     _textbox(slide, left + Inches(0.15), card_top + Inches(0.42), card_width - Inches(0.3), Inches(0.45), value, size=18, bold=True, color=_accent())
 
+                # No explicit row_cap here — _draw_table's own default (9
+                # rows when insights are passed, matching this call before
+                # the KPI cards were added) is what keeps the table's actual
+                # bottom edge on the slide. This slide's table starts ~1.05in
+                # lower than the plain _table_slide default (to make room for
+                # the card row above), so forcing all 14 built rows through
+                # (confirmed live: rows ran to 8.25in on a 7.5in-tall slide,
+                # off the bottom edge) would blow well past the slide bottom.
                 _draw_table(
                     slide, ["Query", "Clicks", "Impressions", "CTR", "Avg. position"], rows,
                     card_top + card_height + Inches(0.2), col_widths=[5.5, 1.5, 1.9, 1.5, 1.7],
-                    row_cap=14, insights=insights,
+                    insights=insights,
                 )
 
             branded_queries = [q for q in queries if _is_branded(q.get("query", ""))]
