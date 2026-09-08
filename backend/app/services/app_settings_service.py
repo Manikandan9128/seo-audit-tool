@@ -20,6 +20,7 @@ GROQ_API_KEY = "groq_api_key"
 CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
 GOOGLE_SERVICE_ACCOUNT_JSON = "google_service_account_json"
+GOOGLE_DRIVE_FOLDER_ID = "google_drive_folder_id"
 
 
 def load_overrides_into_settings(db: Session) -> None:
@@ -37,6 +38,9 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, GOOGLE_SERVICE_ACCOUNT_JSON)
     if row and row.value:
         settings.google_service_account_json = row.value
+    row = db.get(AppSetting, GOOGLE_DRIVE_FOLDER_ID)
+    if row and row.value:
+        settings.google_drive_folder_id = row.value
 
 
 def _set_key(db: Session, setting_key: str, value: str) -> str:
@@ -197,3 +201,11 @@ def masked_google_service_account_json() -> str | None:
     except _json.JSONDecodeError:
         email = None
     return email or "(configured)"
+
+
+def set_google_drive_folder_id(db: Session, value: str) -> None:
+    settings.google_drive_folder_id = _set_key(db, GOOGLE_DRIVE_FOLDER_ID, value)
+
+
+def get_google_drive_folder_id() -> str | None:
+    return settings.google_drive_folder_id or None

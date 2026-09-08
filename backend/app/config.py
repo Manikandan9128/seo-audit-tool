@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # per report so the full (uncapped) keyword list can be linked from a
     # slide instead of rendered as a table capped at ~14 rows.
     google_service_account_json: str = ""
+    # ID of a Google Drive folder owned by a real human, shared with that
+    # service account as Editor — see google_sheets_service.py's
+    # _create_spreadsheet_file docstring for why this is required (a bare
+    # service account has no Drive storage of its own under a Workspace
+    # org). The folder ID is the part of its URL after "folders/".
+    google_drive_folder_id: str = ""
 
 
 settings = Settings()

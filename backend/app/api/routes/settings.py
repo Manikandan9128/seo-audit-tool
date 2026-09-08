@@ -5,12 +5,14 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db
 from app.models.user import User
 from app.services.app_settings_service import (
+    get_google_drive_folder_id,
     masked_claude_api_key,
     masked_gemini_api_key,
     masked_google_service_account_json,
     masked_groq_api_key,
     set_claude_api_key,
     set_gemini_api_key,
+    set_google_drive_folder_id,
     set_google_service_account_json,
     set_groq_api_key,
     test_claude_key,
@@ -38,6 +40,10 @@ class GoogleServiceAccountJsonIn(BaseModel):
     google_service_account_json: str
 
 
+class GoogleDriveFolderIdIn(BaseModel):
+    google_drive_folder_id: str
+
+
 @router.get("")
 def get_settings(current_user: User = Depends(get_current_user)):
     gemini_masked = masked_gemini_api_key()
@@ -53,6 +59,7 @@ def get_settings(current_user: User = Depends(get_current_user)):
         "claude_api_key_masked": claude_masked,
         "google_service_account_json_set": gsa_masked is not None,
         "google_service_account_json_masked": gsa_masked,
+        "google_drive_folder_id": get_google_drive_folder_id(),
     }
 
 
@@ -162,3 +169,24 @@ def test_google_service_account_json_route(current_user: User = Depends(get_curr
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_google_service_account_json()
     return {"test_ok": test["ok"], "test_message": test["message"]}
+
+
+@router.put("/google-drive-folder-id")
+def update_google_drive_folder_id(
+    payload: GoogleDriveFolderIdIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The ID of a Drive folder owned by a real human, shared with the
+    service account as Editor — required because a bare service account has
+    no Drive storage of its own under a Workspace org (see
+    google_sheets_service.py). Saving this alone doesn't test it — use the
+    Google Service Account JSON card's "Test key" button, which now
+    exercises this folder too."""
+    set_google_drive_folder_id(db, payload.google_drive_folder_id)
+    test = test_google_service_account_json()
+    return {
+        "google_drive_folder_id": get_google_drive_folder_id(),
+        "test_ok": test["ok"],
+        "test_message": test["message"],
+    }

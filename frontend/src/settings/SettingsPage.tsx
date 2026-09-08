@@ -109,6 +109,68 @@ function ApiKeyCard({ title, description, keySet, masked, loading, saveUrl, test
   );
 }
 
+function DriveFolderCard({
+  value,
+  loading,
+  onSaved,
+}: {
+  value: string | null;
+  loading: boolean;
+  onSaved: (folderId: string | null, testResult: { ok: boolean; message: string }) => void;
+}) {
+  const [input, setInput] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save() {
+    if (!input.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await api.put("/settings/google-drive-folder-id", { google_drive_folder_id: input.trim() });
+      onSaved(res.data.google_drive_folder_id, { ok: res.data.test_ok, message: res.data.test_message });
+      setInput("");
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't save the folder ID");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ margin: 0, fontSize: 18 }}>Google Drive Folder ID</h3>
+      <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
+        A bare service account has no Drive storage of its own, so it can't create Sheets directly. Create a folder
+        in your own Google Drive, share it with the service account's email above (Editor access), then paste the
+        folder's ID here — it's the part of the folder's URL after <code>/folders/</code>.
+      </p>
+
+      {loading ? (
+        <p style={{ fontSize: 13 }}>Loading...</p>
+      ) : (
+        <p style={{ fontSize: 13, margin: 0 }}>
+          Current: {value ? <code>{value}</code> : <span style={{ color: "var(--text-muted)" }}>not set</span>}
+        </p>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <input
+          type="text"
+          placeholder="Paste the Drive folder ID"
+          style={{ flex: 1 }}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+        />
+        <button onClick={save} disabled={saving || !input.trim()}>
+          {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
+      {error && <p style={{ fontSize: 13, color: "#991b1b", marginTop: 8 }}>{error}</p>}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [geminiSet, setGeminiSet] = useState(false);
   const [geminiMasked, setGeminiMasked] = useState<string | null>(null);
@@ -118,6 +180,8 @@ export default function SettingsPage() {
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
   const [gsaSet, setGsaSet] = useState(false);
   const [gsaMasked, setGsaMasked] = useState<string | null>(null);
+  const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
+  const [folderTestResult, setFolderTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -134,6 +198,7 @@ export default function SettingsPage() {
       setClaudeMasked(res.data.claude_api_key_masked);
       setGsaSet(res.data.google_service_account_json_set);
       setGsaMasked(res.data.google_service_account_json_masked);
+      setDriveFolderId(res.data.google_drive_folder_id);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Couldn't load settings");
     } finally {
@@ -253,6 +318,21 @@ export default function SettingsPage() {
             setGsaMasked(masked);
           }}
         />
+
+        <DriveFolderCard
+          value={driveFolderId}
+          loading={loading}
+          onSaved={(folderId, test) => {
+            setDriveFolderId(folderId);
+            setFolderTestResult(test);
+          }}
+        />
+        {folderTestResult && (
+          <p style={{ fontSize: 13, marginTop: -8, color: folderTestResult.ok ? "var(--success)" : "#991b1b" }}>
+            {folderTestResult.ok ? "✓ " : "✗ "}
+            {folderTestResult.message}
+          </p>
+        )}
       </div>
     </div>
   );
