@@ -1330,16 +1330,16 @@ def _build_pptx_for_client(
         logger.exception("Wikipedia check failed for client %s — continuing without it", client_id)
 
     # One Google Sheet per competitor holding their FULL (uncapped) keyword
-    # list — replaces the old per-competitor slide capped at ~14 rows when a
-    # service account is configured. Created fresh each report generation
-    # (not in report-preview — see _gather_report_data — since a preview can
-    # be re-run repeatedly and shouldn't spam new sheets each time). Any
-    # single domain's failure (network error, unconfigured) just drops that
-    # domain's link — the whole section falls back to the old capped-table
-    # slides automatically in pptx_builder when this dict ends up empty.
+    # list — replaces the old per-competitor slide capped at ~14 rows once a
+    # Google account is connected for Sheets. Created fresh each report
+    # generation (not in report-preview — see _gather_report_data — since a
+    # preview can be re-run repeatedly and shouldn't spam new sheets each
+    # time). Any single domain's failure (network error, not connected) just
+    # drops that domain's link — the whole section falls back to the old
+    # capped-table slides automatically in pptx_builder when this dict ends
+    # up empty.
     competitor_keyword_sheet_links: dict[str, str] = {}
-    sheets_configured = bool(settings.google_service_account_json) or bool(get_sheets_oauth_email(db))
-    if full_competitor_positions and sheets_configured:
+    if full_competitor_positions and get_sheets_oauth_email(db):
         for domain, rows in full_competitor_positions.items():
             if not rows:
                 continue

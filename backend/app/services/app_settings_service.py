@@ -19,8 +19,6 @@ GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_API_KEY = "groq_api_key"
 CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
-GOOGLE_SERVICE_ACCOUNT_JSON = "google_service_account_json"
-GOOGLE_DRIVE_FOLDER_ID = "google_drive_folder_id"
 GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN = "google_sheets_oauth_access_token"
 GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN = "google_sheets_oauth_refresh_token"
 GOOGLE_SHEETS_OAUTH_EMAIL = "google_sheets_oauth_email"
@@ -40,12 +38,6 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, CLAUDE_API_KEY)
     if row and row.value:
         settings.claude_api_key = row.value
-    row = db.get(AppSetting, GOOGLE_SERVICE_ACCOUNT_JSON)
-    if row and row.value:
-        settings.google_service_account_json = row.value
-    row = db.get(AppSetting, GOOGLE_DRIVE_FOLDER_ID)
-    if row and row.value:
-        settings.google_drive_folder_id = row.value
     row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_CLIENT_ID)
     if row and row.value:
         settings.google_sheets_oauth_client_id = row.value
@@ -170,74 +162,18 @@ def masked_claude_api_key() -> str | None:
     return _mask(settings.claude_api_key)
 
 
-def set_google_service_account_json(db: Session, value: str) -> None:
-    settings.google_service_account_json = _set_key(db, GOOGLE_SERVICE_ACCOUNT_JSON, value)
-
-
-def test_google_service_account_json() -> dict:
-    """Validates the JSON parses and has the fields a service account key
-    needs, then makes one real Sheets API call (create + immediately delete
-    a throwaway spreadsheet) to confirm the Sheets + Drive APIs are actually
-    enabled for this service account, not just that the key itself is
-    well-formed."""
-    if not settings.google_service_account_json:
-        return {"ok": False, "message": "No Google service account JSON configured"}
-    import json as _json
-
-    try:
-        info = _json.loads(settings.google_service_account_json)
-    except _json.JSONDecodeError as e:
-        return {"ok": False, "message": f"Not valid JSON: {e}"}
-    missing = [f for f in ("client_email", "private_key", "type") if f not in info]
-    if missing:
-        return {"ok": False, "message": f"Missing field(s) in service account JSON: {', '.join(missing)}"}
-    if info.get("type") != "service_account":
-        return {"ok": False, "message": f"Expected a service_account key, got type={info.get('type')!r}"}
-    try:
-        from app.services.google_sheets_service import _test_connection
-
-        _test_connection()
-        return {"ok": True, "message": f"Key works — Sheets + Drive API reachable as {info['client_email']}"}
-    except Exception as e:
-        return {"ok": False, "message": str(e)[:300]}
-
-
 def test_sheets_connection(db: Session) -> dict:
-    """Tests whichever credentials google_sheets_service resolves — the
-    OAuth connection if present (preferred), else the service account.
-    Used by the OAuth card's own test button and by the Drive-folder-ID
-    save (which only matters for the service-account path, but a general
-    test is more useful feedback than one hardcoded to that path)."""
+    """Tests the connected Sheets OAuth account by creating + deleting a
+    throwaway spreadsheet — confirms Sheets API, Drive API, and the
+    connection are all actually working together."""
     try:
         from app.services.google_sheets_service import _test_connection
 
-        mode = _test_connection(db)
-        if mode == "oauth":
-            email = get_sheets_oauth_email(db)
-            return {"ok": True, "message": f"Connected — Sheets are created under {email}"}
-        return {"ok": True, "message": "Service account works — Sheets + Drive API reachable"}
+        _test_connection(db)
+        email = get_sheets_oauth_email(db)
+        return {"ok": True, "message": f"Connected — Sheets are created under {email}"}
     except Exception as e:
         return {"ok": False, "message": str(e)[:300]}
-
-
-def masked_google_service_account_json() -> str | None:
-    if not settings.google_service_account_json:
-        return None
-    import json as _json
-
-    try:
-        email = _json.loads(settings.google_service_account_json).get("client_email")
-    except _json.JSONDecodeError:
-        email = None
-    return email or "(configured)"
-
-
-def set_google_drive_folder_id(db: Session, value: str) -> None:
-    settings.google_drive_folder_id = _set_key(db, GOOGLE_DRIVE_FOLDER_ID, value)
-
-
-def get_google_drive_folder_id() -> str | None:
-    return settings.google_drive_folder_id or None
 
 
 def set_sheets_oauth_client(db: Session, client_id: str, client_secret: str) -> None:

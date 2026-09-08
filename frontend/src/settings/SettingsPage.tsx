@@ -161,7 +161,7 @@ function SheetsOAuthCard({
   }
 
   async function disconnect() {
-    if (!confirm("Disconnect this Google account? Competitor keyword Sheets will stop generating until reconnected or a service account is configured instead.")) return;
+    if (!confirm("Disconnect this Google account? Competitor keyword Sheets will stop generating until reconnected.")) return;
     setBusy(true);
     setError("");
     try {
@@ -189,12 +189,10 @@ function SheetsOAuthCard({
 
   return (
     <div className="card">
-      <h3 style={{ margin: 0, fontSize: 18 }}>Google Account for Sheets (recommended)</h3>
+      <h3 style={{ margin: 0, fontSize: 18 }}>Google Account for Sheets</h3>
       <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
-        Connect your own Google account to create competitor keyword Sheets directly under it — no service account,
-        no shared folder, no storage-quota edge cases. This is the simplest path, especially with a plain personal
-        Gmail account (a bare service account has no Drive storage of its own and can fail even when set up
-        correctly).
+        Connect your own Google account to create competitor keyword Sheets directly under it — the full, uncapped
+        keyword list per competitor, linked from the report instead of a table capped at ~14 rows.
       </p>
 
       {!clientId && !loading && (
@@ -269,68 +267,6 @@ function SheetsOAuthCard({
   );
 }
 
-function DriveFolderCard({
-  value,
-  loading,
-  onSaved,
-}: {
-  value: string | null;
-  loading: boolean;
-  onSaved: (folderId: string | null, testResult: { ok: boolean; message: string }) => void;
-}) {
-  const [input, setInput] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  async function save() {
-    if (!input.trim()) return;
-    setSaving(true);
-    setError("");
-    try {
-      const res = await api.put("/settings/google-drive-folder-id", { google_drive_folder_id: input.trim() });
-      onSaved(res.data.google_drive_folder_id, { ok: res.data.test_ok, message: res.data.test_message });
-      setInput("");
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Couldn't save the folder ID");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <h3 style={{ margin: 0, fontSize: 18 }}>Google Drive Folder ID</h3>
-      <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
-        A bare service account has no Drive storage of its own, so it can't create Sheets directly. Create a folder
-        in your own Google Drive, share it with the service account's email above (Editor access), then paste the
-        folder's ID here — it's the part of the folder's URL after <code>/folders/</code>.
-      </p>
-
-      {loading ? (
-        <p style={{ fontSize: 13 }}>Loading...</p>
-      ) : (
-        <p style={{ fontSize: 13, margin: 0 }}>
-          Current: {value ? <code>{value}</code> : <span style={{ color: "var(--text-muted)" }}>not set</span>}
-        </p>
-      )}
-
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <input
-          type="text"
-          placeholder="Paste the Drive folder ID"
-          style={{ flex: 1 }}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-        />
-        <button onClick={save} disabled={saving || !input.trim()}>
-          {saving ? "Saving..." : "Save"}
-        </button>
-      </div>
-      {error && <p style={{ fontSize: 13, color: "#991b1b", marginTop: 8 }}>{error}</p>}
-    </div>
-  );
-}
-
 export default function SettingsPage() {
   const [geminiSet, setGeminiSet] = useState(false);
   const [geminiMasked, setGeminiMasked] = useState<string | null>(null);
@@ -338,10 +274,6 @@ export default function SettingsPage() {
   const [groqMasked, setGroqMasked] = useState<string | null>(null);
   const [claudeSet, setClaudeSet] = useState(false);
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
-  const [gsaSet, setGsaSet] = useState(false);
-  const [gsaMasked, setGsaMasked] = useState<string | null>(null);
-  const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
-  const [folderTestResult, setFolderTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [sheetsOauthEmail, setSheetsOauthEmail] = useState<string | null>(null);
   const [sheetsOauthClientId, setSheetsOauthClientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -358,9 +290,6 @@ export default function SettingsPage() {
       setGroqMasked(res.data.groq_api_key_masked);
       setClaudeSet(res.data.claude_api_key_set);
       setClaudeMasked(res.data.claude_api_key_masked);
-      setGsaSet(res.data.google_service_account_json_set);
-      setGsaMasked(res.data.google_service_account_json_masked);
-      setDriveFolderId(res.data.google_drive_folder_id);
       setSheetsOauthEmail(res.data.google_sheets_oauth_email);
       setSheetsOauthClientId(res.data.google_sheets_oauth_client_id);
     } catch (err: any) {
@@ -459,50 +388,6 @@ export default function SettingsPage() {
         />
 
         <SheetsOAuthCard email={sheetsOauthEmail} clientId={sheetsOauthClientId} loading={loading} onChanged={load} />
-
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: -8 }}>
-          Advanced / Google Workspace domains only — skip this if you connected your Google account above:
-        </p>
-
-        <ApiKeyCard
-          title="Google Service Account JSON"
-          description={
-            <>
-              Enables full (uncapped) competitor keyword lists as linked Google Sheets in the report, instead of a
-              table capped at ~14 rows. Create one at{" "}
-              <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noreferrer">
-                console.cloud.google.com
-              </a>{" "}
-              with the Sheets API and Drive API enabled, then paste the downloaded key's JSON content here.
-            </>
-          }
-          keySet={gsaSet}
-          masked={gsaMasked}
-          loading={loading}
-          saveUrl="/settings/google-service-account-json"
-          testUrl="/settings/google-service-account-json/test"
-          saveField="google_service_account_json"
-          multiline
-          onSaved={(set, masked) => {
-            setGsaSet(set);
-            setGsaMasked(masked);
-          }}
-        />
-
-        <DriveFolderCard
-          value={driveFolderId}
-          loading={loading}
-          onSaved={(folderId, test) => {
-            setDriveFolderId(folderId);
-            setFolderTestResult(test);
-          }}
-        />
-        {folderTestResult && (
-          <p style={{ fontSize: 13, marginTop: -8, color: folderTestResult.ok ? "var(--success)" : "#991b1b" }}>
-            {folderTestResult.ok ? "✓ " : "✗ "}
-            {folderTestResult.message}
-          </p>
-        )}
       </div>
     </div>
   );
