@@ -938,6 +938,29 @@ def _gather_report_data(
             if category:
                 r["page_category"] = category
 
+        # Current Ranking / Traffic (lead's reference flow, doc 2) — real
+        # Semrush data when a Keyword Gap export's own-domain column exists
+        # (domain_positions/domain_ranking_urls — same structure
+        # semrush_analysis_service already reads for the Keyword Gap
+        # Opportunities finding, matched the same way: normalize + find the
+        # column matching the client's own domain).
+        matrix_rows = [r for r in keyword_rows_all if r.get("domain_positions")]
+        if matrix_rows:
+            own_norm = _normalize_domain(client.website_url or "")
+            own_col = next(
+                (d for d in matrix_rows[0]["domain_positions"] if _normalize_domain(d) == own_norm), None
+            )
+            if own_col:
+                for r in keyword_rows_all:
+                    positions = r.get("domain_positions") or {}
+                    pos = positions.get(own_col)
+                    if pos not in (None, ""):
+                        r["current_position"] = pos
+                    urls = r.get("domain_ranking_urls") or {}
+                    url = urls.get(own_col)
+                    if url:
+                        r["current_url"] = url
+
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
     # checks) — a real multi-page crawl result, richer than our own

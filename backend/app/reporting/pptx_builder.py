@@ -2630,6 +2630,141 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
     return slides
 
 
+# Industry-average organic CTR by SERP position — NOT this client's measured
+# data (Semrush/GSC don't give per-keyword CTR for keywords not yet
+# ranking, which is exactly the case this exists to estimate). Values from
+# the widely-cited Backlinko 2023 organic CTR study — standard practice for
+# this kind of projection in real SEO reports; clearly labeled as an
+# estimate everywhere it's shown, never presented as measured fact.
+_CTR_BY_POSITION = {
+    1: 0.317, 2: 0.247, 3: 0.187, 4: 0.136, 5: 0.095,
+    6: 0.062, 7: 0.042, 8: 0.031, 9: 0.025, 10: 0.022,
+}
+_CTR_BEYOND_PAGE_ONE = 0.01
+
+
+def _ctr_for_position(position) -> float:
+    pos = _num(position)
+    if pos <= 0:
+        return 0.0
+    return _CTR_BY_POSITION.get(round(pos), _CTR_BEYOND_PAGE_ONE)
+
+
+def add_keyword_opportunity_slide(prs: Presentation, keyword_rows: list[dict], max_rows: int = 14):
+    """Doc 2 of the lead's reference flow, run end to end: for each
+    cluster's Primary keyword (same clustering add_keyword_research_slide
+    uses) — Current Ranking -> Opportunity Score -> Priority tier ->
+    Recommendation -> Expected KPI. Real data (current_position/current_url
+    from a Keyword Gap export's own-domain column, when uploaded) feeds
+    everything except the CTR benchmark used for the KPI projection, which
+    is an industry-average estimate by design — no per-keyword CTR exists
+    for a keyword this client doesn't yet rank for. Returns None if no
+    cluster has enough data (current_position OR page_category) to score."""
+    clusters: dict[str, list[dict]] = {}
+    for r in keyword_rows:
+        label = (r.get("cluster") or "").strip()
+        if label:
+            clusters.setdefault(label, []).append(r)
+    if not clusters:
+        return None
+
+    candidates = []
+    for label, rows_for_cluster in clusters.items():
+        primary = max(rows_for_cluster, key=lambda r: _num(r.get("search_volume")))
+        volume = _num(primary.get("search_volume"))
+        if volume <= 0:
+            continue
+        position = primary.get("current_position")
+        kd = primary.get("keyword_difficulty")
+
+        # Gap Factor — how much headroom is left to capture. Not ranking at
+        # all leaves the most room; already top-3 leaves the least.
+        pos_num = _num(position)
+        if pos_num <= 0:
+            gap_factor = 1.0
+        elif pos_num > 20:
+            gap_factor = 0.9
+        elif pos_num > 10:
+            gap_factor = 0.7
+        elif pos_num > 3:
+            gap_factor = 0.4
+        else:
+            gap_factor = 0.15
+
+        # Feasibility — lower keyword difficulty means the volume is more
+        # realistically capturable; unknown KD is treated as neutral rather
+        # than penalized (we simply don't know, not evidence of hard).
+        kd_num = _num(kd) if kd not in (None, "") else None
+        feasibility = (100 - kd_num) / 100 if kd_num is not None else 0.5
+
+        score = volume * gap_factor * feasibility
+
+        existing_url = primary.get("current_url") or primary.get("existing_page_url")
+        if pos_num <= 3 and pos_num > 0:
+            recommendation, target_position = "Monitor", max(1, int(pos_num) - 1)
+        elif 3 < pos_num <= 10:
+            recommendation, target_position = "Expand Content", 3
+        elif pos_num > 10:
+            recommendation, target_position = "Optimize Existing Page", 10
+        elif existing_url:
+            # A page already covers this topic but isn't ranking at all —
+            # likely targeting/intent mismatch rather than a content gap.
+            recommendation, target_position = "Re-Align Page", 10
+        else:
+            recommendation, target_position = "Create New Page", 10
+
+        current_clicks = volume * _ctr_for_position(pos_num)
+        expected_clicks = volume * _ctr_for_position(target_position)
+        clicks_gain = expected_clicks - current_clicks
+        growth_pct = (clicks_gain / current_clicks * 100) if current_clicks > 0 else None
+
+        candidates.append({
+            "cluster": label, "keyword": primary.get("keyword", ""), "volume": volume,
+            "position": pos_num if pos_num > 0 else None, "score": score,
+            "recommendation": recommendation, "target_position": target_position,
+            "expected_clicks": expected_clicks, "clicks_gain": clicks_gain, "growth_pct": growth_pct,
+        })
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    # Priority tiers are relative to THIS client's own opportunity set (top
+    # third / middle third / bottom third of scores) rather than fixed
+    # thresholds — self-normalizing across wildly different site sizes and
+    # industries instead of assuming what "high volume" means universally.
+    n = len(candidates)
+    high_cut = max(1, n // 3)
+    medium_cut = max(high_cut + 1, (2 * n) // 3)
+    for i, c in enumerate(candidates):
+        c["priority"] = "High" if i < high_cut else ("Medium" if i < medium_cut else "Low")
+
+    shown = candidates[:max_rows]
+    rows = [
+        (
+            c["keyword"], c["position"] if c["position"] else "Not ranking", c["priority"],
+            c["recommendation"], f"#{c['target_position']}",
+            f"{c['expected_clicks']:,.0f}" if c["expected_clicks"] else "—",
+            f"+{c['growth_pct']:.0f}%" if c["growth_pct"] is not None else "New",
+        )
+        for c in shown
+    ]
+    high_count = sum(1 for c in candidates if c["priority"] == "High")
+    top = candidates[0]
+    top_position_text = f"currently position {top['position']:.0f}" if top["position"] else "currently not ranking"
+    insights = [
+        f"{high_count} High-priority opportunity cluster(s) out of {n} scored.",
+        f"Top opportunity: \"{top['keyword']}\" — {top_position_text}, targeting #{top['target_position']}, est. {top['expected_clicks']:,.0f} monthly clicks.",
+        "Expected clicks use industry-average CTR by position (Backlinko study), not this client's measured data — a projection, not a guarantee.",
+    ]
+    return _table_slide(
+        prs, "Keyword Opportunity Analysis",
+        ["Keyword", "Current Position", "Priority", "Recommendation", "Target", "Est. Monthly Clicks", "Growth"],
+        rows, col_widths=[3.4, 1.7, 1.3, 2.2, 1.1, 1.9, 1.5],
+        source="Semrush Keyword Gap + industry-benchmark CTR", insights=insights,
+    )
+
+
 def add_backlink_profile_slide(
     prs: Presentation, backlink_rows: list[dict], row_count: int, backlink_summary: dict | None = None,
     own_domain_rating: int | None = None,
@@ -3437,6 +3572,7 @@ def _build_report(
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
         if keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
+            add_keyword_opportunity_slide(prs, keyword_rows)
         if competitor_rows:
             add_competitor_table_slide(prs, competitor_rows)
         if competitor_positions:
