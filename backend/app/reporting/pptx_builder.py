@@ -3396,16 +3396,53 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
 
         cluster_counts: dict[str, int] = {}
         cluster_volume: dict[str, float] = {}
+        cluster_rows: dict[str, list[dict]] = {}
         for r in keyword_rows:
             label = (r.get("cluster") or "").strip()
             if not label:
                 continue
             cluster_counts[label] = cluster_counts.get(label, 0) + 1
             cluster_volume[label] = cluster_volume.get(label, 0) + _num(r.get("search_volume"))
+            cluster_rows.setdefault(label, []).append(r)
+
+        # Exact URL decision per cluster — teammate QA on the last report
+        # flagged this slide as repeating cluster volumes without ever
+        # deciding a real URL: update vs. create. existing_page_url is
+        # already populated per-keyword upstream (site_audit.py's
+        # match_existing_page pass, same word-overlap match the Target
+        # Keywords slide uses) — reused here rather than re-matching.
+        # "Update existing" only when that one URL actually covers HALF or
+        # more of the cluster's own keywords — a single incidental match
+        # among many unmatched keywords isn't a real update target.
+        url_to_clusters: dict[str, set[str]] = {}
         for label, count in sorted(cluster_counts.items(), key=lambda kv: -cluster_volume.get(kv[0], 0)):
             vol = cluster_volume.get(label, 0)
             vol_text = f", {int(vol):,} combined monthly searches" if vol else ""
-            items.append(f"Build out content for the \"{label}\" keyword cluster — {count} keyword(s) tracked{vol_text}.")
+            url_counts = Counter(r["existing_page_url"] for r in cluster_rows[label] if r.get("existing_page_url"))
+            if url_counts:
+                target_url, matched = url_counts.most_common(1)[0]
+                if matched >= max(1, count // 2):
+                    action = f"update the existing page ({target_url}) rather than starting a new one"
+                    url_to_clusters.setdefault(target_url, set()).add(label)
+                else:
+                    action = f"create a new page — the closest existing match ({target_url}) only covers {matched} of this cluster's {count} keyword(s)"
+            else:
+                action = "create a new page — no existing page covers this cluster's keywords"
+            items.append(f"Build out content for the \"{label}\" keyword cluster — {count} keyword(s) tracked{vol_text}; {action}.")
+
+        # Cannibalization: two or more DIFFERENT clusters both resolving to
+        # the same existing URL as their update target means that one page
+        # would otherwise be asked to rank for two distinct search intents
+        # at once — flagged explicitly rather than silently telling the
+        # client to "update" the same URL twice under different bullets.
+        for url, clusters in url_to_clusters.items():
+            if len(clusters) > 1:
+                cluster_list = ", ".join(f"\"{c}\"" for c in sorted(clusters))
+                items.append(
+                    f"Cannibalization risk: {url} is the best existing match for {len(clusters)} different keyword "
+                    f"clusters ({cluster_list}) — consolidate them onto that one page with clear on-page sections "
+                    "per intent, or split it into separate pages, rather than letting them compete for the same query."
+                )
     items.append("Audit existing content for thin or outdated pages and refresh or consolidate them to strengthen topical authority.")
     items.append("Keep a content calendar built around the highest-volume clusters above so publishing stays consistent rather than one-off.")
     intro = "Where to focus content production, based on the keyword research and clustering above."
