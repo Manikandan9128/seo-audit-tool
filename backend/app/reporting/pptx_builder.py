@@ -3553,6 +3553,15 @@ def _build_report(
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
             total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
+            # Sorted by sessions and capped BEFORE anything below reads from
+            # it — every insight below names a channel by its exact string,
+            # so it must only ever pick from the same rows the table
+            # actually renders. Previously insights scanned the full,
+            # unsorted `sources` list while the table showed an arbitrary
+            # (unsorted) first-14 slice of it — confirmed live: the return-
+            # rate insight named a channel ("Cross-network") that wasn't
+            # even one of the 14 rows on the slide.
+            shown = sorted(sources, key=lambda s: float(s.get("sessions", 0) or 0), reverse=True)[:14]
             rows = [
                 (
                     s["channel"],
@@ -3562,11 +3571,11 @@ def _build_report(
                     f"{int(float(s.get('returning_users', 0) or 0)):,}",
                     f"{s['return_rate_pct']:.0f}%" if s.get("return_rate_pct") is not None else "—",
                 )
-                for s in sources[:14]
+                for s in shown
             ]
-            top_channel = max(sources, key=lambda s: float(s.get("sessions", 0) or 0))
+            top_channel = shown[0]
             top_share = float(top_channel["sessions"]) / total_sessions * 100 if total_sessions else 0
-            organic = next((s for s in sources if "organic search" in s["channel"].lower()), None)
+            organic = next((s for s in shown if "organic search" in s["channel"].lower()), None)
             insights = [f"{top_channel['channel']} drives {top_share:.0f}% of sessions — the dominant channel by far." if top_share > 40 else f"Traffic is split fairly evenly, {top_channel['channel']} leads at {top_share:.0f}%."]
             if organic:
                 organic_share = float(organic["sessions"]) / total_sessions * 100 if total_sessions else 0
@@ -3574,7 +3583,7 @@ def _build_report(
             else:
                 insights.append("No Organic Search sessions in this period — SEO isn't driving measurable traffic yet.")
             best_return_channel = max(
-                (s for s in sources if s.get("return_rate_pct") is not None), key=lambda s: s["return_rate_pct"], default=None
+                (s for s in shown if s.get("return_rate_pct") is not None), key=lambda s: s["return_rate_pct"], default=None
             )
             if best_return_channel:
                 insights.append(f"{best_return_channel['channel']} has the highest return rate at {best_return_channel['return_rate_pct']:.0f}% — strongest channel for repeat visitors.")
@@ -3615,7 +3624,11 @@ def _build_report(
                     sum(q.get("position", 0) * q.get("impressions", 0) for q in subset) / total_impressions
                     if total_impressions else 0
                 )
-                best_positioned = min((q for q in subset if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None)
+                # From top_q (the rows actually drawn on the slide), not the
+                # full subset — confirmed live: the insight named a query
+                # ("lumberfy") that ranked outside the shown top-14-by-clicks
+                # rows, so it never appeared in the table underneath it.
+                best_positioned = min((q for q in top_q if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None)
                 insights = [f"Average CTR is {avg_ctr:.1f}% across {total_impressions:,} impressions — {'strong' if avg_ctr > 3 else 'below the ~3% search-average, titles/descriptions may need work'}."]
                 if best_positioned:
                     insights.append(f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}.")
