@@ -767,6 +767,15 @@ def _gather_report_data(
             date_range = {}
             ga4_start = (date.today() - timedelta(days=30)).isoformat()
             ga4_end = date.today().isoformat()
+            # Traffic Breakdown - Monthly Average needs a real multi-month
+            # trend to be meaningfully "average" over — teammate QA on the
+            # last report flagged the single 30-day window it used before
+            # ("we cannot judge it with just one month data"). 120 days
+            # (~4 months) gives 3-6 real data points to average across
+            # without reaching back so far the channel mix has genuinely
+            # shifted since. Independent of ga4_start/ga4_end above, which
+            # every other GA4 slide still uses.
+            channel_breakdown_start = (date.today() - timedelta(days=120)).isoformat()
             # Search Console data lags ~2-3 days behind — a range whose end
             # date is more recent than that reliably comes back empty (not
             # partial), so clamp regardless of "today".
@@ -797,7 +806,7 @@ def _gather_report_data(
                         # months-in-range figure via date.fromisoformat(), which
                         # crashes on GA4's relative-date keywords (confirmed: this
                         # is the "Invalid isoformat string: 'today'" report failure).
-                        ga4_service.get_traffic_channel_breakdown, creds, client.ga4_property_id, ga4_start, ga4_end
+                        ga4_service.get_traffic_channel_breakdown, creds, client.ga4_property_id, channel_breakdown_start, ga4_end
                     )
                     jobs["page_performance"] = pool.submit(
                         ga4_service.get_page_performance, creds, client.ga4_property_id, "30daysAgo", "today"

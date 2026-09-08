@@ -853,7 +853,22 @@ def add_tech_stack_slide(prs: Presentation, tech_stack: dict):
     _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
     y = Inches(1.35)
 
+    detected = tech_stack.get("detected") or []
+    # CMS pulled out of the grouped "Detected technologies" list and shown
+    # as its own top-line fact — same tier as Hostname/IP/HTTPS — since
+    # "what CMS is this on" is the single most-asked question about a
+    # site's tech stack and was previously easy to miss buried alphabetically
+    # among framework/analytics/hosting categories below. Explicit "Not
+    # detected" fallback (not silently absent) when no cms-category marker
+    # matched, e.g. a custom-built site with none of tech_stack_service's
+    # known CMS signatures — so the slide always answers the question
+    # instead of just omitting the row.
+    cms_names = [item["name"] for item in detected if item.get("category") == "cms"]
+    cms_value = ", ".join(dict.fromkeys(cms_names)) if cms_names else "Not detected — likely a custom-built site"
+    remaining_detected = [item for item in detected if item.get("category") != "cms"]
+
     facts = [
+        ("CMS", cms_value),
         ("Hostname", tech_stack.get("hostname")),
         ("IP address", tech_stack.get("ip")),
         ("Reverse DNS", tech_stack.get("reverse_dns")),
@@ -867,17 +882,16 @@ def add_tech_stack_slide(prs: Presentation, tech_stack: dict):
         y += Inches(0.34)
 
     y += Inches(0.2)
-    detected = tech_stack.get("detected") or []
-    if detected:
+    if remaining_detected:
         _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Detected technologies", size=14, bold=True, color=_accent())
         y += Inches(0.42)
         by_category: dict[str, list[str]] = {}
-        for item in detected:
+        for item in remaining_detected:
             by_category.setdefault(item["category"], []).append(item["name"])
         for category, names in by_category.items():
             if y > Inches(6.5):
                 break
-            _textbox(slide, Inches(0.9), y, Inches(2.4), Inches(0.3), category.title(), size=12, bold=True)
+            _textbox(slide, Inches(0.9), y, Inches(2.4), Inches(0.3), category.upper() if len(category) <= 4 else category.title(), size=12, bold=True)
             _textbox(slide, Inches(3.2), y, Inches(9.0), Inches(0.3), ", ".join(names), size=12, color=TEXT_DARK)
             y += Inches(0.36)
     return slide
@@ -1943,22 +1957,11 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
         _textbox(slide, left + Inches(0.15), top + Inches(0.15), card_width - Inches(0.3), Inches(0.4), label, size=12, color=TEXT_MUTED)
         _textbox(slide, left + Inches(0.15), top + Inches(0.55), card_width - Inches(0.3), Inches(0.7), value, size=20, bold=True, color=_accent())
 
-    rows_used = -(-len(metrics) // cols_per_row)
-    insights_top = Inches(1.3) + Emu(rows_used * (card_height + row_gap)) + Inches(0.05)
-    pages_per_session = pageviews / sessions if sessions else 0
-    insights = []
-    if avg_bounce >= 55:
-        insights.append(f"Bounce rate is {avg_bounce:.0f}% — high; visitors are leaving without exploring, check landing-page relevance and load speed.")
-    elif avg_bounce <= 35:
-        insights.append(f"Bounce rate is {avg_bounce:.0f}% — strong, visitors are engaging well past the landing page.")
-    else:
-        insights.append(f"Bounce rate is {avg_bounce:.0f}% — typical range, room to improve landing-page engagement.")
-    insights.append(f"Visitors view {pages_per_session:.1f} pages per session on average.")
-    if users and sessions:
-        sessions_per_user = sessions / users
-        if sessions_per_user > 1.3:
-            insights.append(f"{sessions_per_user:.1f} sessions per user — a meaningful share of visitors are returning, not just first-time traffic.")
-    _insights_strip(slide, Inches(0.6), insights_top, Inches(11.9), insights)
+    # Key-insights strip removed per teammate QA on the last report — this
+    # is a pure overview slide (raw KPI cards), the per-metric commentary
+    # duplicated what the numbers already showed and belongs on the slides
+    # that actually break the data down (Traffic Sources, Traffic Spike,
+    # Traffic Breakdown), not restated again here.
     return slide
 
 
