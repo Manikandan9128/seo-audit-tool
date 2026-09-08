@@ -2542,8 +2542,12 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
     instead of one flat 14-row table that drowns thousands of uploaded rows
     into a single slide. Falls back to a flat table when no Cluster column
     was present in the uploaded export."""
-    headers = ["Keyword", "Search Volume", "Keyword Difficulty"]
-    col_widths = [7.0, 2.6, 2.5]
+    # Role column marks the Primary keyword (highest search volume in the
+    # cluster — same one _keyword_insights below calls "top") vs. every
+    # other keyword as Secondary, matching the lead's reference flow's
+    # FINAL CLUSTER -> Primary Keyword / Secondary Keywords step.
+    headers = ["Keyword", "Role", "Search Volume", "Keyword Difficulty"]
+    col_widths = [5.6, 1.6, 2.6, 2.3]
 
     clusters: dict[str, list[dict]] = {}
     for r in keyword_rows:
@@ -2590,7 +2594,10 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 continue
             seen.add(kw)
             deduped.append(r)
-        rows = [(r.get("keyword", ""), r.get("search_volume", ""), r.get("keyword_difficulty", "")) for r in deduped]
+        rows = [
+            (r.get("keyword", ""), "Primary" if i == 0 else "Secondary", r.get("search_volume", ""), r.get("keyword_difficulty", ""))
+            for i, r in enumerate(deduped)
+        ]
         insights = _keyword_insights(deduped) if deduped else []
         return [_table_slide(prs, "Target Keywords", headers, rows, col_widths=col_widths, source="Semrush export", insights=insights)]
 
@@ -2613,7 +2620,10 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 continue
             seen.add(kw)
             deduped.append(r)
-        rows = [(r.get("keyword", ""), r.get("search_volume", ""), r.get("keyword_difficulty", "")) for r in deduped]
+        rows = [
+            (r.get("keyword", ""), "Primary" if i == 0 else "Secondary", r.get("search_volume", ""), r.get("keyword_difficulty", ""))
+            for i, r in enumerate(deduped)
+        ]
         title = f"Target Keywords: {label}" if label else "Target Keywords"
         insights = _keyword_insights(deduped) if deduped else []
         slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source="Semrush export", insights=insights))
