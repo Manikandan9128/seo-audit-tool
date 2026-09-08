@@ -3245,13 +3245,37 @@ def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-") or "page"
 
 
+# Eligibility floor for calling something "Programmatic SEO" rather than
+# just "add a couple more pages" — teammate QA on the last report flagged
+# this slide as recommending page generation with no eligibility rules at
+# all (every 2+-keyword cluster got a hub+sub-page recommendation
+# regardless of real scale or intent uniqueness). Real programmatic SEO
+# implies a genuine template pattern across enough distinct pages to be
+# worth building infrastructure for — below this, it's just normal
+# content work, already covered by the Content SEO Next Steps slide.
+_PROGRAMMATIC_MIN_SUBPAGES = 3
+_PROGRAMMATIC_MIN_CLUSTER_VOLUME = 300
+# Two sub-keywords whose token sets overlap this much are the same search
+# intent wearing different phrasing (e.g. "certified payroll software" vs
+# "certified payroll software tool") — templating them as two separate
+# pages is exactly the thin/duplicate-content risk (SERP non-uniqueness)
+# the eligibility flow asks to rule out before recommending page
+# generation, not a second real sub-page.
+_PROGRAMMATIC_DEDUP_OVERLAP = 0.6
+
+
+def _keyword_tokens(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2}
+
+
 def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | None):
     """Hub + sub-page content-architecture recommendations — matches the
     manual reference deck's "Programmatic SEO Opportunities" slide (one main
     hub page per topic, sub-pages beneath it targeting specific keywords).
-    Built entirely from the keyword clusters already identified for the
-    Target Keywords slides — no new data source needed, just a different
-    way of presenting the same clusters as a content-architecture plan."""
+    Built from the keyword clusters already identified for the Target
+    Keywords slides, gated by real eligibility rules first: enough
+    genuinely distinct sub-keywords to justify a template (not just 2 near-
+    duplicate phrasings), and real demand behind the cluster as a whole."""
     if not keyword_rows:
         return None
     clusters: dict[str, list[dict]] = {}
@@ -3264,29 +3288,59 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
 
     ranked = sorted(clusters.items(), key=lambda kv: sum(_num(r.get("search_volume")) for r in kv[1]), reverse=True)
     items = []
-    for label, rows_for_cluster in ranked[:6]:
+    for label, rows_for_cluster in ranked:
+        cluster_volume = sum(_num(r.get("search_volume")) for r in rows_for_cluster)
+        if cluster_volume < _PROGRAMMATIC_MIN_CLUSTER_VOLUME:
+            continue  # demand eligibility: not enough real search volume behind this topic to template
+
         hub_slug = _slugify(label)
+        hub_tokens = _keyword_tokens(label)
         top_keywords = sorted(rows_for_cluster, key=lambda r: _num(r.get("search_volume")), reverse=True)
-        sub_slugs = []
+        sub_slugs: list[str] = []
+        sub_token_sets: list[set[str]] = []
         for r in top_keywords:
-            slug = _slugify(r.get("keyword", ""))
-            # A keyword identical to (or slugifying the same as) the cluster
-            # name itself belongs on the hub page, not a redundant nested
-            # duplicate of it.
-            if slug and slug != hub_slug and slug not in sub_slugs:
-                sub_slugs.append(slug)
-            if len(sub_slugs) == 2:
+            keyword = r.get("keyword", "")
+            slug = _slugify(keyword)
+            if not slug or slug == hub_slug or slug in sub_slugs:
+                continue
+            # Compare only the DISTINCTIVE tokens (cluster-label words like
+            # "certified payroll" stripped out first) — every keyword in a
+            # cluster shares those by definition, so comparing full token
+            # sets flagged nearly every pair in the cluster as "overlapping"
+            # regardless of real intent difference (confirmed: collapsed a
+            # 5-distinct-intent cluster down to 1). Comparing what's left
+            # after the shared topic is stripped is the actual SERP-
+            # uniqueness signal — same distinctive word(s) means same
+            # intent, different distinctive words means a different page.
+            tokens = _keyword_tokens(keyword) - hub_tokens
+            if not tokens:
+                continue  # nothing left but the cluster topic itself — same intent as the hub page
+            is_near_duplicate = any(
+                len(tokens & seen) / max(1, min(len(tokens), len(seen))) >= _PROGRAMMATIC_DEDUP_OVERLAP
+                for seen in sub_token_sets
+            )
+            if is_near_duplicate:
+                continue
+            sub_slugs.append(slug)
+            sub_token_sets.append(tokens)
+            if len(sub_slugs) == 4:
                 break
-        if not sub_slugs:
-            continue
+        if len(sub_slugs) < _PROGRAMMATIC_MIN_SUBPAGES:
+            continue  # not enough genuinely distinct sub-pages to call this a template pattern
+
         subpages = ", ".join(f"/{hub_slug}/{s}" for s in sub_slugs)
-        items.append(f"{label}: main hub page /{hub_slug}, with sub-pages {subpages} targeting the cluster's highest-volume keywords.")
+        items.append(
+            f"{label} ({int(cluster_volume):,} combined monthly searches, {len(sub_slugs)} distinct sub-intents "
+            f"eligible): main hub page /{hub_slug}, with sub-pages {subpages}. Each sub-page needs genuinely "
+            "unique content per intent — canonical/noindex any page that ends up too similar to another rather "
+            "than publishing near-duplicates."
+        )
     if not items:
         return None
 
     intro = (
-        "Content architecture built from the keyword clusters identified above — one hub page per topic, "
-        "with sub-pages beneath it targeting the cluster's specific high-volume keywords."
+        "Only clusters that clear real eligibility for a template pattern — enough distinct search intent and "
+        "demand to justify hub+sub-page infrastructure, not a couple of near-duplicate phrasings."
     )
     return _next_steps_category_slide(prs, "Programmatic SEO Opportunities", intro, items)
 
