@@ -61,6 +61,13 @@ export default function ClientDetailPage() {
   const [psiMobile, setPsiMobile] = useState<any>(null);
   const [psiDesktop, setPsiDesktop] = useState<any>(null);
   const [psiLoading, setPsiLoading] = useState(false);
+  // Separate from `error` (the harsh red banner) — this preview check uses
+  // a tight 50s/no-retry budget (see backend /pagespeed endpoint comment)
+  // and reliably times out on a heavy site even though the real "Generate
+  // Report" download has its own 150s x retry PSI call and gets the data
+  // fine regardless. A red "request failed" banner here read as a real
+  // failure to the user even though nothing was actually broken.
+  const [psiPreviewNote, setPsiPreviewNote] = useState("");
 
   const [pageAuditResult, setPageAuditResult] = useState<any>(null);
   const [pageAuditLoading, setPageAuditLoading] = useState(false);
@@ -266,6 +273,7 @@ export default function ClientDetailPage() {
   async function runPageSpeed() {
     setPsiLoading(true);
     setError("");
+    setPsiPreviewNote("");
     try {
       const [mobileRes, desktopRes] = await Promise.all([
         api.post(`/clients/${clientId}/pagespeed`, null, { params: { strategy: "mobile" } }),
@@ -274,7 +282,19 @@ export default function ClientDetailPage() {
       setPsiMobile(mobileRes.data);
       setPsiDesktop(desktopRes.data);
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "PageSpeed Insights failed");
+      const detail = err?.response?.data?.detail || "";
+      // A timeout here is this quick preview check's own tight budget, not
+      // a real failure — the actual report generation has a longer budget
+      // with retries and fetches PSI data correctly regardless. Any other
+      // failure (e.g. missing API key) is a real problem worth the red
+      // banner.
+      if (/timed out|timeout/i.test(detail)) {
+        setPsiPreviewNote(
+          "PageSpeed preview check timed out — this is common on larger sites and won't affect the downloaded report, which uses a longer timeout with retries."
+        );
+      } else {
+        setError(detail || "PageSpeed Insights failed");
+      }
     } finally {
       setPsiLoading(false);
     }
@@ -934,6 +954,16 @@ export default function ClientDetailPage() {
               loading={psiLoading}
               hasData={!!psiMobile}
             >
+              {!psiLoading && psiPreviewNote && (
+                <div
+                  style={{
+                    fontSize: 12, color: "#92400e", background: "#fef3c7", border: "1px solid #fde68a",
+                    borderRadius: 6, padding: "8px 10px", marginTop: 12, maxWidth: 480,
+                  }}
+                >
+                  {psiPreviewNote}
+                </div>
+              )}
               {psiMobile && (
                 <div style={{ marginTop: 16 }}>
                   <PageSpeedReport mobile={psiMobile} desktop={psiDesktop} />
