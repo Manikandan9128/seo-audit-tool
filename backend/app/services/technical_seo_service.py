@@ -215,7 +215,32 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     def _bucket(label: str) -> dict:
         return by_type.setdefault(label, {"pages": 0, "with_schema": 0, "valid": 0, "urls": []})
 
+    def _dedup_key(u: str) -> str:
+        p = urlparse(u)
+        return f"{p.netloc.lower()}{p.path.rstrip('/')}"
+
+    # Collapse crawled URLs onto their canonical target before classifying
+    # anything — a paginated/parameter/duplicate URL that canonicalizes
+    # elsewhere shouldn't get its own Page Type bucket entry, or it inflates
+    # "Pages" and skews Coverage/Valid % for that type. When the canonical
+    # target was itself crawled (the common case), its own meta wins over
+    # whichever duplicate happened to be seen first.
+    canonical_groups: dict[str, dict] = {}
     for page in pages:
+        meta = page.get("meta")
+        if not meta:
+            continue
+        url = page.get("url") or ""
+        key = _dedup_key(meta.get("canonical_url") or url) or _dedup_key(url)
+        if not key:
+            continue
+        is_self_canonical = _dedup_key(url) == key
+        existing = canonical_groups.get(key)
+        if existing is None or (is_self_canonical and not existing["_self"]):
+            canonical_groups[key] = {"page": page, "_self": is_self_canonical}
+    deduped_pages = [g["page"] for g in canonical_groups.values()]
+
+    for page in deduped_pages:
         meta = page.get("meta")
         if not meta:
             continue
@@ -327,7 +352,7 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     }
 
 
-def _extract_meta(html_source: str) -> dict:
+def _extract_meta(html_source: str, base_url: str | None = None) -> dict:
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html_source, re.IGNORECASE | re.DOTALL)
     title = html.unescape(title_match.group(1).strip()) if title_match else None
 
@@ -341,7 +366,19 @@ def _extract_meta(html_source: str) -> dict:
         break
 
     viewport_present = bool(re.search(r'<meta[^>]+name=["\']viewport["\']', html_source, re.IGNORECASE))
-    canonical_present = bool(re.search(r'<link[^>]+rel=["\']canonical["\']', html_source, re.IGNORECASE))
+    # Canonical tags can carry rel/href in either attribute order — check
+    # both instead of assuming rel always comes first, which real-world
+    # markup doesn't guarantee.
+    canonical_url = None
+    for link_tag in re.findall(r"<link\b[^>]*>", html_source, re.IGNORECASE):
+        if not re.search(r'rel=["\']canonical["\']', link_tag, re.IGNORECASE):
+            continue
+        href_match = re.search(r'href=["\'](.*?)["\']', link_tag, re.IGNORECASE | re.DOTALL)
+        if href_match:
+            raw = html.unescape(href_match.group(1).strip())
+            canonical_url = urljoin(base_url, raw) if base_url else raw
+        break
+    canonical_present = canonical_url is not None
     h1_count = len(re.findall(r"<h1[^>]*>", html_source, re.IGNORECASE))
     structured_data_present = bool(re.search(r'application/ld\+json', html_source, re.IGNORECASE))
     schema_entities = _extract_schema_entities(html_source) if structured_data_present else []
@@ -357,6 +394,7 @@ def _extract_meta(html_source: str) -> dict:
         "meta_description_length": len(description) if description else 0,
         "viewport_present": viewport_present,
         "canonical_present": canonical_present,
+        "canonical_url": canonical_url,
         "h1_count": h1_count,
         "structured_data_present": structured_data_present,
         "schema_types_found": schema_types,
@@ -491,7 +529,7 @@ async def run_multi_page_audit_async(
 
             page_result = {"url": url, "reachable": reachable, "status_code": status_code}
             if reachable and text is not None:
-                meta = _extract_meta(text)
+                meta = _extract_meta(text, base_url=url)
                 page_result["meta"] = meta
                 page_result["issues"] = _meta_issues(meta)
             else:
@@ -543,7 +581,7 @@ def run_site_audit(website_url: str) -> dict:
     result["sitemap"] = _check_sitemap(sitemap_url)
 
     if home_resp is not None and home_resp.status_code < 400:
-        result["meta"] = _extract_meta(home_resp.text)
+        result["meta"] = _extract_meta(home_resp.text, base_url=website_url)
         result["company_summary"] = summarize_company(website_url, extract_visible_text(home_resp.text))
         result["brand_color"] = extract_brand_color(home_resp.text)
         result["logo_url"] = find_logo_url(base_url, home_resp.text)

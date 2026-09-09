@@ -1662,16 +1662,26 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
                 f"Highest-priority gap: {top_gap['page_type']} pages are only {top_gap['coverage_pct']}% covered"
                 + (f", {top_gap['pageviews']:,} real pageviews behind that gap." if top_gap["pageviews"] else ".")
             )
-    elif type_coverage:
-        _textbox(slide, left, y, width, Inches(0.24), "Structured Data Coverage", size=12.5, bold=True, color=_accent())
+    if type_coverage:
+        # "Schema Count" — the flow's own step name for this table — used to
+        # be dropped whenever by_page_type also had data (elif, mutually
+        # exclusive), even though it's a distinct step from Page Type/
+        # Coverage above. Renders in both cases now; tighter row cap only
+        # when stacked below the by_page_type table so the 3-section slide
+        # (Page Type, Schema Count, Findings) still fits.
+        stacked = bool(by_page_type)
+        row_cap = 4 if stacked else ROW_CAP
+        row_h = 0.26 if stacked else ROW_H
+        _textbox(slide, left, y, width, Inches(0.24), "Schema Count by Type", size=12.5, bold=True, color=_accent())
         y = y + Inches(0.28)
         coverage_rows = [(c["type"], f"{c['pages_with_it']:,} / {total_pages:,}", f"{c['coverage_pct']}%") for c in type_coverage]
         y = _draw_table(
             slide, ["Schema Type", "Pages With It", "Coverage"], coverage_rows, y,
-            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=ROW_CAP, row_height=ROW_H,
+            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=row_cap, row_height=row_h,
         ) + Inches(0.2)
-        any_schema_pct = 100 * pages_with_schema / total_pages
-        insights.append(f"{pages_with_schema:,} of {total_pages:,} pages ({any_schema_pct:.0f}%) have structured data implemented.")
+        if not stacked:
+            any_schema_pct = 100 * pages_with_schema / total_pages
+            insights.append(f"{pages_with_schema:,} of {total_pages:,} pages ({any_schema_pct:.0f}%) have structured data implemented.")
 
     gsc_rows = []
     gsc_pass_count = gsc_fail_count = 0
@@ -1700,11 +1710,17 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
     ]
     finding_rows = gsc_rows + type_rows + rule_rows
     if finding_rows:
+        # All 3 sections stacking (Page Type + Schema Count + Findings)
+        # needs a tighter cap here too, same reasoning as Schema Count above
+        # — otherwise the combined height runs past the slide and crowds
+        # out the insights strip below.
+        findings_stacked = bool(by_page_type) and bool(type_coverage)
+        findings_row_cap = 4 if findings_stacked else ROW_CAP
         _textbox(slide, left, y, width, Inches(0.24), "Schema Validator Findings", size=12.5, bold=True, color=_accent())
         y = y + Inches(0.28)
         y = _draw_table(
             slide, ["Schema Type", "Finding", "Pages Affected"], finding_rows, y,
-            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=ROW_CAP, row_height=ROW_H,
+            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=findings_row_cap, row_height=ROW_H,
         ) + Inches(0.2)
         if gsc_rich_results:
             insights.append(f"Search Console's own rich-result check: {gsc_pass_count:,} pass, {gsc_fail_count:,} fail.")
