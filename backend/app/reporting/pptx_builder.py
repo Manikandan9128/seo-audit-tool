@@ -493,6 +493,142 @@ def add_pagespeed_issues_slide(prs: Presentation, mobile: dict | None, desktop: 
     )
 
 
+def _squarify(nodes: list[dict], x: float, y: float, w: float, h: float) -> list[dict]:
+    """Same squarified-treemap layout as the frontend's ScriptTreemap
+    component (googlechrome.github.io/lighthouse/treemap uses the same
+    algorithm) — kept independent since the slide is built server-side
+    with no access to the browser layout."""
+    total = sum(n["resource_bytes"] for n in nodes) or 1
+    area = w * h
+    out = []
+    remaining = list(nodes)
+    rx, ry, rw, rh = x, y, w, h
+
+    while remaining:
+        vertical = rw >= rh
+        side = rh if vertical else rw
+        row, row_sum, best_worst = [], 0.0, float("inf")
+        for n in remaining:
+            candidate = row + [n]
+            s = row_sum + n["resource_bytes"]
+            row_area = (s / total) * area
+            row_len = row_area / side if side else 0
+            worst = max(
+                (max(row_len / ((c["resource_bytes"] / total) * area / row_len), ((c["resource_bytes"] / total) * area / row_len) / row_len)
+                 if row_len else 0)
+                for c in candidate
+            )
+            if worst <= best_worst or not row:
+                row, row_sum, best_worst = candidate, s, worst
+            else:
+                break
+        remaining = remaining[len(row):]
+        row_area = (row_sum / total) * area
+        row_len = row_area / side if side else 0
+        offset = 0.0
+        for n in row:
+            a = (n["resource_bytes"] / total) * area
+            length = a / row_len if row_len else 0
+            if vertical:
+                out.append({**n, "x": rx, "y": ry + offset, "w": row_len, "h": length})
+            else:
+                out.append({**n, "x": rx + offset, "y": ry, "w": length, "h": row_len})
+            offset += length
+        if vertical:
+            rx += row_len
+            rw -= row_len
+        else:
+            ry += row_len
+            rh -= row_len
+    return out
+
+
+def _format_bytes(n: float) -> str:
+    if n < 1024:
+        return f"{int(n)} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.2f} MB"
+
+
+def _treemap_tile_color(node: dict) -> RGBColor:
+    pct = (node["unused_bytes"] / node["resource_bytes"]) if node["resource_bytes"] else 0
+    if pct >= 0.5:
+        return BAD
+    if pct >= 0.2:
+        return WARN
+    return RGBColor(0x2F, 0x6F, 0xED)
+
+
+def add_script_treemap_slide(prs: Presentation, mobile: dict | None, desktop: dict | None):
+    """Renders Lighthouse's script-treemap-data audit (the same data behind
+    googlechrome.github.io/lighthouse/treemap) as native PPTX rectangles —
+    which JS bundles are biggest and how much of each goes unused."""
+    result = mobile or desktop
+    nodes = (result or {}).get("script_treemap") or []
+    if not nodes:
+        return None
+    label = "Mobile" if result is mobile else "Desktop"
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "JavaScript Bundle Breakdown")
+    _textbox(slide, Inches(9.5), Inches(0.3), Inches(3.3), Inches(0.4), "Source: Google PageSpeed Insights", size=11, color=TEXT_MUTED)
+    _textbox(slide, Inches(0.4), Inches(1.0), Inches(6), Inches(0.4), f"{label} — script treemap (size vs. unused bytes)", size=13, color=TEXT_MUTED)
+
+    origin_x, origin_y = Inches(0.4), Inches(1.5)
+    map_w, map_h = Inches(9.0), Inches(5.2)
+    laid_out = _squarify(nodes[:40], 0.0, 0.0, float(map_w), float(map_h))
+
+    for n in laid_out:
+        left = origin_x + Emu(int(n["x"]))
+        top = origin_y + Emu(int(n["y"]))
+        w = max(Emu(int(n["w"])), Emu(1))
+        h = max(Emu(int(n["h"])), Emu(1))
+        tile = slide.shapes.add_shape(1, left, top, w, h)
+        _fill(tile, _treemap_tile_color(n))
+        tile.line.color.rgb = WHITE
+        tile.line.width = Pt(0.75)
+        tile.shadow.inherit = False
+        if n["w"] > Inches(0.9) and n["h"] > Inches(0.35):
+            tf = tile.text_frame
+            tf.word_wrap = True
+            tf.margin_left = tf.margin_right = Pt(3)
+            tf.margin_top = tf.margin_bottom = Pt(2)
+            name = n["name"].rsplit("/", 1)[-1] or n["name"]
+            p = tf.paragraphs[0]
+            run = p.add_run()
+            run.text = name
+            run.font.size = Pt(9)
+            run.font.bold = True
+            run.font.color.rgb = WHITE
+            p2 = tf.add_paragraph()
+            run2 = p2.add_run()
+            run2.text = _format_bytes(n["resource_bytes"])
+            run2.font.size = Pt(8)
+            run2.font.color.rgb = WHITE
+
+    legend_x = Inches(9.8)
+    for i, (color, text) in enumerate([
+        (RGBColor(0x2F, 0x6F, 0xED), "<20% unused"),
+        (WARN, "20–50% unused"),
+        (BAD, ">50% unused"),
+    ]):
+        sq_top = Inches(1.6) + Emu(i * Inches(0.4))
+        sq = slide.shapes.add_shape(1, legend_x, sq_top, Inches(0.16), Inches(0.16))
+        _fill(sq, color)
+        sq.shadow.inherit = False
+        _textbox(slide, legend_x + Inches(0.28), sq_top - Inches(0.03), Inches(2.6), Inches(0.3), text, size=12)
+
+    total_bytes = sum(n["resource_bytes"] for n in nodes)
+    total_unused = sum(n["unused_bytes"] for n in nodes)
+    insights = [f"Total JS analyzed: {_format_bytes(total_bytes)}, of which {_format_bytes(total_unused)} unused."]
+    biggest = max(nodes, key=lambda n: n["resource_bytes"], default=None)
+    if biggest:
+        insights.append(f"Largest bundle: {biggest['name'].rsplit('/', 1)[-1]} at {_format_bytes(biggest['resource_bytes'])}.")
+    _insights_strip(slide, Inches(9.8), Inches(3.2), Inches(3.1), insights)
+    return slide
+
+
 def _issue_row(slide, left, top, width, text, severity="warn"):
     color = BAD if severity == "error" else WARN
     dot = slide.shapes.add_shape(9, left, top + Inches(0.06), Inches(0.12), Inches(0.12))
@@ -3712,6 +3848,7 @@ def _build_report(
         if psi_mobile or psi_desktop:
             add_pagespeed_slide(prs, psi_mobile, psi_desktop)
             add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
+            add_script_treemap_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
             add_site_health_slide(prs, site_audit, site_audit_overview)
             if site_audit_pages_rows:
