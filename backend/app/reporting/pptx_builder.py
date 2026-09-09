@@ -945,49 +945,131 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     _content_header(slide, "Website Structure")
     _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Site Audit", size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
 
-    # Plain left-indented hierarchy list — matches Semrush's own Site
-    # Structure widget layout (client asked for "same like hierarchy like
-    # left side"), not the node-and-connector diagram this used to be.
-    # URL count per row restored per user request 2026-09-08 (client wants
-    # the per-directory/sub-directory URL counts, same as Semrush's widget)
-    # — each row now shows its page count, root row shows the site total.
-    MAX_TOP = 12
-    MAX_SUB = 3
-    row_h = Inches(0.32)
-    max_y = Inches(6.9)
-    y = Inches(1.15)
+    # Node-and-connector hierarchy diagram — domain -> top directories ->
+    # sub-directories, each box carrying its own crawled-URL count. This
+    # replaced the left-indented list a0e1015 had switched to (client had
+    # asked to match Semrush's own widget layout at the time); brought back
+    # per Gaps.pdf gap 3 ("project how the structure is designed") which
+    # explicitly asked for the visual again. Capped at MAX_TOP top-level /
+    # MAX_SUB sub-level boxes before the slide gets cramped — anything
+    # beyond that is called out in the insight line instead of silently
+    # dropped.
+    MAX_TOP = 6
+    MAX_SUB = 2
 
     # Same canonical total as the Site Health slide's "Crawled Pages" card
     # (deduped unique URLs, not just the sum of directory buckets below —
     # those exclude bare "/"-root and single-page/WP-archive URLs folded
-    # elsewhere) so this slide's header figure never quietly disagrees with
-    # the earlier one for the same crawl.
+    # elsewhere) so this slide's root-box figure never quietly disagrees
+    # with the earlier one for the same crawl.
     canonical = _canonical_page_totals(site_audit_pages_rows, None)
     site_total = canonical["total"] if canonical else sum(top_counts.values())
-    _textbox(slide, Inches(0.7), y, Inches(9), row_h, domain, size=15, bold=True, color=TEXT_DARK)
-    _textbox(slide, Inches(9.7), y, Inches(1.9), row_h, f"{site_total:,} URLs", size=12, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
-    y += row_h
+    shown = ranked[:MAX_TOP]
 
-    for directory, count in ranked[:MAX_TOP]:
-        if y > max_y:
-            break
-        _textbox(slide, Inches(1.1), y, Inches(8.5), row_h, directory, size=12.5, color=TEXT_DARK)
-        _textbox(slide, Inches(9.7), y, Inches(1.9), row_h, f"{count:,} URLs", size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
-        y += row_h
-        # Same reasoning as the top-level filter above, one level down:
-        # a sub-path with only 1 page under it is a single leaf page
-        # (e.g. one blog post at /blog/some-post-slug), not a real
-        # sub-section — confirmed live, individual post slugs were
-        # showing up as if they were meaningful /blog sub-folders.
+    root_w, root_h = 3.0, 0.62
+    root_left = 0.6 + (12.1 - root_w) / 2
+    root_top = 1.05
+    _tree_box(slide, Inches(root_left), Inches(root_top), Inches(root_w), Inches(root_h), domain, site_total, bold=True, fill=HEADER_ROW_BG, name_size=13, count_size=11)
+
+    n2 = max(len(shown), 1)
+    gap2 = 0.15
+    box2_w = (12.1 - (n2 - 1) * gap2) / n2
+    box2_h = 0.68
+    spine1_y = root_top + root_h + 0.22
+    box2_top = spine1_y + 0.15
+
+    root_center_x = root_left + root_w / 2
+    _tree_line_v(slide, Inches(root_center_x), Inches(root_top + root_h), Inches(spine1_y))
+
+    centers2 = [0.6 + box2_w / 2 + i * (box2_w + gap2) for i in range(n2)]
+    if len(centers2) > 1:
+        _tree_line_h(slide, Inches(centers2[0]), Inches(centers2[-1]), Inches(spine1_y))
+
+    for i, (directory, count) in enumerate(shown):
+        left2 = 0.6 + i * (box2_w + gap2)
+        cx = centers2[i]
+        _tree_line_v(slide, Inches(cx), Inches(spine1_y), Inches(box2_top))
+        label = _truncate_cell(directory, box2_w - 0.2, size_pt=11)
+        _tree_box(slide, Inches(left2), Inches(box2_top), Inches(box2_w), Inches(box2_h), label, count, name_size=11, count_size=9.5)
+
+        # Same reasoning as the top-level filter above, one level down: a
+        # sub-path with only 1 page under it is a single leaf page (e.g.
+        # one blog post at /blog/some-post-slug), not a real sub-section.
         real_subs = [(d, c) for d, c in child_counts.get(directory, {}).items() if c >= 2]
-        for sub_directory, sub_count in sorted(real_subs, key=lambda kv: -kv[1])[:MAX_SUB]:
-            if y > max_y:
-                break
-            _textbox(slide, Inches(1.5), y, Inches(8.1), row_h, f"/{sub_directory.split('/')[-1]}", size=11.5, color=TEXT_MUTED)
-            _textbox(slide, Inches(9.7), y, Inches(1.9), row_h, f"{sub_count:,} URLs", size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
-            y += row_h
+        if not real_subs:
+            continue
+        top_subs = sorted(real_subs, key=lambda kv: -kv[1])[:MAX_SUB]
+        n3 = len(top_subs)
+        gap3 = 0.1
+        box3_w = (box2_w - (n3 - 1) * gap3) / n3
+        box3_h = 0.58
+        spine2_y = box2_top + box2_h + 0.16
+        box3_top = spine2_y + 0.12
+        parent_bottom = box2_top + box2_h
+        _tree_line_v(slide, Inches(cx), Inches(parent_bottom), Inches(spine2_y))
+        centers3 = [left2 + box3_w / 2 + j * (box3_w + gap3) for j in range(n3)]
+        if len(centers3) > 1:
+            _tree_line_h(slide, Inches(centers3[0]), Inches(centers3[-1]), Inches(spine2_y))
+        for j, (sub_directory, sub_count) in enumerate(top_subs):
+            left3 = left2 + j * (box3_w + gap3)
+            _tree_line_v(slide, Inches(centers3[j]), Inches(spine2_y), Inches(box3_top))
+            sub_label = _truncate_cell(sub_directory.split("/")[-1], box3_w - 0.15, size_pt=9.5)
+            _tree_box(slide, Inches(left3), Inches(box3_top), Inches(box3_w), Inches(box3_h), f"/{sub_label}", sub_count, name_size=9.5, count_size=8.5)
 
+    insights = [f"{site_total:,} total crawled URLs across {len(ranked)} top-level director{'y' if len(ranked) == 1 else 'ies'}."]
+    if len(ranked) > MAX_TOP:
+        insights.append(f"Showing the top {MAX_TOP} directories by URL count — {len(ranked) - MAX_TOP} more not shown here.")
+    _insights_strip(slide, Inches(0.6), Inches(5.4), Inches(11.9), insights)
     return slide
+
+
+def _tree_box(slide, left, top, width, height, name: str, count: int, bold: bool = False, fill=None, name_size: float = 11, count_size: float = 9.5):
+    """One node in the Website Structure hierarchy diagram — a compact
+    rounded box with the directory name on top and its URL count below,
+    matching the deck's existing card styling (see _card) rather than a
+    plain shape, so the tree reads as part of the same visual system."""
+    box = slide.shapes.add_shape(5, left, top, width, height)  # rounded rectangle
+    try:
+        box.adjustments[0] = 0.12
+    except (IndexError, AttributeError):
+        pass
+    box.fill.solid()
+    box.fill.fore_color.rgb = fill or WHITE
+    box.line.color.rgb = _accent() if bold else CARD_BORDER
+    box.line.width = Pt(1.25 if bold else 0.75)
+    box.shadow.inherit = False
+    tf = box.text_frame
+    tf.word_wrap = True
+    tf.margin_left = tf.margin_right = Pt(2)
+    tf.margin_top = Pt(3)
+    tf.margin_bottom = Pt(2)
+    p0 = tf.paragraphs[0]
+    p0.alignment = PP_ALIGN.CENTER
+    r0 = p0.add_run()
+    r0.text = name
+    r0.font.size = Pt(name_size)
+    r0.font.bold = bold
+    r0.font.color.rgb = TEXT_DARK
+    p1 = tf.add_paragraph()
+    p1.alignment = PP_ALIGN.CENTER
+    r1 = p1.add_run()
+    r1.text = f"{count:,} URLs"
+    r1.font.size = Pt(count_size)
+    r1.font.bold = True
+    r1.font.color.rgb = _accent() if bold else TEXT_MUTED
+    return box
+
+
+def _tree_line_v(slide, x, y1, y2):
+    line = slide.shapes.add_shape(1, x, min(y1, y2), Pt(1.5), abs(int(y2) - int(y1)) or Pt(1))
+    _fill(line, CARD_BORDER)
+    line.shadow.inherit = False
+
+
+def _tree_line_h(slide, x1, x2, y):
+    line = slide.shapes.add_shape(1, min(x1, x2), y, abs(int(x2) - int(x1)) or Pt(1), Pt(1.5))
+    _fill(line, CARD_BORDER)
+    line.shadow.inherit = False
 
 
 def add_company_overview_slide(prs: Presentation, client_name: str, summary: str):
