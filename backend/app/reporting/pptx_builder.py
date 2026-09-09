@@ -3732,9 +3732,13 @@ def _build_report(
     # if backlink_rows or backlink_summary or own_domain_rating is not None:
     #     add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
 
-    # Brand Citation Opportunities slide cut per user request 2026-09-08 —
-    # function kept below for fast re-enable if ever needed.
-    # add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
+    # Brand Citation Opportunities slide cut 2026-09-08, restored 2026-09-09
+    # once brand_citation_service's generic-word-brand disambiguation bug
+    # was fixed (teammate QA: it was returning unrelated results for a
+    # client whose brand name doubles as an ordinary word). Always called,
+    # same as before the cut — falls back to directory-recommendations-only
+    # when neither real citations nor a Wikipedia page were found.
+    add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")

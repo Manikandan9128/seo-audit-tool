@@ -1447,12 +1447,19 @@ def _build_pptx_for_client(
     # fetch above.
     brand_citations = None
     brand_wikipedia = None
+    # Real industry terms from the extracted Company Overview (e.g.
+    # "Payroll Software", "Construction") — the corroboration signal that
+    # tells a generic-word brand name (a client literally named "Lumber")
+    # apart from unrelated results about the dictionary word itself. See
+    # brand_citation_service._needs_disambiguation for why this only
+    # matters for short/common-word brand names.
+    industry_terms = (data.get("company_overview") or {}).get("industries") or []
     try:
-        brand_citations = search_brand_mentions(client.name, client.website_url)
+        brand_citations = search_brand_mentions(client.name, client.website_url, industry_terms)
     except Exception:
         logger.exception("Brand citation search failed for client %s — continuing without it", client_id)
     try:
-        brand_wikipedia = check_wikipedia_presence(client.name)
+        brand_wikipedia = check_wikipedia_presence(client.name, client.website_url, industry_terms)
     except Exception:
         logger.exception("Wikipedia check failed for client %s — continuing without it", client_id)
 
