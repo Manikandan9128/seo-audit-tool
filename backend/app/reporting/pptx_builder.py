@@ -1209,91 +1209,6 @@ def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None
     return slide
 
 
-def add_critical_issues_slide(
-    prs: Presentation,
-    site_audit_issues: list[dict] | None,
-    site_audit_pages_rows: list[dict] | None = None,
-    analytics: dict | None = None,
-):
-    """Standalone Critical Issues slide — ERROR-severity items only from
-    Semrush Site Audit's issue rollup (issue_type == "ERROR"), matching the
-    manual report's dedicated Critical Issues page. Distinct from the
-    combined SEO Issues slide above, which mixes Errors + Warnings in one
-    2-column layout — this is Errors alone, full width, so the most severe
-    findings aren't sharing space with lower-priority warnings.
-
-    Columns distinguish the two counts Semrush's rollup actually gives per
-    issue type: Affected Pages (failed_checks, how many pages have it) vs
-    Total Checked (total_checks, how many pages were eligible for the
-    check) — NOT the same number, e.g. a canonical-tag check only runs
-    against indexable pages. Organic exposure below is a SITE-WIDE
-    broken/non-200 total, not broken out per individual issue type —
-    Semrush's Site Audit issue export is an aggregate rollup only (issue
-    name + failed/total counts), it does not include the per-issue list of
-    affected URLs, so there's no real per-issue traffic number to compute
-    without a per-issue URL export Semrush doesn't currently give us."""
-    if not site_audit_issues:
-        return None
-    errors = [
-        r for r in site_audit_issues
-        if str(r.get("issue_type", "")).strip().upper() == "ERROR" and (r.get("failed_checks") or 0) > 0
-    ]
-    if not errors:
-        return None
-
-    ranked = sorted(errors, key=lambda r: r.get("failed_checks") or 0, reverse=True)
-    rows = [
-        (r.get("issue", "Issue"), f"{r.get('failed_checks', 0):,}", f"{r.get('total_checks', 0):,}" if r.get("total_checks") else "—")
-        for r in ranked
-    ]
-    total_affected = sum(r.get("failed_checks") or 0 for r in errors)
-    top = ranked[0]
-    insights = [
-        f"{len(errors)} distinct critical error type(s), {total_affected:,} total affected page-checks.",
-        f"Most widespread: \"{top.get('issue')}\" — {top.get('failed_checks', 0):,} pages affected.",
-    ]
-
-    # Business-impact cross-reference: real GA4 pageviews AND GSC clicks
-    # that landed on pages which are now broken/non-200, per the same Site
-    # Audit per-page export the Website Structure slide uses. Only added
-    # when the relevant real dataset is present and actually overlaps —
-    # never estimated. Site-wide across all broken pages, not per-issue —
-    # see the docstring above for why a per-issue split isn't possible yet.
-    if site_audit_pages_rows and analytics:
-        broken_paths = {
-            urlparse(r.get("page_url") or "").path.rstrip("/")
-            for r in site_audit_pages_rows
-            if str(r.get("http_status_code", "200")).strip() not in ("200", "")
-        }
-        top_pages = (analytics.get("top_pages") or {}).get("rows", [])
-        matched_views = sum(
-            int(float(p.get("page_views", 0) or 0))
-            for p in top_pages
-            if (p.get("path") or "").rstrip("/") in broken_paths
-        )
-        page_clicks = (analytics.get("page_clicks") or {}).get("rows", [])
-        matched_clicks = sum(
-            int(float(r.get("clicks", 0) or 0))
-            for r in page_clicks
-            if urlparse(r.get("page") or "").path.rstrip("/") in broken_paths
-        )
-        if matched_views > 0 or matched_clicks > 0:
-            parts = []
-            if matched_views > 0:
-                parts.append(f"{matched_views:,} real pageviews")
-            if matched_clicks > 0:
-                parts.append(f"{matched_clicks:,} organic search clicks")
-            insights.append(
-                f"These broken/non-200 pages received {' and '.join(parts)} in the reporting window — "
-                "that traffic (and any ranking credit) is being lost right now."
-            )
-
-    return _table_slide(
-        prs, "Critical Issues", ["Issue", "Affected Pages", "Total Checked"], rows,
-        col_widths=[7.0, 2.5, 2.6], source="Semrush Site Audit", insights=insights,
-    )
-
-
 def add_priority_issues_slide(
     prs: Presentation,
     site_audit_pages_rows: list[dict] | None,
@@ -3972,7 +3887,6 @@ def _build_report(
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
-            add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows, analytics)
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
             if schema_validation and schema_validation.get("total_pages"):
