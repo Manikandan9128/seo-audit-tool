@@ -287,6 +287,17 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
     categories = lighthouse.get("categories", {})
     audits = lighthouse.get("audits", {})
 
+    # A 200 OK can still come back with an empty/incomplete Lighthouse
+    # result (no performance category scored at all) — confirmed real on a
+    # heavy-JS site: two back-to-back calls with identical params, one
+    # returned a real score, the other returned 200 with categories={}
+    # entirely. That never triggered the retry above (no exception, no
+    # 5xx status), so a single flaky run silently produced "Not run" on
+    # the Website Performance slide even though a retry moments later
+    # would very likely have succeeded (as it did here).
+    if retries > 0 and categories.get("performance", {}).get("score") is None:
+        return run_pagespeed(url, strategy=strategy, retries=retries - 1, timeout=timeout)
+
     def score(cat_key: str) -> int | None:
         cat = categories.get(cat_key)
         if not cat or cat.get("score") is None:
