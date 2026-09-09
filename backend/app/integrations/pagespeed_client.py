@@ -102,6 +102,13 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
             return None
         return round(cat["score"] * 100)
 
+    def raw_score(cat_key: str) -> float | None:
+        # Lighthouse's own exact 0-1 score, unrounded — the PSI dashboard's
+        # 0-100 badge is round(raw * 100), which loses precision (0.905 and
+        # 0.914 both show as "91").
+        cat = categories.get(cat_key)
+        return cat.get("score") if cat else None
+
     def metric(audit_key: str) -> str | None:
         audit = audits.get(audit_key)
         return audit.get("displayValue") if audit else None
@@ -113,6 +120,12 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
             "seo": score("seo"),
             "accessibility": score("accessibility"),
             "best_practices": score("best-practices"),
+        },
+        "raw_scores": {
+            "performance": raw_score("performance"),
+            "seo": raw_score("seo"),
+            "accessibility": raw_score("accessibility"),
+            "best_practices": raw_score("best-practices"),
         },
         "core_web_vitals": {
             "largest_contentful_paint": metric("largest-contentful-paint"),
