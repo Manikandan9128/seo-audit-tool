@@ -1962,7 +1962,9 @@ _PAGE_ISSUE_FIXES = {
 _ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
 
 
-def _tech_fixes_scored_rows(page_audit: dict, analytics: dict | None) -> list[tuple]:
+def _tech_fixes_scored_rows(
+    page_audit: dict, analytics: dict | None, site_audit_pages_rows: list[dict] | None = None
+) -> list[tuple]:
     # Same GA4+GSC join and page-value formula as Priority Issues (see
     # _traffic_by_path/_page_value_score) — previously this only weighed
     # GA4 pageviews and silently ignored GSC clicks, so a fix on a page
@@ -1971,8 +1973,10 @@ def _tech_fixes_scored_rows(page_audit: dict, analytics: dict | None) -> list[tu
     pageviews_by_path, clicks_by_path = _traffic_by_path(analytics)
 
     scored_rows = []
+    covered_paths: set[str] = set()
     for page in page_audit.get("pages", []):
         path = urlparse(page.get("url", "")).path or "/"
+        covered_paths.add(path.rstrip("/") or "/")
         page_views = pageviews_by_path.get(path.rstrip("/"), 0)
         clicks = clicks_by_path.get(path.rstrip("/"), 0)
         score = _page_value_score(page_views, clicks)
@@ -1982,11 +1986,58 @@ def _tech_fixes_scored_rows(page_audit: dict, analytics: dict | None) -> list[tu
                 continue
             fix_text, severity, category = fix
             scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -score, issue, path, fix_text, page_views, category))
+
+    # Semrush's Crawled Pages export (site_audit_pages_rows) covers the
+    # site's real full crawl (e.g. 1,340 pages) vs. this tool's own ~20-page
+    # sample above — before this, Tech Fixes only ever scored that ~20-page
+    # sample, silently ignoring every other page even though Site
+    # Structure/SEO Issues/Site Health all use the full export (Gaps.pdf,
+    # "Understanding Current Scenario": Tech Fixes should match the same
+    # crawled-pages scope). Semrush's per-page export only gives an ISSUE
+    # COUNT, not issue names, so these rows can't get a real named Fix —
+    # they're added honestly as "N issue(s) reported by Semrush" instead of
+    # fabricating a specific fix, ranked below real named findings (info
+    # severity) and bucketed into their own "other" category rather than
+    # guessing technical vs. seo.
+    if site_audit_pages_rows:
+        domain_counts = Counter(urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows)
+        domain_counts.pop("", None)
+        own_domain = domain_counts.most_common(1)[0][0] if domain_counts else None
+        seen_semrush_paths: set[str] = set()
+        for r in site_audit_pages_rows:
+            page_url = r.get("page_url")
+            issues = r.get("issues")
+            if not (page_url and issues):
+                continue
+            if own_domain and urlparse(page_url).netloc not in ("", own_domain):
+                continue
+            path = urlparse(page_url).path or "/"
+            key = path.rstrip("/") or "/"
+            if key in covered_paths or key in seen_semrush_paths:
+                continue
+            try:
+                issue_count = int(float(issues))
+            except (TypeError, ValueError):
+                continue
+            if issue_count <= 0:
+                continue
+            seen_semrush_paths.add(key)
+            page_views = pageviews_by_path.get(key, 0)
+            clicks = clicks_by_path.get(key, 0)
+            score = _page_value_score(page_views, clicks)
+            fix_text = (
+                "Full per-issue breakdown isn't available for this page in this export — "
+                "review it in Semrush's Site Audit dashboard, or see SEO Issues for the site-wide breakdown by type."
+            )
+            scored_rows.append((
+                _ISSUE_SEVERITY_RANK["info"], -score, f"{issue_count} issue(s) (Semrush)", path, fix_text, page_views, "other",
+            ))
+
     scored_rows.sort(key=lambda r: (r[0], r[1]))
     return scored_rows
 
 
-def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[tuple]):
+def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[tuple], source: str = "Site crawl"):
     if not scored_rows:
         return None
     shown = scored_rows[:9]
@@ -2005,11 +2056,16 @@ def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[
         )
     return _table_slide(
         prs, title, ["Issue", "Where", "Fix"], rows,
-        col_widths=col_widths, source="Site crawl", insights=insights,
+        col_widths=col_widths, source=source, insights=insights,
     )
 
 
-def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None, analytics: dict | None = None) -> list:
+def add_tech_fixes_slide(
+    prs: Presentation,
+    page_audit: dict | None,
+    analytics: dict | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
+) -> list:
     """Flattens page_audit's per-page issues (up to 20 crawled pages) into
     one Issue/Where/Fix row per (page, issue) pair, worst-severity first
     (severity stays the primary sort — an error is still an error regardless
@@ -2018,23 +2074,29 @@ def add_tech_fixes_slide(prs: Presentation, page_audit: dict | None, analytics: 
     hit sorts above the same-severity fix on a page nobody visits — and the
     single highest-traffic affected page gets called out as an insight.
     Split into two slides (Technical vs SEO issues, see _PAGE_ISSUE_FIXES'
-    category field) per client request — was one mixed list before.
-    Sourced from our own crawl, not Semrush — Semrush's per-page x
-    per-issue-type matrix export (mega_export.csv) isn't parsed at all
-    currently (parked deliberately), would give a richer full-site version
-    of this same idea later if ever built."""
+    category field) per client request — was one mixed list before. A
+    third "Additional Pages" slide covers the rest of Semrush's full
+    crawl (site_audit_pages_rows) beyond our own ~20-page sample — see
+    _tech_fixes_scored_rows for why those rows can't get a named Fix.
+    Named Issue/Fix rows still come from our own crawl — Semrush's per-page
+    x per-issue-type matrix export (mega_export.csv) isn't parsed at all
+    currently (parked deliberately), would give richer named findings for
+    the full site later if ever built. The "Additional Pages" slide covers
+    the scope gap in the meantime with an honest count-only row instead."""
     if not page_audit:
         return []
 
-    scored_rows = _tech_fixes_scored_rows(page_audit, analytics)
+    scored_rows = _tech_fixes_scored_rows(page_audit, analytics, site_audit_pages_rows)
     if not scored_rows:
         return []
 
     technical_rows = [r for r in scored_rows if r[6] == "technical"]
     seo_rows = [r for r in scored_rows if r[6] == "seo"]
+    other_rows = [r for r in scored_rows if r[6] == "other"]
     slides = [
         _tech_fixes_category_slide(prs, "Tech Fixes — Technical Issues", technical_rows),
         _tech_fixes_category_slide(prs, "Tech Fixes — SEO Issues", seo_rows),
+        _tech_fixes_category_slide(prs, "Tech Fixes — Additional Pages", other_rows, source="Semrush Site Audit"),
     ]
     return [s for s in slides if s]
 
@@ -4103,7 +4165,7 @@ def _build_report(
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows)
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
-            add_tech_fixes_slide(prs, page_audit, analytics)
+            add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows)
             if schema_validation and schema_validation.get("total_pages"):
                 add_schema_combined_slide(prs, schema_validation)
             elif structured_data_rows:
