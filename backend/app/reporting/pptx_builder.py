@@ -2229,6 +2229,23 @@ def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insigh
     return slide
 
 
+# GA4's own default channel-group names, defined here for a couple that
+# read as opaque jargon to a non-technical report reader — expanded inline
+# wherever an insight names one of these, since the table itself (row
+# labels only) has no room for an explanation. Not our classification —
+# these are Google Analytics's own standard channel groups, straight off
+# the sessionDefaultChannelGroup dimension.
+_CHANNEL_DEFINITIONS = {
+    "cross-network": "spans multiple ad networks/inventory types at once — typically a Google Ads Performance Max campaign",
+    "unassigned": "GA4 couldn't determine a channel for this traffic, usually missing or broken UTM tags",
+}
+
+
+def _channel_note(channel: str) -> str:
+    definition = _CHANNEL_DEFINITIONS.get((channel or "").strip().lower())
+    return f" ({definition})" if definition else ""
+
+
 def _traffic_sources_insights(
     shown: list[dict], total_sessions: float, prior_rows: list[dict] | None = None
 ) -> list[str]:
@@ -2282,7 +2299,8 @@ def _traffic_sources_insights(
     else:
         quality = "no new-vs-returning data available for this channel"
     insights.append(
-        f"{top['channel']} drives the largest share of sessions ({_pct_text(top['pct_share'])} of {int(total_sessions):,} total) — {quality}."
+        f"{top['channel']}{_channel_note(top['channel'])} drives the largest share of sessions "
+        f"({_pct_text(top['pct_share'])} of {int(total_sessions):,} total) — {quality}."
     )
     used.add(top["channel"])
 
@@ -2291,7 +2309,8 @@ def _traffic_sources_insights(
     if rate_ranked and rate_ranked[0]["channel"] not in used and len(insights) < 3:
         best = rate_ranked[0]
         insights.append(
-            f"{best['channel']} has the strongest return rate at {best['return_rate']:.0f}% ({_pct_text(best['pct_share'])} of sessions)."
+            f"{best['channel']}{_channel_note(best['channel'])} has the strongest return rate at "
+            f"{best['return_rate']:.0f}% ({_pct_text(best['pct_share'])} of sessions)."
         )
         used.add(best["channel"])
 
@@ -2308,8 +2327,9 @@ def _traffic_sources_insights(
             if mismatched:
                 m = mismatched[0]
                 insights.append(
-                    f"{m['channel']} carries {_pct_text(m['pct_share'])} of sessions but only a {m['return_rate']:.0f}% return "
-                    f"rate, well below the {avg_rate:.0f}% average across channels — a size/quality mismatch worth a closer look."
+                    f"{m['channel']}{_channel_note(m['channel'])} carries {_pct_text(m['pct_share'])} of sessions but only a "
+                    f"{m['return_rate']:.0f}% return rate, well below the {avg_rate:.0f}% average across channels — a "
+                    f"size/quality mismatch worth a closer look."
                 )
                 used.add(m["channel"])
 
@@ -2333,8 +2353,8 @@ def _traffic_sources_insights(
             _, r, prior_share, prior_sessions = deltas[0]
             direction = "up" if r["pct_share"] >= prior_share else "down"
             insights.append(
-                f"{r['channel']} moved {direction} from {_pct_text(prior_share)} of sessions ({int(prior_sessions):,}) in the "
-                f"prior period to {_pct_text(r['pct_share'])} ({int(r['sessions']):,}) this period."
+                f"{r['channel']}{_channel_note(r['channel'])} moved {direction} from {_pct_text(prior_share)} of sessions "
+                f"({int(prior_sessions):,}) in the prior period to {_pct_text(r['pct_share'])} ({int(r['sessions']):,}) this period."
             )
             used.add(r["channel"])
 
@@ -2342,11 +2362,11 @@ def _traffic_sources_insights(
             current_names = {v["channel"] for v in verified}
             new_channel = next((r["channel"] for r in verified if r["channel"] not in prior_by_channel and r["channel"] not in used), None)
             if new_channel:
-                insights.append(f"{new_channel} is new this period — no data for it in the prior period.")
+                insights.append(f"{new_channel}{_channel_note(new_channel)} is new this period — no data for it in the prior period.")
             else:
                 missing = next((c for c in prior_by_channel if c not in current_names), None)
                 if missing:
-                    insights.append(f"{missing} appeared in the prior period but has no sessions this period.")
+                    insights.append(f"{missing}{_channel_note(missing)} appeared in the prior period but has no sessions this period.")
 
     return insights[:3]
 
