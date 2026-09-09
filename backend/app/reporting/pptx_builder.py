@@ -2288,94 +2288,6 @@ def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insigh
     return slide
 
 
-# Branded/Non-Branded page-path rules, as specified by the client. Substring
-# checks against the raw path, case-insensitive — deliberately literal to
-# what was specified (e.g. "/blog" matches "/blog-post" too) rather than
-# adding stricter boundary logic not asked for. Order doesn't matter within
-# a bucket; a path matching neither list is dropped from both segmented
-# slides (still counted in the overall, unsegmented Top Pages slide above).
-_BRANDED_PAGE_SIGNALS = [
-    "/about", "/our-team", "/careers", "/jobs", "/news", "/newsroom", "/press",
-    "/contact", "/support", "/login", "/sign-in", "/app", "/demo", "/quote", "/pricing",
-]
-_NONBRANDED_PAGE_SIGNALS = [
-    "/features", "/modules", "/capabilities", "/products/", "/solutions/", "/services/",
-    "/blog", "/articles", "/insights", "/podcast", "/webinar", "/videos",
-    "/case-studies", "/success-stories", "/customers",
-    "/resources", "/guides", "/whitepapers", "/tools", "/calculators", "/templates",
-    "/glossary", "/wiki", "/dictionary",
-]
-
-
-def _classify_page_branded(path: str) -> str | None:
-    if (path or "").strip("/") == "":
-        return "branded"  # homepage
-    text = (path or "").lower()
-    if any(sig in text for sig in _BRANDED_PAGE_SIGNALS):
-        return "branded"
-    if any(sig in text for sig in _NONBRANDED_PAGE_SIGNALS):
-        return "non-branded"
-    return None
-
-
-def add_top_pages_branded_split_slide(
-    prs: Presentation, branded_pct: float, branded_pages: list[dict], nonbranded_pct: float, nonbranded_pages: list[dict]
-):
-    """Branded and Non-Branded Top Pages on ONE slide (client asked these
-    combined rather than as two separate slides) — two half-width panels
-    side by side, each with its own compact stat strip + table. The %
-    column is each page's share of its SEGMENT's Users (not Pageviews —
-    client specifically wants Users% here), separate from the stat strip's
-    share of the FULL site's users."""
-    if not branded_pages and not nonbranded_pages:
-        return None
-    slide = _blank_slide(prs)
-    _content_header(slide, "Top Pages — Branded vs Non-Branded")
-
-    def _page_label(path: str) -> str:
-        return f"{path} (Home Page)" if path.strip("/") == "" else path
-
-    half_width_in = 5.9
-    lefts = [Inches(0.6), Inches(0.6 + half_width_in + 0.3)]
-    panels = [("BRANDED SHARE", branded_pct, branded_pages), ("NON-BRANDED SHARE", nonbranded_pct, nonbranded_pages)]
-    bottoms = []
-
-    for (label, share_pct, pages), left in zip(panels, lefts):
-        if not pages:
-            continue
-        card_top, card_h = Inches(1.1), Inches(0.55)
-        _card(slide, left, card_top, Inches(half_width_in), card_h)
-        _textbox(slide, left + Inches(0.15), card_top + Inches(0.07), Inches(2.2), Inches(0.22), label, size=9, bold=True, color=TEXT_MUTED)
-        _textbox(slide, left + Inches(0.15), card_top + Inches(0.26), Inches(1.2), Inches(0.28), f"{share_pct:.0f}%", size=17, bold=True, color=_accent())
-        _textbox(slide, left + Inches(1.4), card_top + Inches(0.31), Inches(half_width_in) - Inches(1.5), Inches(0.22), "of branded + non-branded users", size=8, color=TEXT_MUTED)
-
-        segment_total_users = sum(int(float(p.get("active_users", 0) or 0)) for p in pages)
-        rows = [
-            (
-                _truncate_cell(_page_label(p["path"]), 2.6),
-                f"{int(float(p['page_views'])):,}",
-                f"{int(float(p.get('active_users', 0) or 0)):,}",
-                f"{(int(float(p.get('active_users', 0) or 0)) / segment_total_users * 100 if segment_total_users else 0):.1f}%",
-            )
-            for p in pages[:7]
-        ]
-        bottom = _draw_table(
-            slide, ["Page", "Pageviews", "Users", "% of Users"], rows, card_top + card_h + Inches(0.15),
-            col_widths=[2.6, 1.0, 1.0, 1.3], left=left, width=Inches(half_width_in), row_cap=7,
-        )
-        bottoms.append(bottom)
-
-    insights = []
-    if branded_pages:
-        top_b = max(branded_pages, key=lambda p: float(p.get("active_users", 0) or 0))
-        insights.append(f"Branded: \"{_page_label(top_b['path'])}\" leads by users.")
-    if nonbranded_pages:
-        top_nb = max(nonbranded_pages, key=lambda p: float(p.get("active_users", 0) or 0))
-        insights.append(f"Non-Branded: \"{_page_label(top_nb['path'])}\" leads by users.")
-    if insights and bottoms:
-        _insights_strip(slide, Inches(0.6), max(bottoms) + Inches(0.25), Inches(11.9), insights)
-    return slide
-
 
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
@@ -4229,37 +4141,11 @@ def _build_report(
             add_traffic_spike_slide(prs, analytics["traffic_spike"])
         if analytics.get("traffic_channel_breakdown"):
             add_traffic_channel_breakdown_slide(prs, analytics["traffic_channel_breakdown"], source=ga4_source)
-        top_pages = (analytics.get("top_pages") or {}).get("rows", [])
-        top_pages = [p for p in top_pages if "career" not in (p.get("path") or "").lower()]
-        if top_pages:
-            # Plain "Top Pages" table cut per user request 2026-09-08 — same
-            # underlying GA4 top_pages data as the branded/non-branded split
-            # below, just a flat top-14 cut instead of segmented by brand.
-            # Uses the FULL (unfiltered) page list, not the career-filtered
-            # top_pages above — the client's own branded rules explicitly
-            # classify /careers as branded, so it belongs in this split.
-            all_pages = (analytics.get("top_pages") or {}).get("rows", [])
-            classified = [(p, _classify_page_branded(p.get("path") or "")) for p in all_pages]
-            branded_pages = sorted(
-                (p for p, c in classified if c == "branded"), key=lambda p: float(p.get("page_views", 0) or 0), reverse=True
-            )
-            nonbranded_pages = sorted(
-                (p for p, c in classified if c == "non-branded"), key=lambda p: float(p.get("page_views", 0) or 0), reverse=True
-            )
-            branded_users = sum(int(float(p.get("active_users", 0) or 0)) for p in branded_pages)
-            nonbranded_users = sum(int(float(p.get("active_users", 0) or 0)) for p in nonbranded_pages)
-            # Denominator is branded+nonbranded users, NOT the full site's
-            # user total — pages matching neither signal list are dropped
-            # from both segments above (_classify_page_branded returns None),
-            # so dividing by the unfiltered site total left the two shares
-            # summing to well under 100%. Each share is now "of the pages
-            # this split actually classifies," so they always sum to 100%.
-            classified_total = branded_users + nonbranded_users
-            add_top_pages_branded_split_slide(
-                prs,
-                branded_users / classified_total * 100 if classified_total else 0, branded_pages,
-                nonbranded_users / classified_total * 100 if classified_total else 0, nonbranded_pages,
-            )
+        # Top Pages — Branded vs Non-Branded slide removed 2026-09-09 per
+        # user request — redundant with GSC's own query-level Branded/
+        # Non-Branded split below (search_queries), which classifies real
+        # search intent directly instead of inferring it from a page-path
+        # signal list.
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
             total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
