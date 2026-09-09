@@ -962,8 +962,13 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     if len(ranked) > len(shown):
         insights.append(f"Showing the top {len(shown)} directories by URL count — {len(ranked) - len(shown)} more not shown here.")
 
+    # Inner "Site Structure" label above the table, matching the reference
+    # deck's card exactly (BEST_p6.png) — Semrush's own widget carries this
+    # same small title inside the card, distinct from the slide's own big
+    # "Website Structure" header above it.
+    _textbox(slide, Inches(0.6), Inches(1.2), Inches(4), Inches(0.24), "Site Structure", size=12.5, bold=True, color=_accent())
     _draw_table(
-        slide, ["Directory", "URLs"], rows, Inches(1.2),
+        slide, ["Directory", "URLs"], rows, Inches(1.55),
         col_widths=[9.1, 3.0], row_cap=ROW_CAP, insights=insights,
     )
     return slide
