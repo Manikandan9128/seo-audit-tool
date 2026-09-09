@@ -1426,7 +1426,7 @@ def add_priority_issues_slide(
 # (confirmed from an EJTOY audit).
 _STRUCTURED_DATA_TYPES = [
     ("Article", "article_items", "improves how blog/news content can appear in search"),
-    ("FAQ", "faq_items", "enables expandable FAQ dropdowns directly in search results"),
+    ("FAQ", "faq_items", "adds AI Overview / LLM-citation value"),
     ("Product", "product_items", "enables price/availability rich results on product pages"),
     ("Review", "review_items", "enables star-rating rich results"),
     ("Local Business", "local_business_items", "enables map/business-info rich results"),
@@ -1435,6 +1435,18 @@ _STRUCTURED_DATA_TYPES = [
     ("Job Posting", "job_posting_items", "enables Google's dedicated job-search rich results"),
     ("Event", "event_items", "enables event date/venue rich results"),
 ]
+
+# Google Search Central rich-result eligibility, checked manually against
+# Google's current documentation — refresh this whenever Google adds or
+# retires a result type, don't trust it to stay accurate indefinitely. FAQ
+# is marked ineligible because Google fully retired the FAQ rich-result SERP
+# dropdown in May 2026; the manual audit process still had "suggest FAQ
+# schema" hardcoded with no check against Google's current capabilities, so
+# the report kept promising a SERP visual Google no longer grants (Gaps.pdf,
+# "Structured Data" gap #3). Types not listed default to eligible.
+_SCHEMA_RICH_RESULT_RETIRED_NOTE = {
+    "faq_items": "Google retired the classic FAQ rich-result SERP dropdown in May 2026 — this is now content/AI-citation value only, not a SERP visual.",
+}
 
 
 # Every schema.org item-type field Semrush's Structured Data export tracks
@@ -1629,6 +1641,9 @@ def add_structured_data_slide(
     missing = [c for c in coverage if c[3] == 0 and c[2] is not None]  # curated-only, has benefit text
     missing_insights = []
     for label, field, benefit, _pages_with in missing:
+        # A retired-rich-result type still gets its own note instead of the
+        # "adding it {benefit}" phrasing — see _SCHEMA_RICH_RESULT_RETIRED_NOTE.
+        retired_note = _SCHEMA_RICH_RESULT_RETIRED_NOTE.get(field)
         required_shapes = _SCHEMA_TYPE_REQUIRED_SHAPES.get(field)
         if required_shapes is not None:
             relevant = relevant_counts.get(field, 0)
@@ -1637,9 +1652,15 @@ def add_structured_data_slide(
                 # careers pages at all) — not a gap, just not applicable.
                 continue
             noun = _SCHEMA_TYPE_SHAPE_NOUN.get(field, label.lower())
-            missing_insights.append(
-                f"No {label} schema found on any of the {relevant} {noun} page(s) identified — adding it {benefit}."
-            )
+            if retired_note:
+                missing_insights.append(
+                    f"No {label} schema found on any of the {relevant} {noun} page(s) identified — worth adding for "
+                    f"{benefit}, but not a SERP-visual win: {retired_note}"
+                )
+            else:
+                missing_insights.append(
+                    f"No {label} schema found on any of the {relevant} {noun} page(s) identified — adding it {benefit}."
+                )
         else:
             # Site-wide type (Breadcrumb) — no shape to narrow to, every page qualifies.
             missing_insights.append(f"No {label} schema found on any of your {total_pages} pages — adding it {benefit}.")
