@@ -1,3 +1,12 @@
+import ScriptTreemap from "./ScriptTreemap";
+
+interface TreemapNode {
+  name: string;
+  resource_bytes: number;
+  unused_bytes: number;
+  children: TreemapNode[];
+}
+
 interface PageSpeedResult {
   strategy: string;
   scores: {
@@ -12,6 +21,7 @@ interface PageSpeedResult {
     interaction_to_next_paint: string | null;
     first_contentful_paint: string | null;
   };
+  script_treemap?: TreemapNode[];
 }
 
 function scoreClass(score: number | null) {
@@ -77,6 +87,9 @@ export default function PageSpeedReport({
                 </tr>
               </tbody>
             </table>
+            {result.script_treemap && result.script_treemap.length > 0 && (
+              <ScriptTreemap nodes={result.script_treemap} />
+            )}
           </div>
         );
       })}

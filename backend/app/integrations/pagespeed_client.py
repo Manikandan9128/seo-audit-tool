@@ -222,6 +222,27 @@ def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
     return issues[:limit]
 
 
+def _extract_treemap(audits: dict, limit: int = 40) -> list[dict]:
+    """Lighthouse's own treemap (googlechrome.github.io/lighthouse/treemap)
+    is built from the script-treemap-data audit — one root node per JS
+    resource, each with nested source-map children. PSI only populates it
+    when the page actually has scripts to map, so this is often empty for
+    script-light pages; callers must handle that."""
+    nodes = ((audits.get("script-treemap-data") or {}).get("details") or {}).get("nodes") or []
+
+    def flatten(node: dict, name: str) -> dict:
+        return {
+            "name": name,
+            "resource_bytes": node.get("resourceBytes", 0),
+            "unused_bytes": node.get("unusedBytes", 0),
+            "children": [flatten(c, c.get("name", "")) for c in (node.get("children") or [])],
+        }
+
+    flat = [flatten(n, n.get("name", "")) for n in nodes]
+    flat.sort(key=lambda n: -n["resource_bytes"])
+    return flat[:limit]
+
+
 def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout: float = TIMEOUT) -> dict:
     """strategy: 'mobile' or 'desktop'. Retries on timeout and on a 5xx from
     PSI itself — its own Lighthouse run is slow and flaky enough that both
@@ -294,4 +315,5 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
             "first_contentful_paint": metric("first-contentful-paint"),
         },
         "issues": _extract_issues(audits),
+        "script_treemap": _extract_treemap(audits),
     }
