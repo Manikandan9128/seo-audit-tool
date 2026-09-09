@@ -1279,6 +1279,35 @@ def add_seo_issues_slide(
     return slide
 
 
+def _traffic_by_path(analytics: dict | None) -> tuple[dict[str, int], dict[str, int]]:
+    """One GA4-pageviews + GSC-clicks-by-path join, shared by every slide
+    that scores a page by real traffic impact (Priority Issues, Tech
+    Fixes) — was independently rebuilt in each before this (Gaps.pdf gap
+    4: "the flow doc itself admits this pipeline is being built manually,
+    four separate times"). Path is the join key since GSC's pagePath
+    dimension carries no host component."""
+    analytics = analytics or {}
+    pageviews_by_path = {
+        (p.get("path") or "").rstrip("/"): int(float(p.get("page_views", 0) or 0))
+        for p in (analytics.get("top_pages") or {}).get("rows", [])
+    }
+    clicks_by_path = {
+        urlparse(r.get("page") or "").path.rstrip("/"): int(r.get("clicks", 0) or 0)
+        for r in (analytics.get("page_clicks") or {}).get("rows", [])
+    }
+    return pageviews_by_path, clicks_by_path
+
+
+def _page_value_score(pageviews: int, clicks: int) -> int:
+    """Shared traffic-impact formula (Issue x URL x GA4 traffic x GSC
+    clicks -> one page-value number): a lost search click is lost demand,
+    weighted heavier than a pageview that could arrive via another
+    channel regardless of search ranking. Same weighting now used by both
+    Priority Issues and Tech Fixes, which previously only weighed GA4
+    pageviews and silently ignored GSC clicks entirely."""
+    return pageviews + clicks * 3
+
+
 def add_priority_issues_slide(
     prs: Presentation,
     site_audit_pages_rows: list[dict] | None,
@@ -1353,14 +1382,7 @@ def add_priority_issues_slide(
             deduped_url_issues[key] = (url, issues)
     url_issues = list(deduped_url_issues.values())
 
-    pageviews_by_path = {
-        (p.get("path") or "").rstrip("/"): int(float(p.get("page_views", 0) or 0))
-        for p in (analytics.get("top_pages") or {}).get("rows", [])
-    }
-    clicks_by_path = {
-        urlparse(r.get("page") or "").path.rstrip("/"): int(r.get("clicks", 0) or 0)
-        for r in (analytics.get("page_clicks") or {}).get("rows", [])
-    }
+    pageviews_by_path, clicks_by_path = _traffic_by_path(analytics)
     if not pageviews_by_path and not clicks_by_path:
         return None
 
@@ -1369,7 +1391,7 @@ def add_priority_issues_slide(
         path = urlparse(url).path.rstrip("/")
         pageviews = pageviews_by_path.get(path, 0)
         clicks = clicks_by_path.get(path, 0)
-        score = pageviews + clicks * 3
+        score = _page_value_score(pageviews, clicks)
         if score > 0:
             ranked.append((url, issues, pageviews, clicks, score))
     if not ranked:
@@ -1859,21 +1881,25 @@ _ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
 
 
 def _tech_fixes_scored_rows(page_audit: dict, analytics: dict | None) -> list[tuple]:
-    top_pages_by_path: dict[str, int] = {}
-    for p in (analytics or {}).get("top_pages", {}).get("rows", []) if analytics else []:
-        path = (p.get("path") or "").rstrip("/")
-        top_pages_by_path[path] = int(float(p.get("page_views", 0) or 0))
+    # Same GA4+GSC join and page-value formula as Priority Issues (see
+    # _traffic_by_path/_page_value_score) — previously this only weighed
+    # GA4 pageviews and silently ignored GSC clicks, so a fix on a page
+    # with real search clicks but few GA4 pageviews under-ranked here even
+    # though Priority Issues would score it higher.
+    pageviews_by_path, clicks_by_path = _traffic_by_path(analytics)
 
     scored_rows = []
     for page in page_audit.get("pages", []):
         path = urlparse(page.get("url", "")).path or "/"
-        page_views = top_pages_by_path.get(path.rstrip("/"), 0)
+        page_views = pageviews_by_path.get(path.rstrip("/"), 0)
+        clicks = clicks_by_path.get(path.rstrip("/"), 0)
+        score = _page_value_score(page_views, clicks)
         for issue in page.get("issues", []):
             fix = _PAGE_ISSUE_FIXES.get(issue)
             if not fix:
                 continue
             fix_text, severity, category = fix
-            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -page_views, issue, path, fix_text, page_views, category))
+            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -score, issue, path, fix_text, page_views, category))
     scored_rows.sort(key=lambda r: (r[0], r[1]))
     return scored_rows
 
