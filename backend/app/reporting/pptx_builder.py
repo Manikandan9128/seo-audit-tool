@@ -2502,7 +2502,7 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Overview")
     span = _ga4_date_span(analytics.get("date_range"))
-    source_text = f"Source: Google Analytics 4 ({span})" if span else "Source: Google Analytics 4"
+    source_text = f"Source: Google Analytics ({span})" if span else "Source: Google Analytics"
     _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), source_text, size=11, color=TEXT_MUTED)
 
     traffic = (analytics.get("traffic_overview") or {}).get("rows", [])
@@ -4434,7 +4434,7 @@ def _build_report(
         add_section_slide(prs, client_name, "Traffic & Search Performance")
         ga4_span = _ga4_date_span(analytics.get("date_range"))
         gsc_span = _gsc_date_span(analytics.get("date_range"))
-        ga4_source = f"Google Analytics 4 ({ga4_span})" if ga4_span else "Google Analytics 4"
+        ga4_source = f"Google Analytics ({ga4_span})" if ga4_span else "Google Analytics"
         gsc_source = f"Google Search Console ({gsc_span})" if gsc_span else "Google Search Console"
         if analytics.get("traffic_overview"):
             add_traffic_overview_slide(prs, analytics)
