@@ -2410,6 +2410,153 @@ def _traffic_sources_insights(
     return insights[:3]
 
 
+# Recruitment-pattern terms — a branded "careers"/"jobs" query is real
+# search demand but not commercial branded-search value (nobody searching
+# "lumberfi careers" is evaluating the product), so it has to be tagged and
+# excluded from the headline metric rather than silently inflating it.
+_RECRUITMENT_QUERY_TERMS = [
+    "career", "careers", "job", "jobs", "hiring", "employment", "vacancy", "vacancies",
+    "working at", "salary", "glassdoor", "indeed",
+]
+
+
+def _classify_branded_query(query: str, brand_tokens: set[str], relevance_terms: list[str]) -> str:
+    """One of BRAND_CORE / RECRUITMENT / PRODUCT_RELEVANT / AMBIGUOUS
+    (2026-09-09 spec) — rule-based, no AI call, since every category here
+    is a mechanical pattern check. AMBIGUOUS is the honest fallback rather
+    than forcing a guess when the query text alone isn't enough."""
+    text = (query or "").lower().strip()
+    if not text:
+        return "AMBIGUOUS"
+    if any(term in text for term in _RECRUITMENT_QUERY_TERMS):
+        return "RECRUITMENT"
+    if any(term and term.lower() in text for term in relevance_terms):
+        return "PRODUCT_RELEVANT"
+    # What's left after stripping the brand token(s) out — if nothing (or
+    # only a stray short word, e.g. a near-brand misspelling) remains, this
+    # is the brand name itself with no other intent signal.
+    remainder = text
+    for token in brand_tokens:
+        if token:
+            remainder = re.sub(rf"\b{re.escape(token)}\b", " ", remainder)
+    remainder = remainder.strip()
+    if not remainder or len(remainder.split()) <= 1:
+        return "BRAND_CORE"
+    return "AMBIGUOUS"
+
+
+def _branded_query_insights(
+    query_table: list[dict], brand_tokens: set[str], client_relevance_profile: dict
+) -> list[str]:
+    """Search Queries — Branded insights (2026-09-09 spec): classify every
+    branded query first, then report raw-vs-RECRUITMENT-excluded metrics
+    side by side — never a single blended average as the finding. Only
+    products/categories literally in client_relevance_profile are used for
+    PRODUCT_RELEVANT matching (never inferred); only queries/figures
+    literally in query_table are ever cited."""
+    if not query_table:
+        return []
+
+    relevance_terms = list(client_relevance_profile.get("products") or []) + list(
+        client_relevance_profile.get("categories") or []
+    )
+    classified = [
+        {**q, "_tag": _classify_branded_query(q.get("query", ""), brand_tokens, relevance_terms)}
+        for q in query_table
+    ]
+
+    def _totals(rows: list[dict]) -> tuple[int, int, float]:
+        clicks = sum(int(r.get("clicks", 0) or 0) for r in rows)
+        impressions = sum(int(r.get("impressions", 0) or 0) for r in rows)
+        ctr = (clicks / impressions * 100) if impressions else 0.0
+        return clicks, impressions, ctr
+
+    raw_clicks, raw_impressions, raw_ctr = _totals(classified)
+    filtered = [q for q in classified if q["_tag"] != "RECRUITMENT"]
+    filt_clicks, filt_impressions, filt_ctr = _totals(filtered)
+
+    insights = [
+        f"Raw: {raw_clicks:,} clicks / {raw_impressions:,} impressions ({raw_ctr:.1f}% CTR) across all branded queries. "
+        f"Excluding recruitment queries: {filt_clicks:,} clicks / {filt_impressions:,} impressions ({filt_ctr:.1f}% CTR)."
+    ]
+
+    recruitment = [q for q in classified if q["_tag"] == "RECRUITMENT"]
+    if recruitment:
+        top_r = max(recruitment, key=lambda q: q.get("impressions", 0))
+        r_ctr = float(top_r.get("ctr", 0) or 0) * 100
+        insights.append(
+            f"\"{top_r['query']}\" ({top_r.get('clicks', 0):,} clicks / {top_r.get('impressions', 0):,} impressions, "
+            f"{r_ctr:.1f}% CTR) is a recruitment query — job-seeker intent, not commercial branded-search value."
+        )
+
+    core_or_relevant = [q for q in classified if q["_tag"] in ("BRAND_CORE", "PRODUCT_RELEVANT")]
+    if core_or_relevant and len(insights) < 3:
+        top_c = max(core_or_relevant, key=lambda q: q.get("impressions", 0))
+        c_ctr = float(top_c.get("ctr", 0) or 0) * 100
+        weak_note = ""
+        if filt_impressions and c_ctr < filt_ctr * 0.6:
+            weak_note = f" — well below the {filt_ctr:.1f}% filtered average despite the volume"
+        insights.append(
+            f"\"{top_c['query']}\" ({top_c['_tag'].replace('_', ' ').title()}, {top_c.get('clicks', 0):,} clicks / "
+            f"{top_c.get('impressions', 0):,} impressions, {c_ctr:.1f}% CTR at position {float(top_c.get('position', 0) or 0):.1f}){weak_note}."
+        )
+
+    return insights[:3]
+
+
+def _standout_query_insight(subset: list[dict]) -> str | None:
+    """Finds ONE standout row instead of summarizing with a blended
+    average (2026-09-09 spec): either a single query dominating the
+    table's impressions/clicks, or a row that inverts expectation (the
+    best-positioned query converting far worse than the table's own
+    average, or a low-impression query outperforming everything else).
+    Real numbers only, no invented reasoning, no qualitative label without
+    a comparison basis actually computed from this same table."""
+    if not subset:
+        return None
+    total_impressions = sum(int(q.get("impressions", 0) or 0) for q in subset)
+    if not total_impressions:
+        return None
+    total_clicks = sum(int(q.get("clicks", 0) or 0) for q in subset)
+    avg_ctr = (total_clicks / total_impressions * 100) if total_impressions else 0.0
+
+    by_impressions = max(subset, key=lambda q: q.get("impressions", 0) or 0)
+    imp_share = (by_impressions.get("impressions", 0) or 0) / total_impressions * 100
+    if imp_share > 50:
+        ctr = float(by_impressions.get("ctr", 0) or 0) * 100
+        return f"One query — \"{by_impressions['query']}\" — makes up {imp_share:.0f}% of all impressions, but only converts at {ctr:.1f}% CTR."
+
+    if total_clicks:
+        by_clicks = max(subset, key=lambda q: q.get("clicks", 0) or 0)
+        click_share = (by_clicks.get("clicks", 0) or 0) / total_clicks * 100
+        if click_share > 50:
+            ctr = float(by_clicks.get("ctr", 0) or 0) * 100
+            return f"One query — \"{by_clicks['query']}\" — makes up {click_share:.0f}% of all clicks, at a {ctr:.1f}% CTR."
+
+    positioned = [q for q in subset if (q.get("clicks", 0) or 0) > 0 and q.get("position") is not None]
+    if positioned:
+        best = min(positioned, key=lambda q: q["position"])
+        best_ctr = float(best.get("ctr", 0) or 0) * 100
+        if best_ctr < avg_ctr * 0.5:
+            return (
+                f"\"{best['query']}\" ranks best in this table (position {best['position']:.1f}) but converts at only "
+                f"{best_ctr:.1f}% CTR, well below the {avg_ctr:.1f}% table average."
+            )
+
+    if len(subset) >= 3:
+        sorted_by_imp = sorted(subset, key=lambda q: q.get("impressions", 0) or 0)
+        low_pool = sorted_by_imp[: max(1, len(sorted_by_imp) // 3)]
+        best_low = max((q for q in low_pool if q.get("impressions", 0)), key=lambda q: q.get("ctr", 0) or 0, default=None)
+        if best_low:
+            low_ctr = float(best_low.get("ctr", 0) or 0) * 100
+            if low_ctr > avg_ctr * 1.5:
+                return (
+                    f"\"{best_low['query']}\" looks unimportant ({int(best_low['impressions']):,} impressions) but is "
+                    f"outperforming everything else at {low_ctr:.1f}% CTR."
+                )
+    return None
+
+
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Overview")
@@ -4432,14 +4579,28 @@ def _build_report(
                     sum(q.get("position", 0) * q.get("impressions", 0) for q in subset) / total_impressions
                     if total_impressions else 0
                 )
-                # From top_q (the rows actually drawn on the slide), not the
-                # full subset — confirmed live: the insight named a query
-                # ("lumberfy") that ranked outside the shown top-14-by-clicks
-                # rows, so it never appeared in the table underneath it.
-                best_positioned = min((q for q in top_q if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None)
-                insights = [f"Average CTR is {avg_ctr:.1f}% across {total_impressions:,} impressions — {'strong' if avg_ctr > 3 else 'below the ~3% search-average, titles/descriptions may need work'}."]
-                if best_positioned:
-                    insights.append(f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}.")
+                # 2026-09-09 spec: never a single blended average as the
+                # finding. Branded gets the classify-first pipeline
+                # (recruitment vs. core-brand vs. product-relevant, raw-vs-
+                # filtered metrics); Non-Branded gets the standout-row rule
+                # (one dominant or inverted-expectation row, not an average
+                # CTR against a made-up "~3%" benchmark like this used to
+                # state with no benchmark actually provided).
+                if title == "Search Queries — Branded":
+                    insights = _branded_query_insights(subset, brand_tokens, client_relevance_profile)
+                else:
+                    standout = _standout_query_insight(top_q)
+                    insights = [standout] if standout else []
+                if not insights:
+                    # From top_q (the rows actually drawn on the slide), not
+                    # the full subset — confirmed live: the insight named a
+                    # query ("lumberfy") that ranked outside the shown
+                    # top-14-by-clicks rows, never appeared in the table.
+                    best_positioned = min(
+                        (q for q in top_q if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None
+                    )
+                    if best_positioned:
+                        insights = [f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}."]
 
                 # Overall summary card strip (Total Clicks/Impressions/CTR/
                 # Avg. position) across the FULL branded/non-branded subset,
@@ -4480,6 +4641,14 @@ def _build_report(
                     insights=insights,
                 )
 
+            # Only products/categories literally present in the extracted
+            # Company Overview — never inferred — per the classify pipeline's
+            # own hard rule ("never infer what the client sells").
+            client_relevance_profile = {
+                "products": (company_overview or {}).get("products") or [],
+                "categories": list((company_overview or {}).get("industries") or [])
+                + list((company_overview or {}).get("solutions") or []),
+            }
             branded_queries = [q for q in queries if _is_branded(q.get("query", ""))]
             nonbranded_queries = [q for q in queries if not _is_branded(q.get("query", ""))]
             _query_table_slide("Search Queries — Branded", branded_queries)
