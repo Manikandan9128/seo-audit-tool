@@ -2547,10 +2547,85 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
             _split_text([{"label": d["label"].title(), "pct": d["pct"]} for d in (r.get("top_devices") or []) if round(d["pct"]) > 0]),
         ))
     months = breakdown.get("months")
-    top = rows_data[0]
-    insights = [
-        f"{top['channel']} is the leading channel, averaging {top['avg_sessions_month']:,} sessions/month ({top['pct_share']:.0f}% of total).",
-    ]
+
+    # Insight rules (2026-09-09 user spec): never state the biggest number
+    # as the whole finding — "X is the leading channel" is a description,
+    # not a finding. Every insight pairs a number with a quality signal
+    # (bounce rate) or cross-checks one segment against the others, since a
+    # single ~30-day window has no "change over time" to lean on for
+    # what's interesting. Never round a small share to zero. Cap 2-3
+    # bullets, ranked by usefulness.
+    def _share_text(pct: float) -> str:
+        return f"{pct:.1f}%" if pct < 1 else f"{pct:.0f}%"
+
+    insights: list[str] = []
+    used_channels: set[str] = set()
+    have_quality = bool(rows_data) and all(r.get("bounce_rate_pct") is not None for r in rows_data)
+
+    if have_quality:
+        avg_bounce = sum(r["bounce_rate_pct"] for r in rows_data) / len(rows_data)
+        top = rows_data[0]
+        top_delta = top["bounce_rate_pct"] - avg_bounce
+        if abs(top_delta) <= 5:
+            quality_note = f"bounce rate ({top['bounce_rate_pct']:.0f}%) is in line with the {avg_bounce:.0f}% average across all channels"
+        elif top_delta > 0:
+            quality_note = f"but its bounce rate ({top['bounce_rate_pct']:.0f}%) runs meaningfully above the {avg_bounce:.0f}% cross-channel average — size alone doesn't mean quality here"
+        else:
+            quality_note = f"and its bounce rate ({top['bounce_rate_pct']:.0f}%) also beats the {avg_bounce:.0f}% cross-channel average"
+        insights.append(
+            f"{top['channel']} carries {_share_text(top['pct_share'])} of sessions ({top['avg_sessions_month']:,}/month), {quality_note}."
+        )
+        used_channels.add(top["channel"])
+
+        # Cross-check: the channel whose bounce rate deviates most from the
+        # group average (excluding whichever channel bullet 1 already
+        # covered) — this is the "different from the other segments in
+        # this table" finding a size-only ranking can't surface, standing
+        # in for trend comparison on a single-period dataset.
+        deviations = sorted(
+            (r for r in rows_data if r["channel"] not in used_channels),
+            key=lambda r: abs(r["bounce_rate_pct"] - avg_bounce), reverse=True,
+        )
+        if deviations and abs(deviations[0]["bounce_rate_pct"] - avg_bounce) > 5:
+            outlier = deviations[0]
+            delta = outlier["bounce_rate_pct"] - avg_bounce
+            direction = "far above" if delta > 0 else "far below"
+            if delta > 0:
+                verdict = "worth investigating for traffic quality despite its size"
+            elif outlier["pct_share"] < 10:
+                verdict = "the most efficient channel in this table, disproportionate to its small size"
+            else:
+                verdict = "a genuine quality strength worth understanding and repeating"
+            insights.append(
+                f"{outlier['channel']} ({_share_text(outlier['pct_share'])} of sessions) has a bounce rate {direction} "
+                f"the {avg_bounce:.0f}% cross-channel average ({outlier['bounce_rate_pct']:.0f}%) — {verdict}."
+            )
+            used_channels.add(outlier["channel"])
+    elif rows_data:
+        # No bounce-rate data (older cached breakdown result) — still frame
+        # as a comparison between segments, never a bare size statement.
+        top = rows_data[0]
+        used_channels.add(top["channel"])
+        second = next((r for r in rows_data if r["channel"] not in used_channels), None)
+        if second:
+            insights.append(
+                f"{top['channel']} ({_share_text(top['pct_share'])} of sessions) leads {second['channel']} "
+                f"({_share_text(second['pct_share'])}) by {top['pct_share'] - second['pct_share']:.0f} points."
+            )
+            used_channels.add(second["channel"])
+
+    # A genuinely small but real channel (e.g. an emerging/new initiative)
+    # — actual decimal, never rounded away to "0%" — only when there's
+    # still room in the cap and it isn't already covered above.
+    if len(insights) < 3:
+        small = [r for r in rows_data if r["channel"] not in used_channels and 0 < r["pct_share"] < 1]
+        if small:
+            s = max(small, key=lambda r: r["pct_share"])
+            insights.append(
+                f"{s['channel']} is a small but real channel at {s['pct_share']:.1f}% of sessions "
+                f"({s['avg_sessions_month']:,}/month) — worth tracking, not yet material."
+            )
+
     if months:
         insights.append(f"Figures are monthly averages across the last {months:.1f} month(s) of tracked data.")
     if used_abbreviations:

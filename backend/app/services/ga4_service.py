@@ -368,16 +368,27 @@ def get_traffic_channel_breakdown(
     months = _months_in_range(start_date, end_date)
 
     def _channel_totals_query():
+        # bounceRate added as the quality signal this breakdown needs to
+        # pair with each channel's size — a 30-day-only report has no
+        # trend to lean on for "what's interesting," so every insight has
+        # to come from comparing segments within this one period instead
+        # (see add_traffic_channel_breakdown_slide). Same call, no extra
+        # API round-trip.
         client = _data_client(creds)
         body = {
             "dimensions": [{"name": "sessionDefaultChannelGroup"}],
-            "metrics": [{"name": "sessions"}, {"name": "totalUsers"}],
+            "metrics": [{"name": "sessions"}, {"name": "totalUsers"}, {"name": "bounceRate"}],
             "dateRanges": [{"startDate": start_date, "endDate": end_date}],
             "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
         }
         response = client.properties().runReport(property=property_id, body=body).execute()
         return [
-            (row["dimensionValues"][0]["value"], int(row["metricValues"][0]["value"]), int(row["metricValues"][1]["value"]))
+            (
+                row["dimensionValues"][0]["value"],
+                int(row["metricValues"][0]["value"]),
+                int(row["metricValues"][1]["value"]),
+                float(row["metricValues"][2]["value"]),
+            )
             for row in response.get("rows", [])
         ]
 
@@ -393,7 +404,7 @@ def get_traffic_channel_breakdown(
         channel_totals = totals_future.result()
         countries_by_channel = countries_future.result()
         devices_by_channel = devices_future.result()
-    total_sessions = sum(s for _, s, _ in channel_totals)
+    total_sessions = sum(s for _, s, _, _ in channel_totals)
 
     rows = [
         {
@@ -401,10 +412,17 @@ def get_traffic_channel_breakdown(
             "avg_sessions_month": round(sessions / months),
             "avg_users_month": round(users / months),
             "pct_share": round(100 * sessions / total_sessions, 1) if total_sessions else 0,
+            # bounceRate is a 0-1 fraction from the API, stored as a 0-100
+            # percentage here so pptx_builder never has to remember which
+            # convention this field uses (other GA4 rate fields in this
+            # codebase are stored raw and *100'd at render time instead —
+            # this one's converted here since it's brand new, not touching
+            # an existing convention).
+            "bounce_rate_pct": round(bounce_rate * 100, 1),
             "top_countries": countries_by_channel.get(channel, []),
             "top_devices": devices_by_channel.get(channel, []),
         }
-        for channel, sessions, users in channel_totals
+        for channel, sessions, users, bounce_rate in channel_totals
     ]
     return {"rows": rows, "months": round(months, 1)}
 
