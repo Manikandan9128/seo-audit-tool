@@ -875,19 +875,20 @@ def add_site_health_slide(
 
 
 def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict] | None):
-    """Flat directory-level table — Directory | URLs | Issues, one row per
-    top-level directory, NO sub-directory nesting — matching Semrush's own
-    "Site Structure" widget exactly as it appears in the client's own
-    reference manual report (BEST audit deck, page 6): a plain table, not
-    a hierarchy tree or indented list. Reverted back to this 2026-09-09
-    after two earlier hierarchy-shaped attempts (a node/connector diagram,
-    then an indented list) — the diagram version's sub-directory rows also
-    only ever showed the top 2 children per parent, which real per-URL
-    counts don't sum anywhere close to the parent total (confirmed live:
-    /ca showed 439 URLs but its 2 shown "children" summed to ~123) — a
-    flat single-level table has no such parent/child sum to mislead with.
-    Derived entirely from Semrush Site Audit's per-page export (page_url,
-    issues) already parsed for the SEO Issues / Tech Fixes slides — no new
+    """Flat directory-level table — Directory | URLs, one row per top-level
+    directory, NO sub-directory nesting — matching Semrush's own "Site
+    Structure" widget as it appears in the client's own reference manual
+    report (BEST audit deck, page 6): a plain table, not a hierarchy tree
+    or indented list. Reverted back to this 2026-09-09 after two earlier
+    hierarchy-shaped attempts (a node/connector diagram, then an indented
+    list) — the diagram version's sub-directory rows also only ever showed
+    the top 2 children per parent, which real per-URL counts don't sum
+    anywhere close to the parent total (confirmed live: /ca showed 439
+    URLs but its 2 shown "children" summed to ~123) — a flat single-level
+    table has no such parent/child sum to mislead with. URLs-only, no
+    Issues column, per explicit user request. Derived entirely from
+    Semrush Site Audit's per-page export (page_url) already parsed for the
+    SEO Issues / Tech Fixes slides — no new
     Semrush upload needed, just a grouping."""
     if not site_audit_pages_rows:
         return None
@@ -915,7 +916,6 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     domain = domain_counts.most_common(1)[0][0]
 
     top_counts: dict[str, int] = {}
-    top_issues: dict[str, int] = {}
     for r in site_audit_pages_rows:
         parsed = urlparse(r.get("page_url") or "")
         if parsed.netloc != domain:
@@ -930,11 +930,6 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
         else:
             directory = f"/{segments[0]}"
         top_counts[directory] = top_counts.get(directory, 0) + 1
-        try:
-            issues = int(float(r.get("issues") or 0))
-        except (TypeError, ValueError):
-            issues = 0
-        top_issues[directory] = top_issues.get(directory, 0) + issues
 
     # A first path segment with exactly 1 page under it isn't a real
     # section/folder a client would recognize — it's just that one page's
@@ -958,25 +953,18 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     # with the earlier one for the same crawl.
     canonical = _canonical_page_totals(site_audit_pages_rows, None)
     site_total = canonical["total"] if canonical else sum(top_counts.values())
-    site_issues = sum(
-        int(float(r.get("issues") or 0) or 0)
-        for r in site_audit_pages_rows
-        if urlparse(r.get("page_url") or "").netloc == domain
-    )
 
     ROW_CAP = 12
     shown = ranked[:ROW_CAP - 1]  # -1 to leave room for the domain row
-    rows = [(domain, f"{site_total:,}", f"{site_issues:,}")] + [
-        (directory, f"{count:,}", f"{top_issues.get(directory, 0):,}") for directory, count in shown
-    ]
+    rows = [(domain, f"{site_total:,}")] + [(directory, f"{count:,}") for directory, count in shown]
 
     insights = [f"{site_total:,} total crawled URLs across {len(ranked)} top-level director{'y' if len(ranked) == 1 else 'ies'}."]
     if len(ranked) > len(shown):
         insights.append(f"Showing the top {len(shown)} directories by URL count — {len(ranked) - len(shown)} more not shown here.")
 
     _draw_table(
-        slide, ["Directory", "URLs", "Issues"], rows, Inches(1.2),
-        col_widths=[8.1, 2.0, 2.0], row_cap=ROW_CAP, insights=insights,
+        slide, ["Directory", "URLs"], rows, Inches(1.2),
+        col_widths=[9.1, 3.0], row_cap=ROW_CAP, insights=insights,
     )
     return slide
 
