@@ -258,6 +258,30 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     avg_engagement_rate = statistics.mean(engagement_by_date.values()) if engagement_by_date else None
     spike_engagement_rate = engagement_by_date.get(spike_date)
 
+    # Bounce rate — same daily_rows, same zero-extra-call pattern as
+    # engagement rate above. This is the one number the slide was missing
+    # to answer "was this good traffic or noise" instead of just "traffic
+    # went up": a spike with a normal bounce rate is a real volume event, a
+    # spike with a much higher bounce rate is likely low-quality/bot
+    # traffic even though sessions look great.
+    bounce_by_date = {
+        r["date"]: float(r["bounce_rate"]) for r in daily_rows if r.get("date") and r.get("bounce_rate") not in (None, "")
+    }
+    avg_bounce_rate = statistics.mean(bounce_by_date.values()) if bounce_by_date else None
+    spike_bounce_rate = bounce_by_date.get(spike_date)
+
+    # Average session duration (seconds) = engagement_duration / sessions
+    # per day — GA4 doesn't expose "average session duration" as its own
+    # per-day metric in get_traffic_overview, but it's derivable from the
+    # two totals already pulled there, so no extra API call here either.
+    duration_by_date: dict[str, float] = {}
+    for r in daily_rows:
+        d, dur, s = r.get("date"), r.get("engagement_duration"), r.get("sessions")
+        if d and dur not in (None, "") and s not in (None, "") and float(s) > 0:
+            duration_by_date[d] = float(dur) / float(s)
+    avg_session_duration_sec = statistics.mean(duration_by_date.values()) if duration_by_date else None
+    spike_session_duration_sec = duration_by_date.get(spike_date)
+
     all_dates = [d for d, _ in days]
     period_start = f"{min(all_dates)[0:4]}-{min(all_dates)[4:6]}-{min(all_dates)[6:8]}"
     period_end = f"{max(all_dates)[0:4]}-{max(all_dates)[4:6]}-{max(all_dates)[6:8]}"
@@ -287,6 +311,10 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
         "spike_engagement_rate": spike_engagement_rate,
         "avg_key_events": avg_key_events,
         "spike_key_events": spike_key_events,
+        "avg_bounce_rate": avg_bounce_rate,
+        "spike_bounce_rate": spike_bounce_rate,
+        "avg_session_duration_sec": avg_session_duration_sec,
+        "spike_session_duration_sec": spike_session_duration_sec,
     }
 
 

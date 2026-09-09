@@ -2474,6 +2474,33 @@ def _traffic_spike_hypothesis(spike: dict) -> list[str]:
         ke_verdict = "rose with it" if spike_ke >= avg_ke * 1.1 else ("stayed flat" if spike_ke >= avg_ke * 0.9 else "did not follow")
         lines.append(f"Key events that day: {spike_ke:.0f} vs a {avg_ke:.0f}/day average — {ke_verdict}.")
 
+    # Bounce rate — the number that answers "was this good traffic or
+    # noise" directly, added as one line alongside the engagement/key-event
+    # evidence above without touching that existing logic. GA4's bounceRate
+    # metric is a 0-1 fraction, same convention as engagementRate above, so
+    # *100 for both display and the "~5 points" comparison threshold.
+    # Classification + reasoning stays one sentence, per spec, so it can't
+    # push an existing line out of _insights_strip's 5-line cap.
+    avg_bounce, spike_bounce = spike.get("avg_bounce_rate"), spike.get("spike_bounce_rate")
+    if avg_bounce is not None and spike_bounce is not None:
+        avg_bounce_pct, spike_bounce_pct = avg_bounce * 100, spike_bounce * 100
+        duration_note = ""
+        avg_dur, spike_dur = spike.get("avg_session_duration_sec"), spike.get("spike_session_duration_sec")
+        if avg_dur is not None and spike_dur is not None:
+            duration_note = f", avg. session duration {spike_dur:.0f}s vs {avg_dur:.0f}s average"
+
+        diff = spike_bounce_pct - avg_bounce_pct
+        if abs(diff) <= 5:
+            label, reason = "SAME PATTERN", "likely a real volume event, not a quality issue"
+        elif diff < 0:
+            label, reason = "MORE ENGAGED THAN USUAL", "worth identifying and repeating the driver"
+        else:
+            label, reason = "LESS ENGAGED THAN USUAL", "likely low-quality/bot traffic, treat with caution"
+        lines.append(
+            f"Bounce rate that day was {spike_bounce_pct:.0f}% vs a {avg_bounce_pct:.0f}% period average{duration_note} "
+            f"— {label}: {reason}."
+        )
+
     # The hypothesis itself: only stated when there's enough evidence to
     # actually distinguish "real demand" from "low-quality traffic" —
     # engagement AND key events both present and pointing the same
