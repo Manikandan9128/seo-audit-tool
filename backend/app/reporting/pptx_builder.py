@@ -756,7 +756,49 @@ def _issue_row(slide, left, top, width, text, severity="warn"):
 _CRAWLED_PAGE_CATEGORIES = ["Blocked", "Redirect", "Have issues", "Broken", "Healthy"]
 
 
-def add_site_health_slide(prs: Presentation, audit: dict, site_audit_overview: dict | None = None):
+def _canonical_page_totals(site_audit_pages_rows: list[dict] | None, site_audit_overview: dict | None) -> dict | None:
+    """One 'how many pages' definition, computed once and reused by every
+    slide that shows a page-count figure. Previously each slide picked its
+    own number (Crawled Pages export row count vs. Site Health overview's
+    own rollup vs. a manual per-slide tally) — the exact 3-conflicting-
+    totals confusion the manual analyst process flagged ("check the issues
+    tab and count the unique URLs... because this is the confusing one").
+    Prefers the per-URL Crawled Pages export (real row-per-page data, so it
+    can also yield a true unique-affected-URL count); falls back to the
+    Site Health overview's own rolled-up total when only that's uploaded."""
+    if site_audit_pages_rows:
+        total_urls, issue_urls = set(), set()
+        for r in site_audit_pages_rows:
+            url = r.get("page_url")
+            if not url:
+                continue
+            total_urls.add(url)
+            try:
+                has_issues = float(r.get("issues") or 0) > 0
+            except (TypeError, ValueError):
+                has_issues = False
+            if has_issues:
+                issue_urls.add(url)
+        return {
+            "total": len(total_urls),
+            "with_issues": len(issue_urls),
+            "source": "Semrush Site Audit — Crawled Pages export",
+        }
+    if site_audit_overview and site_audit_overview.get("pages_total"):
+        return {
+            "total": site_audit_overview["pages_total"],
+            "with_issues": None,
+            "source": "Semrush Site Audit — Site Health overview",
+        }
+    return None
+
+
+def add_site_health_slide(
+    prs: Presentation,
+    audit: dict,
+    site_audit_overview: dict | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
+):
     slide = _blank_slide(prs)
     _content_header(slide, "Understanding Current Scenario")
     if site_audit_overview and site_audit_overview.get("export_date"):
@@ -768,11 +810,13 @@ def add_site_health_slide(prs: Presentation, audit: dict, site_audit_overview: d
     card1 = _card(slide, Inches(0.6), Inches(1.2), Inches(3.6), Inches(2.6))
     _textbox(slide, Inches(0.8), Inches(1.35), Inches(3), Inches(0.4), "Crawled Pages", size=15, bold=True)
 
+    page_totals = _canonical_page_totals(site_audit_pages_rows, site_audit_overview)
     if site_audit_overview:
         health_pct = site_audit_overview.get("site_health_pct")
+        crawled_display = f"{page_totals['total']:,}" if page_totals else "—"
         _textbox(
             slide, Inches(0.8), Inches(1.68), Inches(2.5), Inches(0.5),
-            str(site_audit_overview.get("pages_total", "—")), size=26, bold=True, color=_accent(),
+            crawled_display, size=26, bold=True, color=_accent(),
         )
         category_colors = {
             "blocked": TEXT_MUTED,
@@ -913,7 +957,13 @@ def add_site_structure_slide(prs: Presentation, site_audit_pages_rows: list[dict
     max_y = Inches(6.9)
     y = Inches(1.15)
 
-    site_total = sum(top_counts.values())
+    # Same canonical total as the Site Health slide's "Crawled Pages" card
+    # (deduped unique URLs, not just the sum of directory buckets below —
+    # those exclude bare "/"-root and single-page/WP-archive URLs folded
+    # elsewhere) so this slide's header figure never quietly disagrees with
+    # the earlier one for the same crawl.
+    canonical = _canonical_page_totals(site_audit_pages_rows, None)
+    site_total = canonical["total"] if canonical else sum(top_counts.values())
     _textbox(slide, Inches(0.7), y, Inches(9), row_h, domain, size=15, bold=True, color=TEXT_DARK)
     _textbox(slide, Inches(9.7), y, Inches(1.9), row_h, f"{site_total:,} URLs", size=12, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
     y += row_h
@@ -1149,9 +1199,29 @@ def add_tech_stack_slide(prs: Presentation, tech_stack: dict):
     return slide
 
 
-def add_seo_issues_slide(prs: Presentation, audit: dict, page_audit: dict | None, site_audit_issues: list[dict] | None = None):
+def add_seo_issues_slide(
+    prs: Presentation,
+    audit: dict,
+    page_audit: dict | None,
+    site_audit_issues: list[dict] | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
+):
     slide = _blank_slide(prs)
     _content_header(slide, "SEO Issues")
+
+    # Consolidated unique-URL count — replaces the manual "check the issues
+    # tab and count the unique URLs... because this is the confusing one"
+    # step: one row per URL in the Crawled Pages export already carries its
+    # own issue count, so a real dedup'd affected-URL total is a straight
+    # read, not a per-issue-type sum (which double-counts a page hit by
+    # more than one issue type).
+    page_totals = _canonical_page_totals(site_audit_pages_rows, None)
+    if page_totals and page_totals["with_issues"] is not None:
+        _textbox(
+            slide, Inches(8.0), Inches(0.3), Inches(4.7), Inches(0.4),
+            f"{page_totals['with_issues']:,} of {page_totals['total']:,} crawled pages have at least one issue",
+            size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT,
+        )
 
     if site_audit_issues:
         # Semrush Site Audit's own issue-type rollup — a real full-site crawl
@@ -3899,10 +3969,10 @@ def _build_report(
             add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
             add_script_treemap_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
-            add_site_health_slide(prs, site_audit, site_audit_overview)
+            add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
-            add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues)
+            add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows)
             add_priority_issues_slide(prs, site_audit_pages_rows, page_audit, analytics)
             add_tech_fixes_slide(prs, page_audit, analytics)
             if schema_validation and schema_validation.get("total_pages"):
