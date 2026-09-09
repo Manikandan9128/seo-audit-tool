@@ -26,7 +26,11 @@ HTML_TECH_HINTS = [
     (r"wp-content|wp-includes", "WordPress", "cms"),
     (r"cdn\.shopify\.com|Shopify\.theme", "Shopify", "cms"),
     (r"static\.wixstatic\.com|wix\.com", "Wix", "cms"),
-    (r"webflow\.js|webflow\.com", "Webflow", "cms"),
+    # webflow\.js alone misses modern Webflow's hashed bundle chunks
+    # (e.g. "webflow.schunk.<hash>.js" — no literal "webflow.js" substring).
+    # data-wf-site/data-wf-page is the platform's own stable marker, always
+    # injected on <html>, independent of whatever the JS bundle is named.
+    (r"webflow\.(js|schunk)|webflow\.com|data-wf-site|data-wf-page", "Webflow", "cms"),
     (r"squarespace\.com|static1\.squarespace", "Squarespace", "cms"),
     (r"__NEXT_DATA__|_next/static", "Next.js", "framework"),
     (r"data-reactroot|react-dom", "React", "framework"),
