@@ -465,50 +465,6 @@ def add_pagespeed_slide(prs: Presentation, mobile: dict | None, desktop: dict | 
     return slide
 
 
-def add_pagespeed_issues_slide(prs: Presentation, mobile: dict | None, desktop: dict | None):
-    """The score-ring slide above says *how bad* PageSpeed is; this says
-    *why* — the actual Lighthouse audit failures (render-blocking resources,
-    unoptimized images, unused JS, etc), same ones PSI's own dashboard lists
-    under "Opportunities"/"Diagnostics", instead of just a bare score."""
-    col_widths = [5.3, 1.3, 5.5]
-    rows = []
-    for label, result in (("Mobile", mobile), ("Desktop", desktop)):
-        for issue in (result or {}).get("issues", []):
-            rows.append((issue["title"], label, issue.get("impact") or "—"))
-    if not rows:
-        return None
-
-    rows.sort(key=lambda r: r[1])  # group by strategy so Mobile/Desktop aren't interleaved
-    insights = []
-    worst = max(
-        (issue for result in (mobile, desktop) if result for issue in result.get("issues", [])),
-        key=lambda i: i["savings_ms"], default=None,
-    )
-    if worst and worst["savings_ms"]:
-        insights.append(f"Biggest opportunity: \"{worst['title']}\" — {worst['impact']}.")
-    insights.append(f"{len(rows)} PageSpeed issue(s) found across Mobile/Desktop Lighthouse audits.")
-
-    # Impact text is a Lighthouse audit description — can run 100-250+
-    # chars. Single-line + no wrap (the old behavior) let PowerPoint spill
-    # it past the cell into the next column, or a hard [:140] slice at the
-    # data layer cut it mid-word with no ellipsis. Wrapped to 3 lines +
-    # taller rows (matching Priority Issues' fix for the same class of bug)
-    # plus a matching _truncate_cell so any overflow past those 3 lines
-    # ends in a real ellipsis instead of PowerPoint growing the row past
-    # what row_height reserved for it.
-    ROW_HEIGHT = 0.6
-    rows = [
-        (_truncate_cell(title, col_widths[0]), where, _truncate_cell(impact, col_widths[2], max_lines=3))
-        for title, where, impact in rows
-    ]
-
-    return _table_slide(
-        prs, "Website Performance — Issue Details", ["Issue", "Where", "Impact"], rows,
-        col_widths=col_widths, source="Google PageSpeed Insights", insights=insights,
-        row_height=ROW_HEIGHT, wrap_cols={2},
-    )
-
-
 def _fmt_metric_value(metric_id: str, value: float) -> str:
     if metric_id == "cumulative-layout-shift":
         return f"{value:.2f}"
@@ -2058,10 +2014,12 @@ def add_tech_fixes_slide(
     same severity are broken by traffic — a fix on a page real visitors
     hit sorts above the same-severity fix on a page nobody visits — and the
     single highest-traffic affected page gets called out as an insight.
-    Split into two slides (Technical vs SEO issues, see _PAGE_ISSUE_FIXES'
-    category field) per client request — was one mixed list before. A
-    third "Additional Pages" slide covers the rest of Semrush's full
-    crawl (site_audit_pages_rows) beyond our own ~20-page sample — see
+    "Tech Fixes — SEO Issues" removed 2026-09-09 per user request —
+    redundant with the main SEO Issues slide's Errors/Warnings, which
+    already covers SEO-category issues site-wide. Technical Issues stays
+    its own slide (see _PAGE_ISSUE_FIXES' category field). A third
+    "Additional Pages" slide covers the rest of Semrush's full crawl
+    (site_audit_pages_rows) beyond our own ~20-page sample — see
     _tech_fixes_scored_rows for why those rows can't get a named Fix.
     Named Issue/Fix rows still come from our own crawl — Semrush's per-page
     x per-issue-type matrix export (mega_export.csv) isn't parsed at all
@@ -2076,11 +2034,9 @@ def add_tech_fixes_slide(
         return []
 
     technical_rows = [r for r in scored_rows if r[6] == "technical"]
-    seo_rows = [r for r in scored_rows if r[6] == "seo"]
     other_rows = [r for r in scored_rows if r[6] == "other"]
     slides = [
         _tech_fixes_category_slide(prs, "Tech Fixes — Technical Issues", technical_rows),
-        _tech_fixes_category_slide(prs, "Tech Fixes — SEO Issues", seo_rows),
         _tech_fixes_category_slide(prs, "Tech Fixes — Additional Pages", other_rows, source="Semrush Site Audit"),
     ]
     return [s for s in slides if s]
@@ -4441,9 +4397,8 @@ def _build_report(
         if psi_mobile or psi_desktop:
             add_pagespeed_slide(prs, psi_mobile, psi_desktop)
             add_pagespeed_score_breakdown_slide(prs, psi_mobile, psi_desktop)
-            add_pagespeed_script_weight_slide(prs, psi_mobile, psi_desktop)
-            add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
             add_script_treemap_slide(prs, psi_mobile, psi_desktop, website_url)
+            add_pagespeed_script_weight_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
             add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
             if site_audit_pages_rows:
