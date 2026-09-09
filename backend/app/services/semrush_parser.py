@@ -693,6 +693,32 @@ _OVERVIEW_TREND_METRICS = {
 }
 
 
+# Semrush's Overview Trend export has used both YYYY-MM-DD and DD-MM-YYYY
+# date-column headers on real files (confirmed: a 2026-08-28 export used
+# ISO "2026-08-27", a 2026-09-08 export for a different client used
+# "10-09-2024" — locale/regional export-setting dependent, not a fixed
+# format). A file using the un-recognized format previously matched zero
+# date columns, fell through _parse_overview_trend_df's own check as if it
+# weren't an Overview Trend file at all, then failed every other type check
+# in detect_import_type too — surfacing as "unknown file type" with no clue
+# why (confirmed live: a real ebacon.com upload hit exactly this).
+_DATE_COL_PATTERNS = [
+    re.compile(r"^(?P<y>\d{4})-(?P<mo>\d{2})-(?P<d>\d{2})$"),  # ISO: YYYY-MM-DD
+    re.compile(r"^(?P<d>\d{2})-(?P<mo>\d{2})-(?P<y>\d{4})$"),  # DD-MM-YYYY
+]
+
+
+def _parse_date_col(col) -> tuple[str, str] | None:
+    """Returns (iso_date, original_column_label) for a column header that
+    looks like a per-day trend date in either format above, else None."""
+    text = str(col).strip()
+    for pattern in _DATE_COL_PATTERNS:
+        m = pattern.match(text)
+        if m:
+            return f"{m.group('y')}-{m.group('mo')}-{m.group('d')}", text
+    return None
+
+
 def _parse_overview_trend_df(df: pd.DataFrame) -> dict | None:
     """Semrush's "Overview Trend" CSV export — same core metrics as Domain
     Overview, but with an explicit Database column per metric row (e.g.
@@ -710,10 +736,15 @@ def _parse_overview_trend_df(df: pd.DataFrame) -> dict | None:
     cols = {c.lower().strip(): c for c in df.columns}
     if not {"target", "metric", "database"} <= set(cols):
         return None
-    date_cols = [c for c in df.columns if re.match(r"^\d{4}-\d{2}-\d{2}$", str(c).strip())]
-    if not date_cols:
+    # Map iso-date -> original column label so "most recent" is picked by
+    # real chronological order (an ISO-keyed sort), not a raw string sort —
+    # string-sorting DD-MM-YYYY labels doesn't give chronological order
+    # ("01-03-2025" < "10-09-2024" alphabetically despite being later).
+    date_col_by_iso = dict(filter(None, (_parse_date_col(c) for c in df.columns)))
+    if not date_col_by_iso:
         return None
-    latest_col = sorted(date_cols)[-1]
+    latest_iso = sorted(date_col_by_iso)[-1]
+    latest_col = date_col_by_iso[latest_iso]
 
     target_col, metric_col, database_col = cols["target"], cols["metric"], cols["database"]
     if df.empty:
@@ -721,7 +752,7 @@ def _parse_overview_trend_df(df: pd.DataFrame) -> dict | None:
     domain = str(df[target_col].iloc[0]).strip()
     database = str(df[database_col].iloc[0]).strip()
 
-    result = {"domain": domain, "database": database, "trend_date": str(latest_col).strip()}
+    result = {"domain": domain, "database": database, "trend_date": latest_iso}
     for _, row in df.iterrows():
         field = _OVERVIEW_TREND_METRICS.get(str(row[metric_col]).strip().lower())
         if not field:
