@@ -1,9 +1,13 @@
 import math
+import re
 from urllib.parse import urlparse
 
 import httpx
 
 from app.config import settings
+
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
 
 PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 # Mobile Lighthouse runs simulate network/CPU throttling and routinely take
@@ -196,6 +200,15 @@ def _extract_script_weight(audits: dict, site_url: str, limit: int = 5) -> dict 
     }
 
 
+def _clean_lighthouse_text(text: str) -> str:
+    """Lighthouse audit descriptions carry raw Markdown (`[Learn more](url)`,
+    `` `offsetWidth` ``) meant for their own web dashboard — rendered
+    verbatim into a slide it shows as literal brackets/parens/backticks
+    instead of prose. Strips both, keeping the link's visible label."""
+    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
+    return _BACKTICK_RE.sub(r"\1", text)
+
+
 def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
     """Real Lighthouse audits.<id> the PSI dashboard itself lists under
     "Opportunities"/"Diagnostics" — failing (score < 0.9), scored
@@ -214,7 +227,7 @@ def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
         savings_ms = ((audit.get("details") or {}).get("overallSavingsMs")) or 0
         issues.append({
             "title": audit.get("title", audit_id),
-            "impact": audit.get("displayValue") or audit.get("description", "")[:140],
+            "impact": audit.get("displayValue") or _clean_lighthouse_text(audit.get("description", "")),
             "savings_ms": savings_ms,
             "score": score,
         })

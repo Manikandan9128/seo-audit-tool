@@ -470,6 +470,7 @@ def add_pagespeed_issues_slide(prs: Presentation, mobile: dict | None, desktop: 
     *why* — the actual Lighthouse audit failures (render-blocking resources,
     unoptimized images, unused JS, etc), same ones PSI's own dashboard lists
     under "Opportunities"/"Diagnostics", instead of just a bare score."""
+    col_widths = [5.3, 1.3, 5.5]
     rows = []
     for label, result in (("Mobile", mobile), ("Desktop", desktop)):
         for issue in (result or {}).get("issues", []):
@@ -487,9 +488,24 @@ def add_pagespeed_issues_slide(prs: Presentation, mobile: dict | None, desktop: 
         insights.append(f"Biggest opportunity: \"{worst['title']}\" — {worst['impact']}.")
     insights.append(f"{len(rows)} PageSpeed issue(s) found across Mobile/Desktop Lighthouse audits.")
 
+    # Impact text is a Lighthouse audit description — can run 100-250+
+    # chars. Single-line + no wrap (the old behavior) let PowerPoint spill
+    # it past the cell into the next column, or a hard [:140] slice at the
+    # data layer cut it mid-word with no ellipsis. Wrapped to 3 lines +
+    # taller rows (matching Priority Issues' fix for the same class of bug)
+    # plus a matching _truncate_cell so any overflow past those 3 lines
+    # ends in a real ellipsis instead of PowerPoint growing the row past
+    # what row_height reserved for it.
+    ROW_HEIGHT = 0.6
+    rows = [
+        (_truncate_cell(title, col_widths[0]), where, _truncate_cell(impact, col_widths[2], max_lines=3))
+        for title, where, impact in rows
+    ]
+
     return _table_slide(
         prs, "Website Performance — Issue Details", ["Issue", "Where", "Impact"], rows,
-        col_widths=[5.3, 1.3, 5.5], source="Google PageSpeed Insights", insights=insights,
+        col_widths=col_widths, source="Google PageSpeed Insights", insights=insights,
+        row_height=ROW_HEIGHT, wrap_cols={2},
     )
 
 
