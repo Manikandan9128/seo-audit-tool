@@ -4352,12 +4352,17 @@ def _build_report(
             # Sorted by sessions and capped BEFORE anything below reads from
             # it — every insight below names a channel by its exact string,
             # so it must only ever pick from the same rows the table
-            # actually renders. Previously insights scanned the full,
-            # unsorted `sources` list while the table showed an arbitrary
-            # (unsorted) first-14 slice of it — confirmed live: the return-
-            # rate insight named a channel ("Cross-network") that wasn't
-            # even one of the 14 rows on the slide.
-            shown = sorted(sources, key=lambda s: float(s.get("sessions", 0) or 0), reverse=True)[:14]
+            # actually renders. ROW_CAP must match _table_slide's own
+            # row_cap for THIS call, not just be "a" cap — confirmed live
+            # 2026-09-09: this was capped at 14 while _draw_table's default
+            # row_cap silently drops to 9 whenever insights are passed
+            # (`row_cap = 9 if insights else 14`), so an insight could
+            # still name a channel (e.g. "Cross-network") ranked #10-14
+            # that never actually made it onto the visible 9-row table.
+            # Passed explicitly to _table_slide below too, so this can't
+            # drift out of sync with _draw_table's default again.
+            ROW_CAP = 9
+            shown = sorted(sources, key=lambda s: float(s.get("sessions", 0) or 0), reverse=True)[:ROW_CAP]
             rows = [
                 (
                     s["channel"],
@@ -4378,7 +4383,7 @@ def _build_report(
             insights = _traffic_sources_insights(shown, total_sessions)
             _table_slide(
                 prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
-                col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights,
+                col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights, row_cap=ROW_CAP,
             )
         queries = (analytics.get("search_queries") or {}).get("rows", [])
         if queries:
