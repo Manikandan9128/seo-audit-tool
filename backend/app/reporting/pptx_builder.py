@@ -2496,7 +2496,7 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
     template section. Only called when a real spike was found (see that
     function's threshold)."""
     slide = _blank_slide(prs)
-    _content_header(slide, "Traffic Spike Analysis")
+    _content_header(slide, "Traffic Spike Analysis — Single Day")
 
     from datetime import date as _date
 
