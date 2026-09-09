@@ -493,6 +493,106 @@ def add_pagespeed_issues_slide(prs: Presentation, mobile: dict | None, desktop: 
     )
 
 
+def _fmt_metric_value(metric_id: str, value: float) -> str:
+    if metric_id == "cumulative-layout-shift":
+        return f"{value:.2f}"
+    return f"{value / 1000:.1f}s" if value >= 1000 else f"{round(value)}ms"
+
+
+def add_pagespeed_score_breakdown_slide(prs: Presentation, mobile: dict | None, desktop: dict | None):
+    """The Lighthouse Scoring Calculator, reimplemented against our own PSI
+    data: which metric is actually costing the most Performance points, and
+    what the score would become if each (or the top few) were fixed to
+    Google's 'good' threshold. Mobile is the primary table — it's usually
+    the worse and higher-traffic surface — desktop only supplies the
+    mobile-vs-desktop callout already used on the score-ring slide."""
+    primary_label, primary = ("Mobile", mobile) if mobile and mobile.get("quick_wins") else ("Desktop", desktop)
+    if not primary or not primary.get("quick_wins"):
+        return None
+
+    headers = ["Metric", "Current", "Score", "Good Threshold", "If Fixed", "Score Impact"]
+    rows = []
+    for w in primary["quick_wins"]:
+        current = w.get("display_value") or _fmt_metric_value(w["id"], w["value"])
+        threshold = _fmt_metric_value(w["id"], w["p10"])
+        delta = w["score_delta"]
+        rows.append((
+            w["label"], current, str(w["score"]), threshold, str(w["score_if_fixed"]),
+            f"+{delta}" if delta > 0 else str(delta),
+        ))
+
+    current_score = primary["current_score"]
+    insights = [f"{primary_label} Performance score is {current_score} — breakdown ranked by which metric costs the most points."]
+    projection = primary.get("combined_projection")
+    if projection and projection["metrics"] and projection["score_after"] > projection["score_before"]:
+        metrics_str = " + ".join(projection["metrics"])
+        insights.append(
+            f"Fixing {metrics_str} alone would move Performance from {projection['score_before']} to {projection['score_after']}."
+        )
+    if mobile and desktop and mobile.get("current_score") is not None and desktop.get("current_score") is not None:
+        gap = desktop["current_score"] - mobile["current_score"]
+        if gap > 15:
+            insights.append(f"Desktop Performance ({desktop['current_score']}) outpaces Mobile ({mobile['current_score']}) by {gap} points.")
+
+    return _table_slide(
+        prs, "Website Performance — Score Breakdown", headers, rows,
+        col_widths=[2.4, 1.7, 1.3, 2.2, 1.5, 1.8], source="Google PageSpeed Insights (Lighthouse scoring model)",
+        insights=insights,
+    )
+
+
+def _fmt_kb(num_bytes: int) -> str:
+    return f"{num_bytes / 1024:.0f} KB"
+
+
+def _short_resource_name(url: str, maxlen: int = 55) -> str:
+    from urllib.parse import unquote, urlparse
+    path = unquote(urlparse(url).path)
+    name = path.rsplit("/", 1)[-1] or url
+    return name if len(name) <= maxlen else name[: maxlen - 1] + "…"
+
+
+def add_pagespeed_script_weight_slide(prs: Presentation, mobile: dict | None, desktop: dict | None):
+    """PSI's Treemap view, translated to report form: which JS files are
+    heaviest and how much of each is actually wasted (dead/unused code) —
+    named resources, not a generic 'reduce unused JavaScript' line. Mobile
+    is primary for the same reason as the score-breakdown slide."""
+    primary_label, primary = ("Mobile", mobile) if mobile and mobile.get("script_weight") else ("Desktop", desktop)
+    sw = (primary or {}).get("script_weight")
+    if not sw or not sw.get("top_waste"):
+        return None
+
+    headers = ["Script", "Size", "Wasted", "Domain"]
+    rows = []
+    for w in sw["top_waste"]:
+        rows.append((
+            _short_resource_name(w["url"]),
+            _fmt_kb(w["total_bytes"]),
+            f"{w['wasted_percent']:.0f}% ({_fmt_kb(w['wasted_bytes'])})",
+            "External" if w["is_third_party"] else "Same domain",
+        ))
+
+    # "External" only means the script loads from a different domain than the
+    # site itself — it may be a genuine third-party vendor (ads, chat, tag
+    # manager) or the client's own CDN subdomain. Deliberately not framed as
+    # vendor blame here; that call needs a human look at which domain it is.
+    insights = [
+        f"Total JS payload ({primary_label}): {_fmt_kb(sw['total_js_bytes'])}, {sw['third_party_pct']}% loads from an external domain "
+        "(own CDN or a genuine third-party vendor — worth checking which)."
+    ]
+    worst = sw["top_waste"][0]
+    insights.append(
+        f"\"{_short_resource_name(worst['url'])}\" wastes {worst['wasted_percent']:.0f}% of its {_fmt_kb(worst['total_bytes'])} "
+        "— highest single opportunity to trim dead code."
+    )
+
+    return _table_slide(
+        prs, "Website Performance — Script Weight Breakdown", headers, rows,
+        col_widths=[5.5, 1.5, 3.0, 2.0], source="Google PageSpeed Insights (Treemap + Unused JavaScript audit)",
+        insights=insights,
+    )
+
+
 def _issue_row(slide, left, top, width, text, severity="warn"):
     color = BAD if severity == "error" else WARN
     dot = slide.shapes.add_shape(9, left, top + Inches(0.06), Inches(0.12), Inches(0.12))
@@ -3711,6 +3811,8 @@ def _build_report(
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if psi_mobile or psi_desktop:
             add_pagespeed_slide(prs, psi_mobile, psi_desktop)
+            add_pagespeed_score_breakdown_slide(prs, psi_mobile, psi_desktop)
+            add_pagespeed_script_weight_slide(prs, psi_mobile, psi_desktop)
             add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
             add_site_health_slide(prs, site_audit, site_audit_overview)
