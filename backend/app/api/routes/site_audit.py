@@ -38,7 +38,7 @@ from app.services.app_settings_service import get_sheets_oauth_email
 from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.search_intent_service import generate_search_intents
 from app.services.domain_strategy_service import check_domain_strategy
-from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ux_findings, static_no_ux_pass
+from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, is_branded_or_near_brand, match_existing_page
@@ -1220,16 +1220,32 @@ def _gather_report_data(
         ux_findings_result = generate_ux_findings(client.name, client.website_url, ux_notes)
     else:
         ux_findings_result = static_no_ux_pass()
+    # ui_fixes is no longer trusted from the manual-notes path at all — no
+    # reviewer has ever actually typed notes in for a real client, so this
+    # slide sat on the static_no_ux_pass() fallback message indefinitely.
+    # Always regenerated below from a real screenshot instead (2026-09-09,
+    # user request: UI-Level Fixes must not depend on a manual pass).
+    # ux_notes-derived conversion_opportunities (a genuinely different
+    # field — turning traffic into leads, not a UI-issue list) still uses
+    # the manual path when notes exist; unaffected by this change.
+    ux_findings_result.pop("ui_fixes", None)
 
-    # Onboarding-bias breakdown no longer needs the manual QA notes above —
-    # it runs as its own vision pass over a real screenshot of the site's
-    # own homepage, so it's available even when no reviewer has done a
-    # manual walkthrough. Only run it when the manual pass above didn't
-    # already produce one (real ux_notes can describe onboarding issues
-    # too) — no point spending a second AI call for the same field.
-    if not ux_findings_result.get("onboarding_breakdown") and (settings.gemini_api_key or settings.claude_api_key):
+    # Onboarding-bias breakdown and UI-Level Fixes are both vision passes
+    # over the same real screenshot of the site's own homepage — captured
+    # once, reused for both, rather than two separate captures of the same
+    # page. Onboarding breakdown still skips itself if real ux_notes already
+    # produced one; ui_fixes never does (see above).
+    homepage_shot = None
+    if settings.gemini_api_key or settings.claude_api_key:
         homepage_shot = capture_homepage_screenshots([own_website_domain]).get(own_website_domain)
-        if homepage_shot:
+
+    if homepage_shot:
+        ui_fixes_result = generate_ui_fixes_from_screenshot(client.name, client.website_url, homepage_shot)
+        if ui_fixes_result.get("ui_fixes"):
+            ux_findings_result["ui_fixes"] = ui_fixes_result["ui_fixes"]
+            ux_findings_result["ui_fixes_source"] = "vision"
+
+        if not ux_findings_result.get("onboarding_breakdown"):
             onboarding_result = generate_onboarding_breakdown(client.name, client.website_url, homepage_shot)
             if onboarding_result.get("onboarding_breakdown"):
                 ux_findings_result["onboarding_breakdown"] = onboarding_result["onboarding_breakdown"]

@@ -3156,38 +3156,44 @@ def add_domain_strategy_slide(prs: Presentation, domain_strategy: dict):
 
 
 def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
-    """UI-Level Fixes (Issue/Where/Fix/Severity) — or, when no manual UX pass
-    was done, a single slide saying so explicitly rather than silently
-    skipping the dimension (report spec Rule 8). Conversion Opportunities
-    (from the same ux_findings dict) now render on their own "Next Steps:
-    Conversion SEO" slide instead, alongside the other Next Steps categories
-    — see add_conversion_seo_next_steps_slide.
+    """UI-Level Fixes (Issue/Where/Fix/Severity) — real ui_fixes render
+    whenever present, regardless of whether a manual UX pass was ever done
+    (2026-09-09: no longer gated on no_ux_pass_done — that flag sat this
+    slide on a permanent fallback message since no reviewer had ever
+    actually typed manual notes in for a real client; ui_fixes now comes
+    from a vision pass over a real homepage screenshot instead, see
+    ux_findings_service.generate_ui_fixes_from_screenshot). The "no pass
+    done" message only shows when there's genuinely nothing — no ui_fixes
+    from either source (report spec Rule 8: state the gap explicitly
+    rather than silently skip the dimension).
 
-    Onboarding Breakdown (below) is rendered independently of whether a
-    manual UX pass happened — it's a vision pass over a real homepage
-    screenshot (see ux_findings_service.generate_onboarding_breakdown), not
-    dependent on a reviewer typing notes in, so it can show up even when
-    UI-Level Fixes above is the "no manual pass done" fallback slide."""
+    Conversion Opportunities (from the same ux_findings dict) render on
+    their own "Next Steps: Conversion SEO" slide instead — see
+    add_conversion_seo_next_steps_slide. That field is still manual-notes-
+    only, unaffected by the ui_fixes change above.
+
+    Onboarding Breakdown (below) is its own separate vision pass over the
+    same screenshot."""
     slides = []
 
-    if ux_findings.get("no_ux_pass_done"):
+    fixes = ux_findings.get("ui_fixes") or []
+    if fixes:
+        rows = [(f.get("issue", ""), f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
+        critical = sum(1 for f in fixes if (f.get("severity") or "").lower() == "critical")
+        source = "Homepage screenshot analysis" if ux_findings.get("ui_fixes_source") == "vision" else "Manual UX walkthrough"
+        insights = [f"{len(fixes)} UI issue(s) found."]
+        if critical:
+            insights.append(f"{critical} flagged Critical — these block a purchase or signup and should be fixed first.")
+        slides.append(_table_slide(
+            prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
+            col_widths=[3.4, 2.8, 4.4, 1.5], source=source, insights=insights,
+        ))
+    elif ux_findings.get("note"):
         slide = _blank_slide(prs)
         _content_header(slide, "UI-Level Fixes")
         _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(2.0))
         _textbox(slide, Inches(0.9), Inches(1.4), Inches(11.4), Inches(1.4), ux_findings["note"], size=13)
         slides.append(slide)
-    elif not ux_findings.get("error"):
-        fixes = ux_findings.get("ui_fixes") or []
-        if fixes:
-            rows = [(f.get("issue", ""), f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
-            critical = sum(1 for f in fixes if (f.get("severity") or "").lower() == "critical")
-            insights = [f"{len(fixes)} UI issue(s) found from the manual walkthrough."]
-            if critical:
-                insights.append(f"{critical} flagged Critical — these block a purchase or signup and should be fixed first.")
-            slides.append(_table_slide(
-                prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
-                col_widths=[3.4, 2.8, 4.4, 1.5], source="Manual UX walkthrough", insights=insights,
-            ))
 
     # Onboarding-bias breakdown of the landing page — separate slide from
     # UI-Level Fixes (that one is broken/missing things; this one is "the
@@ -3732,13 +3738,11 @@ def _build_report(
     # if backlink_rows or backlink_summary or own_domain_rating is not None:
     #     add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
 
-    # Brand Citation Opportunities slide cut 2026-09-08, restored 2026-09-09
-    # once brand_citation_service's generic-word-brand disambiguation bug
-    # was fixed (teammate QA: it was returning unrelated results for a
-    # client whose brand name doubles as an ordinary word). Always called,
-    # same as before the cut — falls back to directory-recommendations-only
-    # when neither real citations nor a Wikipedia page were found.
-    add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
+    # Brand Citation Opportunities slide cut again 2026-09-09 per user
+    # request ("remove as of now, will suggest if needed") — disambiguation
+    # bug fix from earlier today (brand_citation_service, same date) is
+    # untouched and function kept below for fast re-enable.
+    # add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
 
     if analytics:
         add_section_slide(prs, client_name, "Traffic & Search Performance")
