@@ -15,6 +15,12 @@ interface PageSpeedResult {
     accessibility: number | null;
     best_practices: number | null;
   };
+  raw_scores?: {
+    performance: number | null;
+    seo: number | null;
+    accessibility: number | null;
+    best_practices: number | null;
+  };
   core_web_vitals: {
     largest_contentful_paint: string | null;
     cumulative_layout_shift: string | null;
@@ -31,11 +37,12 @@ function scoreClass(score: number | null) {
   return "bad";
 }
 
-function ScoreCard({ label, score }: { label: string; score: number | null }) {
+function ScoreCard({ label, score, raw }: { label: string; score: number | null; raw?: number | null }) {
   return (
-    <div className="metric">
+    <div className="metric" title={raw != null ? `Exact Lighthouse score: ${raw}` : undefined}>
       <div className="label">{label}</div>
       <div className={`value ${scoreClass(score)}`}>{score ?? "—"}</div>
+      {raw != null && <div style={{ fontSize: 11, opacity: 0.6 }}>{raw.toFixed(3)}</div>}
     </div>
   );
 }
@@ -59,10 +66,10 @@ export default function PageSpeedReport({
           <div key={strategy} style={{ marginBottom: 24 }}>
             <p className="eyebrow" style={{ marginBottom: 8 }}>{strategy}</p>
             <div className="metric-grid" style={{ marginBottom: 12 }}>
-              <ScoreCard label="Performance" score={result.scores.performance} />
-              <ScoreCard label="SEO" score={result.scores.seo} />
-              <ScoreCard label="Accessibility" score={result.scores.accessibility} />
-              <ScoreCard label="Best practices" score={result.scores.best_practices} />
+              <ScoreCard label="Performance" score={result.scores.performance} raw={result.raw_scores?.performance} />
+              <ScoreCard label="SEO" score={result.scores.seo} raw={result.raw_scores?.seo} />
+              <ScoreCard label="Accessibility" score={result.scores.accessibility} raw={result.raw_scores?.accessibility} />
+              <ScoreCard label="Best practices" score={result.scores.best_practices} raw={result.raw_scores?.best_practices} />
             </div>
             <table>
               <thead>
