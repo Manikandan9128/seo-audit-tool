@@ -693,30 +693,52 @@ _OVERVIEW_TREND_METRICS = {
 }
 
 
-# Semrush's Overview Trend export has used both YYYY-MM-DD and DD-MM-YYYY
-# date-column headers on real files (confirmed: a 2026-08-28 export used
-# ISO "2026-08-27", a 2026-09-08 export for a different client used
-# "10-09-2024" — locale/regional export-setting dependent, not a fixed
-# format). A file using the un-recognized format previously matched zero
-# date columns, fell through _parse_overview_trend_df's own check as if it
-# weren't an Overview Trend file at all, then failed every other type check
-# in detect_import_type too — surfacing as "unknown file type" with no clue
-# why (confirmed live: a real ebacon.com upload hit exactly this).
-_DATE_COL_PATTERNS = [
-    re.compile(r"^(?P<y>\d{4})-(?P<mo>\d{2})-(?P<d>\d{2})$"),  # ISO: YYYY-MM-DD
-    re.compile(r"^(?P<d>\d{2})-(?P<mo>\d{2})-(?P<y>\d{4})$"),  # DD-MM-YYYY
-]
+# Semrush's Overview Trend export's per-day date columns aren't a fixed
+# format — confirmed real files: a 2026-08-28 export used ISO
+# "2026-08-27", a 2026-09-08 export for a different client used
+# "10-09-2024" (DD-MM-YYYY) — locale/regional export-setting dependent. A
+# file using an un-recognized format previously matched zero date columns,
+# fell through _parse_overview_trend_df's own check as if it weren't an
+# Overview Trend file at all, then failed every other type check in
+# detect_import_type too — surfacing as "unknown file type" with no clue
+# why (confirmed live: a real ebacon.com upload hit exactly this). Rather
+# than whitelisting more fixed patterns every time Semrush's export locale
+# changes again, detect date-shaped columns generically (pandas' own date
+# parser, which already handles ISO/slash/dot/month-name/etc. variants) and
+# infer day-first vs. month-first ONCE from evidence across all the
+# columns together — a per-column guess would risk two ambiguous columns
+# ("03-04-2024") in the same file being read inconsistently.
+_DATE_COL_SHAPE_RE = re.compile(r"^\d{1,4}[-/.\s]\D{0,4}\d{1,4}[-/.\s]\D{0,4}\d{1,4}$")
 
 
-def _parse_date_col(col) -> tuple[str, str] | None:
-    """Returns (iso_date, original_column_label) for a column header that
-    looks like a per-day trend date in either format above, else None."""
-    text = str(col).strip()
-    for pattern in _DATE_COL_PATTERNS:
-        m = pattern.match(text)
-        if m:
-            return f"{m.group('y')}-{m.group('mo')}-{m.group('d')}", text
-    return None
+def _detect_date_columns(columns) -> dict[str, str]:
+    """Returns {iso_date: original_column_label} for every column header
+    that parses as a date, in whatever format this export happens to use."""
+    candidates = [str(c).strip() for c in columns]
+    date_like = [c for c in candidates if _DATE_COL_SHAPE_RE.match(c)]
+    if not date_like:
+        return {}
+
+    # A leading 4-digit group is unambiguous (ISO YYYY-...), never affects
+    # this decision. Among the rest, if any leading group exceeds 12 it
+    # can't be a month — the whole file's columns must be day-first.
+    def leading_num(s: str) -> int | None:
+        m = re.match(r"^(\d{1,4})", s)
+        return int(m.group(1)) if m else None
+
+    dayfirst = any(
+        (n := leading_num(c)) is not None and n > 12
+        for c in date_like
+        if not re.match(r"^\d{4}\b", c)
+    )
+
+    result: dict[str, str] = {}
+    for original in date_like:
+        parsed = pd.to_datetime(original, dayfirst=dayfirst, errors="coerce")
+        if pd.isna(parsed):
+            continue
+        result[parsed.strftime("%Y-%m-%d")] = original
+    return result
 
 
 def _parse_overview_trend_df(df: pd.DataFrame) -> dict | None:
@@ -740,7 +762,7 @@ def _parse_overview_trend_df(df: pd.DataFrame) -> dict | None:
     # real chronological order (an ISO-keyed sort), not a raw string sort —
     # string-sorting DD-MM-YYYY labels doesn't give chronological order
     # ("01-03-2025" < "10-09-2024" alphabetically despite being later).
-    date_col_by_iso = dict(filter(None, (_parse_date_col(c) for c in df.columns)))
+    date_col_by_iso = _detect_date_columns(df.columns)
     if not date_col_by_iso:
         return None
     latest_iso = sorted(date_col_by_iso)[-1]
