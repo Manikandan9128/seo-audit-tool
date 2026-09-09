@@ -2288,6 +2288,127 @@ def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insigh
     return slide
 
 
+def _traffic_sources_insights(
+    shown: list[dict], total_sessions: float, prior_rows: list[dict] | None = None
+) -> list[str]:
+    """Traffic Sources insight rules (2026-09-09 spec):
+
+    Step 1 — period mode is "comparison" only when real prior-period
+    channel rows are actually supplied, never assumed; otherwise "single".
+    Step 2 — every channel name/figure referenced below comes only from
+    `shown` (the exact rows the table renders, already sorted+capped by
+    the caller — same "Cross-network" bug this guards against as the
+    return-rate max below) or `prior_rows`; never introduced, rounded, or
+    recalled from elsewhere.
+    Step 3 — return rate: trust an already-given return_rate_pct field;
+    only fall back to computing returning-users / sessions when that field
+    is genuinely absent, and always verify the actual max before naming a
+    channel as "strongest."
+    Step 4/5 — up to 3 bullets: largest session share paired with a
+    quality signal (never size alone), the verified strongest return
+    rate, a size/quality mismatch flag, and — comparison mode only — the
+    single biggest period-over-period swing plus new/missing channels.
+    No trend/MoM language is used in single mode."""
+    if not shown:
+        return []
+
+    prior_by_channel = {p["channel"]: p for p in prior_rows} if prior_rows else {}
+    comparison_mode = bool(prior_by_channel)
+
+    verified = []
+    for s in shown:
+        sessions = float(s.get("sessions", 0) or 0)
+        pct_share = (sessions / total_sessions * 100) if total_sessions else 0.0
+        new_users = float(s.get("new_users", 0) or 0)
+        returning_users = float(s.get("returning_users", 0) or 0)
+        return_rate = s.get("return_rate_pct")
+        if return_rate is None and sessions:
+            return_rate = round(100 * returning_users / sessions, 1)
+        verified.append({
+            "channel": s["channel"], "sessions": sessions, "pct_share": pct_share,
+            "new_users": new_users, "returning_users": returning_users, "return_rate": return_rate,
+        })
+
+    insights: list[str] = []
+    used: set[str] = set()
+
+    # Largest share, paired with a quality signal — never size alone.
+    top = max(verified, key=lambda r: r["sessions"])
+    if top["return_rate"] is not None:
+        quality = f"a {top['return_rate']:.0f}% return rate"
+    elif top["new_users"] or top["returning_users"]:
+        quality = f"{top['new_users']:,.0f} new vs {top['returning_users']:,.0f} returning users"
+    else:
+        quality = "no new-vs-returning data available for this channel"
+    insights.append(
+        f"{top['channel']} drives the largest share of sessions ({_pct_text(top['pct_share'])} of {int(total_sessions):,} total) — {quality}."
+    )
+    used.add(top["channel"])
+
+    # Verified strongest return rate (Step 3: confirmed max, not assumed).
+    rate_ranked = sorted((r for r in verified if r["return_rate"] is not None), key=lambda r: r["return_rate"], reverse=True)
+    if rate_ranked and rate_ranked[0]["channel"] not in used and len(insights) < 3:
+        best = rate_ranked[0]
+        insights.append(
+            f"{best['channel']} has the strongest return rate at {best['return_rate']:.0f}% ({_pct_text(best['pct_share'])} of sessions)."
+        )
+        used.add(best["channel"])
+
+    # Mismatch: large share, return rate well below the group's own
+    # average (cross-segment check, not a fixed threshold).
+    if len(insights) < 3:
+        rated = [r for r in verified if r["return_rate"] is not None]
+        if len(rated) >= 2:
+            avg_rate = sum(r["return_rate"] for r in rated) / len(rated)
+            mismatched = sorted(
+                (r for r in rated if r["channel"] not in used and r["pct_share"] >= 15 and r["return_rate"] < avg_rate - 10),
+                key=lambda r: r["pct_share"], reverse=True,
+            )
+            if mismatched:
+                m = mismatched[0]
+                insights.append(
+                    f"{m['channel']} carries {_pct_text(m['pct_share'])} of sessions but only a {m['return_rate']:.0f}% return "
+                    f"rate, well below the {avg_rate:.0f}% average across channels — a size/quality mismatch worth a closer look."
+                )
+                used.add(m["channel"])
+
+    # Comparison mode only: the single biggest verified period-over-period
+    # swing (share delta), stated with real numbers from both periods —
+    # then a new/missing channel flag if room remains.
+    if comparison_mode and len(insights) < 3:
+        prior_total = sum(float(p.get("sessions", 0) or 0) for p in prior_rows) if prior_rows else 0.0
+        deltas = []
+        for r in verified:
+            if r["channel"] in used:
+                continue
+            prior = prior_by_channel.get(r["channel"])
+            if prior is None:
+                continue
+            prior_sessions = float(prior.get("sessions", 0) or 0)
+            prior_share = (prior_sessions / prior_total * 100) if prior_total else 0.0
+            deltas.append((abs(r["pct_share"] - prior_share), r, prior_share, prior_sessions))
+        if deltas:
+            deltas.sort(key=lambda d: d[0], reverse=True)
+            _, r, prior_share, prior_sessions = deltas[0]
+            direction = "up" if r["pct_share"] >= prior_share else "down"
+            insights.append(
+                f"{r['channel']} moved {direction} from {_pct_text(prior_share)} of sessions ({int(prior_sessions):,}) in the "
+                f"prior period to {_pct_text(r['pct_share'])} ({int(r['sessions']):,}) this period."
+            )
+            used.add(r["channel"])
+
+        if len(insights) < 3:
+            current_names = {v["channel"] for v in verified}
+            new_channel = next((r["channel"] for r in verified if r["channel"] not in prior_by_channel and r["channel"] not in used), None)
+            if new_channel:
+                insights.append(f"{new_channel} is new this period — no data for it in the prior period.")
+            else:
+                missing = next((c for c in prior_by_channel if c not in current_names), None)
+                if missing:
+                    insights.append(f"{missing} appeared in the prior period but has no sessions this period.")
+
+    return insights[:3]
+
 
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
@@ -2518,6 +2639,13 @@ def _abbreviate_country(name: str) -> str:
     return _COUNTRY_ABBREVIATIONS.get(name.strip().lower(), name[:3].upper())
 
 
+def _pct_text(pct: float) -> str:
+    """Never round a small share to zero — show the real decimal for
+    anything under 1%, since that's exactly where a new/emerging channel's
+    real number matters most even though it's small (2026-09-09 spec)."""
+    return f"{pct:.1f}%" if pct < 1 else f"{pct:.0f}%"
+
+
 def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, source: str | None = None):
     """Channel is the primary key (one row per channel, per report spec) —
     country and device are folded into that same row as each channel's own
@@ -2555,9 +2683,6 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
     # single ~30-day window has no "change over time" to lean on for
     # what's interesting. Never round a small share to zero. Cap 2-3
     # bullets, ranked by usefulness.
-    def _share_text(pct: float) -> str:
-        return f"{pct:.1f}%" if pct < 1 else f"{pct:.0f}%"
-
     insights: list[str] = []
     used_channels: set[str] = set()
     have_quality = bool(rows_data) and all(r.get("bounce_rate_pct") is not None for r in rows_data)
@@ -2573,7 +2698,7 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
         else:
             quality_note = f"and its bounce rate ({top['bounce_rate_pct']:.0f}%) also beats the {avg_bounce:.0f}% cross-channel average"
         insights.append(
-            f"{top['channel']} carries {_share_text(top['pct_share'])} of sessions ({top['avg_sessions_month']:,}/month), {quality_note}."
+            f"{top['channel']} carries {_pct_text(top['pct_share'])} of sessions ({top['avg_sessions_month']:,}/month), {quality_note}."
         )
         used_channels.add(top["channel"])
 
@@ -2597,7 +2722,7 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
             else:
                 verdict = "a genuine quality strength worth understanding and repeating"
             insights.append(
-                f"{outlier['channel']} ({_share_text(outlier['pct_share'])} of sessions) has a bounce rate {direction} "
+                f"{outlier['channel']} ({_pct_text(outlier['pct_share'])} of sessions) has a bounce rate {direction} "
                 f"the {avg_bounce:.0f}% cross-channel average ({outlier['bounce_rate_pct']:.0f}%) — {verdict}."
             )
             used_channels.add(outlier["channel"])
@@ -2609,8 +2734,8 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
         second = next((r for r in rows_data if r["channel"] not in used_channels), None)
         if second:
             insights.append(
-                f"{top['channel']} ({_share_text(top['pct_share'])} of sessions) leads {second['channel']} "
-                f"({_share_text(second['pct_share'])}) by {top['pct_share'] - second['pct_share']:.0f} points."
+                f"{top['channel']} ({_pct_text(top['pct_share'])} of sessions) leads {second['channel']} "
+                f"({_pct_text(second['pct_share'])}) by {top['pct_share'] - second['pct_share']:.0f} points."
             )
             used_channels.add(second["channel"])
 
@@ -4244,20 +4369,13 @@ def _build_report(
                 )
                 for s in shown
             ]
-            top_channel = shown[0]
-            top_share = float(top_channel["sessions"]) / total_sessions * 100 if total_sessions else 0
-            organic = next((s for s in shown if "organic search" in s["channel"].lower()), None)
-            insights = [f"{top_channel['channel']} drives {top_share:.0f}% of sessions — the dominant channel by far." if top_share > 40 else f"Traffic is split fairly evenly, {top_channel['channel']} leads at {top_share:.0f}%."]
-            if organic:
-                organic_share = float(organic["sessions"]) / total_sessions * 100 if total_sessions else 0
-                insights.append(f"Organic Search is {organic_share:.0f}% of sessions — {'a healthy share of true search-driven discovery' if organic_share > 15 else 'a thin slice, most traffic is not coming from search yet'}.")
-            else:
-                insights.append("No Organic Search sessions in this period — SEO isn't driving measurable traffic yet.")
-            best_return_channel = max(
-                (s for s in shown if s.get("return_rate_pct") is not None), key=lambda s: s["return_rate_pct"], default=None
-            )
-            if best_return_channel:
-                insights.append(f"{best_return_channel['channel']} has the highest return rate at {best_return_channel['return_rate_pct']:.0f}% — strongest channel for repeat visitors.")
+            # No prior-period channel data is fetched anywhere in this
+            # pipeline (every other slide in this report is single-
+            # snapshot, same convention) — _traffic_sources_insights
+            # always runs in "single" mode today, but is written to
+            # activate real comparison-mode output the moment prior-period
+            # rows are ever passed in, per the 2026-09-09 spec.
+            insights = _traffic_sources_insights(shown, total_sessions)
             _table_slide(
                 prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
                 col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights,
