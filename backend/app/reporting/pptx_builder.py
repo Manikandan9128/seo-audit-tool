@@ -2998,8 +2998,20 @@ def add_competitor_keyword_sheets_slide(
         size=13, color=TEXT_MUTED,
     )
 
+    # Real bug caught live on report 48 (Lumber, 2026-09-09): with 4
+    # competitors + 4 insight bullets, this loop's own math (1.6 + 4*0.85
+    # for cards, then +0.2+0.4+4*0.45 for insights) runs to y=7.4in — past
+    # the footer text at ~7.1in and close to the 7.5in slide edge, so the
+    # last insight bullet visually overwrote the footer. This was the only
+    # text-block layout in the file with no max-height guard at all (every
+    # other insights renderer here — _insights_strip — already has one).
+    # Same footer clearance _insights_strip uses (SLIDE_H - Inches(0.5)).
+    max_y = SLIDE_H - Inches(0.5)
+
     y = Inches(1.6)
     for domain, url in sheet_links.items():
+        if y + Inches(0.7) > max_y:
+            break
         rows = competitor_positions.get(domain) or []
         card = _card(slide, Inches(0.6), y, Inches(11.1), Inches(0.7))
         _textbox(slide, Inches(0.8), y + Inches(0.08), Inches(4), Inches(0.3), domain, size=14, bold=True)
@@ -3016,11 +3028,13 @@ def add_competitor_keyword_sheets_slide(
         y += Inches(0.85)
 
     insights = _cross_competitor_keyword_insights(competitor_positions)
-    if insights:
+    if insights and y + Inches(0.6) <= max_y:
         insight_y = y + Inches(0.2)
         _textbox(slide, Inches(0.6), insight_y, Inches(4), Inches(0.3), "Key Insights", size=14, bold=True)
         insight_y += Inches(0.4)
         for text in insights:
+            if insight_y + Inches(0.45) > max_y:
+                break
             _textbox(slide, Inches(0.6), insight_y, Inches(11.1), Inches(0.5), f"• {text}", size=12)
             insight_y += Inches(0.45)
     return slide
