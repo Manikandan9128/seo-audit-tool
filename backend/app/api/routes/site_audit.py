@@ -344,6 +344,31 @@ def _num_for_sort(v) -> float:
 _CLASSIFY_CANDIDATE_CAP = 40
 
 
+def _company_overview_context(company_overview: dict | None) -> str | None:
+    """Composes the extracted Company Overview's description with its
+    Ideal Customer Profile fields (target_market, primary_buyers) into one
+    grounding string for keyword-relevance AI classification. Company
+    Overview extraction already produces a fixed-schema ICP (target_country/
+    target_market/primary_buyers/daily_users/beneficiaries) but only
+    `description` was ever passed to classify_keywords — the ICP fields
+    were computed and then never queried by anything downstream (Gaps.pdf,
+    "Company Overview": "never actually used downstream"). Feeding the
+    buyer segment in lets the AI judge "would THIS company's actual buyer
+    persona search this" instead of relevance-by-description-topic alone."""
+    if not company_overview:
+        return None
+    parts = []
+    description = (company_overview.get("description") or "").strip()
+    if description:
+        parts.append(description)
+    target_market = company_overview.get("target_market")
+    primary_buyers = [b for b in (company_overview.get("primary_buyers") or []) if b][:5]
+    segment_bits = [b for b in [target_market, f"typical buyers: {', '.join(primary_buyers)}" if primary_buyers else None] if b]
+    if segment_bits:
+        parts.append(f"Target segment — {'; '.join(segment_bits)}.")
+    return " ".join(parts) or None
+
+
 def _filter_competitor_keywords(client: Client, data: dict) -> None:
     """Classifies every competitor keyword (Highly relevant / Potentially
     relevant / Exclude — see keyword_relevance_service) and strips excluded
@@ -379,7 +404,7 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
     if not all_keywords:
         return
 
-    client_description = (data.get("company_overview") or {}).get("description")
+    client_description = _company_overview_context(data.get("company_overview"))
     classifications = classify_keywords(client.name, client_domain, brand_tokens, all_keywords, client_description)
     if not classifications:
         return
@@ -428,7 +453,7 @@ def _filter_search_queries(client: Client, data: dict) -> None:
     if not candidate_keywords:
         return
 
-    client_description = (data.get("company_overview") or {}).get("description")
+    client_description = _company_overview_context(data.get("company_overview"))
     classifications = classify_keywords(client.name, client_domain, brand_tokens, candidate_keywords, client_description)
     if not classifications:
         return
