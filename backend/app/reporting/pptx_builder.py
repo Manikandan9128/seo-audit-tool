@@ -676,10 +676,98 @@ def _treemap_tile_color(node: dict) -> RGBColor:
     return RGBColor(0x2F, 0x6F, 0xED)
 
 
-def add_script_treemap_slide(prs: Presentation, mobile: dict | None, desktop: dict | None):
+# Well-known 3rd-party script name fragments — matched against the
+# script's filename since some vendor scripts load same-origin through a
+# proxy/CDN passthrough and wouldn't otherwise look external by host alone.
+# Used to give a specific, nameable vendor in the actionable insight
+# ("ask <vendor> whether this needs to block page load") instead of a
+# generic "third-party script."
+_KNOWN_THIRD_PARTY_SCRIPT_PATTERNS = [
+    ("fbevents", "Meta/Facebook Pixel"), ("gtag", "Google Analytics/Ads"), ("gtm.js", "Google Tag Manager"),
+    ("posthog", "PostHog analytics"), ("hotjar", "Hotjar"), ("fullstory", "FullStory session replay"),
+    ("logrocket", "LogRocket session replay"), ("clarity", "Microsoft Clarity"), ("intercom", "Intercom chat widget"),
+    ("hubspot", "HubSpot"), ("memberstack", "Memberstack"), ("segment", "Segment"),
+    ("tracing.replay", "a session-replay tool"), ("survey", "a survey widget"), ("platform.js", "a social platform SDK"),
+    # Site-builder/CMS platform runtime bundles — not the client's own
+    # code even when served same-origin, so must NOT be classified "own"
+    # (telling a client to "code-split this, ask your dev team" on a file
+    # the platform generates and controls is wrong, actionable advice).
+    ("webflow.schunk", "the Webflow platform's own runtime"),
+    ("webflow.js", "the Webflow platform's own runtime"),
+    ("wp-content", "a WordPress plugin"),
+    ("shopify", "the Shopify platform"),
+]
+
+
+def _classify_script_party(name: str, site_domain: str) -> tuple[str, str | None]:
+    """('third_party' | 'own', vendor_label). vendor_label names the likely
+    vendor when recognizable from the filename; still third_party with
+    vendor_label=None otherwise (host differs from the site's own domain
+    but isn't in the known-pattern list)."""
+    lower = (name or "").lower()
+    for pattern, vendor in _KNOWN_THIRD_PARTY_SCRIPT_PATTERNS:
+        if pattern in lower:
+            return "third_party", vendor
+    host = urlparse(name or "").netloc.lower()
+    site_host = (site_domain or "").lower().replace("www.", "")
+    if host and site_host and site_host not in host:
+        return "third_party", None
+    return "own", None
+
+
+def _script_treemap_actions(nodes: list[dict], site_domain: str) -> list[str]:
+    """Actionable findings only, per user request 2026-09-09: no bare
+    "Total JS analyzed: X" description — every bullet names a concrete
+    file and says what to actually do about it. Split 1st-party (client's
+    own code — a dev-team code-splitting/dead-code task) vs. 3rd-party
+    (vendor scripts — a defer/lazy-load or "do we still need this" call,
+    zero engineering risk since it's not the client's own code) since
+    those are two entirely different fixes with different owners."""
+    classified = [{**n, "_party": p, "_vendor": v} for n in nodes for p, v in [_classify_script_party(n.get("name", ""), site_domain)]]
+    third_party = [n for n in classified if n["_party"] == "third_party"]
+    own = [n for n in classified if n["_party"] == "own"]
+
+    actions: list[str] = []
+
+    if third_party:
+        tp_bytes = sum(n["resource_bytes"] for n in third_party)
+        top_tp = max(third_party, key=lambda n: n["resource_bytes"])
+        top_tp_name = top_tp["name"].rsplit("/", 1)[-1]
+        vendor_note = f" ({top_tp['_vendor']})" if top_tp["_vendor"] else ""
+        actions.append(
+            f"{len(third_party)} third-party script(s) totaling {_format_bytes(tp_bytes)} can be deferred or "
+            f"loaded after the page becomes interactive — none of them need to block first render. Biggest: "
+            f"{top_tp_name}{vendor_note} at {_format_bytes(top_tp['resource_bytes'])}."
+        )
+
+    own_with_waste = [n for n in own if n.get("unused_bytes", 0) > 0]
+    if own_with_waste and len(actions) < 3:
+        top_own = max(own_with_waste, key=lambda n: n["unused_bytes"])
+        waste_pct = 100 * top_own["unused_bytes"] / top_own["resource_bytes"] if top_own["resource_bytes"] else 0
+        top_own_name = top_own["name"].rsplit("/", 1)[-1]
+        actions.append(
+            f"\"{top_own_name}\" is your own code and wastes {_format_bytes(top_own['unused_bytes'])} "
+            f"({waste_pct:.0f}% of {_format_bytes(top_own['resource_bytes'])}) — code-split or remove the unused "
+            f"portion; this one needs your dev team, not a vendor."
+        )
+
+    named_vendor = next((n for n in third_party if n["_vendor"]), None)
+    if named_vendor and len(actions) < 3:
+        actions.append(
+            f"\"{named_vendor['name'].rsplit('/', 1)[-1]}\" is {named_vendor['_vendor']} "
+            f"({_format_bytes(named_vendor['resource_bytes'])}) — confirm it's actually needed on every page load, "
+            f"or delay it until after the page is interactive."
+        )
+
+    return actions[:3]
+
+
+def add_script_treemap_slide(prs: Presentation, mobile: dict | None, desktop: dict | None, website_url: str | None = None):
     """Renders Lighthouse's script-treemap-data audit (the same data behind
     googlechrome.github.io/lighthouse/treemap) as native PPTX rectangles —
-    which JS bundles are biggest and how much of each goes unused."""
+    which JS bundles are biggest and how much of each goes unused — with
+    actionable insights only (2026-09-09 user request: no bare stats,
+    every bullet is a concrete thing to do)."""
     result = mobile or desktop
     nodes = (result or {}).get("script_treemap") or []
     if not nodes:
@@ -735,12 +823,7 @@ def add_script_treemap_slide(prs: Presentation, mobile: dict | None, desktop: di
         sq.shadow.inherit = False
         _textbox(slide, legend_x + Inches(0.28), sq_top - Inches(0.03), Inches(2.6), Inches(0.3), text, size=12)
 
-    total_bytes = sum(n["resource_bytes"] for n in nodes)
-    total_unused = sum(n["unused_bytes"] for n in nodes)
-    insights = [f"Total JS analyzed: {_format_bytes(total_bytes)}, of which {_format_bytes(total_unused)} unused."]
-    biggest = max(nodes, key=lambda n: n["resource_bytes"], default=None)
-    if biggest:
-        insights.append(f"Largest bundle: {biggest['name'].rsplit('/', 1)[-1]} at {_format_bytes(biggest['resource_bytes'])}.")
+    insights = _script_treemap_actions(nodes, website_url or "")
     _insights_strip(slide, Inches(9.8), Inches(3.2), Inches(3.1), insights)
     return slide
 
@@ -4360,7 +4443,7 @@ def _build_report(
             add_pagespeed_score_breakdown_slide(prs, psi_mobile, psi_desktop)
             add_pagespeed_script_weight_slide(prs, psi_mobile, psi_desktop)
             add_pagespeed_issues_slide(prs, psi_mobile, psi_desktop)
-            add_script_treemap_slide(prs, psi_mobile, psi_desktop)
+            add_script_treemap_slide(prs, psi_mobile, psi_desktop, website_url)
         if site_audit:
             add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
             if site_audit_pages_rows:
