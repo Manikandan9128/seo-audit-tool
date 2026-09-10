@@ -90,10 +90,18 @@ actually visible in it as ground truth, do not invent page elements, copy, or fl
 Do an onboarding breakdown of this landing page: walk it the way a first-time visitor experiences it and flag \
 where recognized onboarding/conversion psychology biases (e.g. cognitive load / Hick's law, choice overload, \
 social proof, anchoring, loss aversion, scarcity/urgency, default bias, Zeigarnik effect / incomplete-task \
-tension, framing, primacy-recency) are either missing where they'd help or working against the visitor. Only \
-report biases you can actually ground in something visible in the screenshot — do not invent generic advice \
-that isn't tied to a real element on the page. Return the top 5, ranked by likely impact on sign-up/purchase \
-completion.
+tension, framing, primacy-recency, risk reversal, brand consistency) are either missing where they'd help or \
+working against the visitor. Give risk reversal and brand consistency equal weight to the other biases — don't \
+skip them just because they're less classically "psychological":
+- Risk reversal: does the page remove the visitor's perceived risk of acting — a money-back guarantee, free \
+  trial or no-card-required signup, visible refund policy, security/payment trust badges near the conversion \
+  point? Flag it if a real conversion point (signup, purchase, demo request) has none of these nearby.
+- Brand consistency: does the primary call-to-action look and read the same everywhere it repeats — same \
+  color, shape, and copy in the header nav vs. the hero vs. anywhere else? Flag competing or inconsistently \
+  styled CTAs, or a hero band whose visual treatment doesn't match the rest of the page's brand identity.
+Only report biases you can actually ground in something visible in the screenshot — do not invent generic \
+advice that isn't tied to a real element on the page. Return the top 5, ranked by likely impact on \
+sign-up/purchase completion.
 
 Write in plain, confident agency language — this is client-facing content, not an AI-generated draft. Never \
 mention that you are an AI, a language model, or any tool by name. Every sentence must be complete, with \
