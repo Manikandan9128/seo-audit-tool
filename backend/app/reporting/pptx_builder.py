@@ -1728,6 +1728,103 @@ def add_structured_data_slide(
     )
 
 
+# Google Search Central rich-result eligibility for the crawl-detected
+# @type names aggregate_schema_validation reports — a broader vocabulary
+# than _STRUCTURED_DATA_TYPES' Semrush field names above, but the same
+# "refresh when Google changes this" caveat as _SCHEMA_RICH_RESULT_RETIRED_
+# NOTE applies. A type with no entry here is unverified, not assumed
+# eligible (2026-09-10 spec, Step 4): never claim a rich result, snippet,
+# or answer-box outcome for a schema type without checking this first.
+_SCHEMA_GOOGLE_ELIGIBILITY: dict[str, str | None] = {
+    "Article": None, "BlogPosting": None, "NewsArticle": None, "Product": None,
+    "Review": None, "LocalBusiness": None, "Event": None, "BreadcrumbList": None,
+    "JobPosting": None, "Recipe": None, "VideoObject": None,
+    "Organization": None, "WebSite": None,
+    "HowTo": "Google restricted HowTo rich results to a small set of approved sites in 2023 — no longer generally available.",
+    "FAQPage": "Google retired the classic FAQ rich-result SERP dropdown in May 2026 — this is content/AI-citation value only, not a SERP visual.",
+}
+
+
+def _schema_eligibility_flag(schema_type: str) -> str | None:
+    """None = eligible, rich-result framing permitted. A string = the type
+    is ineligible (state plainly, cite it) or unverified (ELIGIBILITY_CHECK_
+    STALE — don't claim a rich-result outcome either way)."""
+    if schema_type not in _SCHEMA_GOOGLE_ELIGIBILITY:
+        return f"ELIGIBILITY_CHECK_STALE — {schema_type} rich-result eligibility hasn't been verified against Google's current docs; treat any SERP-feature claim for it as unconfirmed."
+    return _SCHEMA_GOOGLE_ELIGIBILITY[schema_type]
+
+
+def _schema_validator_insights(schema_validation: dict) -> list[str]:
+    """KEY INSIGHTS for Structured Data & Schema Validator (2026-09-10
+    spec): a traffic-weighted overall coverage headline instead of a flat
+    page-count %, the single highest-pageviews-at-risk gap named
+    specifically, any type where presence and required-field validity
+    diverge, and a plain eligibility note for any type Google no longer
+    grants (or has never had verified) a rich result for. Built entirely
+    from by_page_type (already segmented by real page type and joined to
+    real GA4 pageviews by aggregate_schema_validation) — never a schema
+    type or number not literally present in that data.
+
+    "Other Pages" is excluded from the weighted headline: that bucket's
+    schema is whatever baseline/universal markup (Organization, WebSite)
+    happens to be sitewide, and Step 2 of the spec requires baseline
+    coverage to be reported separately from content-specific schema
+    coverage rather than blended into one number that could read as
+    "100% have structured data" when only the universal types are
+    present."""
+    by_page_type = schema_validation.get("by_page_type") or []
+    content_rows = [r for r in by_page_type if r["page_type"] != "Other Pages" and r["pages"]]
+    if not content_rows:
+        return []
+
+    has_traffic = any(r["pageviews"] for r in content_rows)
+    if has_traffic:
+        weighted_num = sum(r["coverage_pct"] / 100 * r["pages"] * r["pageviews"] for r in content_rows)
+        weighted_den = sum(r["pages"] * r["pageviews"] for r in content_rows)
+    else:
+        weighted_num = sum(r["coverage_pct"] / 100 * r["pages"] for r in content_rows)
+        weighted_den = sum(r["pages"] for r in content_rows)
+    overall = 100 * weighted_num / weighted_den if weighted_den else 0
+    total_content_pages = sum(r["pages"] for r in content_rows)
+
+    insights = [
+        f"{'Traffic-weighted' if has_traffic else 'Page-weighted'} content-specific schema coverage across "
+        f"{total_content_pages:,} pages (Article/Product/etc.): {overall:.0f}% — Organization/WebSite baseline "
+        f"schema is tracked separately below, not blended into this number."
+    ]
+
+    # content_rows is already sorted by -pageviews (aggregate_schema_
+    # validation's own SEO-priority order), so the first row short of 100%
+    # coverage is the single biggest pageviews-at-risk gap.
+    top_gap = next((r for r in content_rows if r["coverage_pct"] < 100), None)
+    if top_gap:
+        at_risk = round(top_gap["pageviews"] * (1 - top_gap["coverage_pct"] / 100))
+        insights.append(
+            f"Biggest gap: {top_gap['page_type']} ({top_gap['applicable_schema']}) is only {top_gap['coverage_pct']}% "
+            f"covered across {top_gap['pages']:,} pages"
+            + (f" — {at_risk:,} pageviews behind schema-less pages." if at_risk else ".")
+        )
+
+    # Presence vs. validity divergence (Step 3: never call presence alone
+    # "valid") — worst gap between coverage_pct and valid_pct.
+    diverging = [r for r in content_rows if r["coverage_pct"] and r["coverage_pct"] - r["valid_pct"] >= 20]
+    if diverging:
+        d = max(diverging, key=lambda r: r["coverage_pct"] - r["valid_pct"])
+        insights.append(
+            f"{d['page_type']} schema is present on {d['coverage_pct']}% of its pages but only {d['valid_pct']}% "
+            f"pass required-field validation — presence isn't validity here."
+        )
+
+    # Eligibility framing (Step 4) for every type actually referenced above.
+    seen_types = sorted({t for r in content_rows for t in r["applicable_schema"].split("/") if t and t != "—"})
+    for t in seen_types:
+        flag = _schema_eligibility_flag(t)
+        if flag:
+            insights.append(flag if flag.startswith("ELIGIBILITY_CHECK_STALE") else f"{t} schema: {flag}")
+
+    return insights[:6]
+
+
 def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
     """Structured Data coverage (type presence %, ground truth from this
     tool's own crawl — see the prior standalone version's now-removed
@@ -1790,14 +1887,15 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
             slide, ["Page Type", "Applicable Schema", "Pages", "Coverage", "Valid", "Pageviews"], coverage_rows, y,
             col_widths=[2.2, 2.6, 1.2, 1.7, 1.6, 2.8], left=left, width=width, row_cap=ROW_CAP, row_height=ROW_H,
         ) + Inches(0.2)
-        any_schema_pct = 100 * pages_with_schema / total_pages
-        insights.append(f"{pages_with_schema:,} of {total_pages:,} pages ({any_schema_pct:.0f}%) have structured data implemented.")
-        top_gap = next((r for r in by_page_type if r["page_type"] != "Other Pages" and r["coverage_pct"] < 100), None)
-        if top_gap:
-            insights.append(
-                f"Highest-priority gap: {top_gap['page_type']} pages are only {top_gap['coverage_pct']}% covered"
-                + (f", {top_gap['pageviews']:,} real pageviews behind that gap." if top_gap["pageviews"] else ".")
-            )
+        # 2026-09-10 spec: traffic-weighted coverage headline + the single
+        # highest-pageviews-at-risk gap + presence/validity divergence +
+        # eligibility framing, all derived from this same table — replaces
+        # the flat "X% have structured data" + a second "Highest-priority
+        # gap" bullet that used to restate a row from the Findings table
+        # below verbatim (the exact duplicate this slide's SNIP reference
+        # showed: a page-type's 0%-coverage row appearing a second time as
+        # its own "finding" card).
+        insights.extend(_schema_validator_insights(schema_validation))
     if type_coverage:
         # "Schema Count" — the flow's own step name for this table — used to
         # be dropped whenever by_page_type also had data (elif, mutually

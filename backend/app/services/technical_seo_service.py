@@ -204,8 +204,6 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     pages_with_schema = 0
     type_counts: Counter = Counter()
     missing_field_counts: Counter = Counter()
-    shape_page_counts: Counter = Counter()
-    shape_type_found_counts: Counter = Counter()
 
     # by_page_type bucket state: page_type -> {pages, with_schema, valid,
     # urls} — "valid" means the applicable schema type is present AND none
@@ -261,10 +259,6 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
         for label, shape_re in _SCHEMA_TYPE_SHAPE_RE.items():
             if shape_re.search(url):
                 matched_shape = label
-                shape_page_counts[label] += 1
-                members = _SCHEMA_TYPE_GROUP_MEMBERS.get(label, {label})
-                if types_found & members:
-                    shape_type_found_counts[label] += 1
                 break  # first matching shape wins — a URL only gets one page-type bucket
 
         page_type = matched_shape or "Other Pages"
@@ -298,13 +292,16 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
         key=lambda m: (m["severity"] != "required", -m["pages_missing"]),
     )
 
-    missing_types = [
-        {"type": t, "reason": f"{shape_page_counts[t]} relevant page(s) found, 0 have {t} schema"}
-        for t in _SCHEMA_TYPE_SHAPE_RE
-        if shape_page_counts[t] > 0
-        and shape_type_found_counts[t] == 0
-        and not any(type_counts[m] for m in _SCHEMA_TYPE_GROUP_MEMBERS.get(t, {t}))
-    ]
+    # URL-shape types (Article-type/Product/LocalBusiness/JobPosting/Event/
+    # FAQPage) are deliberately NOT listed here even when entirely missing
+    # — they're exactly the same buckets by_page_type already reports below
+    # with coverage_pct=0, plus real pages/valid_pct/pageviews detail this
+    # list can't carry. Restating them here duplicated the same "0%
+    # implemented" fact twice on one slide (2026-09-10 spec: remove the
+    # duplicate rather than reformat it). Only truly sitewide types
+    # (Organization/WebSite/BreadcrumbList — never bucketed by page type)
+    # have no by_page_type equivalent, so they still belong here.
+    missing_types = []
     for t in _SITE_WIDE_SCHEMA_TYPES:
         if total_pages > 0 and type_counts[t] == 0:
             missing_types.append({"type": t, "reason": f"not found on any of the {total_pages} crawled pages"})
