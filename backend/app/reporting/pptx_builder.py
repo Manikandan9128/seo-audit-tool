@@ -2810,8 +2810,6 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
             # drop it instead of showing "Tablet 0%".
             _split_text([{"label": d["label"].title(), "pct": d["pct"]} for d in (r.get("top_devices") or []) if round(d["pct"]) > 0]),
         ))
-    months = breakdown.get("months")
-
     # Insight rules (2026-09-09 user spec): never state the biggest number
     # as the whole finding — "X is the leading channel" is a description,
     # not a finding. Every insight pairs a number with a quality signal
@@ -2887,8 +2885,24 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
                 f"({s['avg_sessions_month']:,}/month) — worth tracking, not yet material."
             )
 
-    if months:
-        insights.append(f"Figures are monthly averages across the last {months:.1f} month(s) of tracked data.")
+    # Channel concentration/diversification (2026-09-10 user spec: replaces
+    # the methodology-only "figures are monthly averages" line, which
+    # restated something already visible in the slide header, with a real
+    # strategic finding) — rows_data is already sorted by pct_share
+    # descending (same assumption "top = rows_data[0]" above already makes).
+    if len(rows_data) >= 2 and len(insights) < 3:
+        top2_channels = rows_data[0]["channel"], rows_data[1]["channel"]
+        top2_share = rows_data[0]["pct_share"] + rows_data[1]["pct_share"]
+        if top2_share >= 70:
+            insights.append(
+                f"{top2_channels[0]} and {top2_channels[1]} together account for {top2_share:.0f}% of all sessions "
+                "— heavy reliance on just two channels, with real exposure if either one dips."
+            )
+        else:
+            insights.append(
+                f"No single channel dominates — {top2_channels[0]} leads at only {_pct_text(rows_data[0]['pct_share'])}, "
+                "a genuinely diversified acquisition mix."
+            )
     if used_abbreviations:
         legend = ", ".join(f"{abbr} - {full}" for abbr, full in sorted(used_abbreviations.items()))
         insights.append(f"* {legend}")
