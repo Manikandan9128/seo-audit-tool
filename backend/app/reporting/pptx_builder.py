@@ -1258,9 +1258,16 @@ def add_seo_issues_slide(
         errors, warnings = [], []
         for row in ranked:
             label = f"{row.get('issue', 'Issue')} ({row.get('failed_checks', 0)} pages)"
-            if str(row.get("issue_type", "")).strip().upper() == "ERROR":
+            # Semrush's own taxonomy is 3-way (Error/Warning/Notice), not
+            # binary — this used to bucket anything non-"ERROR" (including
+            # Notices) into Warnings, silently inflating the Warnings count
+            # past what Semrush itself reports. Notices are dropped from
+            # this slide entirely per user request (2026-09-10) rather than
+            # merged in under either column.
+            issue_type = str(row.get("issue_type", "")).strip().upper()
+            if issue_type == "ERROR":
                 errors.append(label)
-            else:
+            elif issue_type == "WARNING":
                 warnings.append(label)
     else:
         issues = list(audit.get("issues", []))
