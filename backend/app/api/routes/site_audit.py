@@ -1136,10 +1136,25 @@ def _gather_report_data(
     # branded-split that Organic Competitors exports don't. Own site's row
     # goes first since single-domain exports don't repeat the domain name.
     own_website_domain = (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
-    domain_overview_rows = []
+    # Keep only the MOST RECENT domain_overview upload per (own site /
+    # competitor domain) — confirmed real bug (2026-09-10): re-uploading a
+    # competitor's Domain Overview with fresh data didn't replace the old
+    # upload, it just added another set of rows for that same domain, so
+    # Competitor Analysis showed the old AND new numbers as two separate
+    # rows for the same competitor. all_imports has no "latest only"
+    # filter anywhere upstream, so this has to dedupe here before building
+    # domain_overview_rows at all.
+    latest_domain_overview_imports: dict[tuple, object] = {}
     for r in all_imports:
         if r.import_type != "domain_overview":
             continue
+        key = (r.is_own_site, _normalize_domain(r.domain_label) if r.domain_label else None)
+        existing = latest_domain_overview_imports.get(key)
+        if existing is None or r.created_at > existing.created_at:
+            latest_domain_overview_imports[key] = r
+
+    domain_overview_rows = []
+    for r in latest_domain_overview_imports.values():
         label = own_website_domain if r.is_own_site else (r.domain_label or "competitor")
         for row in r.parsed_data.get("rows", []):
             # For the own site, always use the client's own domain as the
