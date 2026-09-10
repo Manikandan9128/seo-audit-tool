@@ -3189,47 +3189,136 @@ def _num(v, default=0.0):
         return default
 
 
+# Strict CTR-by-position decay model (2026-09-10 user spec) — deliberately
+# NOT an AI call: the spec requires exact tier adherence ("do not deviate"),
+# which code guarantees and an LLM only approximates. (lo, hi, ctr_pct).
+_CTR_DECAY_TIERS = [
+    (1, 1, 22.0), (2, 2, 13.0), (3, 3, 9.0), (4, 4, 6.0), (5, 5, 4.5),
+    (6, 10, 1.5), (11, 20, 0.2), (21, 10**9, 0.0),
+]
+# Position just inside the next-better tier — for flagging a keyword one
+# step from a real CTR jump (11->10 is 0.2%->1.5%, not a rounding blip).
+_CTR_TIER_CROSSING_POSITIONS = {11: 10, 6: 5, 21: 20}
+
+
+def _ctr_decay_pct(position) -> float:
+    try:
+        pos = int(position)
+    except (TypeError, ValueError):
+        return 0.0
+    if pos <= 0:
+        return 0.0
+    for lo, hi, ctr in _CTR_DECAY_TIERS:
+        if lo <= pos <= hi:
+            return ctr
+    return 0.0
+
+
 def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
-    """Table version of semrush_analysis_service's keyword-gap detection —
-    the "issues" list only surfaces one summary sentence + a single top
-    example; this renders the full ranked list of keywords a competitor
-    ranks for that the client doesn't (or ranks far ahead on), so it reads
-    like the manual report's keyword tables instead of one line of prose.
-    Includes both gap types the analysis surfaces: not ranking at all, and
-    ranking so far behind a page-1 competitor it's effectively invisible."""
+    """Conservative organic-traffic projection (2026-09-10 user spec):
+    applies the strict CTR-decay-by-position model above to both the
+    client's and the top competitor's position for every keyword gap,
+    rather than just listing positions with no traffic estimate. Includes
+    both gap types semrush_analysis_service surfaces: not ranking at all,
+    and ranking so far behind a page-1 competitor it's effectively
+    invisible — a missing/absent position (either side) projects to 0
+    clicks, a genuinely MISSING competitor_position is marked "no data"
+    rather than guessed."""
     rows = competitor_analysis.get("keyword_gap_rows") or []
     rows = [r for r in rows if not _is_branded_keyword(r.get("keyword", ""), _brand_token(r.get("competitor_domain", "")))]
     if not rows:
         return None
 
+    projected = []
+    for r in rows:
+        volume = r.get("search_volume") or 0
+        your_position = r.get("your_position")
+        competitor_position = r.get("competitor_position")
+        your_clicks = round(volume * _ctr_decay_pct(your_position) / 100)
+        competitor_clicks = round(volume * _ctr_decay_pct(competitor_position) / 100) if competitor_position else None
+        projected.append({
+            "keyword": r["keyword"], "volume": volume, "your_position": your_position,
+            "your_clicks": your_clicks, "competitor_position": competitor_position, "competitor_clicks": competitor_clicks,
+        })
+
+    total_your = sum(p["your_clicks"] for p in projected)
+    total_competitor = sum(p["competitor_clicks"] for p in projected if p["competitor_clicks"] is not None)
+
     table_rows = [
         (
-            r["keyword"],
-            r["competitor_domain"] or "—",
-            f"#{r['competitor_position']}" if r.get("competitor_position") else "—",
-            f"#{r['your_position']}" if r.get("your_position") else "Not ranking",
-            f"{r['search_volume']:,}",
-            r["keyword_difficulty"] if r.get("keyword_difficulty") not in (None, "") else "—",
+            p["keyword"], f"{p['volume']:,}",
+            f"#{p['your_position']}" if p["your_position"] else "Not ranking",
+            f"{p['your_clicks']:,}",
+            f"#{p['competitor_position']}" if p["competitor_position"] else "—",
+            f"{p['competitor_clicks']:,}" if p["competitor_clicks"] is not None else "no data",
         )
-        for r in rows
+        for p in projected
     ]
-    total_volume = sum(r["search_volume"] for r in rows)
-    top = rows[0]
-    insights = [f"{len(rows)} keyword gap(s) found, {total_volume:,} combined monthly searches."]
-    if top.get("competitor_domain"):
-        your_pos_text = f"you're at #{top['your_position']}" if top.get("your_position") else "you don't rank at all"
-        insights.append(f"Highest-volume gap: \"{top['keyword']}\" ({top['search_volume']:,} searches) — {top['competitor_domain']} ranks #{top['competitor_position']}, {your_pos_text}.")
-    else:
-        insights.append(f"Highest-volume gap: \"{top['keyword']}\" ({top['search_volume']:,} searches).")
-    cpcs = [r["cpc"] for r in rows if r.get("cpc") not in (None, "")]
-    if cpcs:
-        avg_cpc = sum(cpcs) / len(cpcs)
-        insights.append(f"Avg. CPC across these gaps is ${avg_cpc:.2f} — {'strong commercial intent, worth prioritizing' if avg_cpc > 10 else 'moderate commercial intent'}.")
 
-    return _table_slide(
-        prs, "Competitor Keyword Gap Analysis", ["Keyword", "Competitor", "Their Position", "Your Position", "Search Volume", "Difficulty"], table_rows,
-        col_widths=[3.7, 2.4, 1.5, 1.5, 1.7, 1.1], source="Semrush Keyword Gap export", insights=insights,
+    insights = []
+    if total_your == 0:
+        insights.append(
+            "Your projected monthly clicks across these gaps: 0 — every tracked position falls in a tier this "
+            "model treats as negligible (position 11-20 is 0.2% CTR, 21+ rounds to 0%)."
+        )
+    else:
+        insights.append(
+            f"Your projected monthly clicks across these gaps: {total_your:,} — the minimal organic demand your "
+            "current positions actually capture on these terms."
+        )
+    insights.append(
+        f"Competitor projected monthly clicks: {total_competitor:,} — demand currently going to them on the "
+        "exact same search terms."
     )
+
+    crossing = [p for p in projected if p["your_position"] in _CTR_TIER_CROSSING_POSITIONS]
+    if crossing:
+        crossing.sort(key=lambda p: p["volume"], reverse=True)
+        top_c = crossing[0]
+        next_pos = _CTR_TIER_CROSSING_POSITIONS[top_c["your_position"]]
+        potential_clicks = round(top_c["volume"] * _ctr_decay_pct(next_pos) / 100)
+        insights.append(
+            f"\"{top_c['keyword']}\" sits at #{top_c['your_position']} — closing just "
+            f"{top_c['your_position'] - next_pos} spot(s) to #{next_pos} would move it into a higher CTR tier, "
+            f"from {top_c['your_clicks']:,} to ~{potential_clicks:,} projected monthly clicks."
+        )
+
+    # Semrush's own keyword_gap export is capped at 500 rows on import (see
+    # semrush_parser.py) — a real, verifiable ceiling, not a guess at a
+    # figure "found elsewhere."
+    if len(rows) >= 500:
+        insights.append(
+            f"This dataset covers {len(rows)} keyword gap(s) — Semrush's own export caps at 500 rows per file, "
+            "so if the true gap count is larger, this projection understates total competitor demand."
+        )
+
+    insights.append(
+        "Positions 21+ are modeled at 0.0% CTR — a conservative rounding-down assumption for this projection, "
+        "not a claim that real-world traffic is literally zero at those positions."
+    )
+
+    # Totals get their own visible card row (spec's Part 2 is a distinct
+    # output from Part 3's insights, not just a number buried in a
+    # sentence), same KPI-card pattern as the Traffic Overview slide.
+    slide = _blank_slide(prs)
+    _content_header(slide, "Competitor Keyword Gap Analysis")
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export — CTR decay model", size=11, color=TEXT_MUTED)
+    metrics = [("Your Projected Monthly Clicks", f"{total_your:,}"), ("Competitor Projected Monthly Clicks", f"{total_competitor:,}")]
+    gap = Inches(0.15)
+    total_width = Inches(12.1)
+    card_width = Emu(int((total_width - gap) / 2))
+    card_height = Inches(0.85)
+    card_top = Inches(1.05)
+    for i, (label, value) in enumerate(metrics):
+        left = Inches(0.6) + Emu(i * (card_width + gap))
+        _card(slide, left, card_top, card_width, card_height)
+        _textbox(slide, left + Inches(0.15), card_top + Inches(0.1), card_width - Inches(0.3), Inches(0.35), label, size=11, color=TEXT_MUTED)
+        _textbox(slide, left + Inches(0.15), card_top + Inches(0.4), card_width - Inches(0.3), Inches(0.4), value, size=20, bold=True, color=_accent())
+    _draw_table(
+        slide, ["Keyword", "Volume", "Your Position", "Your Projected Clicks", "Competitor Position", "Competitor Projected Clicks"],
+        table_rows, card_top + card_height + Inches(0.2), col_widths=[2.6, 1.3, 1.5, 1.9, 1.9, 2.1], insights=insights[:5],
+    )
+    return slide
 
 
 def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narrative: dict):
