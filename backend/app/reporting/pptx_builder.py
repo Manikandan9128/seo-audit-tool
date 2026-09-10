@@ -2022,11 +2022,39 @@ def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[
     )
 
 
+def add_priority_issues_page_wise_slide(prs: Presentation, other_rows: list[tuple], ai_result: dict | None) -> object | None:
+    """Page | Issues | Fix table for pages Semrush's full crawl flagged but
+    our own ~20-page sample didn't reach (2026-09-10 user spec). Fix column
+    is AI-inferred per page from URL pattern + issue count (see
+    page_wise_priority_service) instead of the old generic "full breakdown
+    isn't available" disclaimer repeated on every row. Insights group pages
+    by shared probable root cause instead of repeating a cause per row —
+    the summary bullet (total affected vs. shown) is computed here, not by
+    the AI, since it's an exact count we already have."""
+    if not other_rows:
+        return None
+    shown = other_rows[:9]
+    fixes = (ai_result or {}).get("fixes") or {}
+    col_widths = [2.3, 1.8, 8.0]
+    rows = [
+        (_truncate_cell(path, col_widths[0]), issue, fixes.get(path, "See SEO Issues for the site-wide breakdown by type."))
+        for _, _, issue, path, _fix_text, _pv, _cat in shown
+    ]
+    insights = list((ai_result or {}).get("insights") or [])[:4]
+    insights.append(f"{len(other_rows)} additional page(s) affected site-wide — showing the {len(shown)} highest-priority here.")
+    return _table_slide(
+        prs, "Priority Issues - Page Wise", ["Page", "Issues", "Fix"], rows,
+        col_widths=col_widths, source="Semrush Site Audit", insights=insights[:5],
+    )
+
+
 def add_tech_fixes_slide(
     prs: Presentation,
     page_audit: dict | None,
     analytics: dict | None = None,
     site_audit_pages_rows: list[dict] | None = None,
+    page_wise_ai: dict | None = None,
+    page_wise_exclude_paths: set[str] | None = None,
 ) -> list:
     """Flattens page_audit's per-page issues (up to 20 crawled pages) into
     one Issue/Where/Fix row per (page, issue) pair, worst-severity first
@@ -2056,9 +2084,12 @@ def add_tech_fixes_slide(
 
     technical_rows = [r for r in scored_rows if r[6] == "technical"]
     other_rows = [r for r in scored_rows if r[6] == "other"]
+    if page_wise_exclude_paths:
+        excluded_norm = {p.rstrip("/") or "/" for p in page_wise_exclude_paths}
+        other_rows = [r for r in other_rows if (r[3].rstrip("/") or "/") not in excluded_norm]
     slides = [
         _tech_fixes_category_slide(prs, "Tech Fixes — Technical Issues", technical_rows),
-        _tech_fixes_category_slide(prs, "Priority Issues - Page Wise", other_rows, source="Semrush Site Audit"),
+        add_priority_issues_page_wise_slide(prs, other_rows, page_wise_ai),
     ]
     return [s for s in slides if s]
 
@@ -4381,6 +4412,8 @@ def build_report(
     competitor_keyword_sheet_links: dict[str, str] | None = None,
     competitor_positions_full: dict[str, list[dict]] | None = None,
     seo_issues_ai_insights: dict | None = None,
+    page_wise_ai: dict | None = None,
+    page_wise_exclude_paths: set[str] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -4402,7 +4435,7 @@ def build_report(
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
             site_audit_pages_rows, next_steps_ai, schema_validation,
             brand_citations, brand_wikipedia, geopulse_analysis, competitor_keyword_sheet_links,
-            competitor_positions_full, seo_issues_ai_insights,
+            competitor_positions_full, seo_issues_ai_insights, page_wise_ai, page_wise_exclude_paths,
         )
     finally:
         _theme["footer"] = ""
@@ -4444,6 +4477,8 @@ def _build_report(
     competitor_keyword_sheet_links: dict[str, str] | None = None,
     competitor_positions_full: dict[str, list[dict]] | None = None,
     seo_issues_ai_insights: dict | None = None,
+    page_wise_ai: dict | None = None,
+    page_wise_exclude_paths: set[str] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -4480,7 +4515,7 @@ def _build_report(
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights)
-            add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows)
+            add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
             if schema_validation and schema_validation.get("total_pages"):
                 add_schema_combined_slide(prs, schema_validation)
             elif structured_data_rows:

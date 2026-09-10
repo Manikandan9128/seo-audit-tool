@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import threading
 import traceback
 import uuid
@@ -28,11 +29,12 @@ from app.models.report_generation_job import ReportGenerationJob
 from app.models.semrush_import import SemrushImport
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
-from app.reporting.pptx_builder import build_report, classify_seo_issues, _canonical_page_totals
+from app.reporting.pptx_builder import build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
 from app.services.seo_issues_insights_service import generate_seo_issues_insights
+from app.services.page_wise_priority_service import generate_page_wise_priority_content
 from app.services.geopulse_ai_service import generate_aeo_geo_content
 from app.services.google_sheets_service import create_competitor_keyword_sheet
 from app.services.app_settings_service import get_sheets_oauth_email
@@ -1328,6 +1330,36 @@ def _gather_report_data(
             logger.warning("SEO Issues insights generation failed for client %s: %s", client.id, insights_candidate["error"])
             content_issues.append(f"SEO Issues insights: {insights_candidate['error']}")
 
+    # Priority Issues - Page Wise slide's AI content (2026-09-10 user spec):
+    # per-page Fix text inferred from URL pattern + issue count, plus
+    # insights that group pages by shared probable root cause. Computed
+    # from the SAME other_rows _tech_fixes_scored_rows produces for the
+    # slide itself, so the AI never reasons about a page the table doesn't
+    # also show.
+    page_wise_ai = None
+    page_wise_exclude_paths: set[str] = set()
+    if page_audit_result and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
+        page_wise_scored_rows = [
+            r for r in _tech_fixes_scored_rows(page_audit_result, analytics, site_audit_pages_rows)
+            if r[6] == "other"
+        ]
+        if page_wise_exclude_paths:
+            excluded_norm = {p.rstrip("/") or "/" for p in page_wise_exclude_paths}
+            page_wise_scored_rows = [r for r in page_wise_scored_rows if (r[3].rstrip("/") or "/") not in excluded_norm]
+        if page_wise_scored_rows:
+            def _row_to_dict(r):
+                match = re.match(r"(\d+)", r[2])
+                return {"page": r[3], "issue_count": int(match.group(1)) if match else 0}
+
+            shown_dicts = [_row_to_dict(r) for r in page_wise_scored_rows[:9]]
+            full_dicts = [_row_to_dict(r) for r in page_wise_scored_rows]
+            page_wise_candidate = generate_page_wise_priority_content(shown_dicts, full_dicts)
+            if "error" not in page_wise_candidate:
+                page_wise_ai = page_wise_candidate
+            else:
+                logger.warning("Priority Issues - Page Wise AI content failed for client %s: %s", client.id, page_wise_candidate["error"])
+                content_issues.append(f"Priority Issues - Page Wise: {page_wise_candidate['error']}")
+
     # One diagnostic thesis synthesizing everything else already gathered —
     # deliberately NOT cached (unlike Company Overview): this reflects
     # current metrics/issues, and a stale cached diagnosis would be
@@ -1404,6 +1436,8 @@ def _gather_report_data(
         "own_domain_rating": own_domain_rating,
         "core_problem": core_problem_result,
         "seo_issues_ai_insights": seo_issues_ai_insights,
+        "page_wise_ai": page_wise_ai,
+        "page_wise_exclude_paths": page_wise_exclude_paths or None,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,
