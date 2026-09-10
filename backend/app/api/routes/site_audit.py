@@ -1269,11 +1269,24 @@ def _gather_report_data(
         if ui_fixes_result.get("ui_fixes"):
             ux_findings_result["ui_fixes"] = ui_fixes_result["ui_fixes"]
             ux_findings_result["ui_fixes_source"] = "vision"
+        elif ui_fixes_result.get("error"):
+            # 2026-09-10: this used to be silently dropped — UI-Level Fixes
+            # would just sit on the static_no_ux_pass() fallback with
+            # nothing in the logs to say the vision call itself was the
+            # reason, not a missing screenshot.
+            logger.warning("UI fixes vision pass failed for %s: %s", client.website_url, ui_fixes_result["error"])
 
         if not ux_findings_result.get("onboarding_breakdown"):
             onboarding_result = generate_onboarding_breakdown(client.name, client.website_url, homepage_shot)
             if onboarding_result.get("onboarding_breakdown"):
                 ux_findings_result["onboarding_breakdown"] = onboarding_result["onboarding_breakdown"]
+            elif onboarding_result.get("error"):
+                logger.warning("Onboarding breakdown vision pass failed for %s: %s", client.website_url, onboarding_result["error"])
+    else:
+        logger.warning(
+            "No homepage screenshot captured for %s — UI-Level Fixes and Onboarding Breakdown will be skipped/fallback this run.",
+            own_website_domain,
+        )
 
     # One diagnostic thesis synthesizing everything else already gathered —
     # deliberately NOT cached (unlike Company Overview): this reflects

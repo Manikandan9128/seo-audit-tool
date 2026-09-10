@@ -12,13 +12,25 @@ also avoids Playwright's sync API having to run across multiple threads,
 which it isn't reliably safe to do.
 """
 
+import logging
+
 from playwright.sync_api import sync_playwright
+
+logger = logging.getLogger(__name__)
 
 
 def capture_homepage_screenshots(domains: list[str], timeout_ms: int = 10000) -> dict[str, bytes]:
     """Returns {domain: png_bytes} — only for domains that actually
     succeeded. A domain missing from the result means capture failed
-    (blocked, timed out, DNS error, etc); skip it silently, don't retry."""
+    (blocked, timed out, DNS error, etc); skip it silently, don't retry.
+
+    Every failure is logged (2026-09-10: this used to swallow everything,
+    including a Chromium-launch failure, with zero trace anywhere — a
+    launch failure means EVERY domain in every call fails, every single
+    report, with nothing in the logs to say why. Logged now so a missing
+    `playwright install --with-deps chromium` on a deploy target — the
+    most likely cause of an every-time, not intermittent, failure — shows
+    up immediately instead of just being an empty dict downstream."""
     screenshots: dict[str, bytes] = {}
     if not domains:
         return screenshots
@@ -37,10 +49,11 @@ def capture_homepage_screenshots(domains: list[str], timeout_ms: int = 10000) ->
                     try:
                         page.goto(f"https://{domain}", timeout=timeout_ms, wait_until="load")
                         screenshots[domain] = page.screenshot(type="png")
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("Homepage screenshot failed for %s: %s", domain, e)
                         continue
             finally:
                 browser.close()
     except Exception:
-        pass  # Playwright/Chromium unavailable in this environment — no screenshots this run
+        logger.exception("Playwright/Chromium launch failed — no screenshots this run for %s", domains)
     return screenshots
