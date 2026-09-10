@@ -1222,12 +1222,35 @@ def add_tech_stack_slide(prs: Presentation, tech_stack: dict):
     return slide
 
 
+def classify_seo_issues(site_audit_issues: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Splits Semrush Site Audit's issue-type rollup into (errors, warnings)
+    — Notices dropped, zero-count rows dropped, ranked by pages affected.
+    Shared by add_seo_issues_slide's own rendering and the AI insights
+    prompt (site_audit.py) so both work off one classification instead of
+    two independently-maintained copies that could drift apart. Each entry
+    is {"issue": str, "pages": int}, not a pre-formatted label string, so
+    the AI prompt gets structured data instead of parsing "(N pages)" back
+    out of a display string."""
+    nonzero = [r for r in site_audit_issues if (r.get("failed_checks") or 0) > 0]
+    ranked = sorted(nonzero, key=lambda r: r.get("failed_checks") or 0, reverse=True)
+    errors, warnings = [], []
+    for row in ranked:
+        issue_type = str(row.get("issue_type", "")).strip().upper()
+        entry = {"issue": row.get("issue", "Issue"), "pages": row.get("failed_checks", 0)}
+        if issue_type == "ERROR":
+            errors.append(entry)
+        elif issue_type == "WARNING":
+            warnings.append(entry)
+    return errors, warnings
+
+
 def add_seo_issues_slide(
     prs: Presentation,
     audit: dict,
     page_audit: dict | None,
     site_audit_issues: list[dict] | None = None,
     site_audit_pages_rows: list[dict] | None = None,
+    insights_ai: dict | None = None,
 ):
     slide = _blank_slide(prs)
     _content_header(slide, "SEO Issues")
@@ -1250,25 +1273,10 @@ def add_seo_issues_slide(
         # Semrush Site Audit's own issue-type rollup — a real full-site crawl
         # result (hundreds of pages, ~95 issue categories), strictly richer
         # than our own homepage + 20-page checks below. Prefer it when
-        # uploaded. Rows with 0 failed checks are noise (the issue TYPE was
-        # checked for but never triggered) — drop them so real problems
-        # aren't crowded out by "X (0 pages)" lines.
-        nonzero = [r for r in site_audit_issues if (r.get("failed_checks") or 0) > 0]
-        ranked = sorted(nonzero, key=lambda r: r.get("failed_checks") or 0, reverse=True)
-        errors, warnings = [], []
-        for row in ranked:
-            label = f"{row.get('issue', 'Issue')} ({row.get('failed_checks', 0)} pages)"
-            # Semrush's own taxonomy is 3-way (Error/Warning/Notice), not
-            # binary — this used to bucket anything non-"ERROR" (including
-            # Notices) into Warnings, silently inflating the Warnings count
-            # past what Semrush itself reports. Notices are dropped from
-            # this slide entirely per user request (2026-09-10) rather than
-            # merged in under either column.
-            issue_type = str(row.get("issue_type", "")).strip().upper()
-            if issue_type == "ERROR":
-                errors.append(label)
-            elif issue_type == "WARNING":
-                warnings.append(label)
+        # uploaded.
+        error_entries, warning_entries = classify_seo_issues(site_audit_issues)
+        errors = [f"{e['issue']} ({e['pages']} pages)" for e in error_entries]
+        warnings = [f"{w['issue']} ({w['pages']} pages)" for w in warning_entries]
     else:
         issues = list(audit.get("issues", []))
         if page_audit:
@@ -1285,8 +1293,14 @@ def add_seo_issues_slide(
 
     # Errors and Warnings each get their own full-height container, side by
     # side, rather than stacking in one shared card — stacked lists with 10
-    # items per group could run past the bottom of the slide.
-    col_top, col_height = Inches(1.1), Inches(5.6)
+    # items per group could run past the bottom of the slide. Card height
+    # shrinks when the AI insights section below has real content to show —
+    # 10 rows only ever need ~4.0in (header + 10*row_h + padding), the extra
+    # 1.6in of card height was previously just empty space at the bottom of
+    # each card, now reclaimed for the insights section instead.
+    has_insights = bool(insights_ai and insights_ai.get("headline"))
+    col_top = Inches(1.1)
+    col_height = Inches(4.0) if has_insights else Inches(5.6)
     col_width = Inches(5.85)
     columns = [("Errors", errors, BAD, Inches(0.6)), ("Warnings", warnings, WARN, Inches(6.85))]
     row_h = Inches(0.32)
@@ -1306,7 +1320,37 @@ def add_seo_issues_slide(
         for issue in shown:
             _issue_row(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), issue, severity=("error" if color == BAD else "warn"))
             y += row_h
+
+    if has_insights:
+        _seo_issues_insights_section(slide, col_top + col_height + Inches(0.15), insights_ai)
     return slide
+
+
+def _seo_issues_insights_section(slide, top, insights_ai: dict):
+    """Renders the AI-generated headline / supporting-bullets / executive-
+    takeaway insights (2026-09-10 spec) below the Errors/Warnings columns —
+    distinct visual weight per part so a reader can skim just the headline
+    + takeaway without reading the supporting bullets, per the spec's own
+    "one sentence a non-technical stakeholder could read" framing for the
+    takeaway line."""
+    left, width = Inches(0.6), Inches(12.1)
+    y = top
+    _textbox(slide, left, y, width, Inches(0.22), "INSIGHTS", size=9.5, bold=True, color=_accent())
+    y += Inches(0.26)
+
+    headline = insights_ai.get("headline") or ""
+    _textbox(slide, left, y, width, Inches(0.4), headline, size=12.5, bold=True, color=TEXT_DARK)
+    y += Inches(0.34)
+
+    for point in (insights_ai.get("supporting") or [])[:4]:
+        _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
+        _textbox(slide, left + Inches(0.18), y, width - Inches(0.18), Inches(0.3), point, size=11)
+        y += Inches(0.28)
+
+    takeaway = insights_ai.get("takeaway")
+    if takeaway:
+        y += Inches(0.05)
+        _textbox(slide, left, y, width, Inches(0.3), f"Takeaway: {takeaway}", size=11, bold=True, color=_accent())
 
 
 def _traffic_by_path(analytics: dict | None) -> tuple[dict[str, int], dict[str, int]]:
@@ -4336,6 +4380,7 @@ def build_report(
     geopulse_analysis: dict | None = None,
     competitor_keyword_sheet_links: dict[str, str] | None = None,
     competitor_positions_full: dict[str, list[dict]] | None = None,
+    seo_issues_ai_insights: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -4357,7 +4402,7 @@ def build_report(
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
             site_audit_pages_rows, next_steps_ai, schema_validation,
             brand_citations, brand_wikipedia, geopulse_analysis, competitor_keyword_sheet_links,
-            competitor_positions_full,
+            competitor_positions_full, seo_issues_ai_insights,
         )
     finally:
         _theme["footer"] = ""
@@ -4398,6 +4443,7 @@ def _build_report(
     geopulse_analysis: dict | None = None,
     competitor_keyword_sheet_links: dict[str, str] | None = None,
     competitor_positions_full: dict[str, list[dict]] | None = None,
+    seo_issues_ai_insights: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -4433,7 +4479,7 @@ def _build_report(
             add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
-            add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows)
+            add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights)
             add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows)
             if schema_validation and schema_validation.get("total_pages"):
                 add_schema_combined_slide(prs, schema_validation)

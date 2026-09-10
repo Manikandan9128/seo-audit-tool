@@ -28,10 +28,11 @@ from app.models.report_generation_job import ReportGenerationJob
 from app.models.semrush_import import SemrushImport
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
-from app.reporting.pptx_builder import build_report
+from app.reporting.pptx_builder import build_report, classify_seo_issues, _canonical_page_totals
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
+from app.services.seo_issues_insights_service import generate_seo_issues_insights
 from app.services.geopulse_ai_service import generate_aeo_geo_content
 from app.services.google_sheets_service import create_competitor_keyword_sheet
 from app.services.app_settings_service import get_sheets_oauth_email
@@ -1308,6 +1309,25 @@ def _gather_report_data(
             own_website_domain,
         )
 
+    # SEO Issues slide's AI insights (headline/root-cause bullets/executive
+    # takeaway, 2026-09-10 user spec) — computed from the SAME classification
+    # the slide itself renders (classify_seo_issues), so the AI never reasons
+    # about a number the reader can't also see on the table.
+    seo_issues_ai_insights = None
+    if site_audit_issues_rows and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
+        error_entries, warning_entries = classify_seo_issues(site_audit_issues_rows)
+        page_totals = _canonical_page_totals(site_audit_pages_rows, None)
+        insights_candidate = generate_seo_issues_insights(
+            error_entries, warning_entries,
+            total_pages=(page_totals or {}).get("total"),
+            pages_with_issues=(page_totals or {}).get("with_issues"),
+        )
+        if "error" not in insights_candidate:
+            seo_issues_ai_insights = insights_candidate
+        else:
+            logger.warning("SEO Issues insights generation failed for client %s: %s", client.id, insights_candidate["error"])
+            content_issues.append(f"SEO Issues insights: {insights_candidate['error']}")
+
     # One diagnostic thesis synthesizing everything else already gathered —
     # deliberately NOT cached (unlike Company Overview): this reflects
     # current metrics/issues, and a stale cached diagnosis would be
@@ -1383,6 +1403,7 @@ def _gather_report_data(
         "backlink_summary": backlink_summary,
         "own_domain_rating": own_domain_rating,
         "core_problem": core_problem_result,
+        "seo_issues_ai_insights": seo_issues_ai_insights,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,
