@@ -711,7 +711,12 @@ def _build_next_steps_findings(data: dict, competitor_narratives: dict[str, dict
             {"path": p.get("path"), "pageviews": p.get("page_views")} for p in top_pages
         ] or None,
         "bounce_rate_pct": round(bounce_rate, 1) if bounce_rate is not None else None,
-        "domain_strategy": data.get("domain_strategy"),
+        # domain_strategy deliberately NOT fed here (2026-09-10 user request):
+        # its ccTLD/domain-consolidation finding was surfacing as the Next
+        # Steps: Technical SEO slide's first bullet, a decision the user
+        # doesn't want recommended in this report. The Domain Strategy slide
+        # itself was already cut earlier (2026-09-08) — this was its only
+        # remaining downstream use.
         "ux_findings": ux_findings if not ux_findings.get("no_ux_pass_done") and not ux_findings.get("error") else None,
     }
 

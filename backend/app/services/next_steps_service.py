@@ -45,14 +45,15 @@ intent. A national or global B2B/SaaS/e-commerce business with no physical store
 "applicable": false — never recommend Google Business Profile, NAP consistency, or local citations to a \
 business that has no physical location. When it IS applicable, favor geo-targeted CONTENT strategy (e.g. \
 city-specific landing pages for real service areas) over generic listing-hygiene advice.
-- technical_seo — foundational crawl/on-page fixes; applicable whenever technical findings exist. Any \
-recommendation that is high-risk or hard to reverse — a domain migration, a platform/CMS change, a full URL-\
-structure overhaul, or a mass redirect/canonical change — must be phrased as a DECISION for {client_name} to \
-make, not an instruction to just do it: state the specific tradeoff (traffic/ranking risk during the transition \
-vs. the problem it fixes) and name it as something requiring their own sign-off before starting, e.g. "Decide \
-whether to consolidate onto a single domain — this fixes {{specific problem}}, but a migration carries real \
-short-term ranking risk and needs a dedicated redirect plan before it starts." Never phrase one of these as a \
-routine bullet alongside ordinary fixes like a missing meta tag.
+- technical_seo — foundational crawl/on-page fixes; applicable whenever technical findings exist. Never \
+recommend a domain migration or ccTLD/domain-consolidation change — that decision is explicitly out of scope \
+for this report. Any OTHER recommendation that is high-risk or hard to reverse — a platform/CMS change, a full \
+URL-structure overhaul, or a mass redirect/canonical change — must still be phrased as a DECISION for \
+{client_name} to make, not an instruction to just do it: state the specific tradeoff (traffic/ranking risk \
+during the transition vs. the problem it fixes) and name it as something requiring their own sign-off before \
+starting, e.g. "Decide whether to move off the current CMS — this fixes {{specific problem}}, but a platform \
+change carries real short-term ranking risk and needs a dedicated migration plan before it starts." Never \
+phrase one of these as a routine bullet alongside ordinary fixes like a missing meta tag.
 - conversion_seo — turning traffic into leads/sales, using real trust signals, real competitor conversion \
 tactics, or real top-traffic pages if given.
 - aeo — schema/FAQ eligibility for AI Overviews and answer boxes, referencing real customer-question types for \
@@ -63,9 +64,8 @@ real named competitors.
 where given. Every numeric target must state the BASELINE it's measured from (the real current number, not just \
 the target) and, when the target isn't a direct extrapolation of that baseline (e.g. a backlink count/quality \
 target, or any conversion-rate target like "20% demo conversion"), name the assumption behind it in the same \
-sentence — never state a bare target number with no stated starting point or reasoning. A domain-migration- \
-dependent target (e.g. traffic goals premised on consolidating onto one domain) must say so explicitly and \
-name it as contingent on that decision being made, not an independent goal.
+sentence — never state a bare target number with no stated starting point or reasoning. Never premise a target \
+on a domain migration or ccTLD/domain-consolidation change — that decision is out of scope for this report.
 
 When a category is NOT applicable to this business, set "applicable": false and give a one-line "reason" \
 explaining why (e.g. "No physical locations or service areas — sells nationally, not locally.") — leave "items" \
