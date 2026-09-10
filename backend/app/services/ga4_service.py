@@ -190,6 +190,29 @@ def _single_dimension_breakdown(client, property_id: str, iso_date: str, dimensi
     ]
 
 
+def _single_day_engagement_metrics(client, property_id: str, iso_date: str) -> dict[str, float]:
+    """Direct single-day query for bounce rate + engagement rate, same
+    proven pattern as _single_dimension_breakdown (used for the spike
+    slide's country/channel/landing-page breakdowns): pulling this one
+    day's value out of the 30-day get_traffic_overview batch sometimes came
+    back empty for that specific row even though the aggregate (and every
+    other day) was fine — confirmed real, Traffic Overview's own bounce-
+    rate card renders a genuine non-zero number from the same underlying
+    data. A dedicated request scoped to just this one day, mirroring how
+    the other per-day breakdowns already work, is far more likely to
+    return a real value than picking it out of the larger batch."""
+    body = {
+        "metrics": [{"name": "bounceRate"}, {"name": "engagementRate"}],
+        "dateRanges": [{"startDate": iso_date, "endDate": iso_date}],
+    }
+    response = client.properties().runReport(property=property_id, body=body).execute()
+    rows = response.get("rows", [])
+    if not rows:
+        return {}
+    mv = rows[0]["metricValues"]
+    return {"bounce_rate": float(mv[0]["value"]), "engagement_rate": float(mv[1]["value"])}
+
+
 def _daily_metric_totals(client, property_id: str, start_date: str, end_date: str, metric_name: str) -> dict[str, float]:
     """date (YYYYMMDD) -> metric total, one query for the whole period —
     same shape as get_traffic_overview's per-day rows but for a metric
@@ -269,6 +292,20 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     }
     avg_bounce_rate = statistics.mean(bounce_by_date.values()) if bounce_by_date else None
     spike_bounce_rate = bounce_by_date.get(spike_date)
+
+    # Spike-day-specific bounce/engagement can come back empty from the
+    # batched 30-day pull above even when the period average (and every
+    # other day) is fine — a dedicated single-day query, same pattern as
+    # the country/channel/landing-page breakdowns below, recovers it.
+    if spike_bounce_rate is None or spike_engagement_rate is None:
+        try:
+            single_day = _single_day_engagement_metrics(client, property_id, iso_date)
+        except HttpError:
+            single_day = {}
+        if spike_bounce_rate is None and "bounce_rate" in single_day:
+            spike_bounce_rate = single_day["bounce_rate"]
+        if spike_engagement_rate is None and "engagement_rate" in single_day:
+            spike_engagement_rate = single_day["engagement_rate"]
 
     # Average session duration (seconds) = engagement_duration / sessions
     # per day — GA4 doesn't expose "average session duration" as its own
