@@ -1,6 +1,8 @@
 from pptx import Presentation
 
-from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _schema_validator_insights, add_schema_combined_slide
+from app.reporting.pptx_builder import (
+    SLIDE_H, SLIDE_W, add_schema_combined_slide, build_schema_report_parts, schema_eligibility_notes,
+)
 from app.services.technical_seo_service import aggregate_schema_validation
 
 
@@ -34,51 +36,72 @@ def _pages(blog_n=310, product_n=55, other_n=1596):
     return pages
 
 
-def test_missing_types_no_longer_duplicates_by_page_type_rows():
-    # 2026-09-10 spec: the same 0%-coverage fact (Article/Product schema
-    # entirely missing) must not appear both as a by_page_type row AND as
-    # a separate "entire type missing" Finding — only truly sitewide types
-    # (never bucketed by page type) belong in missing_types.
+def test_other_pages_marked_na_not_a_content_schema_row():
     sv = aggregate_schema_validation(_pages())
-    missing_type_names = {m["type"] for m in sv["missing_types"]}
-    by_page_type_names = {r["page_type"] for r in sv["by_page_type"]}
-    assert missing_type_names.isdisjoint(by_page_type_names)
-    assert "BreadcrumbList" in missing_type_names
+    parts = build_schema_report_parts(sv)
+    other = next(r for r in parts["part1"] if r["page_type"] == "Other Pages")
+    assert other["recommended_schema"] == "N/A"
+    assert not any(r["schema_type"] == "Other Pages" for r in parts["part2"])
 
 
-def test_overall_coverage_excludes_baseline_only_other_pages():
-    analytics = {"top_pages": {"rows": [{"path": "/blog/post-0", "page_views": 672}, {"path": "/product/item-0", "page_views": 405}]}}
-    sv = aggregate_schema_validation(_pages(), analytics)
-    insights = _schema_validator_insights(sv)
-    assert insights
-    assert "0%" in insights[0]
-    assert "not blended" in insights[0]
+def test_content_type_coverage_denominator_is_its_own_page_count_not_total():
+    # Part 2's Coverage % denominator must be the pages that type applies
+    # to (310 blog pages), never the full site total (~1961 pages).
+    sv = aggregate_schema_validation(_pages())
+    parts = build_schema_report_parts(sv)
+    article_row = next(r for r in parts["part2"] if r["schema_type"] == "Article")
+    assert article_row["applicable"] == 310
+    product_row = next(r for r in parts["part2"] if r["schema_type"] == "Product")
+    assert product_row["applicable"] == 55
 
 
-def test_biggest_gap_names_highest_pageviews_page_type():
-    analytics = {"top_pages": {"rows": [{"path": "/blog/post-0", "page_views": 672}, {"path": "/product/item-0", "page_views": 405}]}}
-    sv = aggregate_schema_validation(_pages(), analytics)
-    insights = _schema_validator_insights(sv)
-    gap_line = next(i for i in insights if i.startswith("Biggest gap"))
-    assert "Article-type" in gap_line
-    assert "672" in gap_line
+def test_baseline_schema_uses_total_pages_denominator():
+    sv = aggregate_schema_validation(_pages())
+    parts = build_schema_report_parts(sv)
+    total_pages = sv["total_pages"]
+    website_row = next(r for r in parts["part2"] if r["schema_type"] == "WebSite")
+    assert website_row["applicable"] == total_pages
+    org_row = next(r for r in parts["part2"] if r["schema_type"] == "Organization")
+    assert org_row["applicable"] == total_pages
 
 
-def test_no_content_pages_returns_no_insights():
+def test_breadcrumb_applicable_is_content_pages_only_not_other_pages():
+    # BreadcrumbList's denominator should be real content pages (blog +
+    # product), matching the SNIP reference — not blended with the "Other
+    # Pages" utility bucket, and not the full site total either.
+    sv = aggregate_schema_validation(_pages())
+    parts = build_schema_report_parts(sv)
+    breadcrumb_row = next(r for r in parts["part2"] if r["schema_type"] == "BreadcrumbList")
+    assert breadcrumb_row["applicable"] == 310 + 55
+
+
+def test_site_wide_part1_row_present():
+    sv = aggregate_schema_validation(_pages())
+    parts = build_schema_report_parts(sv)
+    site_wide = next(r for r in parts["part1"] if r["page_type"] == "Site-wide")
+    assert site_wide["recommended_schema"] == "WebSite, Organization"
+    assert site_wide["pages"] == sv["total_pages"]
+
+
+def test_eligibility_notes_flag_retired_type_only():
     sv = aggregate_schema_validation(_pages(blog_n=0, product_n=0, other_n=50))
-    assert _schema_validator_insights(sv) == []
+    parts = build_schema_report_parts(sv)
+    notes = schema_eligibility_notes(parts["part2"])
+    assert "Product" not in notes
+    assert "WebSite" not in notes
 
 
-def test_slide_renders_without_duplicate_finding_row():
-    # "Article-type" legitimately appears twice — once as the coverage
-    # table's own row, once in the "Biggest gap" insight bullet naming it.
-    # What must NOT happen is a THIRD appearance as its own row in the
-    # separate "Schema Validator Findings" table below (the old duplicate:
-    # the same 0%-coverage fact restated as "(entire type missing)").
-    analytics = {"top_pages": {"rows": [{"path": "/blog/post-0", "page_views": 672}, {"path": "/product/item-0", "page_views": 405}]}}
-    sv = aggregate_schema_validation(_pages(), analytics)
-    slide = add_schema_combined_slide(_prs(), sv)
+def test_slide_renders_with_no_ai_insights_and_no_part3_section():
+    sv = aggregate_schema_validation(_pages())
+    slide = add_schema_combined_slide(_prs(), sv, schema_ai_insights=None)
     text = _slide_text(slide)
-    assert text.count("Article-type") == 2
-    assert "Product\n(entire type missing)" not in text
-    assert "Article-type\n(entire type missing)" not in text
+    assert "Part 1" in text
+    assert "Part 2" in text
+    assert "KEY INSIGHTS" not in text.upper()
+
+
+def test_slide_renders_ai_insights_when_provided():
+    sv = aggregate_schema_validation(_pages())
+    slide = add_schema_combined_slide(_prs(), sv, schema_ai_insights={"insights": ["Article schema missing on all 310 blog pages — Fix: add it to the blog template."]})
+    text = _slide_text(slide)
+    assert "Fix: add it to the blog template" in text

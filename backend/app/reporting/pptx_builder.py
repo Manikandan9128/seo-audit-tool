@@ -1674,217 +1674,167 @@ def _schema_eligibility_flag(schema_type: str) -> str | None:
     return _SCHEMA_GOOGLE_ELIGIBILITY[schema_type]
 
 
-def _schema_validator_insights(schema_validation: dict) -> list[str]:
-    """KEY INSIGHTS for Structured Data & Schema Validator (2026-09-10
-    spec): a traffic-weighted overall coverage headline instead of a flat
-    page-count %, the single highest-pageviews-at-risk gap named
-    specifically, any type where presence and required-field validity
-    diverge, and a plain eligibility note for any type Google no longer
-    grants (or has never had verified) a rich result for. Built entirely
-    from by_page_type (already segmented by real page type and joined to
-    real GA4 pageviews by aggregate_schema_validation) — never a schema
-    type or number not literally present in that data.
+_PAGE_TYPE_LABELS = {
+    "Article-type": "Blog / Article", "Product": "Product", "LocalBusiness": "Local / Location",
+    "JobPosting": "Job Listing", "Event": "Event", "FAQPage": "FAQ-style Pages", "Other Pages": "Other Pages",
+}
+_PAGE_TYPE_SCHEMA_LABEL = {
+    "Article-type": "Article", "Product": "Product", "LocalBusiness": "LocalBusiness",
+    "JobPosting": "JobPosting", "Event": "Event", "FAQPage": "FAQPage",
+}
+_PAGE_TYPE_WHY_APPLIES = {
+    "Article-type": "Content is dated, authored editorial — eligible for article rich results.",
+    "Product": "Has price/availability data — eligible for product rich results.",
+    "LocalBusiness": "Has location/contact details — eligible for map/business-info rich results.",
+    "JobPosting": "Contains job listing details — eligible for Google's job-search rich results.",
+    "Event": "Contains event date/venue details — eligible for event rich results.",
+    "FAQPage": "Contains genuine Q&A content — only pages with this content qualify.",
+}
 
-    "Other Pages" is excluded from the weighted headline: that bucket's
-    schema is whatever baseline/universal markup (Organization, WebSite)
-    happens to be sitewide, and Step 2 of the spec requires baseline
-    coverage to be reported separately from content-specific schema
-    coverage rather than blended into one number that could read as
-    "100% have structured data" when only the universal types are
-    present."""
+
+def build_schema_report_parts(schema_validation: dict) -> dict:
+    """Builds Part 1 (Page Type -> Recommended Schema -> Pages -> Why It
+    Applies) and Part 2 (Schema Type -> Applicable -> Valid -> Errors ->
+    Coverage %) rows for the Structured Data & Schema Validator slide
+    (2026-09-10 user spec), from aggregate_schema_validation's already-
+    computed by_page_type/type_coverage/missing_properties — no new
+    crawling, no invented numbers. Denominator for Part 2's Coverage % is
+    always the pages that schema type actually applies to, never total
+    site pages; baseline site-wide schema (WebSite/Organization) and
+    BreadcrumbList (applicable to real content pages, not utility "Other
+    Pages") get their own rows rather than being blended into any content
+    type's coverage. Shared by the slide's own rendering and the AI
+    insights prompt (site_audit.py) so both work off identical numbers."""
+    total_pages = schema_validation.get("total_pages") or 0
     by_page_type = schema_validation.get("by_page_type") or []
-    content_rows = [r for r in by_page_type if r["page_type"] != "Other Pages" and r["pages"]]
-    if not content_rows:
-        return []
+    type_coverage = {c["type"]: c["pages_with_it"] for c in (schema_validation.get("type_coverage") or [])}
+    missing_props_by_type: dict[str, int] = {}
+    for m in schema_validation.get("missing_properties") or []:
+        if m["severity"] == "required":
+            missing_props_by_type[m["type"]] = missing_props_by_type.get(m["type"], 0) + m["pages_missing"]
 
-    has_traffic = any(r["pageviews"] for r in content_rows)
-    if has_traffic:
-        weighted_num = sum(r["coverage_pct"] / 100 * r["pages"] * r["pageviews"] for r in content_rows)
-        weighted_den = sum(r["pages"] * r["pageviews"] for r in content_rows)
-    else:
-        weighted_num = sum(r["coverage_pct"] / 100 * r["pages"] for r in content_rows)
-        weighted_den = sum(r["pages"] for r in content_rows)
-    overall = 100 * weighted_num / weighted_den if weighted_den else 0
-    total_content_pages = sum(r["pages"] for r in content_rows)
+    part1, part2 = [], []
+    content_pages_total = 0
+    for row in by_page_type:
+        pt = row["page_type"]
+        pages = row["pages"]
+        label = _PAGE_TYPE_LABELS.get(pt, pt)
+        if pt == "Other Pages":
+            part1.append({
+                "page_type": label, "recommended_schema": "N/A", "pages": pages,
+                "why_it_applies": "No content-specific schema type applies to this template.",
+            })
+            continue
+        content_pages_total += pages
+        schema_label = _PAGE_TYPE_SCHEMA_LABEL.get(pt, pt)
+        part1.append({
+            "page_type": label, "recommended_schema": f"{schema_label}, BreadcrumbList", "pages": pages,
+            "why_it_applies": _PAGE_TYPE_WHY_APPLIES.get(pt, ""),
+        })
+        present = round(row["coverage_pct"] / 100 * pages)
+        valid = round(row["valid_pct"] / 100 * pages)
+        part2.append({
+            "schema_type": schema_label, "applicable": pages, "valid": valid,
+            "errors": max(present - valid, 0), "coverage_pct": row["valid_pct"],
+        })
 
-    insights = [
-        f"{'Traffic-weighted' if has_traffic else 'Page-weighted'} content-specific schema coverage across "
-        f"{total_content_pages:,} pages (Article/Product/etc.): {overall:.0f}% — Organization/WebSite baseline "
-        f"schema is tracked separately below, not blended into this number."
-    ]
+    if total_pages:
+        part1.append({
+            "page_type": "Site-wide", "recommended_schema": "WebSite, Organization", "pages": total_pages,
+            "why_it_applies": "Baseline identity schema, applies to every page.",
+        })
+        for t in ("WebSite", "Organization"):
+            present = type_coverage.get(t, 0)
+            invalid = missing_props_by_type.get(t, 0)
+            valid = max(present - invalid, 0)
+            part2.append({
+                "schema_type": t, "applicable": total_pages, "valid": valid,
+                "errors": max(present - valid, 0),
+                "coverage_pct": round(100 * valid / total_pages) if total_pages else 0,
+            })
 
-    # content_rows is already sorted by -pageviews (aggregate_schema_
-    # validation's own SEO-priority order), so the first row short of 100%
-    # coverage is the single biggest pageviews-at-risk gap.
-    top_gap = next((r for r in content_rows if r["coverage_pct"] < 100), None)
-    if top_gap:
-        at_risk = round(top_gap["pageviews"] * (1 - top_gap["coverage_pct"] / 100))
-        insights.append(
-            f"Biggest gap: {top_gap['page_type']} ({top_gap['applicable_schema']}) is only {top_gap['coverage_pct']}% "
-            f"covered across {top_gap['pages']:,} pages"
-            + (f" — {at_risk:,} pageviews behind schema-less pages." if at_risk else ".")
-        )
+    if content_pages_total:
+        present = min(type_coverage.get("BreadcrumbList", 0), content_pages_total)
+        invalid = missing_props_by_type.get("BreadcrumbList", 0)
+        valid = max(present - invalid, 0)
+        part2.append({
+            "schema_type": "BreadcrumbList", "applicable": content_pages_total, "valid": valid,
+            "errors": max(present - valid, 0),
+            "coverage_pct": round(100 * valid / content_pages_total) if content_pages_total else 0,
+        })
 
-    # Presence vs. validity divergence (Step 3: never call presence alone
-    # "valid") — worst gap between coverage_pct and valid_pct.
-    diverging = [r for r in content_rows if r["coverage_pct"] and r["coverage_pct"] - r["valid_pct"] >= 20]
-    if diverging:
-        d = max(diverging, key=lambda r: r["coverage_pct"] - r["valid_pct"])
-        insights.append(
-            f"{d['page_type']} schema is present on {d['coverage_pct']}% of its pages but only {d['valid_pct']}% "
-            f"pass required-field validation — presence isn't validity here."
-        )
+    return {"part1": part1, "part2": part2}
 
-    # Eligibility framing (Step 4) for every type actually referenced above.
-    seen_types = sorted({t for r in content_rows for t in r["applicable_schema"].split("/") if t and t != "—"})
-    for t in seen_types:
-        flag = _schema_eligibility_flag(t)
+
+def schema_eligibility_notes(part2: list[dict]) -> dict[str, str]:
+    """Google rich-result eligibility note per schema type appearing in
+    Part 2 — only populated for a type that's NOT fully eligible (retired,
+    restricted, or unverified). Fed to the Part 3 AI insights prompt so it
+    never claims a rich-result/CTR benefit for a type Google doesn't
+    actually grant one for."""
+    notes = {}
+    for row in part2:
+        flag = _schema_eligibility_flag(row["schema_type"])
         if flag:
-            insights.append(flag if flag.startswith("ELIGIBILITY_CHECK_STALE") else f"{t} schema: {flag}")
+            notes[row["schema_type"]] = flag
+    return notes
 
-    return insights[:6]
 
-
-def add_schema_combined_slide(prs: Presentation, schema_validation: dict):
-    """Structured Data coverage (type presence %, ground truth from this
-    tool's own crawl — see the prior standalone version's now-removed
-    docstring for why crawl beats Semrush's export here) and Schema
-    Validator (missing REQUIRED properties + Search Console's real
-    rich-result verdicts) on ONE slide, stacked full-width (Structured
-    Data on top, Schema Validator below) rather than as two separate
-    slides — per client request. Explicitly NOT two half-width side-by-
-    side panels: that version cut both tables' row_cap and column widths
-    to fit side by side, which lost real rows/truncated real column
-    content compared to the original separate full-width slides — full
-    width top-to-bottom keeps every column at its original width. Both
-    tables are sourced from the same schema_validation dict
-    (aggregate_schema_validation), so whenever one would have content the
-    other's data is already available too; the Semrush-export-only
-    fallback (add_structured_data_slide) stays a separate full-width
-    slide for the rare case no crawl-based schema data exists at all."""
+def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema_ai_insights: dict | None = None):
+    """Structured Data & Schema Validator, 2026-09-10 user spec: straight
+    into two tables (no summary metric cards) — Part 1 maps each page type
+    to its recommended schema and why it applies; Part 2 reports Applicable/
+    Valid/Errors/Coverage % per schema type, denominator always the pages
+    that type applies to, baseline (WebSite/Organization) and BreadcrumbList
+    kept in their own rows rather than blended into content-type coverage.
+    Part 3 (Key Insights) is AI-written from these exact same numbers (see
+    build_schema_report_parts / page_wise_priority_service-style prompt in
+    structured_data_insights_service.py) — grouping by shared root cause,
+    calling out confirmed wins and correctly-excluded pages, never inventing
+    a schema type. Falls back to tables-only (no Part 3) when AI insights
+    aren't available, same discipline as every other AI section in this
+    file."""
     total_pages = schema_validation.get("total_pages") or 0
     if not total_pages:
         return None
 
-    type_coverage = schema_validation.get("type_coverage") or []
-    pages_with_schema = schema_validation.get("pages_with_schema") or 0
-    missing_properties = schema_validation.get("missing_properties") or []
-    gsc_rich_results = schema_validation.get("gsc_rich_results") or []
-    missing_types = schema_validation.get("missing_types") or []
-    by_page_type = schema_validation.get("by_page_type") or []
-    if not type_coverage and not missing_properties and not gsc_rich_results and not missing_types:
+    parts = build_schema_report_parts(schema_validation)
+    part1, part2 = parts["part1"], parts["part2"]
+    if not part1 and not part2:
         return None
 
     slide = _blank_slide(prs)
     _content_header(slide, "Structured Data & Schema Validator")
+    gsc_rich_results = schema_validation.get("gsc_rich_results") or []
     source = "Site Audit crawl + Search Console URL Inspection" if gsc_rich_results else "Site Audit crawl (JSON-LD)"
     _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
 
     left, width = Inches(0.6), Inches(12.1)
     y = Inches(1.05)
-    insights = []
-    ROW_CAP, ROW_H = 6, 0.3
+    ROW_H = 0.28
 
-    if by_page_type:
-        # Presence, validity, and business value split by PAGE TYPE (not
-        # one blended site-wide number) — teammate QA on the last report
-        # asked for exactly this: Page Type -> Applicable Schema -> Schema
-        # Count -> Validation -> SEO Priority. Rows are already sorted by
-        # real GA4 pageviews (the traffic a gap here would actually cost),
-        # page count as tiebreaker — the highest-priority gap is always
-        # row one, not something the reader has to work out themselves.
-        _textbox(slide, left, y, width, Inches(0.24), "Structured Data Coverage by Page Type", size=12.5, bold=True, color=_accent())
-        y = y + Inches(0.28)
-        coverage_rows = [
-            (
-                r["page_type"], r["applicable_schema"], f"{r['pages']:,}",
-                f"{r['coverage_pct']}%", f"{r['valid_pct']}%",
-                f"{r['pageviews']:,}" if r["pageviews"] else "—",
-            )
-            for r in by_page_type
+    if part1:
+        _textbox(slide, left, y, width, Inches(0.24), "Part 1 — Applicable Schema by Page Type", size=12.5, bold=True, color=_accent())
+        y += Inches(0.28)
+        rows1 = [(r["page_type"], r["recommended_schema"], f"{r['pages']:,}", r["why_it_applies"]) for r in part1]
+        y = _draw_table(
+            slide, ["Page Type", "Recommended Schema", "Pages", "Why It Applies"], rows1, y,
+            col_widths=[2.0, 2.3, 1.0, 6.8], left=left, width=width, row_cap=6, row_height=ROW_H, wrap_cols={3},
+        ) + Inches(0.15)
+
+    if part2:
+        _textbox(slide, left, y, width, Inches(0.24), "Part 2 — Validation Results", size=12.5, bold=True, color=_accent())
+        y += Inches(0.28)
+        rows2 = [
+            (r["schema_type"], f"{r['applicable']:,}", f"{r['valid']:,}", f"{r['errors']:,}", f"{r['coverage_pct']}%")
+            for r in part2
         ]
         y = _draw_table(
-            slide, ["Page Type", "Applicable Schema", "Pages", "Coverage", "Valid", "Pageviews"], coverage_rows, y,
-            col_widths=[2.2, 2.6, 1.2, 1.7, 1.6, 2.8], left=left, width=width, row_cap=ROW_CAP, row_height=ROW_H,
-        ) + Inches(0.2)
-        # 2026-09-10 spec: traffic-weighted coverage headline + the single
-        # highest-pageviews-at-risk gap + presence/validity divergence +
-        # eligibility framing, all derived from this same table — replaces
-        # the flat "X% have structured data" + a second "Highest-priority
-        # gap" bullet that used to restate a row from the Findings table
-        # below verbatim (the exact duplicate this slide's SNIP reference
-        # showed: a page-type's 0%-coverage row appearing a second time as
-        # its own "finding" card).
-        insights.extend(_schema_validator_insights(schema_validation))
-    if type_coverage:
-        # "Schema Count" — the flow's own step name for this table — used to
-        # be dropped whenever by_page_type also had data (elif, mutually
-        # exclusive), even though it's a distinct step from Page Type/
-        # Coverage above. Renders in both cases now; tighter row cap only
-        # when stacked below the by_page_type table so the 3-section slide
-        # (Page Type, Schema Count, Findings) still fits.
-        stacked = bool(by_page_type)
-        row_cap = 4 if stacked else ROW_CAP
-        row_h = 0.26 if stacked else ROW_H
-        _textbox(slide, left, y, width, Inches(0.24), "Schema Count by Type", size=12.5, bold=True, color=_accent())
-        y = y + Inches(0.28)
-        coverage_rows = [(c["type"], f"{c['pages_with_it']:,} / {total_pages:,}", f"{c['coverage_pct']}%") for c in type_coverage]
-        y = _draw_table(
-            slide, ["Schema Type", "Pages With It", "Coverage"], coverage_rows, y,
-            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=row_cap, row_height=row_h,
-        ) + Inches(0.2)
-        if not stacked:
-            any_schema_pct = 100 * pages_with_schema / total_pages
-            insights.append(f"{pages_with_schema:,} of {total_pages:,} pages ({any_schema_pct:.0f}%) have structured data implemented.")
+            slide, ["Schema Type", "Applicable Pages", "Valid", "Errors", "Coverage %"], rows2, y,
+            col_widths=[2.6, 2.4, 2.0, 2.0, 3.1], left=left, width=width, row_cap=6, row_height=ROW_H,
+        ) + Inches(0.15)
 
-    gsc_rows = []
-    gsc_pass_count = gsc_fail_count = 0
-    for r in gsc_rich_results:
-        verdict = r.get("verdict")
-        if verdict == "PASS":
-            gsc_pass_count += 1
-        elif verdict == "FAIL":
-            gsc_fail_count += 1
-        for item in r.get("detected_items") or []:
-            for sub in item.get("items") or []:
-                for issue in sub.get("issues") or []:
-                    gsc_rows.append((
-                        f"{item.get('type')} (Google-verified)",
-                        issue.get("message") or "Flagged by Google's Rich Results check",
-                        _truncate_cell(r.get("url") or "", 4.0),
-                    ))
-    type_rows = [(m["type"], "(entire type missing)", m["reason"]) for m in missing_types]
-    rule_rows = [
-        (
-            m["type"] if m["severity"] == "required" else f"{m['type']} (recommended)",
-            f"Missing {m['field']}",
-            f"{m['pages_missing']:,} of {total_pages:,}",
-        )
-        for m in missing_properties
-    ]
-    finding_rows = gsc_rows + type_rows + rule_rows
-    if finding_rows:
-        # All 3 sections stacking (Page Type + Schema Count + Findings)
-        # needs a tighter cap here too, same reasoning as Schema Count above
-        # — otherwise the combined height runs past the slide and crowds
-        # out the insights strip below.
-        findings_stacked = bool(by_page_type) and bool(type_coverage)
-        findings_row_cap = 4 if findings_stacked else ROW_CAP
-        _textbox(slide, left, y, width, Inches(0.24), "Schema Validator Findings", size=12.5, bold=True, color=_accent())
-        y = y + Inches(0.28)
-        y = _draw_table(
-            slide, ["Schema Type", "Finding", "Pages Affected"], finding_rows, y,
-            col_widths=[4.0, 4.05, 4.05], left=left, width=width, row_cap=findings_row_cap, row_height=ROW_H,
-        ) + Inches(0.2)
-        if gsc_rich_results:
-            insights.append(f"Search Console's own rich-result check: {gsc_pass_count:,} pass, {gsc_fail_count:,} fail.")
-        if missing_types:
-            insights.append(f"{missing_types[0]['type']} schema entirely missing — {missing_types[0]['reason']}.")
-        elif missing_properties:
-            worst = missing_properties[0]
-            worst_label = "missing (required)" if worst["severity"] == "required" else "missing (recommended)"
-            insights.append(f"{worst['type']} schema {worst_label} '{worst['field']}' on {worst['pages_missing']:,} page(s).")
-
+    insights = list((schema_ai_insights or {}).get("insights") or [])[:5]
     if insights:
         _insights_strip(slide, left, y, width, insights)
     return slide
@@ -4414,6 +4364,7 @@ def build_report(
     seo_issues_ai_insights: dict | None = None,
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
+    schema_ai_insights: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -4436,6 +4387,7 @@ def build_report(
             site_audit_pages_rows, next_steps_ai, schema_validation,
             brand_citations, brand_wikipedia, geopulse_analysis, competitor_keyword_sheet_links,
             competitor_positions_full, seo_issues_ai_insights, page_wise_ai, page_wise_exclude_paths,
+            schema_ai_insights,
         )
     finally:
         _theme["footer"] = ""
@@ -4479,6 +4431,7 @@ def _build_report(
     seo_issues_ai_insights: dict | None = None,
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
+    schema_ai_insights: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -4517,7 +4470,7 @@ def _build_report(
             add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights)
             add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
             if schema_validation and schema_validation.get("total_pages"):
-                add_schema_combined_slide(prs, schema_validation)
+                add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
             elif structured_data_rows:
                 add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
 

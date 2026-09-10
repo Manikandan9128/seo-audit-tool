@@ -29,12 +29,16 @@ from app.models.report_generation_job import ReportGenerationJob
 from app.models.semrush_import import SemrushImport
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
-from app.reporting.pptx_builder import build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows
+from app.reporting.pptx_builder import (
+    build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows,
+    build_schema_report_parts, schema_eligibility_notes,
+)
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
 from app.services.seo_issues_insights_service import generate_seo_issues_insights
 from app.services.page_wise_priority_service import generate_page_wise_priority_content
+from app.services.structured_data_insights_service import generate_structured_data_insights
 from app.services.geopulse_ai_service import generate_aeo_geo_content
 from app.services.google_sheets_service import create_competitor_keyword_sheet
 from app.services.app_settings_service import get_sheets_oauth_email
@@ -1424,6 +1428,26 @@ def _gather_report_data(
             except Exception:
                 logger.exception("GSC rich-result inspection failed for client %s", client.id)
 
+    # Structured Data & Schema Validator's Part 3 (Key Insights, 2026-09-10
+    # user spec) — written from the SAME Part 1/Part 2 numbers the slide
+    # itself renders (build_schema_report_parts), so the AI never reasons
+    # about a schema type or count the reader can't also see on the table.
+    schema_ai_insights = None
+    if schema_validation_result and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
+        schema_parts = build_schema_report_parts(schema_validation_result)
+        pageviews_by_page_type = {
+            r["page_type"]: r["pageviews"] for r in (schema_validation_result.get("by_page_type") or [])
+        }
+        eligibility_notes = schema_eligibility_notes(schema_parts["part2"])
+        schema_insights_candidate = generate_structured_data_insights(
+            schema_parts["part1"], schema_parts["part2"], pageviews_by_page_type, eligibility_notes,
+        )
+        if "error" not in schema_insights_candidate:
+            schema_ai_insights = schema_insights_candidate
+        else:
+            logger.warning("Structured Data insights generation failed for client %s: %s", client.id, schema_insights_candidate["error"])
+            content_issues.append(f"Structured Data insights: {schema_insights_candidate['error']}")
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
@@ -1438,6 +1462,7 @@ def _gather_report_data(
         "seo_issues_ai_insights": seo_issues_ai_insights,
         "page_wise_ai": page_wise_ai,
         "page_wise_exclude_paths": page_wise_exclude_paths or None,
+        "schema_ai_insights": schema_ai_insights,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,
