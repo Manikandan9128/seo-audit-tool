@@ -18,11 +18,26 @@ from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
 
+# A real Chrome UA + masking navigator.webdriver — Playwright's default
+# headless fingerprint (default UA string naming "HeadlessChrome",
+# navigator.webdriver === true) is exactly what basic bot-detection/WAF
+# rules check for. Confirmed real: a client's OWN homepage (behind a WAF/
+# bot-protection layer, as many marketing sites are) failed capture every
+# single time while competitor sites with no such protection captured fine
+# in the same run — this is the standard, well-established fix for that
+# class of block, not a workaround for anything else.
+_REALISTIC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+_HIDE_WEBDRIVER_SCRIPT = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+
 
 def capture_homepage_screenshots(domains: list[str], timeout_ms: int = 10000) -> dict[str, bytes]:
     """Returns {domain: png_bytes} — only for domains that actually
     succeeded. A domain missing from the result means capture failed
-    (blocked, timed out, DNS error, etc); skip it silently, don't retry.
+    (blocked, timed out, DNS error, etc); skip it silently, don't retry the
+    same wait condition, but see the domcontentloaded fallback below.
 
     Every failure is logged (2026-09-10: this used to swallow everything,
     including a Chromium-launch failure, with zero trace anywhere — a
@@ -44,14 +59,25 @@ def capture_homepage_screenshots(domains: list[str], timeout_ms: int = 10000) ->
             # up the entire report for 30s on every single generation.
             browser = p.chromium.launch(args=["--no-sandbox"], timeout=15000)
             try:
-                page = browser.new_page(viewport={"width": 1280, "height": 800})
+                page = browser.new_page(viewport={"width": 1280, "height": 800}, user_agent=_REALISTIC_UA)
+                page.add_init_script(_HIDE_WEBDRIVER_SCRIPT)
                 for domain in domains:
                     try:
                         page.goto(f"https://{domain}", timeout=timeout_ms, wait_until="load")
-                        screenshots[domain] = page.screenshot(type="png")
                     except Exception as e:
-                        logger.warning("Homepage screenshot failed for %s: %s", domain, e)
-                        continue
+                        # A heavy JS-driven homepage (trackers, chat widgets,
+                        # webfonts) can keep firing network activity forever
+                        # and never reach the "load" event within budget —
+                        # domcontentloaded (the DOM is parsed, page is
+                        # visually renderable) is still a real, usable
+                        # screenshot even if some late-loading widget never
+                        # finishes. One retry only, not a loop.
+                        try:
+                            page.goto(f"https://{domain}", timeout=timeout_ms, wait_until="domcontentloaded")
+                        except Exception:
+                            logger.warning("Homepage screenshot failed for %s: %s", domain, e)
+                            continue
+                    screenshots[domain] = page.screenshot(type="png")
             finally:
                 browser.close()
     except Exception:

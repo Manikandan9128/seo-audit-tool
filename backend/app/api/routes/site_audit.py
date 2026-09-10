@@ -1261,8 +1261,21 @@ def _gather_report_data(
     # page. Onboarding breakdown still skips itself if real ux_notes already
     # produced one; ui_fixes never does (see above).
     homepage_shot = None
-    if settings.gemini_api_key or settings.claude_api_key:
+    vision_key_configured = bool(settings.gemini_api_key or settings.claude_api_key)
+    if vision_key_configured:
         homepage_shot = capture_homepage_screenshots([own_website_domain]).get(own_website_domain)
+    else:
+        # 2026-09-10: previously indistinguishable in the logs from a
+        # screenshot-capture failure below — this case is deterministic
+        # (no vision-capable key configured at all, so capture is never
+        # even attempted) and needs a different fix (add a Gemini/Claude
+        # key) than a capture failure (bot-blocked/timed-out for this one
+        # domain) does.
+        logger.warning(
+            "Skipping UI Fixes/Onboarding vision pass for %s — no Gemini or Claude API key configured "
+            "(Groq alone can't do vision calls).",
+            own_website_domain,
+        )
 
     if homepage_shot:
         ui_fixes_result = generate_ui_fixes_from_screenshot(client.name, client.website_url, homepage_shot)
@@ -1282,9 +1295,16 @@ def _gather_report_data(
                 ux_findings_result["onboarding_breakdown"] = onboarding_result["onboarding_breakdown"]
             elif onboarding_result.get("error"):
                 logger.warning("Onboarding breakdown vision pass failed for %s: %s", client.website_url, onboarding_result["error"])
-    else:
+    elif vision_key_configured:
+        # A vision-capable key IS configured, so the no-key branch above
+        # already logged and this is the OTHER cause: capture itself
+        # returned nothing for this specific domain (bot-blocked, timed out
+        # even after the retry, DNS/unreachable). See screenshot_client.
+        # capture_homepage_screenshots's own warning log for the underlying
+        # exception. `elif` (not `else`) so this never double-logs alongside
+        # the no-key warning above.
         logger.warning(
-            "No homepage screenshot captured for %s — UI-Level Fixes and Onboarding Breakdown will be skipped/fallback this run.",
+            "Homepage screenshot capture failed for %s — UI-Level Fixes and Onboarding Breakdown will be skipped/fallback this run.",
             own_website_domain,
         )
 

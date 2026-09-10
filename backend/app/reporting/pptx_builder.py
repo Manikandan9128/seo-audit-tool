@@ -2064,9 +2064,12 @@ def _tech_fixes_scored_rows(
             page_views = pageviews_by_path.get(key, 0)
             clicks = clicks_by_path.get(key, 0)
             score = _page_value_score(page_views, clicks)
+            # 2026-09-10 user request: don't repeat "Semrush's Site Audit" in
+            # every row's Fix cell — the slide already names that source
+            # once, in the header ("Source: Semrush Site Audit").
             fix_text = (
                 "Full per-issue breakdown isn't available for this page in this export — "
-                "review it in Semrush's Site Audit dashboard, or see SEO Issues for the site-wide breakdown by type."
+                "see SEO Issues for the site-wide breakdown by type."
             )
             scored_rows.append((
                 _ISSUE_SEVERITY_RANK["info"], -score, f"{issue_count} issue(s) (Semrush)", path, fix_text, page_views, "other",
