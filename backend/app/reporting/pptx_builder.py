@@ -3098,21 +3098,29 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], k
     if own_worldwide_date and own_worldwide_date != own_export_date:
         date_bits.append(f"Worldwide as of {own_worldwide_date}")
     source = f"Semrush export ({'; '.join(date_bits)})" if date_bits else "Semrush export"
-    slide = _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source=source, insights=insights)
 
+    slide = _blank_slide(prs)
+    _content_header(slide, "Competitor Analysis")
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
     # Full client + competitor keyword lists (2026-09-10 user spec) live in
-    # one combined Google Sheet (multiple tabs — see
-    # google_sheets_service.create_combined_keyword_sheet), linked here at
-    # the bottom instead of their own dedicated slide. A real button
-    # (whole shape clickable via click_action, not just a small text run)
-    # so it reads and behaves as an unmistakable, easy-to-hit link rather
-    # than fiddly inline text.
+    # one combined Google Sheet, linked via a button at the bottom instead
+    # of their own dedicated slide — reserves its own fixed zone ABOVE the
+    # standing page footer (_footer draws at SLIDE_H-0.4 to SLIDE_H-0.1;
+    # confirmed live on report 54: the button was drawn straight over that
+    # footer text, an actual visible overwrite, not just a close call) and
+    # caps how far the insights strip below the table may render so a long
+    # insights list can't grow down into the same reserved zone either.
+    insights_max_y = (SLIDE_H - Inches(1.10)) if keyword_sheet_link else None
+    bottom = _draw_table(slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=9 if insights else 14)
+    if insights:
+        _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), insights, max_y=insights_max_y)
+
     if keyword_sheet_link:
         _textbox(
-            slide, Inches(0.6), SLIDE_H - Inches(0.56), Inches(3.0), Inches(0.22),
+            slide, Inches(0.6), SLIDE_H - Inches(1.00), Inches(3.0), Inches(0.20),
             "KEYWORD LIST", size=9.5, bold=True, color=TEXT_MUTED,
         )
-        btn = slide.shapes.add_shape(5, Inches(0.6), SLIDE_H - Inches(0.38), Inches(4.3), Inches(0.32))
+        btn = slide.shapes.add_shape(5, Inches(0.6), SLIDE_H - Inches(0.76), Inches(4.3), Inches(0.32))
         try:
             btn.adjustments[0] = 0.35
         except (IndexError, AttributeError):
