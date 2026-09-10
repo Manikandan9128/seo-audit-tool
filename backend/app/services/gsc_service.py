@@ -89,6 +89,35 @@ def inspect_urls(creds: Credentials, site_url: str, urls: list[str], max_urls: i
     return results
 
 
+def get_search_analytics_by_country(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 50) -> dict:
+    """Same Search Analytics API as get_search_analytics, dimensioned by
+    country instead of query — for the Branded/Non-Branded slide's
+    high-potential-country flagging (2026-09-10 user spec). Position is
+    fetched even though the slide's own Part 3 table doesn't show it, so
+    the "CTR well below the best-performing country's CTR for a comparable
+    position" flagging logic has something real to compare against."""
+    webmasters = build("searchconsole", "v1", credentials=creds)
+    body = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "dimensions": ["country"],
+        "rowLimit": row_limit,
+    }
+    response = webmasters.searchanalytics().query(siteUrl=site_url, body=body).execute()
+    rows = []
+    for row in response.get("rows", []):
+        rows.append(
+            {
+                "country": row["keys"][0],
+                "clicks": row["clicks"],
+                "impressions": row["impressions"],
+                "ctr": row["ctr"],
+                "position": row["position"],
+            }
+        )
+    return {"rows": rows}
+
+
 def get_page_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 1000) -> dict:
     """Same Search Analytics API as get_search_analytics, dimensioned by page
     instead of query — clicks/impressions per URL, for cross-referencing

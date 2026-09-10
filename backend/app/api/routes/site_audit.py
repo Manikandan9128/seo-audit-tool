@@ -32,6 +32,7 @@ from app.models.user import User
 from app.reporting.pptx_builder import (
     build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows,
     build_schema_report_parts, schema_eligibility_notes,
+    build_branded_vs_nonbranded_comparison, build_high_potential_pages, build_high_potential_countries,
 )
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
@@ -39,6 +40,7 @@ from app.services.core_problem_service import generate_core_problem
 from app.services.seo_issues_insights_service import generate_seo_issues_insights
 from app.services.page_wise_priority_service import generate_page_wise_priority_content
 from app.services.structured_data_insights_service import generate_structured_data_insights
+from app.services.branded_search_insights_service import generate_branded_search_insights
 from app.services.geopulse_ai_service import generate_aeo_geo_content
 from app.services.google_sheets_service import create_competitor_keyword_sheet
 from app.services.app_settings_service import get_sheets_oauth_email
@@ -906,6 +908,9 @@ def _gather_report_data(
                     jobs["page_clicks"] = pool.submit(
                         gsc_service.get_page_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
                     )
+                    jobs["search_by_country"] = pool.submit(
+                        gsc_service.get_search_analytics_by_country, creds, client.gsc_site_url, gsc_start, gsc_end
+                    )
                 for key, future in jobs.items():
                     try:
                         analytics[key] = future.result()
@@ -1364,6 +1369,42 @@ def _gather_report_data(
                 logger.warning("Priority Issues - Page Wise AI content failed for client %s: %s", client.id, page_wise_candidate["error"])
                 content_issues.append(f"Priority Issues - Page Wise: {page_wise_candidate['error']}")
 
+    # Branded vs Non-Branded Search Performance (2026-09-10 user spec) —
+    # Part 1 (comparison) and Parts 2/3 (high-potential pages/countries)
+    # are computed deterministically here; only Part 4 (Key Insights) goes
+    # through the AI, grounded in these exact same numbers.
+    branded_vs_nonbranded_comparison = None
+    branded_vs_nonbranded_ai_insights = None
+    high_potential_pages = None
+    high_potential_countries = None
+    search_queries_rows = (analytics.get("search_queries") or {}).get("rows") or []
+    if search_queries_rows:
+        # Same brand-token matching as the rest of this report (near-brand
+        # variants/misspellings included) — see is_branded_or_near_brand.
+        brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client.website_url)) if t}
+        branded_queries = [q for q in search_queries_rows if is_branded_or_near_brand(q.get("query", ""), brand_tokens)]
+        nonbranded_queries = [q for q in search_queries_rows if not is_branded_or_near_brand(q.get("query", ""), brand_tokens)]
+        branded_vs_nonbranded_comparison = build_branded_vs_nonbranded_comparison(branded_queries, nonbranded_queries)
+
+        page_clicks_rows = (analytics.get("page_clicks") or {}).get("rows") or []
+        country_rows = (analytics.get("search_by_country") or {}).get("rows") or []
+        high_potential_pages = build_high_potential_pages(page_clicks_rows)
+        high_potential_countries = build_high_potential_countries(country_rows)
+
+        if settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key:
+            top_branded = sorted(branded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
+            top_nonbranded = sorted(nonbranded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
+            gsc_range = f"{date_range.get('gsc_start', '')} to {date_range.get('gsc_end', '')}"
+            branded_insights_candidate = generate_branded_search_insights(
+                branded_vs_nonbranded_comparison, high_potential_pages, high_potential_countries,
+                top_branded, top_nonbranded, gsc_range,
+            )
+            if "error" not in branded_insights_candidate:
+                branded_vs_nonbranded_ai_insights = branded_insights_candidate
+            else:
+                logger.warning("Branded vs Non-Branded insights failed for client %s: %s", client.id, branded_insights_candidate["error"])
+                content_issues.append(f"Branded vs Non-Branded insights: {branded_insights_candidate['error']}")
+
     # One diagnostic thesis synthesizing everything else already gathered —
     # deliberately NOT cached (unlike Company Overview): this reflects
     # current metrics/issues, and a stale cached diagnosis would be
@@ -1463,6 +1504,10 @@ def _gather_report_data(
         "page_wise_ai": page_wise_ai,
         "page_wise_exclude_paths": page_wise_exclude_paths or None,
         "schema_ai_insights": schema_ai_insights,
+        "branded_vs_nonbranded_comparison": branded_vs_nonbranded_comparison,
+        "branded_vs_nonbranded_ai_insights": branded_vs_nonbranded_ai_insights,
+        "high_potential_pages": high_potential_pages,
+        "high_potential_countries": high_potential_countries,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,

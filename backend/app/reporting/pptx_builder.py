@@ -2382,153 +2382,6 @@ def _traffic_sources_insights(shown: list[dict], total_sessions: float) -> list[
     return insights[:4]
 
 
-# Recruitment-pattern terms — a branded "careers"/"jobs" query is real
-# search demand but not commercial branded-search value (nobody searching
-# "lumberfi careers" is evaluating the product), so it has to be tagged and
-# excluded from the headline metric rather than silently inflating it.
-_RECRUITMENT_QUERY_TERMS = [
-    "career", "careers", "job", "jobs", "hiring", "employment", "vacancy", "vacancies",
-    "working at", "salary", "glassdoor", "indeed",
-]
-
-
-def _classify_branded_query(query: str, brand_tokens: set[str], relevance_terms: list[str]) -> str:
-    """One of BRAND_CORE / RECRUITMENT / PRODUCT_RELEVANT / AMBIGUOUS
-    (2026-09-09 spec) — rule-based, no AI call, since every category here
-    is a mechanical pattern check. AMBIGUOUS is the honest fallback rather
-    than forcing a guess when the query text alone isn't enough."""
-    text = (query or "").lower().strip()
-    if not text:
-        return "AMBIGUOUS"
-    if any(term in text for term in _RECRUITMENT_QUERY_TERMS):
-        return "RECRUITMENT"
-    if any(term and term.lower() in text for term in relevance_terms):
-        return "PRODUCT_RELEVANT"
-    # What's left after stripping the brand token(s) out — if nothing (or
-    # only a stray short word, e.g. a near-brand misspelling) remains, this
-    # is the brand name itself with no other intent signal.
-    remainder = text
-    for token in brand_tokens:
-        if token:
-            remainder = re.sub(rf"\b{re.escape(token)}\b", " ", remainder)
-    remainder = remainder.strip()
-    if not remainder or len(remainder.split()) <= 1:
-        return "BRAND_CORE"
-    return "AMBIGUOUS"
-
-
-def _branded_query_insights(
-    query_table: list[dict], brand_tokens: set[str], client_relevance_profile: dict
-) -> list[str]:
-    """Search Queries — Branded insights (2026-09-09 spec): classify every
-    branded query first, then report raw-vs-RECRUITMENT-excluded metrics
-    side by side — never a single blended average as the finding. Only
-    products/categories literally in client_relevance_profile are used for
-    PRODUCT_RELEVANT matching (never inferred); only queries/figures
-    literally in query_table are ever cited."""
-    if not query_table:
-        return []
-
-    relevance_terms = list(client_relevance_profile.get("products") or []) + list(
-        client_relevance_profile.get("categories") or []
-    )
-    classified = [
-        {**q, "_tag": _classify_branded_query(q.get("query", ""), brand_tokens, relevance_terms)}
-        for q in query_table
-    ]
-
-    def _totals(rows: list[dict]) -> tuple[int, int, float]:
-        clicks = sum(int(r.get("clicks", 0) or 0) for r in rows)
-        impressions = sum(int(r.get("impressions", 0) or 0) for r in rows)
-        ctr = (clicks / impressions * 100) if impressions else 0.0
-        return clicks, impressions, ctr
-
-    raw_clicks, raw_impressions, raw_ctr = _totals(classified)
-    filtered = [q for q in classified if q["_tag"] != "RECRUITMENT"]
-    filt_clicks, filt_impressions, filt_ctr = _totals(filtered)
-
-    insights = [
-        f"Raw: {raw_clicks:,} clicks / {raw_impressions:,} impressions ({raw_ctr:.1f}% CTR) across all branded queries. "
-        f"Excluding recruitment queries: {filt_clicks:,} clicks / {filt_impressions:,} impressions ({filt_ctr:.1f}% CTR)."
-    ]
-
-    recruitment = [q for q in classified if q["_tag"] == "RECRUITMENT"]
-    if recruitment:
-        top_r = max(recruitment, key=lambda q: q.get("impressions", 0))
-        r_ctr = float(top_r.get("ctr", 0) or 0) * 100
-        insights.append(
-            f"\"{top_r['query']}\" ({top_r.get('clicks', 0):,} clicks / {top_r.get('impressions', 0):,} impressions, "
-            f"{r_ctr:.1f}% CTR) is a recruitment query — job-seeker intent, not commercial branded-search value."
-        )
-
-    core_or_relevant = [q for q in classified if q["_tag"] in ("BRAND_CORE", "PRODUCT_RELEVANT")]
-    if core_or_relevant and len(insights) < 3:
-        top_c = max(core_or_relevant, key=lambda q: q.get("impressions", 0))
-        c_ctr = float(top_c.get("ctr", 0) or 0) * 100
-        weak_note = ""
-        if filt_impressions and c_ctr < filt_ctr * 0.6:
-            weak_note = f" — well below the {filt_ctr:.1f}% filtered average despite the volume"
-        insights.append(
-            f"\"{top_c['query']}\" ({top_c['_tag'].replace('_', ' ').title()}, {top_c.get('clicks', 0):,} clicks / "
-            f"{top_c.get('impressions', 0):,} impressions, {c_ctr:.1f}% CTR at position {float(top_c.get('position', 0) or 0):.1f}){weak_note}."
-        )
-
-    return insights[:3]
-
-
-def _standout_query_insight(subset: list[dict]) -> str | None:
-    """Finds ONE standout row instead of summarizing with a blended
-    average (2026-09-09 spec): either a single query dominating the
-    table's impressions/clicks, or a row that inverts expectation (the
-    best-positioned query converting far worse than the table's own
-    average, or a low-impression query outperforming everything else).
-    Real numbers only, no invented reasoning, no qualitative label without
-    a comparison basis actually computed from this same table."""
-    if not subset:
-        return None
-    total_impressions = sum(int(q.get("impressions", 0) or 0) for q in subset)
-    if not total_impressions:
-        return None
-    total_clicks = sum(int(q.get("clicks", 0) or 0) for q in subset)
-    avg_ctr = (total_clicks / total_impressions * 100) if total_impressions else 0.0
-
-    by_impressions = max(subset, key=lambda q: q.get("impressions", 0) or 0)
-    imp_share = (by_impressions.get("impressions", 0) or 0) / total_impressions * 100
-    if imp_share > 50:
-        ctr = float(by_impressions.get("ctr", 0) or 0) * 100
-        return f"One query — \"{by_impressions['query']}\" — makes up {imp_share:.0f}% of all impressions, but only converts at {ctr:.1f}% CTR."
-
-    if total_clicks:
-        by_clicks = max(subset, key=lambda q: q.get("clicks", 0) or 0)
-        click_share = (by_clicks.get("clicks", 0) or 0) / total_clicks * 100
-        if click_share > 50:
-            ctr = float(by_clicks.get("ctr", 0) or 0) * 100
-            return f"One query — \"{by_clicks['query']}\" — makes up {click_share:.0f}% of all clicks, at a {ctr:.1f}% CTR."
-
-    positioned = [q for q in subset if (q.get("clicks", 0) or 0) > 0 and q.get("position") is not None]
-    if positioned:
-        best = min(positioned, key=lambda q: q["position"])
-        best_ctr = float(best.get("ctr", 0) or 0) * 100
-        if best_ctr < avg_ctr * 0.5:
-            return (
-                f"\"{best['query']}\" ranks best in this table (position {best['position']:.1f}) but converts at only "
-                f"{best_ctr:.1f}% CTR, well below the {avg_ctr:.1f}% table average."
-            )
-
-    if len(subset) >= 3:
-        sorted_by_imp = sorted(subset, key=lambda q: q.get("impressions", 0) or 0)
-        low_pool = sorted_by_imp[: max(1, len(sorted_by_imp) // 3)]
-        best_low = max((q for q in low_pool if q.get("impressions", 0)), key=lambda q: q.get("ctr", 0) or 0, default=None)
-        if best_low:
-            low_ctr = float(best_low.get("ctr", 0) or 0) * 100
-            if low_ctr > avg_ctr * 1.5:
-                return (
-                    f"\"{best_low['query']}\" looks unimportant ({int(best_low['impressions']):,} impressions) but is "
-                    f"outperforming everything else at {low_ctr:.1f}% CTR."
-                )
-    return None
-
-
 def _validate_slide_insights(insights: list[str], shown_rows: list[dict], name_field: str) -> tuple[list[str], list[str]]:
     """QA gate (2026-09-10 spec) run right before an insights block is
     published: every quoted name an insight cites must be one of the rows
@@ -2553,6 +2406,207 @@ def _validate_slide_insights(insights: list[str], shown_rows: list[dict], name_f
             continue
         validated.append(line)
     return validated, removed
+
+
+def build_branded_vs_nonbranded_comparison(branded_queries: list[dict], nonbranded_queries: list[dict]) -> dict:
+    """Part 1 of the Branded vs Non-Branded slide (2026-09-10 user spec):
+    Clicks/Impressions/CTR/Avg. Position per group, plus branded's share of
+    total clicks — the headline number. Avg. Position is impression-
+    weighted, matching how GSC itself reports a period average. Pure data
+    shaping, no AI — every number here is a direct sum/average of the rows
+    already fetched, shared by the slide's own rendering and the Part 4 AI
+    insights prompt so both work off identical figures."""
+    def _group_stats(rows: list[dict]) -> dict:
+        clicks = sum(int(r.get("clicks", 0) or 0) for r in rows)
+        impressions = sum(int(r.get("impressions", 0) or 0) for r in rows)
+        ctr_pct = round(clicks / impressions * 100, 1) if impressions else 0.0
+        avg_position = (
+            round(sum(r.get("position", 0) * r.get("impressions", 0) for r in rows) / impressions, 1)
+            if impressions else 0.0
+        )
+        return {"clicks": clicks, "impressions": impressions, "ctr_pct": ctr_pct, "avg_position": avg_position}
+
+    branded = _group_stats(branded_queries)
+    nonbranded = _group_stats(nonbranded_queries)
+    total_clicks = branded["clicks"] + nonbranded["clicks"]
+    branded_share_pct = round(branded["clicks"] / total_clicks * 100, 1) if total_clicks else 0.0
+    return {"branded": branded, "nonbranded": nonbranded, "branded_share_pct": branded_share_pct}
+
+
+_HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE = 50
+_HIGH_POTENTIAL_MIN_IMPRESSIONS_COUNTRY = 30
+
+
+def _ctr_band_for_position(position: float) -> tuple[float, float] | None:
+    """Rough typical-CTR-by-position bands per the user's 2026-09-10 spec —
+    deliberately coarse (these vary a lot by query intent/vertical), used
+    only to catch a page whose CTR is NOTICEABLY under its band, not to
+    make a precise claim."""
+    if 1 <= position <= 3:
+        return (15.0, 30.0)
+    if 4 <= position <= 10:
+        return (3.0, 10.0)
+    if 11 <= position <= 20:
+        return (1.0, 3.0)
+    return None
+
+
+def build_high_potential_pages(page_rows: list[dict]) -> list[dict]:
+    """Part 2 flagging logic (2026-09-10 user spec): a page qualifies if
+    its position is 8-20 (close enough to page 1 for a realistic ranking
+    push) OR its CTR is noticeably under the typical band for its
+    position with meaningful impressions behind it. Pages below the
+    minimum-impressions floor are excluded outright — not enough signal
+    to act on. Sorted by impressions (the pages worth the most attention
+    first), each row grounded only in its own real position/CTR/
+    impressions, no invented numbers."""
+    flagged = []
+    for r in page_rows:
+        impressions = float(r.get("impressions", 0) or 0)
+        if impressions < _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE:
+            continue
+        position = float(r.get("position", 0) or 0)
+        ctr_pct = float(r.get("ctr", 0) or 0) * 100
+        reasons = []
+        if 8 <= position <= 20:
+            reasons.append(f"position {position:.1f} is close enough to page 1 for a realistic ranking push")
+        band = _ctr_band_for_position(position)
+        if band and ctr_pct < band[0]:
+            reasons.append(
+                f"{ctr_pct:.1f}% CTR is noticeably below the {band[0]:.0f}-{band[1]:.0f}% typical range for position {position:.0f}"
+            )
+        if not reasons:
+            continue
+        flagged.append({
+            "page": r.get("page"), "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1),
+            "position": round(position, 1), "opportunity": "; ".join(reasons),
+        })
+    flagged.sort(key=lambda r: r["impressions"], reverse=True)
+    return flagged
+
+
+def build_high_potential_countries(country_rows: list[dict]) -> list[dict]:
+    """Part 3 flagging logic (2026-09-10 user spec): a country qualifies
+    if it has meaningful-relative impressions but a CTR well below the
+    best-performing country's, OR meaningful impressions with near-zero
+    clicks (a localization/currency/relevance mismatch signal). Country
+    codes are GSC's raw ISO-3166-1 alpha-3 codes, uppercased for display
+    (e.g. "usa" -> "USA") rather than guessing at a full country name not
+    actually returned by the API."""
+    eligible = [r for r in country_rows if float(r.get("impressions", 0) or 0) >= _HIGH_POTENTIAL_MIN_IMPRESSIONS_COUNTRY]
+    if not eligible:
+        return []
+    best = max(eligible, key=lambda r: float(r.get("ctr", 0) or 0))
+    best_ctr_pct = float(best.get("ctr", 0) or 0) * 100
+    best_label = str(best.get("country", "")).upper()
+    top_impressions = max(float(r.get("impressions", 0) or 0) for r in eligible)
+
+    flagged = []
+    for r in eligible:
+        impressions = float(r.get("impressions", 0) or 0)
+        clicks = float(r.get("clicks", 0) or 0)
+        ctr_pct = float(r.get("ctr", 0) or 0) * 100
+        reasons = []
+        if r is not best and impressions >= top_impressions * 0.4 and ctr_pct < best_ctr_pct * 0.6:
+            reasons.append(
+                f"{ctr_pct:.1f}% CTR is well below {best_label}'s {best_ctr_pct:.1f}% despite meaningful impressions"
+            )
+        if clicks <= 1:
+            reasons.append("near-zero clicks despite real impressions — possible localization/currency/relevance mismatch")
+        if not reasons:
+            continue
+        flagged.append({
+            "country": str(r.get("country", "")).upper(), "impressions": int(impressions), "clicks": int(clicks),
+            "ctr_pct": round(ctr_pct, 1), "opportunity": "; ".join(reasons),
+        })
+    flagged.sort(key=lambda r: r["impressions"], reverse=True)
+    return flagged
+
+
+def add_branded_vs_nonbranded_slide(prs: Presentation, comparison: dict, ai_insights: dict | None, source: str) -> object | None:
+    """Part 1 (comparison table) + Part 4 (Key Insights) of the 2026-09-10
+    user spec — Parts 2/3 (high-potential pages/countries) render on the
+    separate add_search_opportunities_slide so the two slides' text never
+    overlaps: this slide's insights name the single highest-opportunity
+    page/country, that slide's tables carry the full detail behind them."""
+    branded, nonbranded = comparison["branded"], comparison["nonbranded"]
+    if not branded["clicks"] and not nonbranded["clicks"] and not branded["impressions"] and not nonbranded["impressions"]:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Branded vs Non-Branded Search Performance")
+    _textbox(slide, Inches(8.0), Inches(0.3), Inches(4.7), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
+
+    _textbox(
+        slide, Inches(0.6), Inches(1.05), Inches(11.9), Inches(0.4),
+        f"Branded queries carry {comparison['branded_share_pct']:.1f}% of total clicks",
+        size=15, bold=True, color=_accent(),
+    )
+
+    rows = [
+        ("Branded", f"{branded['clicks']:,}", f"{branded['impressions']:,}", f"{branded['ctr_pct']:.1f}%", f"{branded['avg_position']:.1f}"),
+        ("Non-Branded", f"{nonbranded['clicks']:,}", f"{nonbranded['impressions']:,}", f"{nonbranded['ctr_pct']:.1f}%", f"{nonbranded['avg_position']:.1f}"),
+    ]
+    y = _draw_table(
+        slide, ["Query Group", "Clicks", "Impressions", "CTR", "Avg. Position"], rows, Inches(1.6),
+        col_widths=[3.0, 2.3, 2.3, 2.3, 2.2], left=Inches(0.6), width=Inches(12.1), row_height=0.4,
+    ) + Inches(0.3)
+
+    insights = list((ai_insights or {}).get("insights") or [])[:5]
+    if insights:
+        _insights_strip(slide, Inches(0.6), y, Inches(12.1), insights)
+    return slide
+
+
+def add_search_opportunities_slide(
+    prs: Presentation, high_pages: list[dict], high_countries: list[dict], source: str
+) -> object | None:
+    """Part 2 (high-potential landing pages) + Part 3 (high-potential
+    countries) of the 2026-09-10 user spec — no narrative insights on this
+    slide (those live on add_branded_vs_nonbranded_slide) so the two
+    slides' text never overlaps. When nothing meets the flagging bar for
+    either table, says so explicitly per spec rather than forcing an empty
+    table or silently omitting the slide."""
+    if not high_pages and not high_countries:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Search Opportunities — Pages & Countries")
+    _textbox(slide, Inches(8.0), Inches(0.3), Inches(4.7), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
+
+    left, width = Inches(0.6), Inches(12.1)
+    y = Inches(1.05)
+
+    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages", size=12.5, bold=True, color=_accent())
+    y += Inches(0.28)
+    if high_pages:
+        rows1 = [
+            (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["opportunity"])
+            for r in high_pages
+        ]
+        y = _draw_table(
+            slide, ["Page", "Impressions", "CTR", "Position", "Opportunity"], rows1, y,
+            col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=5, row_height=0.4, wrap_cols={4},
+        ) + Inches(0.25)
+    else:
+        _textbox(slide, left, y, width, Inches(0.3), "No pages met the high-potential bar this period.", size=11.5, color=TEXT_MUTED)
+        y += Inches(0.45)
+
+    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Countries", size=12.5, bold=True, color=_accent())
+    y += Inches(0.28)
+    if high_countries:
+        rows2 = [
+            (r["country"], f"{r['impressions']:,}", f"{r['clicks']:,}", f"{r['ctr_pct']:.1f}%", r["opportunity"])
+            for r in high_countries
+        ]
+        _draw_table(
+            slide, ["Country", "Impressions", "Clicks", "CTR", "Opportunity"], rows2, y,
+            col_widths=[1.6, 1.5, 1.3, 1.2, 6.5], left=left, width=width, row_cap=5, row_height=0.4, wrap_cols={4},
+        )
+    else:
+        _textbox(slide, left, y, width, Inches(0.3), "No countries met the high-potential bar this period.", size=11.5, color=TEXT_MUTED)
+
+    return slide
 
 
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
@@ -4388,6 +4442,10 @@ def build_report(
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
     schema_ai_insights: dict | None = None,
+    branded_vs_nonbranded_comparison: dict | None = None,
+    branded_vs_nonbranded_ai_insights: dict | None = None,
+    high_potential_pages: list[dict] | None = None,
+    high_potential_countries: list[dict] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -4410,7 +4468,8 @@ def build_report(
             site_audit_pages_rows, next_steps_ai, schema_validation,
             brand_citations, brand_wikipedia, geopulse_analysis, competitor_keyword_sheet_links,
             competitor_positions_full, seo_issues_ai_insights, page_wise_ai, page_wise_exclude_paths,
-            schema_ai_insights,
+            schema_ai_insights, branded_vs_nonbranded_comparison, branded_vs_nonbranded_ai_insights,
+            high_potential_pages, high_potential_countries,
         )
     finally:
         _theme["footer"] = ""
@@ -4455,6 +4514,10 @@ def _build_report(
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
     schema_ai_insights: dict | None = None,
+    branded_vs_nonbranded_comparison: dict | None = None,
+    branded_vs_nonbranded_ai_insights: dict | None = None,
+    high_potential_pages: list[dict] | None = None,
+    high_potential_countries: list[dict] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -4572,119 +4635,18 @@ def _build_report(
                 prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
                 col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights, row_cap=ROW_CAP,
             )
-        queries = (analytics.get("search_queries") or {}).get("rows", [])
-        if queries:
-            # The domain-derived token alone ("lumberfi" from lumberfi.com)
-            # missed real branded queries built around the actual company
-            # name ("lumber careers", "lumber payroll") since "lumberfi"
-            # never appears in them as a whole word — confirmed on a real
-            # Lumber regen, every one of those fell into Non-Branded. Match
-            # on EITHER the company-name token OR the domain token so both
-            # "lumber ..." and "lumberfi ..." style queries count as branded.
-            brand_tokens = {t for t in (_brand_token(client_name), _brand_token(website_url)) if t}
-
-            def _is_branded(query: str) -> bool:
-                # is_branded_or_near_brand (not the plain whole-word
-                # _is_branded_keyword) also catches a real near-brand query
-                # variant/misspelling, e.g. "lumberfy" — confirmed live,
-                # that landed in Non-Branded since it's not an exact match
-                # for either "lumber" or "lumberfi".
-                return is_branded_or_near_brand(query, brand_tokens)
-
-            def _query_table_slide(title: str, subset: list[dict]):
-                if not subset:
-                    return
-                top_q = sorted(subset, key=lambda q: q.get("clicks", 0), reverse=True)[:14]
-                rows = [(q["query"], q["clicks"], q["impressions"], f"{q['ctr']*100:.1f}%", f"{q['position']:.1f}") for q in top_q]
-                total_clicks = sum(q.get("clicks", 0) for q in subset)
-                total_impressions = sum(q.get("impressions", 0) for q in subset)
-                avg_ctr = total_clicks / total_impressions * 100 if total_impressions else 0
-                # Impression-weighted, not a plain per-row average — matches
-                # how GSC itself reports the period average position.
-                avg_position = (
-                    sum(q.get("position", 0) * q.get("impressions", 0) for q in subset) / total_impressions
-                    if total_impressions else 0
-                )
-                # 2026-09-09 spec: never a single blended average as the
-                # finding. Branded gets the classify-first pipeline
-                # (recruitment vs. core-brand vs. product-relevant, raw-vs-
-                # filtered metrics); Non-Branded gets the standout-row rule
-                # (one dominant or inverted-expectation row, not an average
-                # CTR against a made-up "~3%" benchmark like this used to
-                # state with no benchmark actually provided).
-                if title == "Search Queries — Branded":
-                    insights = _branded_query_insights(subset, brand_tokens, client_relevance_profile)
-                else:
-                    standout = _standout_query_insight(top_q)
-                    insights = [standout] if standout else []
-                # 2026-09-10 QA gate: _branded_query_insights scans the full
-                # subset (needed for accurate raw-vs-filtered totals), so its
-                # named examples can fall outside top_q, the rows actually
-                # drawn below — drop any that do rather than publish a query
-                # the reader can't find in the table.
-                insights, _ = _validate_slide_insights(insights, top_q, "query")
-                if not insights:
-                    # From top_q (the rows actually drawn on the slide), not
-                    # the full subset — confirmed live: the insight named a
-                    # query ("lumberfy") that ranked outside the shown
-                    # top-14-by-clicks rows, never appeared in the table.
-                    best_positioned = min(
-                        (q for q in top_q if q.get("clicks", 0) > 0), key=lambda q: q.get("position", 999), default=None
-                    )
-                    if best_positioned:
-                        insights = [f"Best-ranking clicked query: \"{best_positioned['query']}\" at position {best_positioned['position']:.1f}."]
-
-                # Overall summary card strip (Total Clicks/Impressions/CTR/
-                # Avg. position) across the FULL branded/non-branded subset,
-                # not just the top-14 shown in the table below — added per
-                # user request 2026-09-08, same pattern as the KPI cards on
-                # the Traffic Overview slide.
-                slide = _blank_slide(prs)
-                _content_header(slide, title)
-                _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {gsc_source}", size=11, color=TEXT_MUTED)
-                metrics = [
-                    ("Total Clicks", f"{total_clicks:,}"),
-                    ("Total Impressions", f"{total_impressions:,}"),
-                    ("Avg. CTR", f"{avg_ctr:.1f}%"),
-                    ("Avg. Position", f"{avg_position:.1f}"),
-                ]
-                gap = Inches(0.15)
-                total_width = Inches(12.1)
-                card_width = Emu(int((total_width - gap * (len(metrics) - 1)) / len(metrics)))
-                card_height = Inches(0.95)
-                card_top = Inches(1.1)
-                for i, (label, value) in enumerate(metrics):
-                    left = Inches(0.6) + Emu(i * (card_width + gap))
-                    _card(slide, left, card_top, card_width, card_height)
-                    _textbox(slide, left + Inches(0.15), card_top + Inches(0.12), card_width - Inches(0.3), Inches(0.35), label, size=11, color=TEXT_MUTED)
-                    _textbox(slide, left + Inches(0.15), card_top + Inches(0.42), card_width - Inches(0.3), Inches(0.45), value, size=18, bold=True, color=_accent())
-
-                # No explicit row_cap here — _draw_table's own default (9
-                # rows when insights are passed, matching this call before
-                # the KPI cards were added) is what keeps the table's actual
-                # bottom edge on the slide. This slide's table starts ~1.05in
-                # lower than the plain _table_slide default (to make room for
-                # the card row above), so forcing all 14 built rows through
-                # (confirmed live: rows ran to 8.25in on a 7.5in-tall slide,
-                # off the bottom edge) would blow well past the slide bottom.
-                _draw_table(
-                    slide, ["Query", "Clicks", "Impressions", "CTR", "Avg. position"], rows,
-                    card_top + card_height + Inches(0.2), col_widths=[5.5, 1.5, 1.9, 1.5, 1.7],
-                    insights=insights,
-                )
-
-            # Only products/categories literally present in the extracted
-            # Company Overview — never inferred — per the classify pipeline's
-            # own hard rule ("never infer what the client sells").
-            client_relevance_profile = {
-                "products": (company_overview or {}).get("products") or [],
-                "categories": list((company_overview or {}).get("industries") or [])
-                + list((company_overview or {}).get("solutions") or []),
-            }
-            branded_queries = [q for q in queries if _is_branded(q.get("query", ""))]
-            nonbranded_queries = [q for q in queries if not _is_branded(q.get("query", ""))]
-            _query_table_slide("Search Queries — Branded", branded_queries)
-            _query_table_slide("Search Queries — Non-Branded", nonbranded_queries)
+        # Branded vs Non-Branded (2026-09-10 user spec) — two slides,
+        # deliberately non-overlapping text: comparison + Key Insights on
+        # add_branded_vs_nonbranded_slide, the full high-potential-page/
+        # country detail those insights reference on
+        # add_search_opportunities_slide. Comparison/high-potential rows
+        # are computed upstream in site_audit.py (build_branded_vs_
+        # nonbranded_comparison / build_high_potential_pages / build_high_
+        # potential_countries) — this file only renders them.
+        if branded_vs_nonbranded_comparison:
+            add_branded_vs_nonbranded_slide(prs, branded_vs_nonbranded_comparison, branded_vs_nonbranded_ai_insights, gsc_source)
+        if high_potential_pages or high_potential_countries:
+            add_search_opportunities_slide(prs, high_potential_pages or [], high_potential_countries or [], gsc_source)
 
     if competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions or competitor_narratives:
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
