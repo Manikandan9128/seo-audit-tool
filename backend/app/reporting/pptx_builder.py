@@ -2014,7 +2014,7 @@ def add_tech_fixes_slide(
     other_rows = [r for r in scored_rows if r[6] == "other"]
     slides = [
         _tech_fixes_category_slide(prs, "Tech Fixes — Technical Issues", technical_rows),
-        _tech_fixes_category_slide(prs, "Tech Fixes — Additional Pages", other_rows, source="Semrush Site Audit"),
+        _tech_fixes_category_slide(prs, "Priority Issues - Page Wise", other_rows, source="Semrush Site Audit"),
     ]
     return [s for s in slides if s]
 
