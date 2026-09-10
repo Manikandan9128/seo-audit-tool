@@ -2248,32 +2248,34 @@ def _channel_note(channel: str) -> str:
     return f" ({definition})" if definition else ""
 
 
-def _traffic_sources_insights(
-    shown: list[dict], total_sessions: float, prior_rows: list[dict] | None = None
-) -> list[str]:
-    """Traffic Sources insight rules (2026-09-09 spec):
+_TRAFFIC_SOURCES_MIN_SAMPLE_SESSIONS = 20
+_TRAFFIC_SOURCES_OVER_RELIANCE_PCT = 45
+_TRAFFIC_SOURCES_DIRECT_INFLATION_PCT = 30
 
-    Step 1 — period mode is "comparison" only when real prior-period
-    channel rows are actually supplied, never assumed; otherwise "single".
-    Step 2 — every channel name/figure referenced below comes only from
-    `shown` (the exact rows the table renders, already sorted+capped by
-    the caller — same "Cross-network" bug this guards against as the
-    return-rate max below) or `prior_rows`; never introduced, rounded, or
-    recalled from elsewhere.
-    Step 3 — return rate: trust an already-given return_rate_pct field;
-    only fall back to computing returning-users / sessions when that field
-    is genuinely absent, and always verify the actual max before naming a
-    channel as "strongest."
-    Step 4/5 — up to 3 bullets: largest session share paired with a
-    quality signal (never size alone), the verified strongest return
-    rate, a size/quality mismatch flag, and — comparison mode only — the
-    single biggest period-over-period swing plus new/missing channels.
-    No trend/MoM language is used in single mode."""
+
+def _traffic_sources_insights(shown: list[dict], total_sessions: float) -> list[str]:
+    """Traffic Sources insight rules (2026-09-10 spec): this is always a
+    SINGLE snapshot (no prior-period rows are ever available to this
+    report tool) — nothing here may claim growth, decline, or any trend
+    ("grew"/"up"/"declining"/"improving" are all fabricated implications
+    with no second period to compare against). Every channel name/figure
+    referenced comes only from `shown` (the exact rows the table renders,
+    already sorted+capped by the caller) — never introduced, rounded, or
+    recalled from elsewhere. Up to 4 bullets, prioritized:
+    1. Composition — largest share paired with a within-period quality
+       signal (never size alone).
+    2. Over-reliance — flagged only when one channel's share crosses a
+       real concentration threshold, not asserted for a healthy mix.
+    3. Data-quality — elevated Direct share framed as "worth
+       investigating" (a common symptom of lost/broken UTM tagging), never
+       stated as a confirmed fact.
+    4. Sample-size caution — any shown channel below a real statistical
+       floor is flagged as too small to conclude from, not treated as a
+       finding (return-rate "strongest" is also excluded from this pool).
+    Return rate / mismatch fill remaining slots as efficiency signals —
+    valid within a single period since they're ratios, not trends."""
     if not shown:
         return []
-
-    prior_by_channel = {p["channel"]: p for p in prior_rows} if prior_rows else {}
-    comparison_mode = bool(prior_by_channel)
 
     verified = []
     for s in shown:
@@ -2292,33 +2294,75 @@ def _traffic_sources_insights(
     insights: list[str] = []
     used: set[str] = set()
 
-    # Largest share, paired with a quality signal — never size alone.
+    # 1. Composition: largest share, paired with a within-period quality
+    # signal — never size alone.
     top = max(verified, key=lambda r: r["sessions"])
     if top["return_rate"] is not None:
-        quality = f"a {top['return_rate']:.0f}% return rate"
+        quality = f"a {top['return_rate']:.0f}% return rate this period"
     elif top["new_users"] or top["returning_users"]:
-        quality = f"{top['new_users']:,.0f} new vs {top['returning_users']:,.0f} returning users"
+        quality = f"{top['new_users']:,.0f} new vs {top['returning_users']:,.0f} returning users this period"
     else:
         quality = "no new-vs-returning data available for this channel"
     insights.append(
-        f"{top['channel']}{_channel_note(top['channel'])} drives the largest share of sessions "
+        f"{top['channel']}{_channel_note(top['channel'])} makes up the largest share of sessions "
         f"({_pct_text(top['pct_share'])} of {int(total_sessions):,} total) — {quality}."
     )
     used.add(top["channel"])
 
-    # Verified strongest return rate (Step 3: confirmed max, not assumed).
-    rate_ranked = sorted((r for r in verified if r["return_rate"] is not None), key=lambda r: r["return_rate"], reverse=True)
-    if rate_ranked and rate_ranked[0]["channel"] not in used and len(insights) < 3:
-        best = rate_ranked[0]
+    # 2. Over-reliance: only flagged when the mix is genuinely concentrated
+    # — a real threshold, not asserted for every report.
+    if top["pct_share"] >= _TRAFFIC_SOURCES_OVER_RELIANCE_PCT and len(insights) < 4:
         insights.append(
-            f"{best['channel']}{_channel_note(best['channel'])} has the strongest return rate at "
-            f"{best['return_rate']:.0f}% ({_pct_text(best['pct_share'])} of sessions)."
+            f"{_pct_text(top['pct_share'])} of sessions come through {top['channel']} alone — a concentrated "
+            "acquisition mix with real exposure if that one channel is disrupted, not a diversified one."
         )
-        used.add(best["channel"])
 
-    # Mismatch: large share, return rate well below the group's own
-    # average (cross-segment check, not a fixed threshold).
-    if len(insights) < 3:
+    # 3. Data-quality flag: elevated Direct share is a classic symptom of
+    # lost/broken UTM tagging misattributing real campaign traffic as
+    # "Direct" — framed as worth investigating, never stated as fact,
+    # since a single snapshot can't distinguish a tracking gap from
+    # genuine type-in/bookmark traffic.
+    if len(insights) < 4:
+        direct = next((r for r in verified if (r["channel"] or "").strip().lower() == "direct"), None)
+        if direct and direct["pct_share"] >= _TRAFFIC_SOURCES_DIRECT_INFLATION_PCT:
+            insights.append(
+                f"Direct accounts for {_pct_text(direct['pct_share'])} of sessions — worth investigating whether "
+                "UTM tagging or campaign attribution is incomplete, since Direct is where GA4 dumps traffic it "
+                "can't otherwise source; this can't be confirmed from a single snapshot alone."
+            )
+
+    # 4. Sample-size caution: a shown channel with too few sessions to
+    # draw any real conclusion from — flagged, not presented as a finding.
+    if len(insights) < 4:
+        tiny = [r for r in verified if 0 < r["sessions"] < _TRAFFIC_SOURCES_MIN_SAMPLE_SESSIONS and r["channel"] not in used]
+        if tiny:
+            smallest = min(tiny, key=lambda r: r["sessions"])
+            insights.append(
+                f"{smallest['channel']}{_channel_note(smallest['channel'])} has only {int(smallest['sessions'])} session(s) "
+                "in this period — too small a sample to draw any real conclusion from, shown for completeness only."
+            )
+            used.add(smallest["channel"])
+
+    # Efficiency signal (fills a remaining slot): verified strongest return
+    # rate, excluding any channel below the sample-size floor so a
+    # near-100%-of-7-sessions channel can't be crowned "strongest."
+    if len(insights) < 4:
+        rate_ranked = sorted(
+            (r for r in verified if r["return_rate"] is not None and r["sessions"] >= _TRAFFIC_SOURCES_MIN_SAMPLE_SESSIONS),
+            key=lambda r: r["return_rate"], reverse=True,
+        )
+        if rate_ranked and rate_ranked[0]["channel"] not in used:
+            best = rate_ranked[0]
+            insights.append(
+                f"{best['channel']}{_channel_note(best['channel'])} has the strongest return rate this period at "
+                f"{best['return_rate']:.0f}% ({_pct_text(best['pct_share'])} of sessions)."
+            )
+            used.add(best["channel"])
+
+    # Efficiency signal: size/quality mismatch — large share, return rate
+    # well below the group's own average (cross-segment check within this
+    # period, not a trend).
+    if len(insights) < 4:
         rated = [r for r in verified if r["return_rate"] is not None]
         if len(rated) >= 2:
             avg_rate = sum(r["return_rate"] for r in rated) / len(rated)
@@ -2330,47 +2374,12 @@ def _traffic_sources_insights(
                 m = mismatched[0]
                 insights.append(
                     f"{m['channel']}{_channel_note(m['channel'])} carries {_pct_text(m['pct_share'])} of sessions but only a "
-                    f"{m['return_rate']:.0f}% return rate, well below the {avg_rate:.0f}% average across channels — a "
-                    f"size/quality mismatch worth a closer look."
+                    f"{m['return_rate']:.0f}% return rate this period, well below the {avg_rate:.0f}% average across "
+                    "channels — a size/quality mismatch worth a closer look."
                 )
                 used.add(m["channel"])
 
-    # Comparison mode only: the single biggest verified period-over-period
-    # swing (share delta), stated with real numbers from both periods —
-    # then a new/missing channel flag if room remains.
-    if comparison_mode and len(insights) < 3:
-        prior_total = sum(float(p.get("sessions", 0) or 0) for p in prior_rows) if prior_rows else 0.0
-        deltas = []
-        for r in verified:
-            if r["channel"] in used:
-                continue
-            prior = prior_by_channel.get(r["channel"])
-            if prior is None:
-                continue
-            prior_sessions = float(prior.get("sessions", 0) or 0)
-            prior_share = (prior_sessions / prior_total * 100) if prior_total else 0.0
-            deltas.append((abs(r["pct_share"] - prior_share), r, prior_share, prior_sessions))
-        if deltas:
-            deltas.sort(key=lambda d: d[0], reverse=True)
-            _, r, prior_share, prior_sessions = deltas[0]
-            direction = "up" if r["pct_share"] >= prior_share else "down"
-            insights.append(
-                f"{r['channel']}{_channel_note(r['channel'])} moved {direction} from {_pct_text(prior_share)} of sessions "
-                f"({int(prior_sessions):,}) in the prior period to {_pct_text(r['pct_share'])} ({int(r['sessions']):,}) this period."
-            )
-            used.add(r["channel"])
-
-        if len(insights) < 3:
-            current_names = {v["channel"] for v in verified}
-            new_channel = next((r["channel"] for r in verified if r["channel"] not in prior_by_channel and r["channel"] not in used), None)
-            if new_channel:
-                insights.append(f"{new_channel}{_channel_note(new_channel)} is new this period — no data for it in the prior period.")
-            else:
-                missing = next((c for c in prior_by_channel if c not in current_names), None)
-                if missing:
-                    insights.append(f"{missing}{_channel_note(missing)} appeared in the prior period but has no sessions this period.")
-
-    return insights[:3]
+    return insights[:4]
 
 
 # Recruitment-pattern terms — a branded "careers"/"jobs" query is real
