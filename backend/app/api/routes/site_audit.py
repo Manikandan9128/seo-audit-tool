@@ -930,8 +930,8 @@ def _gather_report_data(
                         )
                         if spike:
                             analytics["traffic_spike"] = spike
-                except HttpError:
-                    pass
+                except HttpError as e:
+                    logger.warning("Traffic spike breakdown failed for client %s: %s", client_id, e)
                 except RefreshError:
                     pass
             if client.gsc_site_url:

@@ -1,3 +1,4 @@
+import logging
 import statistics
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date as _date
@@ -5,6 +6,8 @@ from datetime import date as _date
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+logger = logging.getLogger(__name__)
 
 
 def list_properties(creds: Credentials) -> list[dict]:
@@ -292,6 +295,12 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     }
     avg_bounce_rate = statistics.mean(bounce_by_date.values()) if bounce_by_date else None
     spike_bounce_rate = bounce_by_date.get(spike_date)
+    logger.info(
+        "traffic_spike bounce/engagement from 30-day batch: %d/%d days had bounce_rate, %d/%d had engagement_rate, "
+        "spike_date=%s spike_bounce=%s spike_engagement=%s",
+        len(bounce_by_date), len(daily_rows), len(engagement_by_date), len(daily_rows),
+        spike_date, spike_bounce_rate, spike_engagement_rate,
+    )
 
     # Spike-day-specific bounce/engagement can come back empty from the
     # batched 30-day pull above even when the period average (and every
@@ -300,7 +309,9 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     if spike_bounce_rate is None or spike_engagement_rate is None:
         try:
             single_day = _single_day_engagement_metrics(client, property_id, iso_date)
-        except HttpError:
+            logger.info("traffic_spike single-day fallback query for %s returned: %s", iso_date, single_day)
+        except Exception as e:
+            logger.warning("traffic_spike single-day fallback query for %s failed: %s", iso_date, e)
             single_day = {}
         if spike_bounce_rate is None and "bounce_rate" in single_day:
             spike_bounce_rate = single_day["bounce_rate"]
