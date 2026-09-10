@@ -3034,11 +3034,14 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
     has_worldwide_data = any(r.get("organic_traffic_worldwide") is not None for r in competitor_rows)
 
     if has_rich_data and has_worldwide_data:
+        # Paid Traffic column dropped 2026-09-10 per user request — Semrush's
+        # paid-traffic estimate for a competitor has no actionable follow-up
+        # for an SEO/organic-focused report, just an idle number.
         headers = [
             "Domain", "Organic Traffic", "Organic Traffic (Global)", "Organic Keywords", "Organic Keywords (Global)",
-            "Paid Traffic", "DR", "Backlinks", "Top Countries", "Branded", "Non-Branded",
+            "DR", "Backlinks", "Top Countries", "Branded", "Non-Branded",
         ]
-        col_widths = [1.9, 1.0, 1.15, 1.0, 1.2, 0.95, 0.7, 1.0, 1.1, 0.9, 1.0]
+        col_widths = [2.15, 1.0, 1.15, 1.0, 1.2, 0.7, 1.0, 1.1, 0.9, 1.0]
         rows = [
             (
                 r.get("domain", ""),
@@ -3046,7 +3049,6 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
                 _fmt_num(r.get("organic_traffic_worldwide")),
                 _fmt_num(r.get("organic_keywords")),
                 _fmt_num(r.get("organic_keywords_worldwide")),
-                _fmt_num(r.get("paid_traffic")),
                 _fmt_num(r.get("authority_score")),
                 _fmt_num(r.get("backlinks_total")),
                 r.get("top_countries", ""),
@@ -3056,14 +3058,13 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
             for r in competitor_rows[:14]
         ]
     elif has_rich_data:
-        headers = ["Domain", "Organic Traffic", "Organic Keywords", "Paid Traffic", "DR", "Backlinks", "Top Countries", "Branded", "Non-Branded"]
-        col_widths = [2.6, 1.3, 1.3, 1.2, 0.9, 1.2, 1.3, 1.1, 1.2]
+        headers = ["Domain", "Organic Traffic", "Organic Keywords", "DR", "Backlinks", "Top Countries", "Branded", "Non-Branded"]
+        col_widths = [3.8, 1.3, 1.3, 0.9, 1.2, 1.3, 1.1, 1.2]
         rows = [
             (
                 r.get("domain", ""),
                 _fmt_num(r.get("organic_traffic")),
                 _fmt_num(r.get("organic_keywords")),
-                _fmt_num(r.get("paid_traffic")),
                 _fmt_num(r.get("authority_score")),
                 _fmt_num(r.get("backlinks_total")),
                 r.get("top_countries", ""),
