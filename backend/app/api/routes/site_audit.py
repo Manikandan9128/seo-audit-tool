@@ -42,7 +42,7 @@ from app.services.page_wise_priority_service import generate_page_wise_priority_
 from app.services.structured_data_insights_service import generate_structured_data_insights
 from app.services.branded_search_insights_service import generate_branded_search_insights
 from app.services.geopulse_ai_service import generate_aeo_geo_content
-from app.services.google_sheets_service import create_competitor_keyword_sheet
+from app.services.google_sheets_service import create_combined_keyword_sheet
 from app.services.app_settings_service import get_sheets_oauth_email
 from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.search_intent_service import generate_search_intents
@@ -1662,25 +1662,26 @@ def _build_pptx_for_client(
     except Exception:
         logger.exception("Wikipedia check failed for client %s — continuing without it", client_id)
 
-    # One Google Sheet per competitor holding their FULL (uncapped) keyword
-    # list — replaces the old per-competitor slide capped at ~14 rows once a
-    # Google account is connected for Sheets. Created fresh each report
+    # ONE Google Sheet, multiple tabs — client's own tracked keywords on tab
+    # 1, each competitor's FULL (uncapped) ranking keyword list on its own
+    # tab after that (2026-09-10 user spec: replaces the old one-Sheet-per-
+    # competitor approach and its own slide; linked from the bottom of the
+    # Competitor Analysis slide instead). Created fresh each report
     # generation (not in report-preview — see _gather_report_data — since a
     # preview can be re-run repeatedly and shouldn't spam new sheets each
-    # time). Any single domain's failure (network error, not connected) just
-    # drops that domain's link — the whole section falls back to the old
-    # capped-table slides automatically in pptx_builder when this dict ends
-    # up empty.
-    competitor_keyword_sheet_links: dict[str, str] = {}
-    if full_competitor_positions and get_sheets_oauth_email(db):
-        for domain, rows in full_competitor_positions.items():
-            if not rows:
-                continue
-            try:
-                competitor_keyword_sheet_links[domain] = create_competitor_keyword_sheet(client.name, domain, rows, db=db)
-            except Exception as e:
-                logger.warning("Competitor keyword sheet creation failed for %s / %s: %s", client.id, domain, e)
-                content_issues.append(f"Competitor keyword sheet ({domain}): {e}")
+    # time). No row cap — a competitor with 10,000+ keywords gets all of
+    # them; if their uploaded export itself only has 10,000 rows, that's
+    # Semrush's own export-tier limit on the file, not a truncation here
+    # (see create_combined_keyword_sheet's docstring).
+    keyword_sheet_link: str | None = None
+    if get_sheets_oauth_email(db) and (full_competitor_positions or data.get("keyword_rows")):
+        try:
+            keyword_sheet_link = create_combined_keyword_sheet(
+                client.name, data.get("keyword_rows") or [], full_competitor_positions, db=db
+            )
+        except Exception as e:
+            logger.warning("Combined keyword sheet creation failed for client %s: %s", client.id, e)
+            content_issues.append(f"Keyword list sheet: {e}")
 
     progress("Building presentation...", 96)
     try:
@@ -1692,8 +1693,7 @@ def _build_pptx_for_client(
             next_steps_ai=next_steps_ai,
             brand_citations=brand_citations,
             brand_wikipedia=brand_wikipedia,
-            competitor_keyword_sheet_links=competitor_keyword_sheet_links or None,
-            competitor_positions_full=full_competitor_positions or None,
+            keyword_sheet_link=keyword_sheet_link,
             **data,
         )
     except Exception as e:

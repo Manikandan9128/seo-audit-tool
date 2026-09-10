@@ -2988,7 +2988,7 @@ def _fmt_num(v):
     return str(int(n)) if n == int(n) else f"{n:.1f}"
 
 
-def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
+def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], keyword_sheet_link: str | None = None):
     """Matches the reference deck's Competitor Analysis table. Renders the
     full DR/Backlinks/Top Countries/Branded-split columns when the rows come
     from Domain Overview uploads; falls back to a slimmer traffic/keywords/
@@ -3098,7 +3098,44 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict]):
     if own_worldwide_date and own_worldwide_date != own_export_date:
         date_bits.append(f"Worldwide as of {own_worldwide_date}")
     source = f"Semrush export ({'; '.join(date_bits)})" if date_bits else "Semrush export"
-    return _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source=source, insights=insights)
+    slide = _table_slide(prs, "Competitor Analysis", headers, rows, col_widths=col_widths, source=source, insights=insights)
+
+    # Full client + competitor keyword lists (2026-09-10 user spec) live in
+    # one combined Google Sheet (multiple tabs — see
+    # google_sheets_service.create_combined_keyword_sheet), linked here at
+    # the bottom instead of their own dedicated slide. A real button
+    # (whole shape clickable via click_action, not just a small text run)
+    # so it reads and behaves as an unmistakable, easy-to-hit link rather
+    # than fiddly inline text.
+    if keyword_sheet_link:
+        _textbox(
+            slide, Inches(0.6), SLIDE_H - Inches(0.56), Inches(3.0), Inches(0.22),
+            "KEYWORD LIST", size=9.5, bold=True, color=TEXT_MUTED,
+        )
+        btn = slide.shapes.add_shape(5, Inches(0.6), SLIDE_H - Inches(0.38), Inches(4.3), Inches(0.32))
+        try:
+            btn.adjustments[0] = 0.35
+        except (IndexError, AttributeError):
+            pass
+        btn.fill.solid()
+        btn.fill.fore_color.rgb = _accent()
+        btn.line.fill.background()
+        btn.shadow.inherit = False
+        tf = btn.text_frame
+        tf.word_wrap = False
+        tf.margin_left = Pt(10)
+        tf.margin_right = Pt(10)
+        tf.margin_top = Pt(2)
+        tf.margin_bottom = Pt(2)
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        run = p.add_run()
+        run.text = "Open full keyword list →"
+        run.font.size = Pt(11.5)
+        run.font.bold = True
+        run.font.color.rgb = WHITE
+        btn.click_action.hyperlink.address = keyword_sheet_link
+    return slide
 
 
 def add_competitor_positions_slides(prs: Presentation, competitor_positions: dict[str, list[dict]]):
@@ -3143,115 +3180,6 @@ def add_competitor_positions_slides(prs: Presentation, competitor_positions: dic
         )
         slides.append(slide)
     return slides
-
-
-def _cross_competitor_keyword_insights(competitor_positions: dict[str, list[dict]]) -> list[str]:
-    """Deterministic (no AI — same reliability bar as the rest of this
-    file's insight bullets) findings computed across ALL competitors' FULL
-    keyword sets at once, not just each one's individual top-14 table.
-    Branded keywords already excluded per-domain by the caller before this
-    runs, matching the non-branded-opportunities-only convention used
-    elsewhere in this section."""
-    non_empty = {d: rows for d, rows in competitor_positions.items() if rows}
-    if len(non_empty) < 2:
-        return []
-
-    insights = []
-    footprint = {
-        d: sum(1 for r in rows if 0 < _num(r.get("position")) <= 10)
-        for d, rows in non_empty.items()
-    }
-    leader = max(footprint, key=footprint.get)
-    insights.append(
-        f"{leader} has the largest page-1 footprint across all tracked competitors — "
-        f"{footprint[leader]} keywords in the top 10 (out of {len(non_empty[leader])} tracked)."
-    )
-
-    keyword_sets = {d: {r.get("keyword", "").lower() for r in rows if r.get("keyword")} for d, rows in non_empty.items()}
-    shared_all = set.intersection(*keyword_sets.values())
-    if shared_all:
-        insights.append(
-            f"{len(shared_all)} keyword(s) are contested by every tracked competitor — "
-            "the core battleground terms for this category."
-        )
-
-    keyword_counts: dict[str, int] = {}
-    for kws in keyword_sets.values():
-        for kw in kws:
-            keyword_counts[kw] = keyword_counts.get(kw, 0) + 1
-    majority = len(non_empty) // 2 + 1
-    contested_by_most = sum(1 for count in keyword_counts.values() if count >= majority)
-    if contested_by_most:
-        insights.append(
-            f"{contested_by_most} keyword(s) rank for {majority}+ of the {len(non_empty)} tracked competitors — "
-            "strong signal these are worth targeting directly."
-        )
-
-    total_tracked = sum(len(rows) for rows in non_empty.values())
-    insights.append(f"{total_tracked:,} competitor keyword rows tracked in total across {len(non_empty)} domains — see the linked sheets for the full lists.")
-    return insights
-
-
-def add_competitor_keyword_sheets_slide(
-    prs: Presentation,
-    competitor_positions: dict[str, list[dict]],
-    sheet_links: dict[str, str],
-):
-    """Replaces the old one-slide-per-competitor capped-at-14-rows table
-    (add_competitor_positions_slides, kept above for the no-Sheets-
-    configured fallback) with a single slide: one link per competitor to a
-    Google Sheet holding that competitor's FULL keyword list (keyword,
-    search volume, KD, position, previous position — everything, not just
-    the top rows), plus insights computed across all competitors' complete
-    keyword sets rather than just each one's truncated table."""
-    slide = _blank_slide(prs)
-    _content_header(slide, "Competitor Keywords — Full Data")
-    _textbox(
-        slide, Inches(0.4), Inches(1.05), Inches(11), Inches(0.4),
-        "Complete keyword lists (not just top 10) — click a link to open the full sheet.",
-        size=13, color=TEXT_MUTED,
-    )
-
-    # Real bug caught live on report 48 (Lumber, 2026-09-09): with 4
-    # competitors + 4 insight bullets, this loop's own math (1.6 + 4*0.85
-    # for cards, then +0.2+0.4+4*0.45 for insights) runs to y=7.4in — past
-    # the footer text at ~7.1in and close to the 7.5in slide edge, so the
-    # last insight bullet visually overwrote the footer. This was the only
-    # text-block layout in the file with no max-height guard at all (every
-    # other insights renderer here — _insights_strip — already has one).
-    # Same footer clearance _insights_strip uses (SLIDE_H - Inches(0.5)).
-    max_y = SLIDE_H - Inches(0.5)
-
-    y = Inches(1.6)
-    for domain, url in sheet_links.items():
-        if y + Inches(0.7) > max_y:
-            break
-        rows = competitor_positions.get(domain) or []
-        card = _card(slide, Inches(0.6), y, Inches(11.1), Inches(0.7))
-        _textbox(slide, Inches(0.8), y + Inches(0.08), Inches(4), Inches(0.3), domain, size=14, bold=True)
-        _textbox(slide, Inches(0.8), y + Inches(0.38), Inches(3), Inches(0.25), f"{len(rows):,} keywords tracked", size=11, color=TEXT_MUTED)
-        link_box = slide.shapes.add_textbox(Inches(5.2), y + Inches(0.08), Inches(6.3), Inches(0.55))
-        tf = link_box.text_frame
-        tf.word_wrap = True
-        p = tf.paragraphs[0]
-        run = p.add_run()
-        run.text = "Open full keyword list →"
-        run.font.size = Pt(13)
-        run.font.color.rgb = _accent()
-        run.hyperlink.address = url
-        y += Inches(0.85)
-
-    insights = _cross_competitor_keyword_insights(competitor_positions)
-    if insights and y + Inches(0.6) <= max_y:
-        insight_y = y + Inches(0.2)
-        _textbox(slide, Inches(0.6), insight_y, Inches(4), Inches(0.3), "Key Insights", size=14, bold=True)
-        insight_y += Inches(0.4)
-        for text in insights:
-            if insight_y + Inches(0.45) > max_y:
-                break
-            _textbox(slide, Inches(0.6), insight_y, Inches(11.1), Inches(0.5), f"• {text}", size=12)
-            insight_y += Inches(0.45)
-    return slide
 
 
 def _num(v, default=0.0):
@@ -4436,8 +4364,7 @@ def build_report(
     brand_citations: list[dict] | None = None,
     brand_wikipedia: dict | None = None,
     geopulse_analysis: dict | None = None,
-    competitor_keyword_sheet_links: dict[str, str] | None = None,
-    competitor_positions_full: dict[str, list[dict]] | None = None,
+    keyword_sheet_link: str | None = None,
     seo_issues_ai_insights: dict | None = None,
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
@@ -4466,8 +4393,8 @@ def build_report(
             competitor_narratives, domain_strategy, ux_findings, site_audit_issues, site_audit_overview,
             backlink_summary, structured_data_rows, own_domain_rating, core_problem,
             site_audit_pages_rows, next_steps_ai, schema_validation,
-            brand_citations, brand_wikipedia, geopulse_analysis, competitor_keyword_sheet_links,
-            competitor_positions_full, seo_issues_ai_insights, page_wise_ai, page_wise_exclude_paths,
+            brand_citations, brand_wikipedia, geopulse_analysis, keyword_sheet_link,
+            seo_issues_ai_insights, page_wise_ai, page_wise_exclude_paths,
             schema_ai_insights, branded_vs_nonbranded_comparison, branded_vs_nonbranded_ai_insights,
             high_potential_pages, high_potential_countries,
         )
@@ -4508,8 +4435,7 @@ def _build_report(
     brand_citations: list[dict] | None = None,
     brand_wikipedia: dict | None = None,
     geopulse_analysis: dict | None = None,
-    competitor_keyword_sheet_links: dict[str, str] | None = None,
-    competitor_positions_full: dict[str, list[dict]] | None = None,
+    keyword_sheet_link: str | None = None,
     seo_issues_ai_insights: dict | None = None,
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
@@ -4654,19 +4580,13 @@ def _build_report(
             add_keyword_research_slide(prs, keyword_rows)
             add_keyword_opportunity_slide(prs, keyword_rows)
         if competitor_rows:
-            add_competitor_table_slide(prs, competitor_rows)
-        if competitor_positions:
-            # Google Sheet links (full, uncapped keyword lists) take
-            # priority over the old per-competitor capped-table slides —
-            # falls back automatically when no service account is
-            # configured or sheet creation failed for every domain, see
-            # site_audit.py._build_pptx_for_client.
-            if competitor_keyword_sheet_links:
-                add_competitor_keyword_sheets_slide(
-                    prs, competitor_positions_full or competitor_positions, competitor_keyword_sheet_links
-                )
-            else:
-                add_competitor_positions_slides(prs, competitor_positions)
+            add_competitor_table_slide(prs, competitor_rows, keyword_sheet_link)
+        if competitor_positions and not keyword_sheet_link:
+            # Old per-competitor capped-table fallback — only when the
+            # combined Sheet (client + all competitors, multiple tabs)
+            # wasn't created (Sheets not connected, or creation failed),
+            # same graceful-degradation discipline as before.
+            add_competitor_positions_slides(prs, competitor_positions)
         if competitor_narratives:
             for domain, narrative in competitor_narratives.items():
                 if "error" not in narrative:

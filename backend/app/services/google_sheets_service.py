@@ -13,6 +13,8 @@ account this hit a confirmed-real "storage quota exceeded" error even
 inside a folder shared with Editor access and plenty of real free space —
 a known Google Drive API quirk that OAuth avoids entirely.)"""
 
+import re
+
 from googleapiclient.discovery import build
 
 _HEADER = ["Keyword", "Search Volume", "KD", "Position", "Previous Position"]
@@ -51,34 +53,85 @@ def _test_connection(db) -> None:
     drive.files().delete(fileId=spreadsheet_id).execute()
 
 
-def create_competitor_keyword_sheet(client_name: str, domain: str, rows: list[dict], db) -> str:
-    """Creates a new Sheet titled after the client + competitor, writes the
-    full (uncapped) keyword list, sets it link-viewable, and returns the
-    edit URL. Raises NoSheetsCredentials if not connected, or whatever the
-    Google API raises on a real failure — caller falls back to the old
-    capped-table slide on any exception, see pptx_builder.py."""
+_CLIENT_HEADER = ["Keyword", "Cluster", "Search Volume", "KD", "Intent"]
+
+
+def _sanitize_tab_title(name: str) -> str:
+    """Sheets tab names can't contain : \\ / ? * [ ] and are capped at 100
+    chars — strip/truncate rather than let the API reject the whole batch
+    over one bad competitor domain name."""
+    cleaned = re.sub(r'[:\\/?*\[\]]', "-", name or "").strip()
+    return (cleaned or "Sheet")[:100]
+
+
+def create_combined_keyword_sheet(
+    client_name: str, client_keyword_rows: list[dict], competitor_positions: dict[str, list[dict]], db,
+) -> str | None:
+    """ONE spreadsheet, multiple tabs — Tab 1 the client's own tracked
+    keyword list, Tab 2+ one per competitor's FULL (uncapped) ranking
+    keyword list (2026-09-10 user spec: replaces the old one-Sheet-per-
+    competitor approach + its own "Competitor Keywords — Full Data" slide;
+    now linked from the bottom of the Competitor Analysis slide instead).
+
+    No row cap is applied here — confirmed real: a competitor (Rippling)
+    with 10,000+ tracked keywords was assumed to be hitting an "Excel
+    limit," but neither this function nor semrush_parser.py's own ingest
+    caps organic_positions rows (see that file's explicit exclusion of
+    "organic_positions" from its 500-row cap) — a spreadsheet tab can hold
+    far more than 10,000 rows (Sheets' real ceiling is ~10 million cells
+    total across the whole file). If a competitor's data still tops out at
+    exactly 10,000 rows, that ceiling was set when the CSV was exported
+    from Semrush itself (a plan-tier export cap), not by anything in this
+    pipeline — re-exporting from Semrush with a higher row allowance (or a
+    plan that permits it) is the only fix for that, uploading it here
+    passes every row straight through.
+
+    Returns None if there's nothing to write (no client rows and no
+    competitor rows) rather than creating an empty spreadsheet."""
+    tabs: list[tuple[str, list[list]]] = []
+    if client_keyword_rows:
+        values = [_CLIENT_HEADER] + [
+            [r.get("keyword", ""), r.get("cluster", ""), r.get("search_volume", ""), r.get("keyword_difficulty", ""), r.get("intent", "")]
+            for r in client_keyword_rows
+        ]
+        tabs.append((_sanitize_tab_title(client_name or "Client"), values))
+    for domain, rows in competitor_positions.items():
+        if not rows:
+            continue
+        values = [_HEADER] + [
+            [r.get("keyword", ""), r.get("search_volume", ""), r.get("keyword_difficulty", ""), r.get("position", ""), r.get("previous_position", "")]
+            for r in rows
+        ]
+        tabs.append((_sanitize_tab_title(domain), values))
+    if not tabs:
+        return None
+
     creds = _resolve_credentials(db)
     sheets = build("sheets", "v4", credentials=creds)
     drive = build("drive", "v3", credentials=creds)
 
-    title = f"{client_name} — Competitor Keywords — {domain}"[:200]
+    title = f"{client_name} — Client + Competitor Keyword Lists"[:200]
     spreadsheet_id = _create_spreadsheet_file(drive, title)
 
-    values = [_HEADER] + [
-        [
-            r.get("keyword", ""),
-            r.get("search_volume", ""),
-            r.get("keyword_difficulty", ""),
-            r.get("position", ""),
-            r.get("previous_position", ""),
-        ]
-        for r in rows
+    # The file starts with exactly one default sheet (sheetId 0) — rename
+    # it for tab 1, add one new sheet per remaining tab, all in one
+    # batchUpdate so a duplicate tab name (two competitors sanitizing to
+    # the same string) fails atomically rather than leaving a half-built
+    # spreadsheet behind.
+    requests = [{"updateSheetProperties": {
+        "properties": {"sheetId": 0, "title": tabs[0][0]}, "fields": "title",
+    }}]
+    for tab_title, _values in tabs[1:]:
+        requests.append({"addSheet": {"properties": {"title": tab_title}}})
+    sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+
+    value_ranges = [
+        {"range": f"'{tab_title}'!A1", "values": values}
+        for tab_title, values in tabs
     ]
-    sheets.spreadsheets().values().update(
+    sheets.spreadsheets().values().batchUpdate(
         spreadsheetId=spreadsheet_id,
-        range="A1",
-        valueInputOption="RAW",
-        body={"values": values},
+        body={"valueInputOption": "RAW", "data": value_ranges},
     ).execute()
 
     drive.permissions().create(
