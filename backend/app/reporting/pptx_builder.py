@@ -2518,6 +2518,32 @@ def _standout_query_insight(subset: list[dict]) -> str | None:
     return None
 
 
+def _validate_slide_insights(insights: list[str], shown_rows: list[dict], name_field: str) -> tuple[list[str], list[str]]:
+    """QA gate (2026-09-10 spec) run right before an insights block is
+    published: every quoted name an insight cites must be one of the rows
+    literally drawn in this slide's own table (`shown_rows`), not some
+    broader dataset the insight was computed from — catches the class of
+    bug where a generator scans the full dataset (e.g. every branded query,
+    for accurate raw-vs-filtered totals) while the table only shows a
+    capped/sorted subset of it, so a named example can fall outside what
+    the reader can actually see on the slide. Confirmed live: an insight
+    named a query ("lumberfy") that ranked outside the shown top-14-by-
+    clicks rows. Never softens or substitutes a bad line — drops it
+    outright. Returns (validated_insights, removed_notes); removed_notes
+    is QA-only, never rendered on the slide."""
+    shown_names = {str(r.get(name_field, "")).strip().lower() for r in shown_rows}
+    validated: list[str] = []
+    removed: list[str] = []
+    for line in insights:
+        quoted = re.findall(r'"([^"]+)"', line)
+        bad = [q for q in quoted if q.strip().lower() not in shown_names]
+        if bad:
+            removed.append(f"dropped (cites {bad!r}, not in this slide's table): {line}")
+            continue
+        validated.append(line)
+    return validated, removed
+
+
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Overview")
@@ -3433,7 +3459,13 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 cats_text = ", ".join(f"{c} ({n})" for c, n in cat_counts)
                 out.append(f"Cluster validation: mixed page formats — {cats_text}. One page likely can't satisfy all of these; consider splitting into separate pages.")
             else:
-                out.append(f"Cluster validation: consistent format ({cat_counts[0][0]}) — one page can reasonably target every keyword here.")
+                # 2026-09-10 spec: never publish two different values for the
+                # same classified field on one slide — anchor to page_category
+                # (what "Recommended format" above is actually built on)
+                # instead of independently re-deriving the mode, which could
+                # disagree when the top-volume keyword's own format wasn't
+                # the cluster's most common one.
+                out.append(f"Cluster validation: consistent format ({page_category or cat_counts[0][0]}) — one page can reasonably target every keyword here.")
         if kds:
             out.append(f"Avg. keyword difficulty {sum(kds) / len(kds):.0f} — {'competitive cluster, prioritize content depth over volume' if sum(kds) / len(kds) > 40 else 'low-competition cluster, faster to rank in'}.")
         if easy_wins:
@@ -4551,6 +4583,12 @@ def _build_report(
                 else:
                     standout = _standout_query_insight(top_q)
                     insights = [standout] if standout else []
+                # 2026-09-10 QA gate: _branded_query_insights scans the full
+                # subset (needed for accurate raw-vs-filtered totals), so its
+                # named examples can fall outside top_q, the rows actually
+                # drawn below — drop any that do rather than publish a query
+                # the reader can't find in the table.
+                insights, _ = _validate_slide_insights(insights, top_q, "query")
                 if not insights:
                     # From top_q (the rows actually drawn on the slide), not
                     # the full subset — confirmed live: the insight named a
