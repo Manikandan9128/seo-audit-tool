@@ -20,6 +20,7 @@ response is still recovered per-domain (see _parse_batch_result)."""
 import json
 import re
 
+from app.config import settings
 from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, generate_text
 
 BATCH_PROMPT_TEMPLATE = """You are an SEO/growth consultant writing competitive-analysis sections for \
@@ -161,7 +162,23 @@ def _chunk_domains(competitors_facts: dict[str, dict], template_overhead_chars: 
     """Greedily groups domains so each chunk's estimated prompt+output stays
     within GROQ_TPM_BUDGET — one domain that alone exceeds it still gets its
     own (oversized) chunk rather than being split further, since a single
-    competitor's narrative can't meaningfully shrink below that."""
+    competitor's narrative can't meaningfully shrink below that.
+
+    GROQ_TPM_BUDGET is Groq-specific (its real per-minute shared cap) and
+    irrelevant when Groq isn't even configured — Gemini/Claude have no such
+    constraint modeled here (generate_text()'s max_tokens is a no-op for
+    Gemini, and Claude's own cap is far above what a handful of competitors
+    needs). Confirmed real: with only a Gemini key set, this budget math
+    forces a separate chunk (and separate AI call, since 2 domains' own
+    _CHUNK_OUTPUT_TOKENS_PER_DOMAIN estimate alone already exceeds
+    GROQ_TPM_BUDGET) per competitor instead of the intended single batched
+    call, quadrupling Gemini calls for a 4-competitor report and burning
+    its daily quota mid-report — later competitors (and the Onboarding
+    Breakdown vision call after them) then silently fail once quota's gone.
+    Skip the Groq-sized chunking entirely when Groq isn't configured."""
+    if not settings.groq_api_key:
+        return [list(competitors_facts.keys())]
+
     chunks: list[list[str]] = []
     current: list[str] = []
     current_data_chars = 0
