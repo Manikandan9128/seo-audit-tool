@@ -29,6 +29,7 @@ dependencies = [
     "anthropic>=0.40",
     "pdfplumber>=0.11",
     "playwright>=1.47",
+    "pycountry>=24.6",
 ]
 
 [project.optional-dependencies]

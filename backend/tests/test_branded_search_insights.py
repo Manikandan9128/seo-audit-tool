@@ -38,7 +38,7 @@ def test_high_potential_page_flagged_for_near_page_one_position():
     pages = [{"page": "https://x.com/a", "impressions": 500, "clicks": 5, "ctr": 0.01, "position": 12.0}]
     flagged = build_high_potential_pages(pages)
     assert len(flagged) == 1
-    assert "page 1" in flagged[0]["opportunity"]
+    assert "page-1" in flagged[0]["fix"]
 
 
 def test_high_potential_page_flagged_for_low_ctr_in_band():
@@ -47,7 +47,7 @@ def test_high_potential_page_flagged_for_low_ctr_in_band():
     pages = [{"page": "https://x.com/b", "impressions": 1000, "clicks": 5, "ctr": 0.005, "position": 5.0}]
     flagged = build_high_potential_pages(pages)
     assert len(flagged) == 1
-    assert "CTR" in flagged[0]["opportunity"]
+    assert "click-through-rate gap" in flagged[0]["fix"]
 
 
 def test_page_below_impression_floor_excluded():
@@ -61,19 +61,41 @@ def test_page_with_no_flag_reason_not_included():
     assert build_high_potential_pages(pages) == []
 
 
-def test_high_potential_country_flagged_for_near_zero_clicks():
+def test_high_potential_country_material_vs_low_signal_split():
+    # USA clears the 1,000-impression material bar; India has real
+    # impressions but a single-digit click count — must land in the
+    # low-signal group, never as an equal-weight material row.
     countries = [
-        {"country": "usa", "clicks": 50, "impressions": 500, "ctr": 0.10, "position": 8.0},
-        {"country": "ind", "clicks": 0, "impressions": 100, "ctr": 0.0, "position": 9.0},
+        {"country": "usa", "clicks": 50, "impressions": 1500, "ctr": 50 / 1500, "position": 8.0},
+        {"country": "ind", "clicks": 1, "impressions": 200, "ctr": 1 / 200, "position": 9.0},
     ]
-    flagged = build_high_potential_countries(countries)
-    ind = next(r for r in flagged if r["country"] == "IND")
-    assert "near-zero clicks" in ind["opportunity"]
+    result = build_high_potential_countries(countries)
+    material_codes = {r["country"] for r in result["material"]}
+    assert "United States" in material_codes
+    assert "India" not in material_codes
+    assert result["material"][0]["fix"]  # every material row carries a specific fix
+    assert "India" in result["low_signal"]["countries"]
+    assert "sample too small to act on" in result["low_signal"]["summary"]
 
 
-def test_country_below_impression_floor_excluded():
+def test_country_below_low_signal_impression_floor_excluded_entirely():
     countries = [{"country": "fra", "clicks": 0, "impressions": 5, "ctr": 0.0, "position": 20.0}]
-    assert build_high_potential_countries(countries) == []
+    result = build_high_potential_countries(countries)
+    assert result == {"material": [], "low_signal": None}
+
+
+def test_country_code_resolved_to_full_name_not_raw_acronym():
+    # Regression: the old code rendered raw alpha-3 codes like "ARM"
+    # unexplained on the slide — every displayed country must be a full
+    # name (or the low-signal group, never a bare 3-letter code).
+    countries = [
+        {"country": "usa", "clicks": 1687, "impressions": 261348, "ctr": 1687 / 261348, "position": 8.0},
+        {"country": "arm", "clicks": 7, "impressions": 110, "ctr": 7 / 110, "position": 5.0},
+    ]
+    result = build_high_potential_countries(countries)
+    assert result["material"][0]["country"] == "United States"
+    assert "Armenia" in result["low_signal"]["countries"]
+    assert "ARM" not in result["material"][0]["fix"]
 
 
 def test_branded_slide_states_headline_share():
@@ -87,12 +109,26 @@ def test_branded_slide_states_headline_share():
 
 
 def test_opportunities_slide_says_so_when_nothing_flagged():
-    slide = add_search_opportunities_slide(_prs(), [], [], "Google Search Console")
+    slide = add_search_opportunities_slide(_prs(), [], {}, "Google Search Console")
     assert slide is None  # both empty -> no slide at all, matches "silently absent" convention
 
 
 def test_opportunities_slide_explicit_message_when_only_one_side_empty():
     high_pages = build_high_potential_pages([{"page": "https://x.com/e", "impressions": 500, "clicks": 5, "ctr": 0.01, "position": 12.0}])
-    slide = add_search_opportunities_slide(_prs(), high_pages, [], "Google Search Console")
+    slide = add_search_opportunities_slide(_prs(), high_pages, {}, "Google Search Console")
     text = _slide_text(slide)
-    assert "No countries met the high-potential bar" in text
+    assert "No countries met the material-opportunity bar" in text
+
+
+def test_opportunities_slide_low_signal_line_never_a_table_row():
+    high_countries = build_high_potential_countries([
+        {"country": "chn", "clicks": 1, "impressions": 300, "ctr": 1 / 300, "position": 10.0},
+    ])
+    slide = add_search_opportunities_slide(_prs(), [], high_countries, "Google Search Console")
+    text = _slide_text(slide)
+    assert "Low-Signal, Monitor Only" in text
+    assert "China" in text
+    for shape in slide.shapes:
+        if shape.has_table:
+            table_text = "\n".join(c.text_frame.text for row in shape.table.rows for c in row.cells)
+            assert "China" not in table_text  # never rendered as a table row

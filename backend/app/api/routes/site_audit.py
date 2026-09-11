@@ -1431,7 +1431,7 @@ def _gather_report_data(
             top_nonbranded = sorted(nonbranded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
             gsc_range = f"{date_range.get('gsc_start', '')} to {date_range.get('gsc_end', '')}"
             branded_insights_candidate = generate_branded_search_insights(
-                branded_vs_nonbranded_comparison, high_potential_pages, high_potential_countries,
+                branded_vs_nonbranded_comparison, high_potential_pages, (high_potential_countries or {}).get("material") or [],
                 top_branded, top_nonbranded, gsc_range,
             )
             if "error" not in branded_insights_candidate:

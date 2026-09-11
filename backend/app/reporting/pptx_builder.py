@@ -9,6 +9,7 @@ from collections import Counter
 from io import BytesIO
 from urllib.parse import urlparse
 
+import pycountry
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
@@ -2493,7 +2494,16 @@ def build_branded_vs_nonbranded_comparison(branded_queries: list[dict], nonbrand
 
 
 _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE = 50
-_HIGH_POTENTIAL_MIN_IMPRESSIONS_COUNTRY = 30
+
+# Country tiering (2026-09-11 user spec) — "material" is impressions high
+# enough that the click gap is a real number of visitors, OR clicks
+# already meaningful even below that impression floor; "low-signal" is
+# real impressions but single-digit clicks, never shown with the same
+# table weight as a material row.
+_COUNTRY_MATERIAL_MIN_IMPRESSIONS = 1000
+_COUNTRY_MATERIAL_MIN_CLICKS = 15
+_COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS = 100
+_COUNTRY_LOW_SIGNAL_MAX_CLICKS = 9
 
 
 def _ctr_band_for_position(position: float) -> tuple[float, float] | None:
@@ -2511,14 +2521,17 @@ def _ctr_band_for_position(position: float) -> tuple[float, float] | None:
 
 
 def build_high_potential_pages(page_rows: list[dict]) -> list[dict]:
-    """Part 2 flagging logic (2026-09-10 user spec): a page qualifies if
+    """Part 2 flagging logic (2026-09-11 user spec): a page qualifies if
     its position is 8-20 (close enough to page 1 for a realistic ranking
     push) OR its CTR is noticeably under the typical band for its
     position with meaningful impressions behind it. Pages below the
     minimum-impressions floor are excluded outright — not enough signal
-    to act on. Sorted by impressions (the pages worth the most attention
-    first), each row grounded only in its own real position/CTR/
-    impressions, no invented numbers."""
+    to act on. The "fix" field states the specific action to take, not
+    just the gap diagnosis, per spec; a real number is quoted instead of
+    a bare "CTR" claim so nothing reads as an unexplained benchmark.
+    Sorted by impressions (the pages worth the most attention first),
+    each row grounded only in its own real position/CTR/impressions, no
+    invented numbers."""
     flagged = []
     for r in page_rows:
         impressions = float(r.get("impressions", 0) or 0)
@@ -2526,60 +2539,123 @@ def build_high_potential_pages(page_rows: list[dict]) -> list[dict]:
             continue
         position = float(r.get("position", 0) or 0)
         ctr_pct = float(r.get("ctr", 0) or 0) * 100
-        reasons = []
-        if 8 <= position <= 20:
-            reasons.append(f"position {position:.1f} is close enough to page 1 for a realistic ranking push")
+        fixes = []
         band = _ctr_band_for_position(position)
         if band and ctr_pct < band[0]:
-            reasons.append(
-                f"{ctr_pct:.1f}% CTR is noticeably below the {band[0]:.0f}-{band[1]:.0f}% typical range for position {position:.0f}"
+            fixes.append(
+                f"Rewrite title/meta to close the click-through-rate gap — currently {ctr_pct:.1f}%, "
+                f"typical for position {position:.0f} is {band[0]:.0f}-{band[1]:.0f}%."
             )
-        if not reasons:
+        if 8 <= position <= 20:
+            fixes.append(
+                f"Push for page-1 ranking via internal links and content refresh — already close at position {position:.1f}."
+            )
+        if not fixes:
             continue
         flagged.append({
             "page": r.get("page"), "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1),
-            "position": round(position, 1), "opportunity": "; ".join(reasons),
+            "position": round(position, 1), "fix": " ".join(fixes),
         })
     flagged.sort(key=lambda r: r["impressions"], reverse=True)
     return flagged
 
 
-def build_high_potential_countries(country_rows: list[dict]) -> list[dict]:
-    """Part 3 flagging logic (2026-09-10 user spec): a country qualifies
-    if it has meaningful-relative impressions but a CTR well below the
-    best-performing country's, OR meaningful impressions with near-zero
-    clicks (a localization/currency/relevance mismatch signal). Country
-    codes are GSC's raw ISO-3166-1 alpha-3 codes, uppercased for display
-    (e.g. "usa" -> "USA") rather than guessing at a full country name not
-    actually returned by the API."""
-    eligible = [r for r in country_rows if float(r.get("impressions", 0) or 0) >= _HIGH_POTENTIAL_MIN_IMPRESSIONS_COUNTRY]
-    if not eligible:
-        return []
-    best = max(eligible, key=lambda r: float(r.get("ctr", 0) or 0))
-    best_ctr_pct = float(best.get("ctr", 0) or 0) * 100
-    best_label = str(best.get("country", "")).upper()
-    top_impressions = max(float(r.get("impressions", 0) or 0) for r in eligible)
+def _country_label(raw_code: str) -> str:
+    """GSC's country dimension returns raw ISO-3166-1 alpha-3 codes (e.g.
+    "usa", "grc") — resolved here to the full country name via pycountry
+    so a slide never shows an unexplained 3-letter code. Falls back to
+    the uppercased raw code only for the rare value pycountry doesn't
+    recognize."""
+    code = str(raw_code or "").strip()
+    if len(code) == 3:
+        match = pycountry.countries.get(alpha_3=code.upper())
+        if match:
+            return match.name
+    return code.upper()
 
-    flagged = []
-    for r in eligible:
+
+def _summarize_low_signal_countries(rows: list[dict]) -> dict | None:
+    """One grouped, deliberately muted line for countries with real
+    impressions but single-digit clicks (2026-09-11 user spec) — never
+    rendered as individual table rows, so a near-zero-click country can't
+    read with the same weight as a material opportunity."""
+    if not rows:
+        return None
+    rows = sorted(rows, key=lambda r: float(r.get("impressions", 0) or 0), reverse=True)
+    names = [_country_label(r.get("country", "")) for r in rows]
+    clicks = [int(float(r.get("clicks", 0) or 0)) for r in rows]
+    impressions = [int(float(r.get("impressions", 0) or 0)) for r in rows]
+    if len(set(clicks)) == 1:
+        click_part = f"{clicks[0]} click each" if clicks[0] == 1 else f"{clicks[0]} clicks each"
+    else:
+        click_part = f"{min(clicks)}-{max(clicks)} clicks"
+    imp_part = f"{impressions[0]}" if min(impressions) == max(impressions) else f"{min(impressions)}-{max(impressions)}"
+    summary = (
+        f"{', '.join(names)}: {click_part} despite {imp_part} impressions — "
+        f"sample too small to act on, worth re-checking next period"
+    )
+    return {"countries": names, "summary": summary}
+
+
+def build_high_potential_countries(country_rows: list[dict]) -> dict:
+    """Part 3 flagging logic (2026-09-11 user spec): countries split into
+    two tiers so a near-zero-click country is never given the same table
+    weight as one with real click volume.
+
+    Material opportunities — impressions >= 1,000 (the click gap is a
+    real number of visitors), OR clicks already >= 15 even below that
+    impression floor (already-meaningful volume worth growing further).
+    Every material row gets a specific fix: countries already near the
+    best CTR get a targeting/budget-expansion fix, countries well below
+    it get a localization fix naming the actual CTR gap (a number, not a
+    bare label).
+
+    Low-signal, monitor only — real impressions (>= 100) but single-digit
+    clicks — rolled into one grouped summary, never individual rows.
+
+    Country codes are resolved to full names via _country_label so
+    nothing renders as an unexplained code."""
+    candidates = [r for r in country_rows if float(r.get("impressions", 0) or 0) >= _COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS]
+    if not candidates:
+        return {"material": [], "low_signal": None}
+
+    material_pool = [
+        r for r in candidates
+        if float(r.get("impressions", 0) or 0) >= _COUNTRY_MATERIAL_MIN_IMPRESSIONS
+        or float(r.get("clicks", 0) or 0) >= _COUNTRY_MATERIAL_MIN_CLICKS
+    ]
+    best = max(candidates, key=lambda r: float(r.get("ctr", 0) or 0))
+    best_ctr_pct = float(best.get("ctr", 0) or 0) * 100
+    best_label = _country_label(best.get("country", ""))
+
+    material = []
+    for r in material_pool:
         impressions = float(r.get("impressions", 0) or 0)
         clicks = float(r.get("clicks", 0) or 0)
         ctr_pct = float(r.get("ctr", 0) or 0) * 100
-        reasons = []
-        if r is not best and impressions >= top_impressions * 0.4 and ctr_pct < best_ctr_pct * 0.6:
-            reasons.append(
-                f"{ctr_pct:.1f}% CTR is well below {best_label}'s {best_ctr_pct:.1f}% despite meaningful impressions"
+        label = _country_label(r.get("country", ""))
+        if r is best or ctr_pct >= best_ctr_pct * 0.6:
+            fix = (
+                f"Expand budget/content targeting for {label} — already converting {int(clicks):,} clicks "
+                f"at a {ctr_pct:.1f}% click-through rate, worth doubling down on."
             )
-        if clicks <= 1:
-            reasons.append("near-zero clicks despite real impressions — possible localization/currency/relevance mismatch")
-        if not reasons:
-            continue
-        flagged.append({
-            "country": str(r.get("country", "")).upper(), "impressions": int(impressions), "clicks": int(clicks),
-            "ctr_pct": round(ctr_pct, 1), "opportunity": "; ".join(reasons),
+        else:
+            fix = (
+                f"Localize title, meta description, and currency/language cues for {label} to close the "
+                f"click-through-rate gap — currently {ctr_pct:.1f}% vs {best_label}'s {best_ctr_pct:.1f}%."
+            )
+        material.append({
+            "country": label, "impressions": int(impressions), "clicks": int(clicks),
+            "ctr_pct": round(ctr_pct, 1), "fix": fix,
         })
-    flagged.sort(key=lambda r: r["impressions"], reverse=True)
-    return flagged
+    material.sort(key=lambda r: r["impressions"], reverse=True)
+
+    material_codes = {r.get("country") for r in material_pool}
+    low_signal_rows = [
+        r for r in candidates
+        if r.get("country") not in material_codes and float(r.get("clicks", 0) or 0) <= _COUNTRY_LOW_SIGNAL_MAX_CLICKS
+    ]
+    return {"material": material, "low_signal": _summarize_low_signal_countries(low_signal_rows)}
 
 
 def add_branded_vs_nonbranded_slide(prs: Presentation, comparison: dict, ai_insights: dict | None, source: str) -> object | None:
@@ -2618,15 +2694,22 @@ def add_branded_vs_nonbranded_slide(prs: Presentation, comparison: dict, ai_insi
 
 
 def add_search_opportunities_slide(
-    prs: Presentation, high_pages: list[dict], high_countries: list[dict], source: str
+    prs: Presentation, high_pages: list[dict], high_countries: dict | None, source: str
 ) -> object | None:
     """Part 2 (high-potential landing pages) + Part 3 (high-potential
-    countries) of the 2026-09-10 user spec — no narrative insights on this
-    slide (those live on add_branded_vs_nonbranded_slide) so the two
-    slides' text never overlaps. When nothing meets the flagging bar for
-    either table, says so explicitly per spec rather than forcing an empty
-    table or silently omitting the slide."""
-    if not high_pages and not high_countries:
+    countries) of the 2026-09-11 user spec. Countries render as two
+    visually distinct tiers: a full "Fix" table for material
+    opportunities, and one muted, structurally separate summary line for
+    low-signal (single-digit-click) countries — never the same table
+    weight as a real opportunity. No narrative insights on this slide
+    (those live on add_branded_vs_nonbranded_slide) so the two slides'
+    text never overlaps. When nothing meets either bar, says so
+    explicitly rather than forcing an empty table or silently omitting
+    the slide."""
+    high_countries = high_countries or {}
+    material_countries = high_countries.get("material") or []
+    low_signal = high_countries.get("low_signal")
+    if not high_pages and not material_countries and not low_signal:
         return None
 
     slide = _blank_slide(prs)
@@ -2640,11 +2723,11 @@ def add_search_opportunities_slide(
     y += Inches(0.28)
     if high_pages:
         rows1 = [
-            (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["opportunity"])
+            (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["fix"])
             for r in high_pages
         ]
         y = _draw_table(
-            slide, ["Page", "Impressions", "CTR", "Position", "Opportunity"], rows1, y,
+            slide, ["Page", "Impressions", "CTR", "Position", "Fix"], rows1, y,
             col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=5, row_height=0.4, wrap_cols={4},
         ) + Inches(0.25)
     else:
@@ -2653,17 +2736,23 @@ def add_search_opportunities_slide(
 
     _textbox(slide, left, y, width, Inches(0.24), "High-Potential Countries", size=12.5, bold=True, color=_accent())
     y += Inches(0.28)
-    if high_countries:
+    if material_countries:
         rows2 = [
-            (r["country"], f"{r['impressions']:,}", f"{r['clicks']:,}", f"{r['ctr_pct']:.1f}%", r["opportunity"])
-            for r in high_countries
+            (r["country"], f"{r['impressions']:,}", f"{r['clicks']:,}", f"{r['ctr_pct']:.1f}%", r["fix"])
+            for r in material_countries
         ]
-        _draw_table(
-            slide, ["Country", "Impressions", "Clicks", "CTR", "Opportunity"], rows2, y,
+        y = _draw_table(
+            slide, ["Country", "Impressions", "Clicks", "CTR", "Fix"], rows2, y,
             col_widths=[1.6, 1.5, 1.3, 1.2, 6.5], left=left, width=width, row_cap=5, row_height=0.4, wrap_cols={4},
-        )
+        ) + Inches(0.2)
     else:
-        _textbox(slide, left, y, width, Inches(0.3), "No countries met the high-potential bar this period.", size=11.5, color=TEXT_MUTED)
+        _textbox(slide, left, y, width, Inches(0.3), "No countries met the material-opportunity bar this period.", size=11.5, color=TEXT_MUTED)
+        y += Inches(0.35)
+
+    if low_signal:
+        _textbox(slide, left, y, width, Inches(0.22), "Low-Signal, Monitor Only", size=10.5, bold=True, color=TEXT_MUTED)
+        y += Inches(0.24)
+        _textbox(slide, left, y, width, Inches(0.5), low_signal["summary"], size=10, color=TEXT_MUTED)
 
     return slide
 
@@ -4831,7 +4920,7 @@ def _build_report(
         if branded_vs_nonbranded_comparison:
             add_branded_vs_nonbranded_slide(prs, branded_vs_nonbranded_comparison, branded_vs_nonbranded_ai_insights, gsc_source)
         if high_potential_pages or high_potential_countries:
-            add_search_opportunities_slide(prs, high_potential_pages or [], high_potential_countries or [], gsc_source)
+            add_search_opportunities_slide(prs, high_potential_pages or [], high_potential_countries or {}, gsc_source)
 
     if competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions or competitor_narratives:
         add_section_slide(prs, client_name, "Competitor & Keyword Research")

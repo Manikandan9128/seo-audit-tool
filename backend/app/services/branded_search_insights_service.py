@@ -3,7 +3,9 @@
 high-potential countries) are computed deterministically in pptx_builder
 (build_branded_vs_nonbranded_comparison / build_high_potential_pages /
 build_high_potential_countries) — this only writes the consultative prose
-around those exact numbers, it never derives or invents one."""
+around those exact numbers, it never derives or invents one. high_countries
+here is only the "material" tier (2026-09-11 user spec split) — the
+low-signal, single-digit-click countries never reach this prompt."""
 
 import json
 import re
