@@ -2493,6 +2493,129 @@ def build_branded_vs_nonbranded_comparison(branded_queries: list[dict], nonbrand
     return {"branded": branded, "nonbranded": nonbranded, "branded_share_pct": branded_share_pct}
 
 
+_DEMAND_GAP_TARGET_PERIOD_DAYS = 30
+_DEMAND_GAP_MIN_IMPRESSIONS = 50
+
+
+def build_branded_dependency_narrative(
+    comparison: dict, nonbranded_queries: list[dict],
+    competitor_positions: dict[str, list[dict]] | None = None,
+    period_days: int = _DEMAND_GAP_TARGET_PERIOD_DAYS,
+) -> dict:
+    """Parts 1 (headline), 2 (demand gap) and 3 (cost of inaction + one
+    concrete example) of the Branded vs Non-Branded "outcome case" rebuild
+    (2026-09-11 user spec) — deterministic, no AI, so the slide still
+    carries real analysis with no AI provider configured (Part 4, Key
+    Insights, stays the only AI-written piece). The position-appropriate
+    CTR benchmark reuses _ctr_decay_pct, the same strict decay model
+    add_keyword_gap_slide already uses for click projections, instead of
+    inventing a second benchmark system. Every modeled number states its
+    own assumption inline rather than standing alone as a bare figure."""
+    branded, nonbranded = comparison["branded"], comparison["nonbranded"]
+    pct = comparison["branded_share_pct"]
+    scale = (_DEMAND_GAP_TARGET_PERIOD_DAYS / period_days) if period_days else 1.0
+
+    if pct >= 70:
+        headline = (
+            f"{pct:.1f}% of your organic clicks come from people already searching your brand name — "
+            f"non-branded discovery is minimal."
+        )
+    elif pct >= 40:
+        headline = (
+            f"{pct:.1f}% of your organic clicks are branded search — a significant share of your traffic "
+            f"depends on people who already know your brand, not on discovering it through a problem "
+            f"they're searching to solve."
+        )
+    else:
+        headline = (
+            f"Only {pct:.1f}% of your organic clicks are branded — non-branded discovery already carries "
+            f"the majority of your organic traffic."
+        )
+
+    demand_gap = None
+    benchmark_ctr = _ctr_decay_pct(round(nonbranded["avg_position"])) if nonbranded["impressions"] else 0.0
+    if benchmark_ctr > nonbranded["ctr_pct"] and nonbranded["impressions"]:
+        extra_clicks_period = nonbranded["impressions"] * (benchmark_ctr - nonbranded["ctr_pct"]) / 100
+        extra_clicks_monthly = round(extra_clicks_period * scale)
+        period_note = "" if period_days == _DEMAND_GAP_TARGET_PERIOD_DAYS else f", scaled from the {period_days}-day period this data covers"
+        demand_gap = {
+            "benchmark_ctr_pct": benchmark_ctr, "extra_clicks_monthly": extra_clicks_monthly,
+            "text": (
+                f"Estimate: closing non-branded click-through rate from {nonbranded['ctr_pct']:.1f}% to the "
+                f"{benchmark_ctr:.1f}% typical for position {nonbranded['avg_position']:.1f} would add roughly "
+                f"{extra_clicks_monthly:,} clicks per 30 days — assumes impressions hold steady and no ranking "
+                f"change{period_note}."
+            ),
+        }
+
+    concrete_example = None
+    candidates = []
+    for q in nonbranded_queries:
+        impressions = float(q.get("impressions", 0) or 0)
+        if impressions < _DEMAND_GAP_MIN_IMPRESSIONS:
+            continue
+        position = float(q.get("position", 0) or 0)
+        ctr_pct = float(q.get("ctr", 0) or 0) * 100
+        q_benchmark = _ctr_decay_pct(round(position))
+        if q_benchmark > ctr_pct:
+            candidates.append((impressions, q.get("query"), position, ctr_pct, q_benchmark))
+    if candidates:
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        impressions, query, position, ctr_pct, q_benchmark = candidates[0]
+        modeled_clicks = round(impressions * (q_benchmark - ctr_pct) / 100 * scale)
+        concrete_example = {
+            "query": query, "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1), "position": round(position, 1),
+            "text": (
+                f"\"{query}\" draws {int(impressions):,} impressions at position {position:.1f} but only a "
+                f"{ctr_pct:.1f}% click-through rate. Estimate: closing that to the {q_benchmark:.1f}% typical "
+                f"for this position is roughly {modeled_clicks:,} extra clicks per 30 days, same assumptions "
+                f"as above."
+            ),
+        }
+
+    competitor_clause = ""
+    if competitor_positions:
+        nb_terms = {str(q.get("query", "")).strip().lower() for q in nonbranded_queries if q.get("query")}
+        overlap = []
+        for domain, rows in competitor_positions.items():
+            for r in rows:
+                kw = str(r.get("keyword", "")).strip().lower()
+                if kw and kw in nb_terms and r.get("position") is not None:
+                    overlap.append((domain, r.get("keyword"), r.get("position")))
+        if overlap:
+            overlap.sort(key=lambda o: _num(o[2], default=999))
+            domain, kw, pos = overlap[0]
+            competitor_clause = (
+                f" At least {len(overlap)} of your non-branded search terms are already ranked by a tracked "
+                f"competitor — \"{kw}\" is currently held by {domain} at position {pos}, not by you."
+            )
+        else:
+            competitor_clause = (
+                f" {len(competitor_positions)} competitor domain(s) are tracked in this account; no direct "
+                f"overlap with your top non-branded terms showed up in this dataset, but it's worth watching "
+                f"as that content grows."
+            )
+
+    if pct >= 40:
+        cost_of_inaction = (
+            "Relying this heavily on branded search caps growth at how many people already know to look for "
+            "you by name — there's little to no new-customer discovery happening through search. If brand "
+            "awareness ever plateaus (a paid-spend cut, a slower launch cadence, a louder competitor), organic "
+            f"traffic has no non-branded floor to fall back on.{competitor_clause}"
+        )
+    else:
+        cost_of_inaction = (
+            f"Even with a healthy non-branded share, the {pct:.1f}% of clicks still tied to brand search is "
+            f"demand that stops the moment brand awareness dips — worth protecting deliberately, not just "
+            f"treating as the smaller number on the table.{competitor_clause}"
+        )
+
+    return {
+        "headline": headline, "demand_gap": demand_gap,
+        "concrete_example": concrete_example, "cost_of_inaction": cost_of_inaction,
+    }
+
+
 _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE = 50
 
 # Country tiering (2026-09-11 user spec) — "material" is impressions high
@@ -2658,38 +2781,82 @@ def build_high_potential_countries(country_rows: list[dict]) -> dict:
     return {"material": material, "low_signal": _summarize_low_signal_countries(low_signal_rows)}
 
 
-def add_branded_vs_nonbranded_slide(prs: Presentation, comparison: dict, ai_insights: dict | None, source: str) -> object | None:
-    """Part 1 (comparison table) + Part 4 (Key Insights) of the 2026-09-10
-    user spec — Parts 2/3 (high-potential pages/countries) render on the
-    separate add_search_opportunities_slide so the two slides' text never
-    overlaps: this slide's insights name the single highest-opportunity
-    page/country, that slide's tables carry the full detail behind them."""
+def add_branded_vs_nonbranded_slide(
+    prs: Presentation, comparison: dict, narrative: dict | None, ai_insights: dict | None, source: str
+) -> object | None:
+    """Branded vs Non-Branded rebuilt as an outcome case, not a two-row
+    table with one headline stat (2026-09-11 user spec): headline (business-
+    dependency framing) -> compact ground-truth table -> demand-gap
+    estimate -> cost of inaction -> one concrete example -> Key Insights.
+    Parts 1-3/headline/example are all from build_branded_dependency_
+    narrative (deterministic, no AI); Part 4 (Key Insights) is the only
+    AI-written piece, same convention as every other AI slide in this
+    file. High-potential pages/countries still render on the separate
+    add_search_opportunities_slide so text never overlaps between the two
+    slides."""
     branded, nonbranded = comparison["branded"], comparison["nonbranded"]
     if not branded["clicks"] and not nonbranded["clicks"] and not branded["impressions"] and not nonbranded["impressions"]:
         return None
+    narrative = narrative or {}
 
     slide = _blank_slide(prs)
     _content_header(slide, "Branded vs Non-Branded Search Performance")
     _textbox(slide, Inches(8.0), Inches(0.3), Inches(4.7), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
 
-    _textbox(
-        slide, Inches(0.6), Inches(1.05), Inches(11.9), Inches(0.4),
-        f"Branded queries carry {comparison['branded_share_pct']:.1f}% of total clicks",
-        size=15, bold=True, color=_accent(),
-    )
+    left, width = Inches(0.6), Inches(12.1)
+    max_y = SLIDE_H - Inches(0.5)
+
+    def _wrapped_lines(text: str, w=width, size=11) -> int:
+        # Same ~14-chars-per-inch-at-size-11 heuristic _insights_strip uses,
+        # scaled by font size so a larger headline doesn't under-reserve height.
+        chars_per_line = max(20, int(w / 914400 * 14 * (11 / size)))
+        return max(1, -(-len(text) // chars_per_line))
+
+    def _paragraph(top, label: str, text: str, label_color=None) -> object:
+        _textbox(slide, left, top, width, Inches(0.22), label.upper(), size=9.5, bold=True, color=label_color or _accent())
+        top += Inches(0.24)
+        lines = _wrapped_lines(text)
+        line_h = Inches(0.2)
+        _textbox(slide, left, top, width, line_h * lines, text, size=11)
+        return top + line_h * lines + Inches(0.16)
+
+    headline = narrative.get("headline") or f"Branded queries carry {comparison['branded_share_pct']:.1f}% of total clicks"
+    headline_lines = _wrapped_lines(headline, size=15)
+    y = Inches(1.05)
+    _textbox(slide, left, y, width, Inches(0.28) * headline_lines, headline, size=15, bold=True, color=_accent())
+    y += Inches(0.3) * headline_lines + Inches(0.1)
 
     rows = [
         ("Branded", f"{branded['clicks']:,}", f"{branded['impressions']:,}", f"{branded['ctr_pct']:.1f}%", f"{branded['avg_position']:.1f}"),
         ("Non-Branded", f"{nonbranded['clicks']:,}", f"{nonbranded['impressions']:,}", f"{nonbranded['ctr_pct']:.1f}%", f"{nonbranded['avg_position']:.1f}"),
     ]
     y = _draw_table(
-        slide, ["Query Group", "Clicks", "Impressions", "CTR", "Avg. Position"], rows, Inches(1.6),
-        col_widths=[3.0, 2.3, 2.3, 2.3, 2.2], left=Inches(0.6), width=Inches(12.1), row_height=0.4,
-    ) + Inches(0.3)
+        slide, ["Query Group", "Clicks", "Impressions", "CTR", "Avg. Position"], rows, y,
+        col_widths=[3.0, 2.3, 2.3, 2.3, 2.2], left=left, width=width, row_height=0.35,
+    ) + Inches(0.2)
+
+    demand_gap = narrative.get("demand_gap")
+    if demand_gap:
+        y = _paragraph(y, "The Gap in Demand Terms", demand_gap["text"])
+    elif nonbranded["impressions"]:
+        y = _paragraph(
+            y, "The Gap in Demand Terms",
+            f"Non-branded click-through rate ({nonbranded['ctr_pct']:.1f}%) already meets or beats the typical "
+            f"rate for position {nonbranded['avg_position']:.1f} — the opportunity here is ranking higher, not "
+            f"closing a click-through gap.",
+        )
+
+    cost_of_inaction = narrative.get("cost_of_inaction")
+    if cost_of_inaction and y < max_y - Inches(0.4):
+        y = _paragraph(y, "Cost of Inaction", cost_of_inaction, label_color=WARN)
+
+    example = narrative.get("concrete_example")
+    if example and y < max_y - Inches(0.4):
+        y = _paragraph(y, "One Concrete Example", example["text"])
 
     insights = list((ai_insights or {}).get("insights") or [])[:5]
     if insights:
-        _insights_strip(slide, Inches(0.6), y, Inches(12.1), insights)
+        _insights_strip(slide, left, y, width, insights, max_y=max_y)
     return slide
 
 
@@ -4718,6 +4885,7 @@ def build_report(
     page_wise_exclude_paths: set[str] | None = None,
     schema_ai_insights: dict | None = None,
     branded_vs_nonbranded_comparison: dict | None = None,
+    branded_vs_nonbranded_narrative: dict | None = None,
     branded_vs_nonbranded_ai_insights: dict | None = None,
     high_potential_pages: list[dict] | None = None,
     high_potential_countries: list[dict] | None = None,
@@ -4743,8 +4911,8 @@ def build_report(
             site_audit_pages_rows, next_steps_ai, schema_validation,
             brand_citations, brand_wikipedia, geopulse_analysis, keyword_sheet_link,
             seo_issues_ai_insights, page_wise_ai, page_wise_exclude_paths,
-            schema_ai_insights, branded_vs_nonbranded_comparison, branded_vs_nonbranded_ai_insights,
-            high_potential_pages, high_potential_countries,
+            schema_ai_insights, branded_vs_nonbranded_comparison, branded_vs_nonbranded_narrative,
+            branded_vs_nonbranded_ai_insights, high_potential_pages, high_potential_countries,
         )
     finally:
         _theme["footer"] = ""
@@ -4789,6 +4957,7 @@ def _build_report(
     page_wise_exclude_paths: set[str] | None = None,
     schema_ai_insights: dict | None = None,
     branded_vs_nonbranded_comparison: dict | None = None,
+    branded_vs_nonbranded_narrative: dict | None = None,
     branded_vs_nonbranded_ai_insights: dict | None = None,
     high_potential_pages: list[dict] | None = None,
     high_potential_countries: list[dict] | None = None,
@@ -4918,7 +5087,9 @@ def _build_report(
         # nonbranded_comparison / build_high_potential_pages / build_high_
         # potential_countries) — this file only renders them.
         if branded_vs_nonbranded_comparison:
-            add_branded_vs_nonbranded_slide(prs, branded_vs_nonbranded_comparison, branded_vs_nonbranded_ai_insights, gsc_source)
+            add_branded_vs_nonbranded_slide(
+                prs, branded_vs_nonbranded_comparison, branded_vs_nonbranded_narrative, branded_vs_nonbranded_ai_insights, gsc_source,
+            )
         if high_potential_pages or high_potential_countries:
             add_search_opportunities_slide(prs, high_potential_pages or [], high_potential_countries or {}, gsc_source)
 

@@ -2,7 +2,8 @@ from pptx import Presentation
 
 from app.reporting.pptx_builder import (
     SLIDE_H, SLIDE_W, add_branded_vs_nonbranded_slide, add_search_opportunities_slide,
-    build_branded_vs_nonbranded_comparison, build_high_potential_countries, build_high_potential_pages,
+    build_branded_dependency_narrative, build_branded_vs_nonbranded_comparison,
+    build_high_potential_countries, build_high_potential_pages,
 )
 
 
@@ -103,9 +104,79 @@ def test_branded_slide_states_headline_share():
         [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0}],
         [{"query": "generic", "clicks": 20, "impressions": 800, "position": 12.0}],
     )
-    slide = add_branded_vs_nonbranded_slide(_prs(), comparison, None, "Google Search Console")
+    slide = add_branded_vs_nonbranded_slide(_prs(), comparison, None, None, "Google Search Console")
     text = _slide_text(slide)
     assert "80.0%" in text
+
+
+def test_branded_dependency_headline_flags_minimal_nonbranded_discovery():
+    branded = [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0}]
+    nonbranded = [{"query": "generic thing", "clicks": 20, "impressions": 5000, "position": 12.0, "ctr": 20 / 5000}]
+    comparison = build_branded_vs_nonbranded_comparison(branded, nonbranded)
+    narrative = build_branded_dependency_narrative(comparison, nonbranded)
+    assert "non-branded discovery is minimal" in narrative["headline"]
+
+
+def test_demand_gap_estimate_states_assumption_and_number():
+    # Position 12 -> benchmark 0.2% (the strict decay tier); non-branded CTR
+    # here is 0% — a real gap the estimate must quantify.
+    nonbranded = [{"query": "generic thing", "clicks": 0, "impressions": 5000, "position": 12.0, "ctr": 0.0}]
+    branded = [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0}]
+    comparison = build_branded_vs_nonbranded_comparison(branded, nonbranded)
+    narrative = build_branded_dependency_narrative(comparison, nonbranded, period_days=30)
+    gap = narrative["demand_gap"]
+    assert gap is not None
+    assert "Estimate:" in gap["text"]
+    assert "assumes" in gap["text"]
+    assert gap["extra_clicks_monthly"] > 0
+
+
+def test_demand_gap_absent_when_nonbranded_already_meets_benchmark():
+    # Position 1 -> benchmark 22%; 50% CTR already clears it, no gap to model.
+    nonbranded = [{"query": "generic thing", "clicks": 100, "impressions": 200, "position": 1.0, "ctr": 0.5}]
+    branded = [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0, "ctr": 0.4}]
+    comparison = build_branded_vs_nonbranded_comparison(branded, nonbranded)
+    narrative = build_branded_dependency_narrative(comparison, nonbranded)
+    assert narrative["demand_gap"] is None
+
+
+def test_concrete_example_names_a_real_nonbranded_query():
+    nonbranded = [
+        {"query": "big opportunity term", "clicks": 1, "impressions": 4000, "position": 12.0, "ctr": 1 / 4000},
+        {"query": "small term", "clicks": 0, "impressions": 60, "position": 12.0, "ctr": 0.0},
+    ]
+    branded = [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0}]
+    comparison = build_branded_vs_nonbranded_comparison(branded, nonbranded)
+    narrative = build_branded_dependency_narrative(comparison, nonbranded)
+    example = narrative["concrete_example"]
+    assert example is not None
+    assert example["query"] == "big opportunity term"  # highest impressions wins
+    assert "Estimate:" in example["text"]
+
+
+def test_cost_of_inaction_names_competitor_overlap_when_available():
+    nonbranded = [{"query": "shared term", "clicks": 5, "impressions": 1000, "position": 8.0, "ctr": 0.005}]
+    branded = [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0}]
+    comparison = build_branded_vs_nonbranded_comparison(branded, nonbranded)
+    competitor_positions = {"rival.com": [{"keyword": "shared term", "position": 3}]}
+    narrative = build_branded_dependency_narrative(comparison, nonbranded, competitor_positions)
+    assert "rival.com" in narrative["cost_of_inaction"]
+    assert "shared term" in narrative["cost_of_inaction"]
+
+
+def test_outcome_case_slide_has_all_five_sections():
+    branded = [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0}]
+    nonbranded = [{"query": "generic thing", "clicks": 5, "impressions": 5000, "position": 12.0, "ctr": 5 / 5000}]
+    comparison = build_branded_vs_nonbranded_comparison(branded, nonbranded)
+    narrative = build_branded_dependency_narrative(comparison, nonbranded)
+    ai_insights = {"insights": ["Branded dependency is high.", "Recommend building non-branded content."]}
+    slide = add_branded_vs_nonbranded_slide(_prs(), comparison, narrative, ai_insights, "Google Search Console")
+    text = _slide_text(slide)
+    assert "non-branded discovery is minimal" in text or "branded search" in text  # headline
+    assert "The Gap in Demand Terms" in text.upper() or "GAP IN DEMAND TERMS" in text.upper()
+    assert "Cost of Inaction".upper() in text.upper()
+    assert "One Concrete Example".upper() in text.upper()
+    assert "Key Insights".upper() in text.upper()
 
 
 def test_opportunities_slide_says_so_when_nothing_flagged():

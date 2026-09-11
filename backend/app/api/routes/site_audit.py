@@ -32,7 +32,7 @@ from app.models.user import User
 from app.reporting.pptx_builder import (
     build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows, _sort_page_wise_by_issue_count,
     build_schema_report_parts, schema_eligibility_notes,
-    build_branded_vs_nonbranded_comparison, build_high_potential_pages, build_high_potential_countries,
+    build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
 )
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
@@ -1409,6 +1409,7 @@ def _gather_report_data(
     # are computed deterministically here; only Part 4 (Key Insights) goes
     # through the AI, grounded in these exact same numbers.
     branded_vs_nonbranded_comparison = None
+    branded_vs_nonbranded_narrative = None
     branded_vs_nonbranded_ai_insights = None
     high_potential_pages = None
     high_potential_countries = None
@@ -1421,6 +1422,18 @@ def _gather_report_data(
         nonbranded_queries = [q for q in search_queries_rows if not is_branded_or_near_brand(q.get("query", ""), brand_tokens)]
         branded_vs_nonbranded_comparison = build_branded_vs_nonbranded_comparison(branded_queries, nonbranded_queries)
 
+        period_days = 30
+        try:
+            from datetime import date as _date
+            _start = _date.fromisoformat(date_range.get("gsc_start", ""))
+            _end = _date.fromisoformat(date_range.get("gsc_end", ""))
+            period_days = max(1, (_end - _start).days + 1)
+        except (ValueError, TypeError):
+            pass
+        branded_vs_nonbranded_narrative = build_branded_dependency_narrative(
+            branded_vs_nonbranded_comparison, nonbranded_queries, competitor_positions, period_days,
+        )
+
         page_clicks_rows = (analytics.get("page_clicks") or {}).get("rows") or []
         country_rows = (analytics.get("search_by_country") or {}).get("rows") or []
         high_potential_pages = build_high_potential_pages(page_clicks_rows)
@@ -1431,8 +1444,8 @@ def _gather_report_data(
             top_nonbranded = sorted(nonbranded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
             gsc_range = f"{date_range.get('gsc_start', '')} to {date_range.get('gsc_end', '')}"
             branded_insights_candidate = generate_branded_search_insights(
-                branded_vs_nonbranded_comparison, high_potential_pages, (high_potential_countries or {}).get("material") or [],
-                top_branded, top_nonbranded, gsc_range,
+                branded_vs_nonbranded_comparison, branded_vs_nonbranded_narrative, high_potential_pages,
+                (high_potential_countries or {}).get("material") or [], top_branded, top_nonbranded, gsc_range,
             )
             if "error" not in branded_insights_candidate:
                 branded_vs_nonbranded_ai_insights = branded_insights_candidate
@@ -1540,6 +1553,7 @@ def _gather_report_data(
         "page_wise_exclude_paths": page_wise_exclude_paths or None,
         "schema_ai_insights": schema_ai_insights,
         "branded_vs_nonbranded_comparison": branded_vs_nonbranded_comparison,
+        "branded_vs_nonbranded_narrative": branded_vs_nonbranded_narrative,
         "branded_vs_nonbranded_ai_insights": branded_vs_nonbranded_ai_insights,
         "high_potential_pages": high_potential_pages,
         "high_potential_countries": high_potential_countries,
