@@ -3329,6 +3329,21 @@ def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
     return slide
 
 
+# best_at bullets are written to cite "(homepage_url)" per the AI prompt's
+# own grounding instruction (competitor_narrative_service.py) — good for
+# keeping the model honest, not for a client-facing slide. Stripped here at
+# render time only, so the citation still exists in the stored narrative
+# for any future re-render/debugging.
+_TRAILING_URL_CITATION_RE = re.compile(r"\s*[\(\-–—]*\s*https?://\S+?\)?\.?\s*$")
+
+
+def _strip_trailing_url_citation(text: str) -> str:
+    stripped = _TRAILING_URL_CITATION_RE.sub("", text).rstrip()
+    if stripped and not stripped.endswith((".", "!", "?")):
+        stripped += "."
+    return stripped or text
+
+
 def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narrative: dict):
     """Matches the reference decks' "What {Competitor} Does Well" slide —
     objective bullets on the competitor's own tactics/strengths, grounded in
@@ -3362,7 +3377,8 @@ def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narr
     bullets_max_y = card_top + card_height - Inches(0.15)
     chars_per_line = max(20, int(text_width / 914400 * 14))
     line_h = Inches(0.24)
-    for item in best_at[:6]:
+    for raw_item in best_at[:6]:
+        item = _strip_trailing_url_citation(raw_item)
         lines = max(1, -(-len(item) // chars_per_line))
         item_h = line_h * lines + Inches(0.08)
         if y + item_h > bullets_max_y:

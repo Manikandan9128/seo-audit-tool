@@ -1320,6 +1320,7 @@ def _gather_report_data(
             # nothing in the logs to say the vision call itself was the
             # reason, not a missing screenshot.
             logger.warning("UI fixes vision pass failed for %s: %s", client.website_url, ui_fixes_result["error"])
+            content_issues.append(f"UI-Level Fixes (vision pass): {ui_fixes_result['error']}")
 
         if not ux_findings_result.get("onboarding_breakdown"):
             onboarding_result = generate_onboarding_breakdown(client.name, client.website_url, homepage_shot)
@@ -1327,6 +1328,7 @@ def _gather_report_data(
                 ux_findings_result["onboarding_breakdown"] = onboarding_result["onboarding_breakdown"]
             elif onboarding_result.get("error"):
                 logger.warning("Onboarding breakdown vision pass failed for %s: %s", client.website_url, onboarding_result["error"])
+                content_issues.append(f"Onboarding breakdown (vision pass): {onboarding_result['error']}")
     elif vision_key_configured:
         # A vision-capable key IS configured, so the no-key branch above
         # already logged and this is the OTHER cause: capture itself
@@ -1338,6 +1340,9 @@ def _gather_report_data(
         logger.warning(
             "Homepage screenshot capture failed for %s — UI-Level Fixes and Onboarding Breakdown will be skipped/fallback this run.",
             own_website_domain,
+        )
+        content_issues.append(
+            "UI-Level Fixes / Onboarding breakdown: homepage screenshot capture failed (bot-blocked, timed out, or unreachable)."
         )
 
     # SEO Issues slide's AI insights (headline/root-cause bullets/executive
