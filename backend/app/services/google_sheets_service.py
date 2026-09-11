@@ -66,28 +66,41 @@ def _sanitize_tab_title(name: str) -> str:
 
 def create_combined_keyword_sheet(
     client_name: str, client_keyword_rows: list[dict], competitor_positions: dict[str, list[dict]], db,
+    client_positions_rows: list[dict] | None = None,
 ) -> str | None:
     """ONE spreadsheet, multiple tabs — Tab 1 the client's own tracked
-    keyword list, Tab 2+ one per competitor's FULL (uncapped) ranking
-    keyword list (2026-09-10 user spec: replaces the old one-Sheet-per-
-    competitor approach + its own "Competitor Keywords — Full Data" slide;
-    now linked from the bottom of the Competitor Analysis slide instead).
+    (curated/clustered) target-keyword list, Tab 2 the client's own FULL
+    Organic Positions ranking list (2026-09-11 fix — see below), Tab 3+ one
+    per competitor's FULL (uncapped) ranking keyword list (2026-09-10 user
+    spec: replaces the old one-Sheet-per-competitor approach + its own
+    "Competitor Keywords — Full Data" slide; now linked from the bottom of
+    the Competitor Analysis slide instead).
 
-    No row cap is applied here — confirmed real: a competitor (Rippling)
-    with 10,000+ tracked keywords was assumed to be hitting an "Excel
-    limit," but neither this function nor semrush_parser.py's own ingest
-    caps organic_positions rows (see that file's explicit exclusion of
-    "organic_positions" from its 500-row cap) — a spreadsheet tab can hold
-    far more than 10,000 rows (Sheets' real ceiling is ~10 million cells
-    total across the whole file). If a competitor's data still tops out at
-    exactly 10,000 rows, that ceiling was set when the CSV was exported
-    from Semrush itself (a plan-tier export cap), not by anything in this
-    pipeline — re-exporting from Semrush with a higher row allowance (or a
-    plan that permits it) is the only fix for that, uploading it here
-    passes every row straight through.
+    2026-09-11 fix: client_positions_rows is the client's own Organic
+    Positions import (same shape/scale as competitor_positions' values) —
+    confirmed live as missing: without it, Tab 1's small curated keyword-
+    gap list (31 rows for Lumber) was the ONLY client-side tab, sitting
+    next to competitor tabs with 1000+ rows each. Individually correct
+    (different datasets, by design) but looked broken side by side in the
+    same spreadsheet. Now the client gets a directly comparable full-scale
+    tab too.
 
-    Returns None if there's nothing to write (no client rows and no
-    competitor rows) rather than creating an empty spreadsheet."""
+    No row cap is applied to either full-Positions tab — confirmed real: a
+    competitor (Rippling) with 10,000+ tracked keywords was assumed to be
+    hitting an "Excel limit," but neither this function nor semrush_
+    parser.py's own ingest caps organic_positions rows (see that file's
+    explicit exclusion of "organic_positions" from its 500-row cap) — a
+    spreadsheet tab can hold far more than 10,000 rows (Sheets' real
+    ceiling is ~10 million cells total across the whole file). If a
+    competitor's data still tops out at exactly 10,000 rows, that ceiling
+    was set when the CSV was exported from Semrush itself (a plan-tier
+    export cap), not by anything in this pipeline — re-exporting from
+    Semrush with a higher row allowance (or a plan that permits it) is the
+    only fix for that, uploading it here passes every row straight
+    through.
+
+    Returns None if there's nothing to write (no rows anywhere) rather
+    than creating an empty spreadsheet."""
     tabs: list[tuple[str, list[list]]] = []
     if client_keyword_rows:
         values = [_CLIENT_HEADER] + [
@@ -95,6 +108,12 @@ def create_combined_keyword_sheet(
             for r in client_keyword_rows
         ]
         tabs.append((_sanitize_tab_title(client_name or "Client"), values))
+    if client_positions_rows:
+        values = [_HEADER] + [
+            [r.get("keyword", ""), r.get("search_volume", ""), r.get("keyword_difficulty", ""), r.get("position", ""), r.get("previous_position", "")]
+            for r in client_positions_rows
+        ]
+        tabs.append((_sanitize_tab_title(f"{client_name or 'Client'} (All Rankings)"), values))
     for domain, rows in competitor_positions.items():
         if not rows:
             continue

@@ -1,7 +1,8 @@
 from pptx import Presentation
 
 from app.reporting.pptx_builder import (
-    SLIDE_H, SLIDE_W, add_branded_vs_nonbranded_slide, add_search_opportunities_slide,
+    SLIDE_H, SLIDE_W, add_branded_vs_nonbranded_slide,
+    add_search_opportunities_pages_slide, add_search_opportunities_countries_slide,
     build_branded_dependency_narrative, build_branded_vs_nonbranded_comparison,
     build_high_potential_countries, build_high_potential_pages,
 )
@@ -196,24 +197,23 @@ def test_outcome_case_slide_has_all_five_sections():
     assert "Key Insights".upper() in text.upper()
 
 
-def test_opportunities_slide_says_so_when_nothing_flagged():
-    slide = add_search_opportunities_slide(_prs(), [], {}, "Google Search Console")
-    assert slide is None  # both empty -> no slide at all, matches "silently absent" convention
+def test_pages_slide_absent_when_no_pages_flagged():
+    # Split slides (2026-09-11 user spec) — each is silently absent on its
+    # own empty data, no cross-slide "no countries met..." placeholder.
+    assert add_search_opportunities_pages_slide(_prs(), [], "Google Search Console") is None
 
 
-def test_opportunities_slide_explicit_message_when_only_one_side_empty():
-    high_pages = build_high_potential_pages([{"page": "https://x.com/e", "impressions": 500, "clicks": 5, "ctr": 0.01, "position": 12.0}])
-    slide = add_search_opportunities_slide(_prs(), high_pages, {}, "Google Search Console")
-    text = _slide_text(slide)
-    assert "No countries met the material-opportunity bar" in text
+def test_countries_slide_absent_when_nothing_flagged():
+    assert add_search_opportunities_countries_slide(_prs(), {}, "Google Search Console") is None
 
 
-def test_opportunities_slide_low_signal_line_never_a_table_row():
+def test_countries_slide_low_signal_line_never_a_table_row():
     high_countries = build_high_potential_countries([
         {"country": "chn", "clicks": 1, "impressions": 300, "ctr": 1 / 300, "position": 10.0},
     ])
-    slide = add_search_opportunities_slide(_prs(), [], high_countries, "Google Search Console")
+    slide = add_search_opportunities_countries_slide(_prs(), high_countries, "Google Search Console")
     text = _slide_text(slide)
+    assert "No countries met the material-opportunity bar" in text  # material empty, only low-signal qualifies
     assert "Low-Signal, Monitor Only" in text
     assert "China" in text
     for shape in slide.shapes:

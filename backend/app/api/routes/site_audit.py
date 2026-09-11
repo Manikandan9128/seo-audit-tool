@@ -885,25 +885,30 @@ def _gather_report_data(
             jobs = {}
             with ThreadPoolExecutor(max_workers=6) as pool:
                 if client.ga4_property_id:
+                    # Real ISO dates (ga4_start/ga4_end), not GA4's relative
+                    # "30daysAgo"/"today" keywords — those resolved "today"
+                    # literally, pulling in the still-processing incomplete
+                    # day (see ga4_end's own comment above) and, separately,
+                    # meant this job and traffic_channel_breakdown below were
+                    # silently NOT drawing from the same window as each
+                    # other despite both claiming "30 days." Every GA4 call
+                    # in this batch now shares one real window so Traffic
+                    # Overview can be the single source of truth the other
+                    # Traffic slides split/reconcile against (2026-09-11).
                     jobs["traffic_overview"] = pool.submit(
-                        ga4_service.get_traffic_overview, creds, client.ga4_property_id, "30daysAgo", "today"
+                        ga4_service.get_traffic_overview, creds, client.ga4_property_id, ga4_start, ga4_end
                     )
                     jobs["top_pages"] = pool.submit(
-                        ga4_service.get_top_pages, creds, client.ga4_property_id, "30daysAgo", "today", limit=15
+                        ga4_service.get_top_pages, creds, client.ga4_property_id, ga4_start, ga4_end, limit=15
                     )
                     jobs["traffic_sources"] = pool.submit(
-                        ga4_service.get_traffic_sources, creds, client.ga4_property_id, "30daysAgo", "today"
+                        ga4_service.get_traffic_sources, creds, client.ga4_property_id, ga4_start, ga4_end
                     )
                     jobs["traffic_channel_breakdown"] = pool.submit(
-                        # Real ISO dates, not "30daysAgo"/"today" like the other
-                        # jobs above — get_traffic_channel_breakdown computes a
-                        # months-in-range figure via date.fromisoformat(), which
-                        # crashes on GA4's relative-date keywords (confirmed: this
-                        # is the "Invalid isoformat string: 'today'" report failure).
                         ga4_service.get_traffic_channel_breakdown, creds, client.ga4_property_id, channel_breakdown_start, ga4_end
                     )
                     jobs["page_performance"] = pool.submit(
-                        ga4_service.get_page_performance, creds, client.ga4_property_id, "30daysAgo", "today"
+                        ga4_service.get_page_performance, creds, client.ga4_property_id, ga4_start, ga4_end
                     )
                 if client.gsc_site_url:
                     jobs["search_queries"] = pool.submit(
@@ -1253,8 +1258,21 @@ def _gather_report_data(
     # Organic Research > Positions export, per competitor domain — feeds the
     # "Competitor Keywords: {domain}" ranking-table slides.
     competitor_positions: dict[str, list[dict]] = {}
+    # Own-site Organic Positions rows — same import type/shape as
+    # competitors, just never collected anywhere before (2026-09-11 fix):
+    # the client's Google Sheet tab was built from the "keyword_gap" import
+    # instead (a small, curated comparison list — 31 rows for Lumber, vs.
+    # competitors' full 1000+-row Positions export), which looked like a
+    # bug from the sheet even though each number was individually correct
+    # for what it represented. Kept separate from competitor_positions
+    # (not just another entry in that dict) since callers already rely on
+    # competitor_positions holding ONLY competitors.
+    own_site_positions_rows: list[dict] = []
     for r in all_imports:
-        if r.import_type != "organic_positions" or r.is_own_site:
+        if r.import_type != "organic_positions":
+            continue
+        if r.is_own_site:
+            own_site_positions_rows.extend(r.parsed_data.get("rows", []))
             continue
         label = r.domain_label or "competitor"
         competitor_positions.setdefault(label, []).extend(r.parsed_data.get("rows", []))
@@ -1572,6 +1590,7 @@ def _gather_report_data(
         "backlink_rows": own_backlink_rows or None,
         "backlink_row_count": own_backlink_row_count,
         "competitor_positions": competitor_positions or None,
+        "own_site_positions_rows": own_site_positions_rows or None,
         "brand_color_hex": site_audit_result.get("brand_color"),
         "company_overview": company_overview_result,
         "tech_stack": tech_stack_result,
@@ -1730,10 +1749,11 @@ def _build_pptx_for_client(
     # Semrush's own export-tier limit on the file, not a truncation here
     # (see create_combined_keyword_sheet's docstring).
     keyword_sheet_link: str | None = None
-    if get_sheets_oauth_email(db) and (full_competitor_positions or data.get("keyword_rows")):
+    if get_sheets_oauth_email(db) and (full_competitor_positions or data.get("keyword_rows") or data.get("own_site_positions_rows")):
         try:
             keyword_sheet_link = create_combined_keyword_sheet(
-                client.name, data.get("keyword_rows") or [], full_competitor_positions, db=db
+                client.name, data.get("keyword_rows") or [], full_competitor_positions, db=db,
+                client_positions_rows=data.get("own_site_positions_rows") or [],
             )
         except Exception as e:
             logger.warning("Combined keyword sheet creation failed for client %s: %s", client.id, e)

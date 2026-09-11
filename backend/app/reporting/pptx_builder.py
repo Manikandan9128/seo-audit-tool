@@ -2817,8 +2817,7 @@ def add_branded_vs_nonbranded_slide(
     narrative (deterministic, no AI); Part 4 (Key Insights) is the only
     AI-written piece, same convention as every other AI slide in this
     file. High-potential pages/countries still render on the separate
-    add_search_opportunities_slide so text never overlaps between the two
-    slides."""
+    Search Opportunities — Pages/Countries slides so text never overlaps."""
     branded, nonbranded = comparison["branded"], comparison["nonbranded"]
     if not branded["clicks"] and not nonbranded["clicks"] and not branded["impressions"] and not nonbranded["impressions"]:
         return None
@@ -2885,61 +2884,69 @@ def add_branded_vs_nonbranded_slide(
     return slide
 
 
-def add_search_opportunities_slide(
-    prs: Presentation, high_pages: list[dict], high_countries: dict | None, source: str
-) -> object | None:
-    """Part 2 (high-potential landing pages) + Part 3 (high-potential
-    countries) of the 2026-09-11 user spec. Countries render as two
-    visually distinct tiers: a full "Fix" table for material
-    opportunities, and one muted, structurally separate summary line for
-    low-signal (single-digit-click) countries — never the same table
-    weight as a real opportunity. No narrative insights on this slide
-    (those live on add_branded_vs_nonbranded_slide) so the two slides'
-    text never overlaps. When nothing meets either bar, says so
-    explicitly rather than forcing an empty table or silently omitting
-    the slide."""
-    high_countries = high_countries or {}
-    material_countries = high_countries.get("material") or []
-    low_signal = high_countries.get("low_signal")
-    if not high_pages and not material_countries and not low_signal:
+def add_search_opportunities_pages_slide(prs: Presentation, high_pages: list[dict], source: str) -> object | None:
+    """High-potential landing pages, split out to its own slide (2026-09-11
+    user spec — was "Search Opportunities — Pages & Countries" combined
+    with the countries half below). Full slide to itself now, so row_cap
+    goes from the shared slide's 5 up to 9, same cap Traffic Sources uses,
+    instead of leaving the extra room empty."""
+    if not high_pages:
         return None
 
     slide = _blank_slide(prs)
-    _content_header(slide, "Search Opportunities — Pages & Countries")
+    _content_header(slide, "Search Opportunities — Pages")
+    _textbox(slide, Inches(8.0), Inches(0.3), Inches(4.7), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
+
+    left, width = Inches(0.6), Inches(12.1)
+    y = Inches(1.05)
+    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages", size=12.5, bold=True, color=_accent())
+    y += Inches(0.28)
+    rows = [
+        (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["fix"])
+        for r in high_pages
+    ]
+    _draw_table(
+        slide, ["Page", "Impressions", "CTR", "Position", "Fix"], rows, y,
+        col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=9, row_height=0.4, wrap_cols={4},
+    )
+    return slide
+
+
+def add_search_opportunities_countries_slide(prs: Presentation, high_countries: dict | None, source: str) -> object | None:
+    """High-potential countries, split out to its own slide (2026-09-11
+    user spec — was combined with the pages half above). Still renders as
+    two visually distinct tiers: a full "Fix" table for material
+    opportunities, and one muted, structurally separate summary line for
+    low-signal (single-digit-click) countries — never the same table
+    weight as a real opportunity. Full slide to itself now, so the
+    material table's row_cap goes from the shared slide's 5 up to 9."""
+    high_countries = high_countries or {}
+    material_countries = high_countries.get("material") or []
+    low_signal = high_countries.get("low_signal")
+    if not material_countries and not low_signal:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Search Opportunities — Countries")
     _textbox(slide, Inches(8.0), Inches(0.3), Inches(4.7), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
 
     left, width = Inches(0.6), Inches(12.1)
     y = Inches(1.05)
 
-    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages", size=12.5, bold=True, color=_accent())
-    y += Inches(0.28)
-    if high_pages:
-        rows1 = [
-            (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["fix"])
-            for r in high_pages
-        ]
-        y = _draw_table(
-            slide, ["Page", "Impressions", "CTR", "Position", "Fix"], rows1, y,
-            col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=5, row_height=0.4, wrap_cols={4},
-        ) + Inches(0.25)
-    else:
-        _textbox(slide, left, y, width, Inches(0.3), "No pages met the high-potential bar this period.", size=11.5, color=TEXT_MUTED)
-        y += Inches(0.45)
-
     _textbox(slide, left, y, width, Inches(0.24), "High-Potential Countries", size=12.5, bold=True, color=_accent())
     y += Inches(0.28)
     if material_countries:
-        rows2 = [
+        rows = [
             (r["country"], f"{r['impressions']:,}", f"{r['clicks']:,}", f"{r['ctr_pct']:.1f}%", r["fix"])
             for r in material_countries
         ]
         y = _draw_table(
-            slide, ["Country", "Impressions", "Clicks", "CTR", "Fix"], rows2, y,
-            col_widths=[1.6, 1.5, 1.3, 1.2, 6.5], left=left, width=width, row_cap=5, row_height=0.4, wrap_cols={4},
-        ) + Inches(0.2)
+            slide, ["Country", "Impressions", "Clicks", "CTR", "Fix"], rows, y,
+            col_widths=[1.6, 1.5, 1.3, 1.2, 6.5], left=left, width=width, row_cap=9, row_height=0.4, wrap_cols={4},
+        ) + Inches(0.25)
     else:
         _textbox(slide, left, y, width, Inches(0.3), "No countries met the material-opportunity bar this period.", size=11.5, color=TEXT_MUTED)
-        y += Inches(0.35)
+        y += Inches(0.4)
 
     if low_signal:
         _textbox(slide, left, y, width, Inches(0.22), "Low-Signal, Monitor Only", size=10.5, bold=True, color=TEXT_MUTED)
@@ -3816,77 +3823,36 @@ def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narr
     return slide
 
 
-def _opportunity_quadrant(slide, left, top, width, height, label, items, color):
-    """One quadrant card of add_competitor_opportunity_slide: a label
-    header plus height-budgeted bullets, same truncate-rather-than-overflow
-    discipline as the rest of this file's AI-derived content. Deliberately
-    conservative chars-per-line estimate (11, vs. ~13-14 used for the wider
-    single-card slides elsewhere in this file) — a narrow ~5in quadrant
-    column wraps on whole words, so a flat width/avg-char-width estimate
-    under-counts wrapped lines more here than it does on a wide card,
-    which under-reserved height and let real (longer) wrapped text run
-    into the next bullet."""
-    _card(slide, left, top, width, height)
-    pad = Inches(0.22)
-    _textbox(slide, left + pad, top + Inches(0.15), width - pad * 2, Inches(0.3), label, size=13, bold=True, color=color)
-    y = top + Inches(0.55)
-    max_y = top + height - Inches(0.15)
-    text_width = width - pad * 2 - Inches(0.2)
-    chars_per_line = max(16, int(text_width / 914400 * 11))
-    line_h = Inches(0.22)
-    for item in items:
-        lines = max(1, -(-len(item) // chars_per_line))
-        item_h = line_h * lines + Inches(0.09)
-        if y + item_h > max_y:
-            break
-        _icon_dot(slide, left + pad, y + Inches(0.07), Inches(0.07), color)
-        _textbox(slide, left + pad + Inches(0.2), y, text_width, line_h * lines, item, size=10.5)
-        y += item_h
-
-
 def add_competitor_opportunity_slide(prs: Presentation, client_name: str, competitor_domain: str, narrative: dict):
-    """Competitor Opportunity Analysis — merged with the former standalone
-    "Areas of Focus for {Client} (vs {Competitor})" slide (2026-09-07, per
-    SEO team + account manager review: the two slides said the same thing
-    twice — opportunity_analysis's "client_should_build" quadrant was just
-    a shorter restatement of the areas_of_focus bullets below it, so that
-    quadrant is dropped and the two slides folded into one instead of
-    trimming content). Top: three quadrants (WHAT COMPETITOR HAS / WHAT
-    CLIENT LACKS / WHY IT MATTERS) — the evidence/reasoning. Bottom: the
-    areas_of_focus bulleted recommendation list plus a closing "Strategic
-    Growth Opportunity" paragraph — the prescriptive advice, in Cyces'
-    own brand red (not the client's brand color) since this is
-    agency-authored strategic content. Height-budgeted throughout so long
-    AI-generated text can't overflow into the footer. Grounded only in
-    narrative["opportunity_analysis"] / ["areas_of_focus"] /
-    ["growth_opportunity"] (same batched AI call, see
-    competitor_narrative_service) — absent (no slide) if the AI produced
-    none of it, same silent-skip pattern as every other AI-derived slide
-    in this file."""
-    opp = narrative.get("opportunity_analysis") or {}
-    has = opp.get("competitor_has") or []
-    lacks = opp.get("client_lacks") or []
-    why = opp.get("why_it_matters") or []
-    areas = narrative.get("areas_of_focus") or []
-    opportunity = narrative.get("growth_opportunity")
-    if not any([has, lacks, why, areas, opportunity]):
+    """Competitor Opportunity Analysis — rebuilt as a single-differentiator
+    slide (2026-09-11 user spec): Headline ("{competitor}'s Unique Angle:
+    ___") -> Unique Angle (1-2 bullets, specific mechanics, never marketing
+    adjectives) -> Gap for {client_name} (exactly one bullet, tied
+    specifically to that angle) -> Shared Advantage (rendered ONLY when
+    the AI found genuine overlap with another competitor already covered
+    in this batch — never invented, omitted entirely otherwise). Replaces
+    the old three-quadrant (WHAT COMPETITOR HAS / WHAT CLIENT LACKS / WHY
+    IT MATTERS) + areas_of_focus + growth_opportunity structure, which
+    routinely surfaced baseline hygiene tactics most competitors share
+    rather than isolating what's genuinely distinct about this one — see
+    competitor_narrative_service's rewritten prompt. Website screenshot
+    placement/sizing is UNCHANGED from before this rewrite, per explicit
+    user instruction. Grounded only in narrative["headline"] /
+    ["unique_angle"] / ["gap"] / ["shared_advantage"] (same batched AI
+    call) — absent (no slide) if the AI produced none of it, same
+    silent-skip pattern as every other AI-derived slide in this file."""
+    headline = narrative.get("headline")
+    unique_angle = narrative.get("unique_angle") or []
+    gap = narrative.get("gap")
+    shared_advantage = narrative.get("shared_advantage")
+    if not headline and not unique_angle and not gap:
         return None
     screenshot = narrative.get("screenshot")
 
     slide = _blank_slide(prs)
     _content_header(slide, f"Competitor Opportunity Analysis: {competitor_domain}")
 
-    gutter = Inches(0.25)
-    left0, quad_top = Inches(0.6), Inches(1.1)
-    total_w, quad_h = Inches(12.1), Inches(1.85)
-    col_w = int((total_w - gutter * 2) / 3)
-    if any([has, lacks, why]):
-        _opportunity_quadrant(slide, left0, quad_top, col_w, quad_h, f"What {competitor_domain} Has", has[:3], _accent())
-        _opportunity_quadrant(slide, left0 + col_w + gutter, quad_top, col_w, quad_h, f"What {client_name} Lacks", lacks[:3], BAD)
-        _opportunity_quadrant(slide, left0 + (col_w + gutter) * 2, quad_top, col_w, quad_h, "Why It Matters", why[:3], WARN)
-        card_top = quad_top + quad_h + Inches(0.2)
-    else:
-        card_top = quad_top
+    card_top = Inches(1.1)
     card_height = Inches(7.15) - card_top
     card_width = Inches(7.8) if screenshot else Inches(12.1)
     text_width = card_width - Inches(0.75)
@@ -3902,62 +3868,52 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
         else:
             _textbox(slide, img_left, card_top + Inches(2.6), img_width, Inches(0.3), competitor_domain, size=10.5, color=TEXT_MUTED, align=PP_ALIGN.CENTER)
 
-    # Reserve room for at least 2 lines of the closing paragraph before
-    # bullets are allowed to eat into that space.
-    bullets_max_y = card_top + card_height - (Inches(0.7) if opportunity else Inches(0.15))
-    chars_per_line = max(20, int(text_width / 914400 * 14))
+    # Every section below stops writing once it would cross this line —
+    # standing rule (2026-09-11): a slide's content must never overlap or
+    # run off the card, so each section re-checks remaining room rather
+    # than assuming its own text always fits.
+    max_y = card_top + card_height - Inches(0.15)
     line_h = Inches(0.22)
-    # Each area_of_focus item is now a structured recommendation object
-    # (recommendation/evidence/lumber_applicability/impact/effort/kpi/
-    # status — see competitor_narrative_service's prompt schema), not a
-    # plain string: impact/effort/KPI/status render as a compact tag line
-    # under the recommendation itself so the priority/testability info a
-    # reader needs to act on it doesn't require re-deriving it elsewhere.
-    # A malformed item (missing the required fields — an off-spec AI
-    # response) is skipped rather than guessed at, same silent-skip
-    # discipline as every other AI-derived slide in this file.
-    STATUS_COLOR = {
-        "Already exists": TEXT_MUTED,
-        "Quick win": GOOD,
-        "Not applicable": TEXT_MUTED,
-    }
-    for item in areas[:7]:
-        if not isinstance(item, dict):
-            continue
-        rec = item.get("recommendation")
-        if not rec:
-            continue
-        lines = max(1, -(-len(rec) // chars_per_line))
-        tag_parts = [p for p in [
-            f"Impact: {item['impact']}" if item.get("impact") else None,
-            f"Effort: {item['effort']}" if item.get("effort") else None,
-            item.get("status"),
-            f"KPI: {item['kpi']}" if item.get("kpi") else None,
-        ] if p]
-        tag_line = "  ·  ".join(tag_parts)
-        item_h = line_h * lines + (Inches(0.19) if tag_line else 0) + Inches(0.06)
-        if y + item_h > bullets_max_y:
-            break
-        dot_color = STATUS_COLOR.get(item.get("status"), DEFAULT_ACCENT)
-        _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), dot_color)
-        _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, rec, size=11.5)
-        y += line_h * lines
-        if tag_line:
-            _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), Inches(0.19), tag_line, size=8.5, color=TEXT_MUTED)
-            y += Inches(0.19)
-        y += Inches(0.06)
 
-    if opportunity:
+    def _wrapped(text: str, size: float = 11.5) -> int:
+        chars_per_line = max(20, int(text_width / 914400 * 14 * (11 / size)))
+        return max(1, -(-len(text) // chars_per_line))
+
+    if headline:
+        headline_text = f"{competitor_domain}'s Unique Angle: {headline}"
+        h_lines = _wrapped(headline_text, size=15)
+        h_h = Inches(0.28) * h_lines
+        if y + h_h <= max_y:
+            _textbox(slide, Inches(0.9), y, text_width, h_h, headline_text, size=15, bold=True, color=DEFAULT_ACCENT)
+            y += h_h + Inches(0.18)
+
+    def _section(label: str, label_color, bullets: list[str], dot_color=None) -> None:
+        nonlocal y
+        if not bullets or y >= max_y:
+            return
+        label_h = Inches(0.22)
+        if y + label_h > max_y:
+            return
+        _textbox(slide, Inches(0.9), y, text_width, label_h, label, size=10.5, bold=True, color=label_color)
+        y += Inches(0.26)
+        for bullet in bullets:
+            lines = _wrapped(bullet)
+            item_h = line_h * lines + Inches(0.08)
+            if y + item_h > max_y:
+                return
+            if dot_color:
+                _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), dot_color)
+                _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, bullet, size=11.5)
+            else:
+                _textbox(slide, Inches(0.9), y, text_width, line_h * lines, bullet, size=11, color=TEXT_MUTED)
+            y += item_h
         y += Inches(0.12)
-        _textbox(slide, Inches(0.9), y, text_width, Inches(0.26), "Strategic Growth Opportunity:", size=12, bold=True, color=DEFAULT_ACCENT)
-        y += Inches(0.3)
-        chars_per_line = max(20, int(text_width / 914400 * 15))
-        available_h = (card_top + card_height) - y - Inches(0.1)
-        max_lines = max(1, int(available_h / Inches(0.22)))
-        max_chars = max_lines * chars_per_line
-        text = opportunity if len(opportunity) <= max_chars else opportunity[: max(0, max_chars - 1)].rsplit(" ", 1)[0] + "…"
-        lines = max(1, -(-len(text) // chars_per_line))
-        _textbox(slide, Inches(0.9), y, text_width, Inches(0.22) * lines, text, size=11, color=TEXT_DARK)
+
+    _section("UNIQUE ANGLE", _accent(), unique_angle[:2], dot_color=DEFAULT_ACCENT)
+    _section(f"GAP FOR {(client_name or 'CLIENT').upper()}", BAD, [gap] if gap else [], dot_color=BAD)
+    if shared_advantage:
+        _section("SHARED ADVANTAGE", TEXT_MUTED, [shared_advantage])
+
     return slide
 
 
@@ -5059,18 +5015,29 @@ def _build_report(
         )
         if analytics.get("traffic_overview"):
             add_traffic_overview_slide(prs, analytics)
-        if analytics.get("traffic_spike"):
-            add_traffic_spike_slide(prs, analytics["traffic_spike"])
-        if analytics.get("traffic_channel_breakdown"):
-            add_traffic_channel_breakdown_slide(prs, analytics["traffic_channel_breakdown"], source=channel_breakdown_source)
         # Top Pages — Branded vs Non-Branded slide removed 2026-09-09 per
         # user request — redundant with GSC's own query-level Branded/
         # Non-Branded split below (search_queries), which classifies real
         # search intent directly instead of inferring it from a page-path
         # signal list.
+        #
+        # Slide order (2026-09-11 user spec): Overview -> Sources -> Spike
+        # -> Monthly Average, so the two same-window (30-day) slides sit
+        # together right after the master total, before the two slides
+        # that each use a DIFFERENT window (Spike's single day, Monthly
+        # Average's ~4 months).
         sources = (analytics.get("traffic_sources") or {}).get("rows", [])
         if sources:
-            total_sessions = sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
+            # Traffic Overview is the master total (2026-09-11 user spec) —
+            # Traffic Sources is a SPLIT of that same number, not its own
+            # independently-summed total, so the two slides can never
+            # silently disagree on total sessions. Falls back to summing
+            # this query's own rows only if Traffic Overview has no data
+            # (e.g. GA4 call failed) so the table still renders sane
+            # percentages rather than all-zero.
+            overview_rows = (analytics.get("traffic_overview") or {}).get("rows", [])
+            master_total_sessions = sum(float(r.get("sessions", 0) or 0) for r in overview_rows)
+            total_sessions = int(master_total_sessions) if master_total_sessions else sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
             # Sorted by sessions and capped BEFORE anything below reads from
             # it — every insight below names a channel by its exact string,
             # so it must only ever pick from the same rows the table
@@ -5107,20 +5074,28 @@ def _build_report(
                 prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
                 col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights, row_cap=ROW_CAP,
             )
-        # Branded vs Non-Branded (2026-09-10 user spec) — two slides,
-        # deliberately non-overlapping text: comparison + Key Insights on
+        if analytics.get("traffic_spike"):
+            add_traffic_spike_slide(prs, analytics["traffic_spike"])
+        if analytics.get("traffic_channel_breakdown"):
+            add_traffic_channel_breakdown_slide(prs, analytics["traffic_channel_breakdown"], source=channel_breakdown_source)
+        # Branded vs Non-Branded (2026-09-10 user spec) — deliberately
+        # non-overlapping text: comparison + Key Insights on
         # add_branded_vs_nonbranded_slide, the full high-potential-page/
-        # country detail those insights reference on
-        # add_search_opportunities_slide. Comparison/high-potential rows
-        # are computed upstream in site_audit.py (build_branded_vs_
-        # nonbranded_comparison / build_high_potential_pages / build_high_
-        # potential_countries) — this file only renders them.
+        # country detail those insights reference on the two Search
+        # Opportunities slides below (split into Pages/Countries,
+        # 2026-09-11 user spec — was one combined slide). Comparison/
+        # high-potential rows are computed upstream in site_audit.py
+        # (build_branded_vs_nonbranded_comparison / build_high_potential_
+        # pages / build_high_potential_countries) — this file only renders
+        # them.
         if branded_vs_nonbranded_comparison:
             add_branded_vs_nonbranded_slide(
                 prs, branded_vs_nonbranded_comparison, branded_vs_nonbranded_narrative, branded_vs_nonbranded_ai_insights, gsc_source,
             )
-        if high_potential_pages or high_potential_countries:
-            add_search_opportunities_slide(prs, high_potential_pages or [], high_potential_countries or {}, gsc_source)
+        if high_potential_pages:
+            add_search_opportunities_pages_slide(prs, high_potential_pages, gsc_source)
+        if high_potential_countries:
+            add_search_opportunities_countries_slide(prs, high_potential_countries, gsc_source)
 
     if competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions or competitor_narratives:
         add_section_slide(prs, client_name, "Competitor & Keyword Research")

@@ -18,7 +18,7 @@ def test_returns_none_when_nothing_to_write():
     assert url is None
 
 
-def _run_with_mocks(client_rows, competitor_positions):
+def _run_with_mocks(client_rows, competitor_positions, client_positions_rows=None):
     fake_creds = MagicMock()
     fake_drive = MagicMock()
     fake_drive.files.return_value.create.return_value.execute.return_value = {"id": "sheet123"}
@@ -28,7 +28,9 @@ def _run_with_mocks(client_rows, competitor_positions):
     ), patch("app.services.google_sheets_service.build", side_effect=lambda name, v, credentials: (
         fake_sheets if name == "sheets" else fake_drive
     )):
-        url = create_combined_keyword_sheet("Client", client_rows, competitor_positions, db=MagicMock())
+        url = create_combined_keyword_sheet(
+            "Client", client_rows, competitor_positions, db=MagicMock(), client_positions_rows=client_positions_rows,
+        )
     return url, fake_sheets, fake_drive
 
 
@@ -59,3 +61,22 @@ def test_domain_with_no_rows_is_skipped_not_an_empty_tab():
     url, fake_sheets, _ = _run_with_mocks([{"keyword": "x"}], {"empty-competitor.com": []})
     batch_requests = fake_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
     assert not any("addSheet" in r for r in batch_requests)
+
+
+def test_client_gets_a_full_positions_tab_matching_competitor_scale():
+    # Regression (2026-09-11): confirmed live — Lumber's own tab had only
+    # 31 rows (the curated keyword-gap list) while competitor tabs had
+    # 1000+ (their full Positions export). The client must also get a
+    # full-scale Positions tab, not just the small curated one.
+    client_curated = [{"keyword": "x", "cluster": "c", "search_volume": 10, "keyword_difficulty": 5, "intent": "informational"}]
+    client_full_positions = [{"keyword": f"kw{i}", "search_volume": i, "position": i % 50 + 1} for i in range(1200)]
+    competitor_positions = {"rival.com": [{"keyword": "y", "search_volume": 20, "position": 3}] * 1200}
+    url, fake_sheets, _ = _run_with_mocks(client_curated, competitor_positions, client_positions_rows=client_full_positions)
+
+    batch_requests = fake_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    added_titles = [r["addSheet"]["properties"]["title"] for r in batch_requests if "addSheet" in r]
+    assert "Client (All Rankings)" in added_titles
+
+    value_ranges = fake_sheets.spreadsheets.return_value.values.return_value.batchUpdate.call_args.kwargs["body"]["data"]
+    client_full_range = next(v for v in value_ranges if "Client (All Rankings)" in v["range"])
+    assert len(client_full_range["values"]) == 1200 + 1  # + header row — same scale as the competitor tab
