@@ -230,28 +230,6 @@ def _daily_metric_totals(client, property_id: str, start_date: str, end_date: st
     return {row["dimensionValues"][0]["value"]: float(row["metricValues"][0]["value"]) for row in response.get("rows", [])}
 
 
-def _single_day_rate_fallback(client, property_id: str, iso_date: str, metric_name: str) -> float | None:
-    """The 30-day batch (get_traffic_overview) can come back missing a row
-    for the spike day even though GA4 has real data for it — thresholding
-    on the wider multi-day query drops rows a same-day-only query doesn't.
-    Retried here as a single-day query so a genuine "no data" (rare) is
-    distinguishable, via the two log lines below, from a bug in how the
-    batch asks for it."""
-    body = {
-        "metrics": [{"name": metric_name}],
-        "dateRanges": [{"startDate": iso_date, "endDate": iso_date}],
-    }
-    try:
-        response = client.properties().runReport(property=property_id, body=body).execute()
-        rows = response.get("rows", [])
-        value = float(rows[0]["metricValues"][0]["value"]) if rows else None
-        logger.info("traffic_spike single-day fallback query for %s (%s) returned: %s", iso_date, metric_name, value)
-        return value
-    except HttpError as e:
-        logger.warning("traffic_spike single-day fallback query for %s (%s) failed: %s", iso_date, metric_name, e)
-        return None
-
-
 def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows: list[dict]) -> dict | None:
     """Finds the single biggest single-day traffic spike in the period (a day
     well above the period average — not just the highest day, since every
@@ -301,7 +279,13 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     # come straight off daily_rows (get_traffic_overview already pulls
     # engagementRate/bounceRate per day) — no extra API call needed for
     # that half of the evidence chain, except when the spike day itself is
-    # missing from the batch (see _single_day_rate_fallback).
+    # missing from the batch (see _single_day_engagement_metrics below).
+    #
+    # This is the one number the slide was missing to answer "was this good
+    # traffic or noise" instead of just "traffic went up": a spike with a
+    # normal bounce rate is a real volume event, a spike with a much higher
+    # bounce rate is likely low-quality/bot traffic even though sessions
+    # look great.
     engagement_by_date = {
         r["date"]: float(r["engagement_rate"]) for r in daily_rows if r.get("date") and r.get("engagement_rate") not in (None, "")
     }
@@ -311,26 +295,6 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
     avg_engagement_rate = statistics.mean(engagement_by_date.values()) if engagement_by_date else None
     avg_bounce_rate = statistics.mean(bounce_by_date.values()) if bounce_by_date else None
     spike_engagement_rate = engagement_by_date.get(spike_date)
-    spike_bounce_rate = bounce_by_date.get(spike_date)
-    logger.info(
-        "traffic_spike bounce/engagement from 30-day batch: date=%s engagement=%s bounce=%s",
-        iso_date, spike_engagement_rate, spike_bounce_rate,
-    )
-    if spike_engagement_rate is None:
-        spike_engagement_rate = _single_day_rate_fallback(client, property_id, iso_date, "engagementRate")
-    if spike_bounce_rate is None:
-        spike_bounce_rate = _single_day_rate_fallback(client, property_id, iso_date, "bounceRate")
-
-    # Bounce rate — same daily_rows, same zero-extra-call pattern as
-    # engagement rate above. This is the one number the slide was missing
-    # to answer "was this good traffic or noise" instead of just "traffic
-    # went up": a spike with a normal bounce rate is a real volume event, a
-    # spike with a much higher bounce rate is likely low-quality/bot
-    # traffic even though sessions look great.
-    bounce_by_date = {
-        r["date"]: float(r["bounce_rate"]) for r in daily_rows if r.get("date") and r.get("bounce_rate") not in (None, "")
-    }
-    avg_bounce_rate = statistics.mean(bounce_by_date.values()) if bounce_by_date else None
     spike_bounce_rate = bounce_by_date.get(spike_date)
     logger.info(
         "traffic_spike bounce/engagement from 30-day batch: %d/%d days had bounce_rate, %d/%d had engagement_rate, "
@@ -398,8 +362,6 @@ def get_traffic_spike_breakdown(creds: Credentials, property_id: str, daily_rows
         "spike_bounce_rate": spike_bounce_rate,
         "avg_key_events": avg_key_events,
         "spike_key_events": spike_key_events,
-        "avg_bounce_rate": avg_bounce_rate,
-        "spike_bounce_rate": spike_bounce_rate,
         "avg_session_duration_sec": avg_session_duration_sec,
         "spike_session_duration_sec": spike_session_duration_sec,
     }

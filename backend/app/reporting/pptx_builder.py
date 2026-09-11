@@ -3040,10 +3040,8 @@ def _traffic_spike_hypothesis(spike: dict) -> list[str]:
         lines.append(f"{top_channel['label']} drove {top_channel['pct']:.0f}% of the spike.")
 
     avg_eng, spike_eng = spike.get("avg_engagement_rate"), spike.get("spike_engagement_rate")
-    avg_bounce, spike_bounce = spike.get("avg_bounce_rate"), spike.get("spike_bounce_rate")
     avg_ke, spike_ke = spike.get("avg_key_events"), spike.get("spike_key_events")
     have_engagement = avg_eng is not None and spike_eng is not None
-    have_bounce = avg_bounce is not None and spike_bounce is not None
     have_key_events = avg_ke is not None and spike_ke is not None
 
     if have_engagement:
@@ -3051,11 +3049,6 @@ def _traffic_spike_hypothesis(spike: dict) -> list[str]:
         eng_delta = eng_pct - avg_eng_pct
         eng_verdict = "held up" if eng_delta >= -5 else "dropped noticeably"
         lines.append(f"Engagement rate that day was {eng_pct:.0f}% vs a {avg_eng_pct:.0f}% period average — {eng_verdict}.")
-    if have_bounce:
-        bounce_pct, avg_bounce_pct = spike_bounce * 100, avg_bounce * 100
-        bounce_delta = bounce_pct - avg_bounce_pct
-        bounce_verdict = "held up" if bounce_delta <= 5 else "rose noticeably"
-        lines.append(f"Bounce rate that day was {bounce_pct:.0f}% vs a {avg_bounce_pct:.0f}% period average — {bounce_verdict}.")
     if have_key_events:
         ke_verdict = "rose with it" if spike_ke >= avg_ke * 1.1 else ("stayed flat" if spike_ke >= avg_ke * 0.9 else "did not follow")
         lines.append(f"Key events that day: {spike_ke:.0f} vs a {avg_ke:.0f}/day average — {ke_verdict}.")
