@@ -30,7 +30,7 @@ from app.models.semrush_import import SemrushImport
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import (
-    build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows,
+    build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows, _sort_page_wise_by_issue_count,
     build_schema_report_parts, schema_eligibility_notes,
     build_branded_vs_nonbranded_comparison, build_high_potential_pages, build_high_potential_countries,
 )
@@ -1374,7 +1374,9 @@ def _gather_report_data(
     # slide itself, so the AI never reasons about a page the table doesn't
     # also show.
     page_wise_ai = None
-    page_wise_exclude_paths: set[str] = set()
+    # /careers excluded per 2026-09-11 user request — not a pattern-driven
+    # exclusion, just this one specific page.
+    page_wise_exclude_paths: set[str] = {"/careers"}
     if page_audit_result and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
         page_wise_scored_rows = [
             r for r in _tech_fixes_scored_rows(page_audit_result, analytics, site_audit_pages_rows)
@@ -1383,14 +1385,19 @@ def _gather_report_data(
         if page_wise_exclude_paths:
             excluded_norm = {p.rstrip("/") or "/" for p in page_wise_exclude_paths}
             page_wise_scored_rows = [r for r in page_wise_scored_rows if (r[3].rstrip("/") or "/") not in excluded_norm]
+        # 2026-09-11 user spec: table (and the AI Fix text generated for it)
+        # must reflect issue-count-highest-first, not export order — same
+        # sort add_priority_issues_page_wise_slide applies at render time,
+        # done here too so the AI writes a Fix for the SAME top-9 pages the
+        # table actually shows after sorting.
+        page_wise_scored_rows = _sort_page_wise_by_issue_count(page_wise_scored_rows)
         if page_wise_scored_rows:
             def _row_to_dict(r):
                 match = re.match(r"(\d+)", r[2])
                 return {"page": r[3], "issue_count": int(match.group(1)) if match else 0}
 
             shown_dicts = [_row_to_dict(r) for r in page_wise_scored_rows[:9]]
-            full_dicts = [_row_to_dict(r) for r in page_wise_scored_rows]
-            page_wise_candidate = generate_page_wise_priority_content(shown_dicts, full_dicts)
+            page_wise_candidate = generate_page_wise_priority_content(shown_dicts)
             if "error" not in page_wise_candidate:
                 page_wise_ai = page_wise_candidate
             else:

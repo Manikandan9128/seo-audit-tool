@@ -1958,17 +1958,75 @@ def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[
     )
 
 
+def _page_wise_issue_count(row: tuple) -> int:
+    match = re.match(r"(\d+)", row[2])
+    return int(match.group(1)) if match else 0
+
+
+def _sort_page_wise_by_issue_count(rows: list[tuple]) -> list[tuple]:
+    """2026-09-11 user spec: Priority Issues - Page Wise must be sorted by
+    issue count, highest first — never left in export order. Distinct from
+    _tech_fixes_scored_rows's own sort (severity, then traffic-value),
+    which every OTHER Tech Fixes slide still uses unchanged."""
+    return sorted(rows, key=lambda r: -_page_wise_issue_count(r))
+
+
+# /blog/* and /product/* + /integrations* are the two URL patterns this
+# slide's data has actually shown pages clustering under in real reports —
+# matches the user's own spec examples. Broadened to "integration" (not
+# just "/integrations") so per-connector pages like /netsuite-integration
+# and /sage-intacct-integration are caught too, not just the hub page.
+def _is_blog_pattern(path: str) -> bool:
+    return "/blog/" in path or path.rstrip("/").endswith("/blog")
+
+
+def _is_product_integration_pattern(path: str) -> bool:
+    lowered = path.lower()
+    return "/product/" in lowered or lowered.rstrip("/").endswith("/product") or "integration" in lowered
+
+
+def _page_wise_group_insights(other_rows: list[tuple]) -> list[str]:
+    """2026-09-11 user spec: group pages by shared root cause with EXACT
+    counts (never "over X") instead of an AI-written summary — a plain
+    len()/sum() over the same rows the table renders is exact by
+    construction, where an LLM asked for the same number can only
+    approximate it."""
+    blog_rows = [r for r in other_rows if _is_blog_pattern(r[3])]
+    product_rows = [r for r in other_rows if _is_product_integration_pattern(r[3])]
+
+    insights = []
+    if blog_rows:
+        total_issues = sum(_page_wise_issue_count(r) for r in blog_rows)
+        insights.append(
+            f"{len(blog_rows)} blog page(s) (/blog/*) carry {total_issues} total issue(s) between them — "
+            "likely thin/duplicate content, duplicate meta tags, or missing BlogPosting schema, which can "
+            "suppress organic rankings and waste crawl budget."
+        )
+    if product_rows:
+        total_issues = sum(_page_wise_issue_count(r) for r in product_rows)
+        insights.append(
+            f"{len(product_rows)} product/integration page(s) (/product/*, /integrations) carry {total_issues} "
+            "total issue(s) between them — likely missing Product/Integration schema or duplicate titles, which "
+            "can hurt SERP visibility and conversions."
+        )
+    if other_rows:
+        top = max(other_rows, key=_page_wise_issue_count)
+        insights.append(f"\"{top[3]}\" has the most issues of any page here — {_page_wise_issue_count(top)} total.")
+    return insights
+
+
 def add_priority_issues_page_wise_slide(prs: Presentation, other_rows: list[tuple], ai_result: dict | None) -> object | None:
     """Page | Issues | Fix table for pages Semrush's full crawl flagged but
-    our own ~20-page sample didn't reach (2026-09-10 user spec). Fix column
-    is AI-inferred per page from URL pattern + issue count (see
-    page_wise_priority_service) instead of the old generic "full breakdown
-    isn't available" disclaimer repeated on every row. Insights group pages
-    by shared probable root cause instead of repeating a cause per row —
-    the summary bullet (total affected vs. shown) is computed here, not by
-    the AI, since it's an exact count we already have."""
+    our own ~20-page sample didn't reach (2026-09-10 user spec, sort +
+    grouped-insights spec added 2026-09-11). Fix column is AI-inferred per
+    page from URL pattern + issue count (see page_wise_priority_service)
+    instead of the old generic "full breakdown isn't available" disclaimer
+    repeated on every row. Insights are computed here, not by the AI (see
+    _page_wise_group_insights) — the user's spec requires an exact count,
+    which code guarantees and an LLM only approximates."""
     if not other_rows:
         return None
+    other_rows = _sort_page_wise_by_issue_count(other_rows)
     shown = other_rows[:9]
     fixes = (ai_result or {}).get("fixes") or {}
     col_widths = [2.3, 1.8, 8.0]
@@ -1976,7 +2034,7 @@ def add_priority_issues_page_wise_slide(prs: Presentation, other_rows: list[tupl
         (_truncate_cell(path, col_widths[0]), issue, fixes.get(path, "See SEO Issues for the site-wide breakdown by type."))
         for _, _, issue, path, _fix_text, _pv, _cat in shown
     ]
-    insights = list((ai_result or {}).get("insights") or [])[:4]
+    insights = _page_wise_group_insights(other_rows)[:4]
     insights.append(f"{len(other_rows)} additional page(s) affected site-wide — showing the {len(shown)} highest-priority here.")
     return _table_slide(
         prs, "Priority Issues - Page Wise", ["Page", "Issues", "Fix"], rows,
