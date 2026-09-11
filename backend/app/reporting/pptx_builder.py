@@ -2146,20 +2146,35 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
         return top
     if max_y is None:
         max_y = SLIDE_H - Inches(0.5)
-    _textbox(slide, left, top, width, Inches(0.24), title.upper(), size=9.5, bold=True, color=_accent())
-    y = top + Inches(0.26)
     # Width-aware wrap estimate (~14 chars/inch at size 11) — a fixed
     # chars-per-line regardless of column width caused text in narrow
     # columns (e.g. the PageSpeed sidebar) to under-reserve height and
     # overlap the next bullet.
     text_width_in = max(width - Inches(0.18), Inches(0.5)) / 914400
     chars_per_line = max(20, int(text_width_in * 14))
+    line_h = Inches(0.22)
+    heading_h = Inches(0.26)
+
+    # Dry-run the fit check BEFORE drawing anything — a table with a tall
+    # row_cap (e.g. Website Structure's 12 rows) can push `top` so close to
+    # max_y that zero bullets actually fit, which used to still draw the
+    # "KEY INSIGHTS" heading with nothing under it (orphan heading, no
+    # bullets, on the rendered slide).
+    fitted = []
+    y = top + heading_h
     for item in insights[:5]:
         lines = max(1, -(-len(item) // chars_per_line))
-        line_h = Inches(0.22)
         item_h = line_h * lines + Inches(0.05)
         if y + item_h > max_y:
             break
+        fitted.append((item, lines, item_h))
+        y += item_h
+    if not fitted:
+        return top
+
+    _textbox(slide, left, top, width, Inches(0.24), title.upper(), size=9.5, bold=True, color=_accent())
+    y = top + heading_h
+    for item, lines, item_h in fitted:
         _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
         _textbox(slide, left + Inches(0.18), y, width - Inches(0.18), line_h * lines, item, size=11)
         y += item_h
