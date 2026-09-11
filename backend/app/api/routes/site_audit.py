@@ -854,8 +854,13 @@ def _gather_report_data(
 
             analytics = {}
             date_range = {}
+            # GA4 keeps ingesting/reprocessing "today" for up to ~24-48h, so a
+            # range ending on today drifts depending on exactly when the
+            # report runs vs. when someone checks GA4's own UI — same class
+            # of lag the GSC clamp below already accounts for. Ending at
+            # yesterday instead gives a stable, fully-processed 30-day window.
+            ga4_end = (date.today() - timedelta(days=1)).isoformat()
             ga4_start = (date.today() - timedelta(days=30)).isoformat()
-            ga4_end = date.today().isoformat()
             # Traffic Breakdown - Monthly Average needs a real multi-month
             # trend to be meaningfully "average" over — teammate QA on the
             # last report flagged the single 30-day window it used before
