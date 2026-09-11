@@ -2174,7 +2174,7 @@ def add_core_problem_slide(prs: Presentation, core_problem: dict):
     return slide
 
 
-def _insights_strip(slide, left, top, width, insights, title="Key Insights", max_y=None):
+def _insights_strip(slide, left, top, width, insights, title="Key Insights", max_y=None, max_items=5):
     """2-5 bullet takeaways mechanically derived from the slide's own data —
     no free-text generation, every line traces back to a number on the same
     slide. Returns the bottom y (Emu) after the strip.
@@ -2206,7 +2206,7 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     # bullets, on the rendered slide).
     fitted = []
     y = top + heading_h
-    for item in insights[:5]:
+    for item in insights[:max_items]:
         lines = max(1, -(-len(item) // chars_per_line))
         item_h = line_h * lines + Inches(0.05)
         if y + item_h > max_y:
@@ -2225,7 +2225,7 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     return y
 
 
-def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=None, width=None, insights=None, row_height=0.4, wrap_cols=None):
+def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=None, width=None, insights=None, row_height=0.4, wrap_cols=None, insights_max=5):
     """Shared table-drawing body behind _table_slide, factored out so a
     slide needing extra content above the table (e.g. a stat card) can draw
     its own header/card and still reuse this instead of duplicating the
@@ -2277,16 +2277,16 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
 
     bottom = top + height
     if insights:
-        bottom = _insights_strip(slide, left, bottom + Inches(0.15), width, insights)
+        bottom = _insights_strip(slide, left, bottom + Inches(0.15), width, insights, max_items=insights_max)
     return bottom
 
 
-def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None, row_cap=None, row_height=0.4, wrap_cols=None):
+def _table_slide(prs, title, headers, rows, col_widths=None, source=None, insights=None, row_cap=None, row_height=0.4, wrap_cols=None, insights_max=5):
     slide = _blank_slide(prs)
     _content_header(slide, title)
     if source:
         _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {source}", size=11, color=TEXT_MUTED)
-    _draw_table(slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=row_cap, insights=insights, row_height=row_height, wrap_cols=wrap_cols)
+    _draw_table(slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=row_cap, insights=insights, row_height=row_height, wrap_cols=wrap_cols, insights_max=insights_max)
     return slide
 
 
@@ -2932,107 +2932,142 @@ def add_traffic_channel_breakdown_slide(prs: Presentation, breakdown: dict, sour
             # drop it instead of showing "Tablet 0%".
             _split_text([{"label": d["label"].title(), "pct": d["pct"]} for d in (r.get("top_devices") or []) if round(d["pct"]) > 0]),
         ))
-    # Insight rules (2026-09-09 user spec): never state the biggest number
-    # as the whole finding — "X is the leading channel" is a description,
-    # not a finding. Every insight pairs a number with a quality signal
-    # (bounce rate) or cross-checks one segment against the others, since a
-    # single ~30-day window has no "change over time" to lean on for
-    # what's interesting. Never round a small share to zero. Cap 2-3
-    # bullets, ranked by usefulness.
-    insights: list[str] = []
-    used_channels: set[str] = set()
-    have_quality = bool(rows_data) and all(r.get("bounce_rate_pct") is not None for r in rows_data)
-
-    if have_quality:
-        avg_bounce = sum(r["bounce_rate_pct"] for r in rows_data) / len(rows_data)
-        top = rows_data[0]
-        top_delta = top["bounce_rate_pct"] - avg_bounce
-        if abs(top_delta) <= 5:
-            quality_note = f"bounce rate ({top['bounce_rate_pct']:.0f}%) is in line with the {avg_bounce:.0f}% average across all channels"
-        elif top_delta > 0:
-            quality_note = f"but its bounce rate ({top['bounce_rate_pct']:.0f}%) runs meaningfully above the {avg_bounce:.0f}% cross-channel average — size alone doesn't mean quality here"
-        else:
-            quality_note = f"and its bounce rate ({top['bounce_rate_pct']:.0f}%) also beats the {avg_bounce:.0f}% cross-channel average"
-        insights.append(
-            f"{top['channel']} carries {_pct_text(top['pct_share'])} of sessions ({top['avg_sessions_month']:,}/month), {quality_note}."
-        )
-        used_channels.add(top["channel"])
-
-        # Cross-check: the channel whose bounce rate deviates most from the
-        # group average (excluding whichever channel bullet 1 already
-        # covered) — this is the "different from the other segments in
-        # this table" finding a size-only ranking can't surface, standing
-        # in for trend comparison on a single-period dataset.
-        deviations = sorted(
-            (r for r in rows_data if r["channel"] not in used_channels),
-            key=lambda r: abs(r["bounce_rate_pct"] - avg_bounce), reverse=True,
-        )
-        if deviations and abs(deviations[0]["bounce_rate_pct"] - avg_bounce) > 5:
-            outlier = deviations[0]
-            delta = outlier["bounce_rate_pct"] - avg_bounce
-            direction = "far above" if delta > 0 else "far below"
-            if delta > 0:
-                verdict = "worth investigating for traffic quality despite its size"
-            elif outlier["pct_share"] < 10:
-                verdict = "the most efficient channel in this table, disproportionate to its small size"
-            else:
-                verdict = "a genuine quality strength worth understanding and repeating"
-            insights.append(
-                f"{outlier['channel']} ({_pct_text(outlier['pct_share'])} of sessions) has a bounce rate {direction} "
-                f"the {avg_bounce:.0f}% cross-channel average ({outlier['bounce_rate_pct']:.0f}%) — {verdict}."
-            )
-            used_channels.add(outlier["channel"])
-    elif rows_data:
-        # No bounce-rate data (older cached breakdown result) — still frame
-        # as a comparison between segments, never a bare size statement.
-        top = rows_data[0]
-        used_channels.add(top["channel"])
-        second = next((r for r in rows_data if r["channel"] not in used_channels), None)
-        if second:
-            insights.append(
-                f"{top['channel']} ({_pct_text(top['pct_share'])} of sessions) leads {second['channel']} "
-                f"({_pct_text(second['pct_share'])}) by {top['pct_share'] - second['pct_share']:.0f} points."
-            )
-            used_channels.add(second["channel"])
-
-    # A genuinely small but real channel (e.g. an emerging/new initiative)
-    # — actual decimal, never rounded away to "0%" — only when there's
-    # still room in the cap and it isn't already covered above.
-    if len(insights) < 3:
-        small = [r for r in rows_data if r["channel"] not in used_channels and 0 < r["pct_share"] < 1]
-        if small:
-            s = max(small, key=lambda r: r["pct_share"])
-            insights.append(
-                f"{s['channel']} is a small but real channel at {s['pct_share']:.1f}% of sessions "
-                f"({s['avg_sessions_month']:,}/month) — worth tracking, not yet material."
-            )
-
-    # Channel concentration/diversification (2026-09-10 user spec: replaces
-    # the methodology-only "figures are monthly averages" line, which
-    # restated something already visible in the slide header, with a real
-    # strategic finding) — rows_data is already sorted by pct_share
-    # descending (same assumption "top = rows_data[0]" above already makes).
-    if len(rows_data) >= 2 and len(insights) < 3:
-        top2_channels = rows_data[0]["channel"], rows_data[1]["channel"]
-        top2_share = rows_data[0]["pct_share"] + rows_data[1]["pct_share"]
-        if top2_share >= 70:
-            insights.append(
-                f"{top2_channels[0]} and {top2_channels[1]} together account for {top2_share:.0f}% of all sessions "
-                "— heavy reliance on just two channels, with real exposure if either one dips."
-            )
-        else:
-            insights.append(
-                f"No single channel dominates — {top2_channels[0]} leads at only {_pct_text(rows_data[0]['pct_share'])}, "
-                "a genuinely diversified acquisition mix."
-            )
+    insights = _traffic_channel_breakdown_insights(rows_data)
     if used_abbreviations:
         legend = ", ".join(f"{abbr} - {full}" for abbr, full in sorted(used_abbreviations.items()))
         insights.append(f"* {legend}")
     return _table_slide(
         prs, "Traffic Breakdown — Monthly Average",
         ["Channel", "Avg Sessions/mo", "% Share", "Top Countries", "Top Devices"],
-        rows, col_widths=[2.0, 1.7, 1.1, 3.5, 3.8], source=source, insights=insights,
+        rows, col_widths=[2.0, 1.7, 1.1, 3.5, 3.8], source=source, insights=insights, insights_max=7,
     )
+
+
+# Judgment-call thresholds (2026-09-11 user spec didn't give exact numbers
+# for "high concentration" / "meaningfully above or below" / "low" vs.
+# "high" share — spec gave the LOGIC, these are the concrete cutoffs
+# applying it, same pattern as this file's other named threshold constants
+# e.g. _TRAFFIC_SOURCES_OVER_RELIANCE_PCT).
+_TCB_CONCENTRATION_RISK_PCT = 80  # spec's own example: "80%+"
+_TCB_BOUNCE_OUTLIER_DELTA_PTS = 10  # points from the weighted average to count as "meaningful"
+_TCB_LOW_SHARE_PCT = 10  # below this = "low session share" for the mismatch checks
+_TCB_HIGH_SHARE_PCT = 15  # at/above this = "large share of traffic" for the mismatch checks
+_TCB_NAMED_EXCLUDED_TOKENS = ("unassigned", "other", "cross-network")
+
+
+def _traffic_channel_breakdown_insights(rows_data: list[dict]) -> list[str]:
+    """2026-09-11 user spec: 4-6 bullets, each strictly derivable from this
+    data (bounce rate included, even though it isn't a table column — the
+    spec requires each such bullet be self-contained with both numbers
+    stated, since the reader can't see a hidden column). 6 is a ceiling,
+    not a quota — every bullet below is its own independently-true-or-false
+    check, so a healthy/quiet channel mix can legitimately produce fewer
+    than 4. rows_data is assumed sorted by pct_share descending (GA4 query
+    orders by sessions desc — see get_traffic_channel_breakdown)."""
+    insights: list[str] = []
+    have_bounce = bool(rows_data) and all(r.get("bounce_rate_pct") is not None for r in rows_data)
+
+    # 1. Concentration check.
+    if len(rows_data) >= 2:
+        top2 = rows_data[:2]
+        combined = top2[0]["pct_share"] + top2[1]["pct_share"]
+        if combined >= _TCB_CONCENTRATION_RISK_PCT:
+            insights.append(
+                f"{top2[0]['channel']} and {top2[1]['channel']} together account for {combined:.0f}% of all "
+                "sessions — a concentrated acquisition mix with real exposure if either channel is disrupted."
+            )
+
+    weighted_avg_bounce = None
+    if have_bounce:
+        total_sessions = sum(r["avg_sessions_month"] for r in rows_data)
+        if total_sessions:
+            weighted_avg_bounce = sum(r["bounce_rate_pct"] * r["avg_sessions_month"] for r in rows_data) / total_sessions
+
+    if weighted_avg_bounce is not None:
+        # 2. Bounce rate outlier vs. the session-weighted average — named
+        # explicitly with both numbers since bounce rate isn't a visible
+        # table column.
+        outlier = max(rows_data, key=lambda r: abs(r["bounce_rate_pct"] - weighted_avg_bounce))
+        delta = outlier["bounce_rate_pct"] - weighted_avg_bounce
+        if abs(delta) >= _TCB_BOUNCE_OUTLIER_DELTA_PTS:
+            direction = "above" if delta > 0 else "below"
+            insights.append(
+                f"{outlier['channel']}'s {outlier['bounce_rate_pct']:.0f}% bounce rate is {abs(delta):.0f} points "
+                f"{direction} the session-weighted average of {weighted_avg_bounce:.0f}% across all channels."
+            )
+
+        # 3. Low bounce + low share — underused, high-quality channel.
+        underused = [
+            r for r in rows_data
+            if r["pct_share"] < _TCB_LOW_SHARE_PCT and (weighted_avg_bounce - r["bounce_rate_pct"]) >= _TCB_BOUNCE_OUTLIER_DELTA_PTS
+        ]
+        if underused:
+            best = min(underused, key=lambda r: r["bounce_rate_pct"])
+            insights.append(
+                f"{best['channel']} has a low {best['bounce_rate_pct']:.0f}% bounce rate ({weighted_avg_bounce - best['bounce_rate_pct']:.0f} "
+                f"points below the {weighted_avg_bounce:.0f}% weighted average) but only {_pct_text(best['pct_share'])} of sessions "
+                f"({best['avg_sessions_month']:,}/month) — an underused, high-quality channel worth investing more into."
+            )
+
+        # 4. High bounce + high volume — highest-priority quality issue
+        # since it touches the most sessions.
+        at_risk = [
+            r for r in rows_data
+            if r["pct_share"] >= _TCB_HIGH_SHARE_PCT and (r["bounce_rate_pct"] - weighted_avg_bounce) >= _TCB_BOUNCE_OUTLIER_DELTA_PTS
+        ]
+        if at_risk:
+            worst = max(at_risk, key=lambda r: r["pct_share"])
+            worst_delta = worst["bounce_rate_pct"] - weighted_avg_bounce
+            insights.append(
+                f"{worst['channel']} carries {_pct_text(worst['pct_share'])} of sessions ({worst['avg_sessions_month']:,}/month) "
+                f"and its {worst['bounce_rate_pct']:.0f}% bounce rate runs {worst_delta:.0f} points above the "
+                f"{weighted_avg_bounce:.0f}% weighted average — the highest-priority quality issue here since it affects "
+                "the most sessions."
+            )
+
+    # 5. Device-mix anomaly — a channel whose top device inverts the
+    # pattern every other channel shares.
+    def _top_device(r):
+        devices = [d for d in (r.get("top_devices") or []) if round(d["pct"]) > 0]
+        return max(devices, key=lambda d: d["pct"]) if devices else None
+
+    with_top_device = [(r, _top_device(r)) for r in rows_data]
+    with_top_device = [(r, d) for r, d in with_top_device if d]
+    if len(with_top_device) >= 3:
+        device_counts = Counter(d["label"].title() for _, d in with_top_device)
+        majority_device, majority_count = device_counts.most_common(1)[0]
+        # Only a real shared pattern (all-but-one channel agrees) counts as
+        # "the rest of the table" — a 3-way split has no pattern to invert.
+        if majority_count >= len(with_top_device) - 1:
+            anomaly = next(((r, d) for r, d in with_top_device if d["label"].title() != majority_device), None)
+            if anomaly:
+                r, d = anomaly
+                insights.append(
+                    f"{r['channel']}'s traffic is majority-{d['label'].title()} ({d['pct']:.0f}%), unlike every other "
+                    f"channel here which skews {majority_device} — worth checking this channel's "
+                    f"{d['label'].lower()} landing experience specifically."
+                )
+
+    # 6. Small-but-named channel — low volume, distinctly labeled (not
+    # Unassigned/Other/cross-network), especially notable if its bounce
+    # rate diverges from what its size alone would suggest.
+    if weighted_avg_bounce is not None:
+        small_named = [
+            r for r in rows_data
+            if r["pct_share"] < _TCB_LOW_SHARE_PCT
+            and not any(tok in r["channel"].strip().lower() for tok in _TCB_NAMED_EXCLUDED_TOKENS)
+        ]
+        if small_named:
+            s = max(small_named, key=lambda r: abs(r["bounce_rate_pct"] - weighted_avg_bounce))
+            s_delta = s["bounce_rate_pct"] - weighted_avg_bounce
+            direction = "worse" if s_delta > 0 else "better"
+            insights.append(
+                f"{s['channel']} is small at {_pct_text(s['pct_share'])} of sessions ({s['avg_sessions_month']:,}/month) "
+                f"but its {s['bounce_rate_pct']:.0f}% bounce rate is {abs(s_delta):.0f} points {direction} than the "
+                f"{weighted_avg_bounce:.0f}% weighted average — worth monitoring as it scales."
+            )
+
+    return insights[:6]
 
 
 def _fmt_num(v):
