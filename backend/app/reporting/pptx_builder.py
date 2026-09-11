@@ -279,6 +279,21 @@ def _gsc_date_span(date_range: dict | None) -> str:
     return f"{fmt(date_range['gsc_start'])} – {fmt(date_range['gsc_end'])}"
 
 
+def _channel_breakdown_date_span(date_range: dict | None) -> str:
+    """Same as _ga4_date_span but for Traffic Breakdown - Monthly Average's
+    own wider window (2026-09-11 fix) — this slide pulls ~4 months of data
+    to average over (see channel_breakdown_start in site_audit.py), a
+    different range than every other GA4 slide's 30-day window, so it
+    needs its own Source caption instead of reusing ga4_start/ga4_end and
+    silently mislabeling itself with the wrong dates."""
+    if not date_range or not (date_range.get("channel_breakdown_start") and date_range.get("channel_breakdown_end")):
+        return ""
+    from datetime import date as _date
+
+    fmt = lambda iso: _date.fromisoformat(iso).strftime("%b %d, %Y")
+    return f"{fmt(date_range['channel_breakdown_start'])} – {fmt(date_range['channel_breakdown_end'])}"
+
+
 def add_title_slide(
     prs: Presentation, client_name: str, website_url: str = "", subtitle: str = "Web and SEO Audit",
     logo_bytes: bytes | None = None, analytics: dict | None = None,
@@ -1964,14 +1979,6 @@ def _page_wise_issue_count(row: tuple) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _sort_page_wise_by_issue_count(rows: list[tuple]) -> list[tuple]:
-    """2026-09-11 user spec: Priority Issues - Page Wise must be sorted by
-    issue count, highest first — never left in export order. Distinct from
-    _tech_fixes_scored_rows's own sort (severity, then traffic-value),
-    which every OTHER Tech Fixes slide still uses unchanged."""
-    return sorted(rows, key=lambda r: -_page_wise_issue_count(r))
-
-
 # /blog/* and /product/* + /integrations* are the two URL patterns this
 # slide's data has actually shown pages clustering under in real reports —
 # matches the user's own spec examples. Broadened to "integration" (not
@@ -2018,16 +2025,22 @@ def _page_wise_group_insights(other_rows: list[tuple]) -> list[str]:
 
 def add_priority_issues_page_wise_slide(prs: Presentation, other_rows: list[tuple], ai_result: dict | None) -> object | None:
     """Page | Issues | Fix table for pages Semrush's full crawl flagged but
-    our own ~20-page sample didn't reach (2026-09-10 user spec, sort +
-    grouped-insights spec added 2026-09-11). Fix column is AI-inferred per
-    page from URL pattern + issue count (see page_wise_priority_service)
+    our own ~20-page sample didn't reach (2026-09-10 user spec, grouped-
+    insights spec added 2026-09-11). Fix column is AI-inferred per page
+    from URL pattern + issue count (see page_wise_priority_service)
     instead of the old generic "full breakdown isn't available" disclaimer
     repeated on every row. Insights are computed here, not by the AI (see
     _page_wise_group_insights) — the user's spec requires an exact count,
-    which code guarantees and an LLM only approximates."""
+    which code guarantees and an LLM only approximates.
+
+    Row order/selection is _tech_fixes_scored_rows's own severity+traffic-
+    value sort, untouched — a same-day issue-count sort was tried and
+    reverted (2026-09-11) because it clustered multiple rows for the SAME
+    page (one per issue category _tech_fixes_scored_rows tracks
+    internally) into the top 9, showing one page repeated 5-6 times
+    instead of 9 distinct pages."""
     if not other_rows:
         return None
-    other_rows = _sort_page_wise_by_issue_count(other_rows)
     shown = other_rows[:9]
     fixes = (ai_result or {}).get("fixes") or {}
     col_widths = [2.3, 1.8, 8.0]
@@ -2747,7 +2760,19 @@ def build_high_potential_countries(country_rows: list[dict]) -> dict:
         if float(r.get("impressions", 0) or 0) >= _COUNTRY_MATERIAL_MIN_IMPRESSIONS
         or float(r.get("clicks", 0) or 0) >= _COUNTRY_MATERIAL_MIN_CLICKS
     ]
-    best = max(candidates, key=lambda r: float(r.get("ctr", 0) or 0))
+    if not material_pool:
+        return {"material": [], "low_signal": _summarize_low_signal_countries([
+            r for r in candidates if float(r.get("clicks", 0) or 0) <= _COUNTRY_LOW_SIGNAL_MAX_CLICKS
+        ])}
+    # Best-CTR reference is drawn from material_pool, not the full
+    # low-signal-inclusive candidates list (2026-09-11 fix, confirmed live
+    # on a real report): a country with a handful of clicks can hit a high
+    # CTR by pure chance (e.g. 1 click off 20 impressions), and letting
+    # that become the benchmark every material country gets told to match
+    # undermines the fix's credibility — same problem the material/
+    # low-signal split exists to prevent, just leaking into the comparator
+    # instead of the display rows.
+    best = max(material_pool, key=lambda r: float(r.get("ctr", 0) or 0))
     best_ctr_pct = float(best.get("ctr", 0) or 0) * 100
     best_label = _country_label(best.get("country", ""))
 
@@ -5026,14 +5051,18 @@ def _build_report(
         add_section_slide(prs, client_name, "Traffic & Search Performance")
         ga4_span = _ga4_date_span(analytics.get("date_range"))
         gsc_span = _gsc_date_span(analytics.get("date_range"))
+        channel_breakdown_span = _channel_breakdown_date_span(analytics.get("date_range"))
         ga4_source = f"Google Analytics ({ga4_span})" if ga4_span else "Google Analytics"
         gsc_source = f"Google Search Console ({gsc_span})" if gsc_span else "Google Search Console"
+        channel_breakdown_source = (
+            f"Google Analytics ({channel_breakdown_span}, monthly avg.)" if channel_breakdown_span else "Google Analytics (monthly avg.)"
+        )
         if analytics.get("traffic_overview"):
             add_traffic_overview_slide(prs, analytics)
         if analytics.get("traffic_spike"):
             add_traffic_spike_slide(prs, analytics["traffic_spike"])
         if analytics.get("traffic_channel_breakdown"):
-            add_traffic_channel_breakdown_slide(prs, analytics["traffic_channel_breakdown"], source=ga4_source)
+            add_traffic_channel_breakdown_slide(prs, analytics["traffic_channel_breakdown"], source=channel_breakdown_source)
         # Top Pages — Branded vs Non-Branded slide removed 2026-09-09 per
         # user request — redundant with GSC's own query-level Branded/
         # Non-Branded split below (search_queries), which classifies real

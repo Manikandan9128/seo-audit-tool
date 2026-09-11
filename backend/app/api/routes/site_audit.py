@@ -30,7 +30,7 @@ from app.models.semrush_import import SemrushImport
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import (
-    build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows, _sort_page_wise_by_issue_count,
+    build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows,
     build_schema_report_parts, schema_eligibility_notes,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
 )
@@ -941,6 +941,7 @@ def _gather_report_data(
 
             if client.ga4_property_id:
                 date_range["ga4_start"], date_range["ga4_end"] = ga4_start, ga4_end
+                date_range["channel_breakdown_start"], date_range["channel_breakdown_end"] = channel_breakdown_start, ga4_end
                 # Separate try: needs Google Signals/demographics enabled on
                 # the property (age/gender), which the calls above don't —
                 # a permission/config error here shouldn't wipe out the
@@ -1390,12 +1391,13 @@ def _gather_report_data(
         if page_wise_exclude_paths:
             excluded_norm = {p.rstrip("/") or "/" for p in page_wise_exclude_paths}
             page_wise_scored_rows = [r for r in page_wise_scored_rows if (r[3].rstrip("/") or "/") not in excluded_norm]
-        # 2026-09-11 user spec: table (and the AI Fix text generated for it)
-        # must reflect issue-count-highest-first, not export order — same
-        # sort add_priority_issues_page_wise_slide applies at render time,
-        # done here too so the AI writes a Fix for the SAME top-9 pages the
-        # table actually shows after sorting.
-        page_wise_scored_rows = _sort_page_wise_by_issue_count(page_wise_scored_rows)
+        # Reverted 2026-09-11: sorting this list by issue count surfaced
+        # multiple rows for the SAME page (one per issue category
+        # _tech_fixes_scored_rows tracks internally) clustered into the
+        # top 9, so the table showed one page repeated 5-6 times instead
+        # of 9 distinct pages. Back to _tech_fixes_scored_rows's own
+        # severity+traffic-value order, confirmed distinct-pages-only in
+        # report 56 (before the issue-count sort was added).
         if page_wise_scored_rows:
             def _row_to_dict(r):
                 match = re.match(r"(\d+)", r[2])

@@ -99,6 +99,23 @@ def test_country_code_resolved_to_full_name_not_raw_acronym():
     assert "ARM" not in result["material"][0]["fix"]
 
 
+def test_best_ctr_benchmark_never_drawn_from_a_low_signal_country():
+    # Regression: confirmed live on a real report — Ecuador (2 clicks, 1
+    # of them lucky) had the highest CTR of any country and got used as
+    # the benchmark every material country was told to match, even though
+    # Ecuador itself sits in the low-signal group. The benchmark must come
+    # from the material pool only.
+    countries = [
+        {"country": "usa", "clicks": 1687, "impressions": 261348, "ctr": 1687 / 261348},
+        {"country": "gbr", "clicks": 19, "impressions": 12857, "ctr": 19 / 12857},
+        {"country": "ecu", "clicks": 2, "impressions": 150, "ctr": 2 / 150},  # 1.3% CTR, low-signal, would win on CTR alone
+    ]
+    result = build_high_potential_countries(countries)
+    material_fixes = " ".join(r["fix"] for r in result["material"])
+    assert "Ecuador" not in material_fixes
+    assert "Ecuador" in result["low_signal"]["countries"]
+
+
 def test_branded_slide_states_headline_share():
     comparison = build_branded_vs_nonbranded_comparison(
         [{"query": "brand", "clicks": 80, "impressions": 200, "position": 1.0}],
