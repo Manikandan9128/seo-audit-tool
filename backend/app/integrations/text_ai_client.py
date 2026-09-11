@@ -316,6 +316,55 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
     raise NoAIProviderConfigured(" / ".join(errors))
 
 
+# Free-tier vision model (2026-09-11) — GROQ_MODEL (openai/gpt-oss-120b) is
+# text-only, but Llama 4 Scout is natively multimodal and available on the
+# same free Groq account/key already used for text calls, no new signup or
+# paid key needed. Tried before Gemini/Claude for the same reason
+# generate_text() tries Groq first: its per-minute budget recovers fast,
+# so spending it first keeps Gemini's scarce once-daily allowance in
+# reserve for when Groq is genuinely tapped out.
+GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_VISION_TIMEOUT_SECONDS = 45
+
+
+def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens: int) -> str:
+    b64_image = base64.b64encode(image_bytes).decode("ascii")
+    # +300 covers the image's own token cost, which the char/4 estimate
+    # below (sized for text-only prompts) can't see at all.
+    estimated_prompt_tokens = len(prompt) // 4 + 300
+    safe_max_tokens = max(256, min(max_tokens, GROQ_TPM_BUDGET - estimated_prompt_tokens))
+    if safe_max_tokens < max_tokens // 2:
+        raise RuntimeError(
+            f"prompt+image too large for Groq's shared TPM budget to leave room for the requested "
+            f"output ({safe_max_tokens} available vs {max_tokens} needed) — skipping to next provider"
+        )
+    _reserve_groq_budget(estimated_prompt_tokens + safe_max_tokens)
+    response = httpx.post(
+        GROQ_API_URL,
+        headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+        json={
+            "model": GROQ_VISION_MODEL,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
+                ],
+            }],
+            "max_tokens": safe_max_tokens,
+        },
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+            request=response.request,
+            response=response,
+        )
+    data = response.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
 def _try_gemini_vision(prompt: str, image_bytes: bytes, mime_type: str) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
     image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
@@ -342,14 +391,23 @@ def _try_claude_vision(prompt: str, image_bytes: bytes, mime_type: str, max_toke
 def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "image/png", max_tokens: int = 2048) -> tuple[str, str]:
     """Same fallback shape as generate_text(), but for a prompt grounded in
     a real screenshot (e.g. the client's own homepage) instead of text
-    alone. Groq is skipped entirely here — GROQ_MODEL is a text-only model,
-    not a vision one; Gemini then Claude are the only two providers here
-    that actually accept an image input. Raises NoAIProviderConfigured if
-    neither key is set or both calls fail."""
-    if not settings.gemini_api_key and not settings.claude_api_key:
-        raise NoAIProviderConfigured("No Gemini or Claude API key configured — vision calls need one of these two")
+    alone. GROQ_MODEL itself is text-only, but the same free Groq key also
+    reaches Llama 4 Scout (see GROQ_VISION_MODEL/_try_groq_vision above),
+    tried first for the same fast-recovery-budget reason generate_text()
+    tries Groq first — Gemini then Claude follow as before. Raises
+    NoAIProviderConfigured if no key is set or every call fails."""
+    if not settings.groq_api_key and not settings.gemini_api_key and not settings.claude_api_key:
+        raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
 
     errors: list[str] = []
+    if settings.groq_api_key:
+        try:
+            text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
+            if text:
+                return text, "groq"
+            errors.append("Groq returned an empty response")
+        except Exception as e:
+            errors.append(f"Groq vision request failed: {str(e)[:300]}")
     if settings.gemini_api_key:
         try:
             text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)

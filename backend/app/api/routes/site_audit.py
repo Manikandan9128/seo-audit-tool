@@ -1293,19 +1293,22 @@ def _gather_report_data(
     # page. Onboarding breakdown still skips itself if real ux_notes already
     # produced one; ui_fixes never does (see above).
     homepage_shot = None
-    vision_key_configured = bool(settings.gemini_api_key or settings.claude_api_key)
+    # 2026-09-11: GROQ_MODEL itself is text-only, but the same free Groq key
+    # also reaches a vision-capable model (Llama 4 Scout — see
+    # GROQ_VISION_MODEL in text_ai_client.py), so a Groq-only setup can now
+    # run this pass too, not just Gemini/Claude.
+    vision_key_configured = bool(settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key)
     if vision_key_configured:
         homepage_shot = capture_homepage_screenshots([own_website_domain]).get(own_website_domain)
     else:
         # 2026-09-10: previously indistinguishable in the logs from a
         # screenshot-capture failure below — this case is deterministic
         # (no vision-capable key configured at all, so capture is never
-        # even attempted) and needs a different fix (add a Gemini/Claude
-        # key) than a capture failure (bot-blocked/timed-out for this one
-        # domain) does.
+        # even attempted) and needs a different fix (add a Groq/Gemini/
+        # Claude key) than a capture failure (bot-blocked/timed-out for
+        # this one domain) does.
         logger.warning(
-            "Skipping UI Fixes/Onboarding vision pass for %s — no Gemini or Claude API key configured "
-            "(Groq alone can't do vision calls).",
+            "Skipping UI Fixes/Onboarding vision pass for %s — no Groq, Gemini, or Claude API key configured.",
             own_website_domain,
         )
 
