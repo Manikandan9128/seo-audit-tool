@@ -1255,20 +1255,6 @@ def add_seo_issues_slide(
     slide = _blank_slide(prs)
     _content_header(slide, "SEO Issues")
 
-    # Consolidated unique-URL count — replaces the manual "check the issues
-    # tab and count the unique URLs... because this is the confusing one"
-    # step: one row per URL in the Crawled Pages export already carries its
-    # own issue count, so a real dedup'd affected-URL total is a straight
-    # read, not a per-issue-type sum (which double-counts a page hit by
-    # more than one issue type).
-    page_totals = _canonical_page_totals(site_audit_pages_rows, None)
-    if page_totals and page_totals["with_issues"] is not None:
-        _textbox(
-            slide, Inches(8.0), Inches(0.3), Inches(4.7), Inches(0.4),
-            f"{page_totals['with_issues']:,} of {page_totals['total']:,} crawled pages have at least one issue",
-            size=11, color=TEXT_MUTED, align=PP_ALIGN.RIGHT,
-        )
-
     if site_audit_issues:
         # Semrush Site Audit's own issue-type rollup — a real full-site crawl
         # result (hundreds of pages, ~95 issue categories), strictly richer
