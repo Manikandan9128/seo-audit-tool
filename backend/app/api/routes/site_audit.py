@@ -1758,6 +1758,15 @@ def _build_pptx_for_client(
         except Exception as e:
             logger.warning("Combined keyword sheet creation failed for client %s: %s", client.id, e)
             content_issues.append(f"Keyword list sheet: {e}")
+    # own_site_positions_rows was only ever needed above, for the Sheet -
+    # build_report() has no matching parameter, so it must not survive
+    # into the **data splat below (confirmed real: this crashed report
+    # generation outright — "build_report() got an unexpected keyword
+    # argument 'own_site_positions_rows'" — the moment this key was added
+    # to _gather_report_data's returned dict without a matching build_
+    # report parameter, since every other key in `data` doubles as a
+    # build_report kwarg).
+    data.pop("own_site_positions_rows", None)
 
     progress("Building presentation...", 96)
     try:
