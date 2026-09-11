@@ -66,102 +66,84 @@ export default function ClientListPage() {
   const connectedCount = clients.filter((c) => c.google_connected).length;
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-end",
-          flexWrap: "wrap",
-          gap: 16,
-          marginBottom: 24,
-        }}
-      >
+    <div className="clients-page">
+      <div className="clients-header">
         <div>
           <p className="eyebrow" style={{ margin: "0 0 4px" }}>
             Portfolio
           </p>
           <h2 style={{ margin: 0 }}>Clients</h2>
-          <p style={{ color: "var(--text-muted)", margin: "6px 0 0", fontSize: 13.5 }}>
-            {clients.length} client{clients.length === 1 ? "" : "s"} · {connectedCount} with Google connected
-          </p>
+          <div className="clients-stats">
+            <span className="stat-pill">
+              <strong>{clients.length}</strong> client{clients.length === 1 ? "" : "s"}
+            </span>
+            <span className="stat-pill accent">
+              <strong>{connectedCount}</strong> connected
+            </span>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div className="clients-toolbar">
           {clients.length > 0 && (
-            <input
-              placeholder="Search clients..."
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              style={{ width: 220 }}
-            />
+            <label className="clients-search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="7" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                placeholder="Search clients..."
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label="Search clients"
+              />
+            </label>
           )}
           <button onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ Add client"}</button>
         </div>
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="card" style={{ marginBottom: 24, display: "flex", gap: 10 }}>
+        <form onSubmit={handleCreate} className="card add-client-form">
           <input
             placeholder="Client name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
-            style={{ flex: 1 }}
           />
           <input
             placeholder="Website URL (https://...)"
             value={websiteUrl}
             onChange={(e) => setWebsiteUrl(e.target.value)}
             required
-            style={{ flex: 1 }}
           />
           <button type="submit">Add</button>
         </form>
       )}
 
       {clients.length === 0 && !showForm && (
-        <div className="card" style={{ textAlign: "center", color: "var(--text-muted)", padding: 48 }}>
-          No clients yet. Add your first client to get started.
+        <div className="card clients-empty">
+          <div className="icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+          </div>
+          <p>No clients yet. Add your first client to get started.</p>
         </div>
       )}
 
       {clients.length > 0 && filtered.length === 0 && (
-        <div className="card" style={{ textAlign: "center", color: "var(--text-muted)", padding: 32 }}>
-          No clients match "{query}".
+        <div className="card clients-empty" style={{ padding: 32 }}>
+          <p>No clients match "{query}".</p>
         </div>
       )}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-          gap: 16,
-        }}
-      >
+      <div className="clients-grid">
         {filtered.map((c) => (
-          <Link
-            key={c.id}
-            to={`/clients/${c.id}`}
-            className="card client-tile"
-            style={{ display: "flex", flexDirection: "column", gap: 16, color: "inherit" }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div
-                style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: 10,
-                  background: avatarColor(c.name),
-                  color: "#fff",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 700,
-                  fontSize: 16,
-                  flexShrink: 0,
-                }}
-              >
+          <Link key={c.id} to={`/clients/${c.id}`} className="card client-tile">
+            <div className="client-tile-top">
+              <div className="client-avatar" style={{ background: avatarColor(c.name) }}>
                 {initials(c.name)}
               </div>
               <span className={`badge ${c.google_connected ? "success" : "muted"}`}>
@@ -169,20 +151,12 @@ export default function ClientListPage() {
               </span>
             </div>
             <div>
-              <div style={{ fontWeight: 600, fontSize: 16, fontFamily: "var(--font-display)" }}>{c.name}</div>
-              <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 2 }}>{hostname(c.website_url)}</div>
+              <div className="client-name">{c.name}</div>
+              <div className="client-host">{hostname(c.website_url)}</div>
             </div>
-            <div
-              style={{
-                marginTop: "auto",
-                paddingTop: 12,
-                borderTop: "1px solid var(--border)",
-                fontSize: 12.5,
-                color: "var(--accent)",
-                fontWeight: 600,
-              }}
-            >
-              Open report →
+            <div className="client-tile-footer">
+              <span>Open report</span>
+              <span aria-hidden="true">→</span>
             </div>
           </Link>
         ))}
