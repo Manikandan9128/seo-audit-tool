@@ -73,7 +73,17 @@ def generate_seo_issues_insights(
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+        # Groq's gpt-oss-120b sometimes prepends stray commentary before the
+        # JSON object despite the "return ONLY valid JSON" instruction — see
+        # the same fallback in competitor_narrative_service.py.
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data = json.loads(raw[start : end + 1])
+            except json.JSONDecodeError:
+                return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+        else:
+            return {"error": "AI did not return valid JSON", "raw": raw[:500]}
     if not data.get("headline"):
         return {"error": "Model returned no headline"}
     return data

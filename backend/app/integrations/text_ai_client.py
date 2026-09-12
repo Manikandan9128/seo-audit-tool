@@ -147,6 +147,15 @@ def _try_groq(prompt: str, max_tokens: int) -> str:
             "model": GROQ_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": safe_max_tokens,
+            # gpt-oss-120b is a reasoning model whose hidden chain-of-thought
+            # tokens share this SAME max_tokens budget — confirmed live
+            # 2026-09-12: with no reasoning_effort set (defaults to full
+            # reasoning), the tightest-budget callers (SEO Issues insights
+            # at 768, Core Problem at 1024) had reasoning consume the whole
+            # budget, coming back as an empty content string or truncated/
+            # unparseable JSON. "low" leaves enough headroom for tight
+            # prompts to actually get a final answer.
+            "reasoning_effort": "low",
         },
         timeout=60,
     )
@@ -316,14 +325,18 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
     raise NoAIProviderConfigured(" / ".join(errors))
 
 
-# Free-tier vision model (2026-09-11) — GROQ_MODEL (openai/gpt-oss-120b) is
-# text-only, but Llama 4 Scout is natively multimodal and available on the
-# same free Groq account/key already used for text calls, no new signup or
-# paid key needed. Tried before Gemini/Claude for the same reason
-# generate_text() tries Groq first: its per-minute budget recovers fast,
-# so spending it first keeps Gemini's scarce once-daily allowance in
-# reserve for when Groq is genuinely tapped out.
-GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+# Free-tier vision model — GROQ_MODEL (openai/gpt-oss-120b) is text-only,
+# but Qwen 3.6 27B is natively multimodal and available on the same free
+# Groq account/key already used for text calls, no new signup or paid key
+# needed. Tried before Gemini/Claude for the same reason generate_text()
+# tries Groq first: its per-minute budget recovers fast, so spending it
+# first keeps Gemini's scarce once-daily allowance in reserve for when
+# Groq is genuinely tapped out.
+# Previously meta-llama/llama-4-scout-17b-16e-instruct, deprecated by Groq
+# 2026-07-17 (404 model_not_found) — confirmed live 2026-09-12 forcing
+# every vision call onto Gemini and exhausting its daily quota. Swapped to
+# Groq's own documented replacement.
+GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
 GROQ_VISION_TIMEOUT_SECONDS = 45
 
 
@@ -352,6 +365,10 @@ def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens
                 ],
             }],
             "max_tokens": safe_max_tokens,
+            # Qwen 3.6 27B only accepts "none" or "default" for
+            # reasoning_effort (unlike gpt-oss-120b's low/medium/high) — see
+            # the same reasoning-eats-max_tokens note on _try_groq above.
+            "reasoning_effort": "none",
         },
         timeout=60,
     )

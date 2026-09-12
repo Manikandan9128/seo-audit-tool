@@ -52,7 +52,17 @@ def generate_core_problem(findings: dict) -> dict:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return {"error": "Model did not return valid JSON", "raw": raw[:500]}
+        # Groq's gpt-oss-120b sometimes prepends stray commentary before the
+        # JSON object despite the "return ONLY valid JSON" instruction — see
+        # the same fallback in competitor_narrative_service.py.
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data = json.loads(raw[start : end + 1])
+            except json.JSONDecodeError:
+                return {"error": "Model did not return valid JSON", "raw": raw[:500]}
+        else:
+            return {"error": "Model did not return valid JSON", "raw": raw[:500]}
     if not data.get("thesis"):
         return {"error": "Model returned no thesis"}
     return data
