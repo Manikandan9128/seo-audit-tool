@@ -118,7 +118,7 @@ def _call_and_parse(prompt: str, max_tokens: int) -> dict:
     raw = raw.strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError:
         # Some models (seen with Groq's openai/gpt-oss-120b) prepend a line
         # or two of commentary/reasoning before the JSON object despite the
@@ -128,10 +128,17 @@ def _call_and_parse(prompt: str, max_tokens: int) -> dict:
         start, end = raw.find("{"), raw.rfind("}")
         if start != -1 and end > start:
             try:
-                return json.loads(raw[start : end + 1])
+                parsed = json.loads(raw[start : end + 1])
             except json.JSONDecodeError:
-                pass
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+                return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+        else:
+            return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+    # json.loads succeeds on any valid JSON value, not just objects — a
+    # degenerate completion (e.g. the literal token "null") parses cleanly
+    # with no exception raised, and every caller below assumes a dict.
+    if not isinstance(parsed, dict):
+        return {"error": "AI did not return a JSON object", "raw": raw[:500]}
+    return parsed
 
 
 # Sizing a chunk against Groq's own TPM budget (not some independent

@@ -84,6 +84,10 @@ def generate_seo_issues_insights(
                 return {"error": "AI did not return valid JSON", "raw": raw[:500]}
         else:
             return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    if not data.get("headline"):
+    # json.loads succeeds on any valid JSON value, not just objects — a
+    # degenerate completion (e.g. the literal token "null") parses cleanly
+    # to None/a list/a string with no exception raised, and .get() below
+    # would then crash instead of falling through to the error path.
+    if not isinstance(data, dict) or not data.get("headline"):
         return {"error": "Model returned no headline"}
     return data

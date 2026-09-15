@@ -1438,7 +1438,12 @@ def _gather_report_data(
     branded_vs_nonbranded_ai_insights = None
     high_potential_pages = None
     high_potential_countries = None
-    search_queries_rows = (analytics.get("search_queries") or {}).get("rows") or []
+    # analytics stays None (not {}) when GA4/GSC isn't connected for this
+    # client at all (see the `analytics = None` above, only ever assigned a
+    # dict inside the `if include_analytics and (...)` branch) — confirmed
+    # live 2026-09-15: a client with no Google connection crashed report
+    # generation right here with "'NoneType' object has no attribute 'get'".
+    search_queries_rows = ((analytics or {}).get("search_queries") or {}).get("rows") or []
     if search_queries_rows:
         # Same brand-token matching as the rest of this report (near-brand
         # variants/misspellings included) — see is_branded_or_near_brand.
