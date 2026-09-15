@@ -929,8 +929,17 @@ def _gather_report_data(
                 for key, future in jobs.items():
                     try:
                         analytics[key] = future.result()
-                    except HttpError:
-                        pass
+                    except HttpError as e:
+                        # Silently swallowed before — a wrong GA4 property
+                        # ID / malformed GSC site_url (needs to match Search
+                        # Console's own format exactly, e.g.
+                        # "sc-domain:example.com" or "https://example.com/")
+                        # produced a 400/403 here with zero trace anywhere,
+                        # so "Traffic & Search Performance" just silently
+                        # rendered empty with no way to tell why. Analytics
+                        # stays optional (report still generates), but now
+                        # at least logged so the cause is diagnosable.
+                        logger.warning("Analytics job '%s' failed for client %s: %s", key, client_id, e)
                     except RefreshError:
                         # Google's token refresh is lazy — it only runs on
                         # the first API call that actually needs it, which
