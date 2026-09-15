@@ -1319,7 +1319,16 @@ def add_seo_issues_slide(
         _fill(rule, color)
         rule.shadow.inherit = False
         y += Inches(0.55)
+        # Long issue strings ("Missing structured data (JSON-LD) — https://
+        # www.<domain>/some-long-slug") wrap to 2 lines at this column width,
+        # but row_h only advances y by one line's worth — the wrapped second
+        # line then rendered on top of the next row below it (confirmed live
+        # on Bharatbenz/Geopits: 10 stacked rows reading as one garbled
+        # overlapping block). Truncating to what actually fits on one line
+        # keeps every row's advance matching row_h.
+        row_text_width_in = (col_width - Inches(0.6) - Inches(0.25)) / 914400
         for issue in shown:
+            issue = _truncate_cell(issue, row_text_width_in, size_pt=13, max_lines=1)
             _issue_row(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), issue, severity=("error" if color == BAD else "warn"))
             y += row_h
 
