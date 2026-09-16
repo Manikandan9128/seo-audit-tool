@@ -1207,6 +1207,26 @@ def _gather_report_data(
     # on the Site Health slide when uploaded.
     site_audit_overview_rows = _all_rows("site_audit_overview", own_only=True)
     site_audit_overview = site_audit_overview_rows[-1] if site_audit_overview_rows else None
+    # Crawled Pages (site_audit_pages) and Site Health overview are two
+    # independently-uploaded Semrush exports that the Understanding Current
+    # Scenario slide combines into one card — if they were pulled from the
+    # site at meaningfully different times, the "Crawled Pages" count and
+    # the "Site Health %" ring next to it aren't actually describing the
+    # same crawl. Flagged, not blocked — matches the fail-open discipline
+    # used for every other AI/data-quality note in this function.
+    if site_audit_pages_rows and site_audit_overview:
+        pages_imports = [r for r in all_imports if r.import_type == "site_audit_pages" and r.is_own_site]
+        overview_imports = [r for r in all_imports if r.import_type == "site_audit_overview" and r.is_own_site]
+        if pages_imports and overview_imports:
+            latest_pages = max(pages_imports, key=lambda r: r.created_at)
+            latest_overview = max(overview_imports, key=lambda r: r.created_at)
+            delta_days = abs((latest_pages.created_at - latest_overview.created_at).days)
+            if delta_days > 7:
+                content_issues.append(
+                    f"Understanding Current Scenario: Crawled Pages was uploaded {latest_pages.created_at.date()} "
+                    f"and the Site Health overview {latest_overview.created_at.date()} — {delta_days} days apart. "
+                    "The slide's page count and health % come from two different crawl snapshots, not one."
+                )
     # Semrush Backlink List PDF's summary stats (Authority Score, Referring
     # Domains, Total Backlinks, Referring IPs, Follow/Nofollow/Sponsored/UGC
     # link attributes) — richer/more authoritative than what the Backlink

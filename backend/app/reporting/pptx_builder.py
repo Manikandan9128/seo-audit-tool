@@ -2026,6 +2026,24 @@ _PAGE_ISSUE_FIXES = {
 _ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
 
 
+_NON_CONTENT_URL_EXTENSIONS = (".xml", ".txt", ".json", ".pdf")
+
+
+def _is_content_page_url(url: str) -> bool:
+    """Rule 2 (2026-09-16 spec): sitemap/robots/raw-data files aren't
+    "pages" and must never land in a page-level issue table or directory
+    rollup — a full-site crawl (Semrush's site_audit_pages export
+    especially) legitimately walks these and can attach issue counts to
+    them the same as any real page."""
+    path = (urlparse(url or "").path or "").lower()
+    if path.endswith(_NON_CONTENT_URL_EXTENSIONS):
+        return False
+    segments = [s for s in path.split("/") if s]
+    if segments and (segments[0].startswith("sitemap") or segments[-1] == "robots.txt"):
+        return False
+    return True
+
+
 def _tech_fixes_scored_rows(
     page_audit: dict, analytics: dict | None, site_audit_pages_rows: list[dict] | None = None
 ) -> list[tuple]:
@@ -2039,6 +2057,8 @@ def _tech_fixes_scored_rows(
     scored_rows = []
     covered_paths: set[str] = set()
     for page in page_audit.get("pages", []):
+        if not _is_content_page_url(page.get("url", "")):
+            continue
         path = urlparse(page.get("url", "")).path or "/"
         covered_paths.add(path.rstrip("/") or "/")
         page_views = pageviews_by_path.get(path.rstrip("/"), 0)
@@ -2074,6 +2094,8 @@ def _tech_fixes_scored_rows(
             if not (page_url and issues):
                 continue
             if own_domain and urlparse(page_url).netloc not in ("", own_domain):
+                continue
+            if not _is_content_page_url(page_url):
                 continue
             path = urlparse(page_url).path or "/"
             key = path.rstrip("/") or "/"
