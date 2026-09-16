@@ -911,36 +911,39 @@ def add_site_health_slide(
     _textbox(slide, Inches(0.8), Inches(1.35), Inches(3), Inches(0.4), "Crawled Pages", size=15, bold=True)
 
     page_totals = _canonical_page_totals(site_audit_pages_rows, site_audit_overview)
-    if site_audit_overview:
-        health_pct = site_audit_overview.get("site_health_pct")
-        crawled_display = f"{page_totals['total']:,}" if page_totals else "—"
+    health_pct = site_audit_overview.get("site_health_pct") if site_audit_overview else None
+    if page_totals:
+        crawled_display = f"{page_totals['total']:,}"
         _textbox(
             slide, Inches(0.8), Inches(1.68), Inches(2.5), Inches(0.5),
             crawled_display, size=26, bold=True, color=_accent(),
         )
-        category_colors = {
-            "blocked": TEXT_MUTED,
-            "redirect": RGBColor(0x5B, 0x5F, 0xE0),
-            "have_issues": WARN,
-            "broken": BAD,
-            "healthy": GOOD,
-        }
-        y = Inches(2.18)
-        for category in _CRAWLED_PAGE_CATEGORIES:
-            key = category.lower().replace(" ", "_")
-            count = site_audit_overview.get(f"{key}_count")
-            pct = site_audit_overview.get(f"{key}_pct")
-            if count is None:
-                continue
-            _icon_dot(slide, Inches(0.85), y + Inches(0.06), Inches(0.11), category_colors[key])
-            _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count} ({pct}%)", size=11.5, color=TEXT_DARK)
-            y += Inches(0.29)
+        if site_audit_overview:
+            category_colors = {
+                "blocked": TEXT_MUTED,
+                "redirect": RGBColor(0x5B, 0x5F, 0xE0),
+                "have_issues": WARN,
+                "broken": BAD,
+                "healthy": GOOD,
+            }
+            y = Inches(2.18)
+            for category in _CRAWLED_PAGE_CATEGORIES:
+                key = category.lower().replace(" ", "_")
+                count = site_audit_overview.get(f"{key}_count")
+                pct = site_audit_overview.get(f"{key}_pct")
+                if count is None:
+                    continue
+                _icon_dot(slide, Inches(0.85), y + Inches(0.06), Inches(0.11), category_colors[key])
+                _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count} ({pct}%)", size=11.5, color=TEXT_DARK)
+                y += Inches(0.29)
+        elif page_totals.get("with_issues") is not None:
+            _textbox(
+                slide, Inches(0.8), Inches(2.18), Inches(3.0), Inches(0.6),
+                f"{page_totals['with_issues']:,} page(s) have issues.", size=12.5, color=TEXT_MUTED,
+            )
     else:
-        # Crawled Pages / Site Health are Semrush-only now — no own-crawl
-        # fallback. A client with no Site Audit Overview PDF uploaded yet
-        # gets an explicit "no data" note instead of a silently-substituted
-        # (and less accurate) own-crawl approximation.
-        health_pct = None
+        # Neither the per-URL Crawled Pages export nor the Site Health
+        # overview PDF has been uploaded — no data to show at all.
         _textbox(
             slide, Inches(0.8), Inches(1.75), Inches(3.0), Inches(0.9),
             "No Semrush Site Audit data uploaded yet.", size=12.5, color=TEXT_MUTED,
