@@ -1,14 +1,50 @@
+import json
 from unittest.mock import patch
 
 from app.services.competitor_narrative_service import (
     _NARRATIVE_KEYS, _already_claimed_prompt_parts, generate_competitor_narratives_batch,
+    generate_cross_competitor_opportunities,
 )
 
 
 def test_narrative_keys_match_new_schema():
     # 2026-09-11 rewrite: single-differentiator schema, shared_advantage
     # is optional so it's deliberately not in the required-keys set.
+    # 2026-09-16: evidence/why_it_matters/opportunity/implementation were
+    # added to the prompt's requested schema but deliberately kept OUT of
+    # this required set too — same reasoning as shared_advantage, a model
+    # that nails everything except one new optional field shouldn't have
+    # the whole competitor's narrative thrown out as an error.
     assert _NARRATIVE_KEYS == {"best_at", "headline", "unique_angle", "gap"}
+
+
+def test_cross_competitor_opportunities_empty_when_no_usable_narratives():
+    assert generate_cross_competitor_opportunities("Client", "client.com", {}) == []
+    assert generate_cross_competitor_opportunities(
+        "Client", "client.com", {"rival.com": {"error": "failed"}}
+    ) == []
+
+
+def test_cross_competitor_opportunities_parses_ai_response():
+    narratives = {
+        "rival.com": {"headline": "pricing calculator", "gap": "no self-serve pricing tool", "opportunity": "build a calculator"},
+    }
+    fake_response = json.dumps({
+        "top_opportunities": [
+            "Build a self-serve pricing calculator to capture decision-stage buyers.",
+            "  ",  # blank entries get dropped
+        ]
+    })
+    with patch("app.services.competitor_narrative_service.generate_text", return_value=(fake_response, "test")):
+        result = generate_cross_competitor_opportunities("Client", "client.com", narratives)
+    assert result == ["Build a self-serve pricing calculator to capture decision-stage buyers."]
+
+
+def test_cross_competitor_opportunities_fails_open_to_empty_list():
+    narratives = {"rival.com": {"headline": "x", "gap": "y"}}
+    with patch("app.services.competitor_narrative_service.generate_text", return_value=("not json", "test")):
+        result = generate_cross_competitor_opportunities("Client", "client.com", narratives)
+    assert result == []
 
 
 def test_already_claimed_empty_when_nothing_to_report():

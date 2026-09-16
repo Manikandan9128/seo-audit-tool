@@ -56,13 +56,16 @@ above the fold (homepage_url)." Each bullet should name the specific tactic and 
 source. If homepage_text is thin or absent for a competitor, fall back to what its metrics alone support \
 (e.g. a clear traffic or keyword-volume lead) rather than inventing on-site tactics.
 
-Then, separately per competitor, identify its ONE genuinely distinct differentiator for the Competitor \
-Opportunity Analysis slide. Rules for this part, strictly:
+Then, separately per competitor, act as a Senior SEO Strategist and identify its ONE genuinely distinct \
+differentiator plus the full opportunity chain that follows from it, for the Competitor Opportunity Analysis \
+slide. Rules for this part, strictly:
 1. Do NOT count baseline hygiene tactics shared by most competitors in this category — demo CTAs, trust \
    badges, live chat, generic case studies, standard pricing pages, newsletter signups, and the like. Those \
    are not differentiators here even if they're genuinely present in best_at above.
 2. Ask "what does ONLY this one do?", not "what does this one do well." A tactic every other competitor in \
-   this batch also does is disqualified, no matter how effective it is.
+   this batch also does is disqualified, no matter how effective it is. Look for patterns across MULTIPLE \
+   keywords/pages/backlinks rather than resting a conclusion on one data point, and use ranking data to tell \
+   apart a genuine new-keyword-acquisition opportunity from an existing-ranking-improvement opportunity.
 3. Before finalizing a competitor's unique angle, check it against every OTHER competitor's angle in this \
    same batch{already_claimed_clause}. If two (or more) competitors genuinely share the same real \
    differentiator, do NOT present it as unique to either — give each of them a "shared_advantage" field \
@@ -72,12 +75,33 @@ Opportunity Analysis slide. Rules for this part, strictly:
    real distinction available rather than leaving it empty, but do NOT invent one that isn't evidenced.
 4. "unique_angle" bullets must describe specific mechanics — the actual mechanism, page type, pricing \
    structure, or on-site behavior — never marketing adjectives ("innovative," "best-in-class," "seamless") \
-   with no mechanism behind them.
-5. Write exactly one "gap" bullet per competitor, tied SPECIFICALLY to that competitor's unique angle — what \
-   {client_name} lacks in direct response to that exact mechanism, not a generic recommendation that could \
-   apply to any competitor in this batch.
-6. "headline" is a short phrase (not a full sentence) naming the angle itself, e.g. "usage-based pricing \
-   calculator" — the slide will render it as "{{competitor}}'s Unique Angle: {{headline}}".
+   with no mechanism behind them. Do not confuse a raw metric (more keywords, more backlinks) with a \
+   strategic standpoint — explain what the pattern in the data indicates about this competitor's actual SEO \
+   strategy, not just that the number is bigger.
+5. "evidence": 2-4 bullets, each citing a SPECIFIC number/fact already present in this competitor's data \
+   above (a keyword + its volume/position, a count of keywords following a pattern, a backlink/DR figure tied \
+   to a specific page or pattern, a ranking-page-type count) — never a restatement of the headline without a \
+   number behind it, never invented.
+6. "why_it_matters": 2-3 sentences on why this specific advantage matters strategically (search visibility, \
+   qualified/commercial-intent traffic, customer journey stage, category ownership, competitive \
+   defensibility) — not a generic "this helps SEO" statement.
+7. Write exactly one "gap" bullet per competitor, tied SPECIFICALLY to that competitor's unique angle — the \
+   actual missing capability, search footprint, page type, topic/use-case coverage, or decision-stage \
+   presence {client_name} lacks in direct response to that exact mechanism. NEVER use a vague, generic \
+   statement here — banned phrasing includes "needs more content," "needs more backlinks," "improve SEO," \
+   "create more blogs," or anything else that isn't a specific, named gap.
+8. "opportunity": ONE sentence converting the gap into a concrete strategic initiative for {client_name} — \
+   name the actual thing to build (a landing-page architecture, a specific topic cluster, a comparison/\
+   alternative content set, a decision-stage content type, authority-building around a named priority page, \
+   an original research/data asset, etc.), grounded in {client_name}'s own strengths — never "copy the \
+   competitor" framing.
+9. "implementation": 2-4 short, specific, actionable bullets that execute the opportunity above — each one \
+   must connect directly to it, not be a generic SEO checklist item.
+10. "headline" is a short phrase (not a full sentence) naming the angle itself, e.g. "usage-based pricing \
+    calculator" — the slide will render it as "{{competitor}}'s Unique Angle: {{headline}}".
+11. If the evidence available for a competitor is genuinely thin (e.g. very few tracked keywords, no \
+    homepage_text, no gap data), say so plainly in that competitor's "evidence" or "why_it_matters" rather \
+    than writing it with the same confidence as a well-evidenced competitor.
 
 Write in plain, confident agency language — this is client-facing content, not an AI-generated draft. \
 Never mention that you are an AI, a language model, or any tool by name; write as the agency's own analysis. \
@@ -98,7 +122,11 @@ domain listed above, using the EXACT domain string as the key:
       "best_at": [string],          // 3-6 short, objective bullets naming concrete tactics/strengths this competitor actually uses — written about the competitor, not advice for {client_name}
       "headline": string,           // short phrase naming this competitor's ONE genuinely distinct differentiator (not a full sentence, not a baseline/shared tactic)
       "unique_angle": [string],     // 1-2 bullets, specific mechanics (the actual mechanism/page type/pricing structure), never marketing adjectives
-      "gap": string,                // exactly ONE bullet: what {client_name} lacks, tied specifically to this competitor's unique angle above
+      "evidence": [string],         // 2-4 bullets, each citing a specific number/fact from this competitor's data above
+      "why_it_matters": string,     // 2-3 sentences on the strategic importance of this advantage
+      "gap": string,                // exactly ONE bullet: the specific missing capability/footprint/page-type {client_name} lacks, tied to this competitor's unique angle — never a vague generic statement
+      "opportunity": string,        // ONE sentence: the concrete strategic initiative that converts the gap into an opportunity for {client_name}
+      "implementation": [string],   // 2-4 specific, actionable steps that execute the opportunity above
       "shared_advantage": string | null   // ONLY non-null if this exact angle is genuinely shared with another competitor already covered (name it) — omit the differentiator framing above in that case; null/omit otherwise, never invented
     }}
   }}
@@ -276,6 +304,68 @@ def _generate_chunk(
 
     error = result.get("error", "Unknown error")
     return {domain: {"error": error} for domain in domains}
+
+
+CROSS_COMPETITOR_SUMMARY_PROMPT = """You are a Senior SEO Strategist writing the closing "Cross-Competitor \
+Opportunity Summary" for {client_name} ({client_domain})'s competitor analysis. Below are the already-\
+finished per-competitor analyses (unique angle, gap, and opportunity for each) from this same report — treat \
+every fact in them as ground truth, never invent a new competitor fact not already stated there.
+
+From these, identify the TOP 3-5 strategic opportunities for {client_name}, combining/prioritizing across \
+competitors where their gaps or opportunities overlap or reinforce each other, rather than just listing one \
+opportunity per competitor. Rules:
+- Do not rank competitors against each other and do not assign arbitrary scores.
+- Prioritize by business relevance, search demand, size of the competitive gap, {client_name}'s existing \
+  potential to execute it, and how well-evidenced it is in the per-competitor analyses below — not by which \
+  competitor is "biggest."
+- Each opportunity must be specific enough to become an actual SEO roadmap initiative — not a generic \
+  "improve content" statement.
+- If two competitors' analyses point at the same underlying opportunity for {client_name}, merge them into \
+  one item rather than listing it twice.
+
+Per-competitor analyses:
+{narratives_json}
+
+Write in plain, confident agency language, as a Senior SEO Manager's strategic recommendation to a client — \
+not an automated audit summary. Never mention that you are an AI, a language model, or any tool by name.
+
+Return ONLY valid JSON, no markdown fences, no commentary:
+{{
+  "top_opportunities": [string]   // 3-5 items, each a specific, roadmap-ready strategic opportunity
+}}
+"""
+
+
+def generate_cross_competitor_opportunities(
+    client_name: str, client_domain: str, narratives: dict[str, dict]
+) -> list[str]:
+    """One additional AI call (not per-competitor) run after every chunk of
+    generate_competitor_narratives_batch has finished, since no single chunk
+    call sees every competitor together when Groq's TPM budget forces
+    multiple chunks — this is the one place that gets to reason across ALL
+    of them at once. Returns [] (never an error dict) on any failure so a
+    missing summary never blocks the rest of report generation; the caller
+    treats an empty list the same as "no summary slide" via the same
+    silent-skip convention as every other AI-derived slide in this file."""
+    usable = {
+        domain: {"headline": n.get("headline"), "gap": n.get("gap"), "opportunity": n.get("opportunity")}
+        for domain, n in narratives.items()
+        if "error" not in n and (n.get("headline") or n.get("gap"))
+    }
+    if not usable:
+        return []
+
+    prompt = CROSS_COMPETITOR_SUMMARY_PROMPT.format(
+        client_name=client_name, client_domain=client_domain,
+        narratives_json=json.dumps(usable, indent=2, default=str),
+    )
+    result = _call_and_parse(prompt, max_tokens=1024)
+    if "error" in result:
+        result = _call_and_parse(prompt, max_tokens=1024)  # one retry, same discipline as _generate_chunk
+    opportunities = result.get("top_opportunities")
+    if not isinstance(opportunities, list) or not opportunities:
+        return []
+    return [o for o in opportunities if isinstance(o, str) and o.strip()][:5]
 
 
 def generate_competitor_narratives_batch(

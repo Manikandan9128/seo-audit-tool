@@ -4099,7 +4099,11 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     silent-skip pattern as every other AI-derived slide in this file."""
     headline = narrative.get("headline")
     unique_angle = narrative.get("unique_angle") or []
+    evidence = narrative.get("evidence") or []
+    why_it_matters = narrative.get("why_it_matters")
     gap = narrative.get("gap")
+    opportunity = narrative.get("opportunity")
+    implementation = narrative.get("implementation") or []
     shared_advantage = narrative.get("shared_advantage")
     if not headline and not unique_angle and not gap:
         return None
@@ -4165,12 +4169,52 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
             y += item_h
         y += Inches(0.12)
 
+    # Priority order matches the spec's own section order — _section()
+    # silently stops adding sections/bullets once max_y is reached, so
+    # whichever section runs out of room first is always the LEAST
+    # important one still queued, never a mid-priority one cut short while
+    # a lower-priority one after it still rendered.
     _section("UNIQUE ANGLE", _accent(), unique_angle[:2], dot_color=DEFAULT_ACCENT)
+    _section("EVIDENCE", TEXT_MUTED, evidence[:4], dot_color=TEXT_MUTED)
+    _section("WHY IT MATTERS", TEXT_MUTED, [why_it_matters] if why_it_matters else [])
     _section(f"GAP FOR {(client_name or 'CLIENT').upper()}", BAD, [gap] if gap else [], dot_color=BAD)
+    _section("OPPORTUNITY", GOOD, [opportunity] if opportunity else [], dot_color=GOOD)
+    _section("IMPLEMENTATION", GOOD, implementation[:4], dot_color=GOOD)
     if shared_advantage:
         _section("SHARED ADVANTAGE", TEXT_MUTED, [shared_advantage])
 
     return slide
+
+
+def add_competitor_opportunity_summary_slide(
+    prs: Presentation, competitor_narratives: dict[str, dict], top_opportunities: list[str] | None
+) -> object | None:
+    """Cross-Competitor Opportunity Summary (2026-09-16 user spec) — closes
+    the per-competitor Opportunity Analysis slides with one table (domain |
+    unique angle | client gap | opportunity, straight from the already-
+    generated narratives, no new AI call) plus the Top 3-5 Strategic
+    Opportunities (from generate_cross_competitor_opportunities, the one
+    extra AI call that sees every competitor together). Silent-skip if
+    there's nothing to summarize, same convention as every other AI-derived
+    slide here."""
+    rows = [
+        (
+            domain,
+            n.get("headline") or "—",
+            n.get("gap") or "—",
+            n.get("opportunity") or "—",
+        )
+        for domain, n in competitor_narratives.items()
+        if "error" not in n and (n.get("headline") or n.get("gap") or n.get("opportunity"))
+    ]
+    if not rows and not top_opportunities:
+        return None
+    return _table_slide(
+        prs, "Cross-Competitor Opportunity Summary",
+        ["Competitor", "Unique Angle", "Client Gap", "Opportunity"], rows,
+        col_widths=[2.6, 3.0, 3.2, 3.3], insights=top_opportunities or None, row_cap=6,
+        insights_max=5,
+    )
 
 
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
@@ -5253,6 +5297,7 @@ def build_report(
     branded_vs_nonbranded_ai_insights: dict | None = None,
     high_potential_pages: list[dict] | None = None,
     high_potential_countries: list[dict] | None = None,
+    competitor_top_opportunities: list[str] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -5277,6 +5322,7 @@ def build_report(
             seo_issues_ai_insights, page_wise_ai, page_wise_exclude_paths,
             schema_ai_insights, branded_vs_nonbranded_comparison, branded_vs_nonbranded_narrative,
             branded_vs_nonbranded_ai_insights, high_potential_pages, high_potential_countries,
+            competitor_top_opportunities=competitor_top_opportunities,
         )
     finally:
         _theme["footer"] = ""
@@ -5325,6 +5371,7 @@ def _build_report(
     branded_vs_nonbranded_ai_insights: dict | None = None,
     high_potential_pages: list[dict] | None = None,
     high_potential_countries: list[dict] | None = None,
+    competitor_top_opportunities: list[str] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -5508,6 +5555,7 @@ def _build_report(
                 if "error" not in narrative:
                     add_competitor_best_at_slide(prs, domain, narrative)
                     add_competitor_opportunity_slide(prs, client_name, domain, narrative)
+            add_competitor_opportunity_summary_slide(prs, competitor_narratives, competitor_top_opportunities)
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
             add_keyword_gap_slide(prs, competitor_analysis)
 
