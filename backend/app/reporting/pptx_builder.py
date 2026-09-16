@@ -1414,13 +1414,26 @@ def add_seo_issues_slide(
         # issue text and count pages here too, so this fallback path looks
         # and behaves the same way regardless of which Semrush exports a
         # given client has or hasn't uploaded.
-        site_wide_issues = list(audit.get("issues", []))
         per_page_issue_counts: dict[str, int] = {}
         if page_audit:
             for page in page_audit.get("pages", []):
                 for issue in page.get("issues", []):
                     per_page_issue_counts[issue] = per_page_issue_counts.get(issue, 0) + 1
         total_pages_checked = len(page_audit.get("pages", [])) if page_audit else None
+
+        # audit["issues"] is a SEPARATE homepage-only check that runs the
+        # same _meta_issues() detector page_audit's per-page crawl already
+        # runs on every page it checks, homepage included — confirmed real
+        # on a BharatBenz regen: "Title tag longer than 60 characters" and
+        # "Missing structured data (JSON-LD)" each showed up TWICE, once
+        # bare from here and once grouped-with-count from per_page_issue_
+        # counts (which already covers the homepage as one of its N pages).
+        # Only genuinely site-level-only findings (HTTPS/reachable/robots/
+        # sitemap — nothing page_audit's per-page loop ever produces) stay
+        # bare; anything page_audit could also report is skipped here and
+        # left to the grouped count below, which already represents it
+        # (including the homepage) without double-counting.
+        site_wide_issues = [i for i in audit.get("issues", []) if i not in per_page_issue_counts]
 
         def _is_error_text(text: str) -> bool:
             return any(k in text.lower() for k in ["not reachable", "https", "robots", "sitemap"])
