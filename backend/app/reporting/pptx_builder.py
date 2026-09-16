@@ -2146,29 +2146,6 @@ def _tech_fixes_scored_rows(
     return scored_rows
 
 
-def _tech_fixes_category_slide(prs: Presentation, title: str, scored_rows: list[tuple], source: str = "Site crawl"):
-    if not scored_rows:
-        return None
-    shown = scored_rows[:9]
-    col_widths = [2.7, 2.3, 7.1]
-    rows = [(_truncate_cell(issue, col_widths[0]), _truncate_cell(path, col_widths[1]), fix_text) for _, _, issue, path, fix_text, _, _ in shown]
-    unreachable_count = sum(1 for _, _, issue, _, _, _, _ in scored_rows if issue == "Page not reachable")
-    insights = [f"{len(scored_rows)} {title.split(' — ')[-1].lower()} issue(s) found across the crawled pages" + (f", {unreachable_count} unreachable." if unreachable_count else ".")]
-    if len(scored_rows) > len(shown):
-        insights.append(f"Showing the {len(shown)} highest-priority — see SEO Issues for the full breakdown by type.")
-    traffic_matched = [r for r in scored_rows if r[5] > 0]
-    if traffic_matched:
-        top_traffic = max(traffic_matched, key=lambda r: r[5])
-        insights.append(
-            f"\"{top_traffic[3]}\" gets real traffic ({top_traffic[5]:,} pageviews in the reporting window) "
-            f"and has a \"{top_traffic[2]}\" issue — fixing this one affects real visitors, not just crawl health."
-        )
-    return _table_slide(
-        prs, title, ["Issue", "Where", "Fix"], rows,
-        col_widths=col_widths, source=source, insights=insights,
-    )
-
-
 def _page_wise_issue_count(row: tuple) -> int:
     match = re.match(r"(\d+)", row[2])
     return int(match.group(1)) if match else 0
@@ -2259,25 +2236,15 @@ def add_tech_fixes_slide(
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
 ) -> list:
-    """Flattens page_audit's per-page issues (up to 20 crawled pages) into
-    one Issue/Where/Fix row per (page, issue) pair, worst-severity first
-    (severity stays the primary sort — an error is still an error regardless
-    of traffic). When real GA4 pageview data is available, ties within the
-    same severity are broken by traffic — a fix on a page real visitors
-    hit sorts above the same-severity fix on a page nobody visits — and the
-    single highest-traffic affected page gets called out as an insight.
-    "Tech Fixes — SEO Issues" removed 2026-09-09 per user request —
-    redundant with the main SEO Issues slide's Errors/Warnings, which
-    already covers SEO-category issues site-wide. Technical Issues stays
-    its own slide (see _PAGE_ISSUE_FIXES' category field). A third
-    "Additional Pages" slide covers the rest of Semrush's full crawl
-    (site_audit_pages_rows) beyond our own ~20-page sample — see
-    _tech_fixes_scored_rows for why those rows can't get a named Fix.
-    Named Issue/Fix rows still come from our own crawl — Semrush's per-page
-    x per-issue-type matrix export (mega_export.csv) isn't parsed at all
-    currently (parked deliberately), would give richer named findings for
-    the full site later if ever built. The "Additional Pages" slide covers
-    the scope gap in the meantime with an honest count-only row instead."""
+    """Priority Issues - Page Wise only — the technical-category rows this
+    function used to also render as a standalone "Tech Fixes — Technical
+    Issues" slide now merge into "Next Steps: Technical SEO" instead
+    (2026-09-16 user request: "merge Tech Fixes into Next Steps: Technical
+    SEO, do not create a standalone slide" — see _tech_fixes_next_steps_items
+    and its wiring in build_report). "Tech Fixes — SEO Issues" removed
+    2026-09-09 per user request — redundant with the main SEO Issues
+    slide's Errors/Warnings, which already covers SEO-category issues
+    site-wide."""
     if not page_audit:
         return []
 
@@ -2285,16 +2252,27 @@ def add_tech_fixes_slide(
     if not scored_rows:
         return []
 
-    technical_rows = [r for r in scored_rows if r[6] == "technical"]
     other_rows = [r for r in scored_rows if r[6] == "other"]
     if page_wise_exclude_paths:
         excluded_norm = {p.rstrip("/") or "/" for p in page_wise_exclude_paths}
         other_rows = [r for r in other_rows if (r[3].rstrip("/") or "/") not in excluded_norm]
-    slides = [
-        _tech_fixes_category_slide(prs, "Tech Fixes — Technical Issues", technical_rows),
-        add_priority_issues_page_wise_slide(prs, other_rows, page_wise_ai),
-    ]
-    return [s for s in slides if s]
+    slide = add_priority_issues_page_wise_slide(prs, other_rows, page_wise_ai)
+    return [slide] if slide else []
+
+
+def _tech_fixes_next_steps_items(
+    page_audit: dict | None, analytics: dict | None, site_audit_pages_rows: list[dict] | None, max_items: int = 5,
+) -> list[str]:
+    """The technical-category rows from _tech_fixes_scored_rows, reformatted
+    as Next Steps bullets instead of a standalone table slide — feeds BOTH
+    the AI-generated and static-fallback versions of "Next Steps: Technical
+    SEO" (see its call site in build_report) so the merge holds regardless
+    of which one actually renders for a given report."""
+    if not page_audit:
+        return []
+    scored_rows = _tech_fixes_scored_rows(page_audit, analytics, site_audit_pages_rows)
+    technical_rows = [r for r in scored_rows if r[6] == "technical"][:max_items]
+    return [f"{issue} on {path} — {fix_text}" for _, _, issue, path, fix_text, _, _ in technical_rows]
 
 
 def _truncate_cell(text: str, width_in: float, size_pt: float = 11, max_lines: int = 1) -> str:
@@ -5004,12 +4982,15 @@ def add_technical_seo_next_steps_slide(
     page_audit: dict | None,
     tech_stack: dict | None,
     domain_strategy: dict | None,
+    technical_fix_items: list[str] | None = None,
 ):
     items = list(_derive_next_steps(site_audit, page_audit))
     if tech_stack and tech_stack.get("https") is False and not any("HTTPS" in i for i in items):
         items.append("Move the site fully to HTTPS before any further SEO work — it's a baseline ranking and trust signal.")
     if domain_strategy:
         items.insert(0, f"Decide the domain strategy first — {domain_strategy['open_question']}")
+    if technical_fix_items:
+        items += technical_fix_items
     intro = "Foundational and on-page fixes that unblock every other SEO effort — tackle these first."
     return _next_steps_category_slide(prs, "Next Steps: Technical SEO", intro, items)
 
@@ -5609,7 +5590,7 @@ def _build_report(
         "goals": "SEO Goals & Targets",
     }
 
-    def _next_steps_slide(key: str, fallback_fn, *fallback_args):
+    def _next_steps_slide(key: str, fallback_fn, *fallback_args, extra_items: list[str] | None = None):
         category = ai_categories.get(key)
         if not category:
             return fallback_fn(*fallback_args)
@@ -5621,12 +5602,20 @@ def _build_report(
         items = category.get("items")
         if not items:
             return fallback_fn(*fallback_args)
+        if extra_items:
+            items = list(items) + extra_items
         title = _ai_category_titles.get(key, key)
         return _next_steps_category_slide(prs, title, category.get("intro") or None, items)
 
     _next_steps_slide("local_seo", add_local_seo_next_steps_slide, prs, structured_data_rows)
+    # Tech Fixes' technical-category rows merge into this slide instead of
+    # their own standalone one (2026-09-16 user request) — passed both as a
+    # fallback_fn arg (static-fallback path) and as extra_items (AI-
+    # generated path), so the merge holds regardless of which one renders.
+    technical_fix_items = _tech_fixes_next_steps_items(page_audit, analytics, site_audit_pages_rows)
     _next_steps_slide(
-        "technical_seo", add_technical_seo_next_steps_slide, prs, site_audit, page_audit, tech_stack, domain_strategy
+        "technical_seo", add_technical_seo_next_steps_slide, prs, site_audit, page_audit, tech_stack, domain_strategy,
+        technical_fix_items, extra_items=technical_fix_items,
     )
     # Always the deterministic keyword-page-category classifier below, never
     # the AI path — this needs an EXACT, guaranteed-consistent rule applied
