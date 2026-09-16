@@ -1305,6 +1305,50 @@ def classify_seo_issues(site_audit_issues: list[dict]) -> tuple[list[dict], list
     return errors, warnings
 
 
+def _issue_count_label(count: int, total_crawled: int | None) -> str:
+    """Semrush's per-issue-type "Failed Checks" number is a unique-page
+    count for most issue types, but a raw occurrence count for link-based
+    issues — one page with 40 broken internal links contributes 40, not 1
+    — so it can legitimately exceed the site's total crawled-page count
+    (confirmed live: Lumber's "Broken internal links" read 2,108 against a
+    1,351-page crawl). Labeling every row "N pages" regardless produced a
+    literally-impossible-looking number that undermines the report's
+    credibility with a client who can just count their own crawled pages.
+    Falls back to the honest, unit-agnostic "occurrences" label whenever
+    the count exceeds what's actually known to have been crawled."""
+    if total_crawled and count > total_crawled:
+        return f"{count:,} occurrences"
+    return f"{count:,} pages"
+
+
+def add_critical_issues_slide(
+    prs: Presentation, site_audit_issues: list[dict] | None, site_audit_pages_rows: list[dict] | None = None
+):
+    """Semrush Site Audit ERROR-severity issues alone, one full slide —
+    distinct from SEO Issues (which caps Errors at 10 rows split side-by-
+    side against Warnings). Matches the real manual reference deck's
+    dedicated "Critical Issues" slide (template item 8): errors only, no
+    row cap beyond what one table page can hold, so a reader gets the
+    complete error list rather than the top-10 half of a two-column
+    layout. Warnings are deliberately excluded — that's what SEO Issues is
+    for."""
+    if not site_audit_issues:
+        return None
+    errors, _warnings = classify_seo_issues(site_audit_issues)
+    if not errors:
+        return None
+    total_crawled = (_canonical_page_totals(site_audit_pages_rows, None) or {}).get("total")
+    rows = [(e["issue"], _issue_count_label(e["pages"], total_crawled)) for e in errors]
+    total_pages_affected = sum(e["pages"] for e in errors)
+    insights = [f"{len(errors)} error-level issue type(s) found, {total_pages_affected:,} affected instance(s) total."]
+    if len(errors) > 14:
+        insights.append(f"Showing all {len(errors)} — see SEO Issues for Errors alongside Warnings.")
+    return _table_slide(
+        prs, "Critical Issues", ["Issue", "Affected"], rows,
+        col_widths=[9.5, 2.6], source="Semrush Site Audit", insights=insights, row_cap=14,
+    )
+
+
 def add_seo_issues_slide(
     prs: Presentation,
     audit: dict,
@@ -1322,8 +1366,9 @@ def add_seo_issues_slide(
         # than our own homepage + 20-page checks below. Prefer it when
         # uploaded.
         error_entries, warning_entries = classify_seo_issues(site_audit_issues)
-        errors = [f"{e['issue']} ({e['pages']} pages)" for e in error_entries]
-        warnings = [f"{w['issue']} ({w['pages']} pages)" for w in warning_entries]
+        total_crawled = (_canonical_page_totals(site_audit_pages_rows, None) or {}).get("total")
+        errors = [f"{e['issue']} ({_issue_count_label(e['pages'], total_crawled)})" for e in error_entries]
+        warnings = [f"{w['issue']} ({_issue_count_label(w['pages'], total_crawled)})" for w in warning_entries]
     else:
         issues = list(audit.get("issues", []))
         if page_audit:
@@ -5112,10 +5157,15 @@ def _build_report(
     #     add_domain_strategy_slide(prs, domain_strategy)
 
     # Understanding Current Scenario section — template order: Website
-    # Performance (PageSpeed) first, then the rest of the crawl-based
-    # findings. Tech Stack & Hosting now renders AFTER this whole section
-    # (was previously rendered before it started) — moved per the client
-    # template's specified order.
+    # Performance (PageSpeed), then Web Structure, then the "Understanding
+    # Current Scenario" crawl/site-health stats itself (template's own 3-
+    # item sub-order; Web Structure and site-health were previously
+    # reversed here). Tech Stack & Hosting renders right after this whole
+    # section, before SEO Issues/Critical Issues/Tech Fixes/UI-UX — it was
+    # drifting to render after ALL of those instead, because it sat outside
+    # this `if site_audit:` block but the block itself grew to include SEO
+    # Issues/Tech Fixes/Schema below it. Split into two blocks so Tech
+    # Stack's call site sits between them, matching the template order.
     if site_audit or page_audit or psi_mobile or psi_desktop:
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if psi_mobile or psi_desktop:
@@ -5124,18 +5174,23 @@ def _build_report(
             add_script_treemap_slide(prs, psi_mobile, psi_desktop, website_url)
             add_pagespeed_script_weight_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
-            add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
-            add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights)
-            add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
-            if schema_validation and schema_validation.get("total_pages"):
-                add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
-            elif structured_data_rows:
-                add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
+            add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
 
     if tech_stack:
         add_tech_stack_slide(prs, tech_stack)
+
+    if site_audit:
+        add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights)
+        # Template item 8: Semrush ERROR-severity issues get their own
+        # standalone slide, distinct from SEO Issues' capped Errors column.
+        add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows)
+        add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
+        if schema_validation and schema_validation.get("total_pages"):
+            add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
+        elif structured_data_rows:
+            add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
 
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)

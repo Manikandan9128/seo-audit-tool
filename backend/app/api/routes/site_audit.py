@@ -514,12 +514,41 @@ def _generate_competitor_narratives(
     # website_url (a full URL, e.g. "https://www.ejtoyco.com/") never
     # matched a bare row domain (e.g. "ejtoyco.com"), so the client's own
     # Domain Overview row was previously slipping through as a "competitor."
-    domains = [d for d in competitor_positions.keys() if _norm(d) != _norm(client_domain)]
+    #
+    # competitor_positions and competitor_rows are two independently-sourced
+    # lists for the same competitor set, and disagree on whether a domain
+    # carries a "www." prefix (e.g. positions has "www.navisite.com", the
+    # Semrush export row has "navisite.com"). The old dedup here compared
+    # raw strings (`d not in domains`), so a www/bare mismatch slipped
+    # through as two distinct competitors — doubling that competitor's
+    # narrative and both downstream slides. Dedup by _norm() instead, and
+    # keep normalized -> canonical-domain lookup tables so every later
+    # read of competitor_positions/competitor_rows below also matches on
+    # the normalized form rather than the exact string.
+    client_norm = _norm(client_domain)
+    positions_by_norm: dict[str, list] = {}
+    canonical_by_norm: dict[str, str] = {}
+    for d in competitor_positions.keys():
+        n = _norm(d)
+        if n == client_norm:
+            continue
+        positions_by_norm.setdefault(n, competitor_positions[d])
+        canonical_by_norm.setdefault(n, d)
+    rows_by_norm: dict[str, dict] = {}
     for row in competitor_rows:
         d = row.get("domain")
-        if d and d not in domains and _norm(d) != _norm(client_domain):
-            domains.append(d)
-    domains = domains[:max_competitors]
+        if not d:
+            continue
+        n = _norm(d)
+        if n == client_norm:
+            continue
+        rows_by_norm.setdefault(n, row)
+        # Prefer the Semrush-export row's domain spelling as canonical —
+        # it's what the Competitor Analysis table (add_competitor_table_slide)
+        # already renders, so the narrative slides refer to the same string.
+        canonical_by_norm[n] = d
+
+    domains = [canonical_by_norm[n] for n in canonical_by_norm][:max_competitors]
     if not domains:
         return {}
 
@@ -547,13 +576,15 @@ def _generate_competitor_narratives(
     # rather than sent to the AI to invent from.
     competitors_facts: dict[str, dict] = {}
     for domain in domains:
-        row = next((r for r in competitor_rows if r.get("domain") == domain), None)
+        n = _norm(domain)
+        row = rows_by_norm.get(n)
+        domain_positions = positions_by_norm.get(n, [])
         top_keywords = sorted(
-            competitor_positions.get(domain, []), key=lambda r: _as_number(r.get("search_volume")), reverse=True
+            domain_positions, key=lambda r: _as_number(r.get("search_volume")), reverse=True
         )[:8]
         relevant_gaps = [
             i["summary"] for i in gap_issues
-            if i.get("domain") and _norm(i["domain"]) == _norm(domain)
+            if i.get("domain") and _norm(i["domain"]) == n
         ]
         homepage_text = homepage_texts.get(domain)
         if not row and not top_keywords and not relevant_gaps and not homepage_text:
@@ -565,7 +596,7 @@ def _generate_competitor_narratives(
         # No new AI/network call: reuses the same classifier the Content
         # SEO Next Steps slide already runs over the client's own keywords.
         ranking_page_types: dict[str, int] = {}
-        for r in competitor_positions.get(domain, []):
+        for r in domain_positions:
             category = _classify_keyword_page_category(r.get("keyword") or "", r.get("intent"))
             if category:
                 ranking_page_types[category] = ranking_page_types.get(category, 0) + 1
