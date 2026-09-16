@@ -39,6 +39,10 @@ authority recommendations for being cited by generative AI engines.
 3-5 items per list, each 1-2 sentences, specific to what's in the data (cite real numbers/findings \
 from it where present) rather than generic advice.
 
+Never claim a schema addition or content change GUARANTEES an LLM citation, an AI Overview \
+appearance, or any other specific AI-search outcome — frame every recommendation as increasing \
+eligibility or visibility, not promising a result.
+
 GeoPulse export content:
 {raw_text}
 

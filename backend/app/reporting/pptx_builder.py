@@ -3820,6 +3820,9 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], k
     return slide
 
 
+_COMPETITOR_THIN_KEYWORD_COUNT = 5
+
+
 def add_competitor_positions_slides(prs: Presentation, competitor_positions: dict[str, list[dict]]):
     """One table slide per competitor domain from a Semrush Organic Research
     > Positions export — what that domain ranks for, and at what position.
@@ -3847,10 +3850,23 @@ def add_competitor_positions_slides(prs: Presentation, competitor_positions: dic
         top1_10 = sum(1 for r in rows if 0 < _num(r.get("position")) <= 10)
         top_kw = sorted_rows[0]
         rising = [r for r in rows if 0 < _num(r.get("position")) < _num(r.get("previous_position") or r.get("position"))]
-        insights = [
-            f"Ranks in the top 10 for {top1_10} of {len(rows)} tracked keywords — {top1_10 / len(rows) * 100:.0f}% of their visible footprint.",
-            f"Highest-volume keyword: \"{top_kw.get('keyword')}\" at position {top_kw.get('position')}, {int(_num(top_kw.get('search_volume'))):,} monthly searches.",
-        ]
+        insights = []
+        # Global Rule 11 (2026-09-16 spec): a domain tracked on only a
+        # handful of keywords isn't a real head-to-head comparison — "100%
+        # of their visible footprint" off 1 tracked keyword reads as a
+        # confident finding when it's actually just too little data to
+        # judge this competitor's relevance from at all.
+        if len(rows) < _COMPETITOR_THIN_KEYWORD_COUNT:
+            insights.append(
+                f"Relevance unconfirmed — only {len(rows)} tracked keyword(s) for this domain, too few to treat "
+                "as a representative head-to-head comparison."
+            )
+        insights.append(
+            f"Ranks in the top 10 for {top1_10} of {len(rows)} tracked keywords — {top1_10 / len(rows) * 100:.0f}% of their visible footprint."
+        )
+        insights.append(
+            f"Highest-volume keyword: \"{top_kw.get('keyword')}\" at position {top_kw.get('position')}, {int(_num(top_kw.get('search_volume'))):,} monthly searches."
+        )
         if rising:
             insights.append(f"{len(rising)} keyword(s) climbing in rank — worth watching where they're pulling traffic from.")
 
