@@ -4,6 +4,7 @@ dark top bar, blue section-title band, light-gray body, white content cards."""
 from __future__ import annotations
 
 import difflib
+import logging
 import re
 import threading
 from collections import Counter
@@ -13,8 +14,11 @@ from urllib.parse import urlparse
 import pycountry
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.util import Inches, Pt, Emu
+
+logger = logging.getLogger(__name__)
 
 from app.services.keyword_relevance_service import (
     _KEYWORD_PAGE_CATEGORIES,
@@ -107,6 +111,32 @@ def _body_bg(slide):
     return rect
 
 
+# Every content slide's title lives at L=0.4in, and slide functions that add
+# a "Source: ..." label independently put it at L=8.0-8.3in on the SAME row
+# (title_y=0.22-0.44in, Source y=0.3in) — the title box used to be Inches(10.5)
+# wide regardless, so any title long enough at the default 23pt bold ran
+# straight into whatever Source label that slide added (confirmed on a real
+# generated deck: "Target Keywords: Tata Trucks & Commercial Vehicles",
+# "Branded vs Non-Branded Search Performance", etc. all visibly collided with
+# their Source label). _content_header has no way to know whether a given
+# slide will add a Source label, so it always reserves the same clearance.
+_TITLE_MAX_WIDTH = Inches(7.4)  # right edge 7.8in, clear of the earliest Source L=8.0in
+
+
+def _fit_title_font_size(text: str, box_width, max_size=23, min_size=14) -> float:
+    """Shrinks (never grows) a single-line bold title's font size just
+    enough to keep it inside box_width, so long AI/data-driven titles
+    (cluster names, competitor domains, etc.) never encroach on the
+    Source-label zone. Same char-width heuristic as _estimate_text_extent,
+    with a smaller safety pad since this drives an actual layout decision,
+    not just an overlap-detection guess."""
+    box_in = Emu(int(box_width)).inches
+    size = max_size
+    while size > min_size and (0.55 * size * len(text) * 1.1) / 72 > box_in:
+        size -= 1
+    return size
+
+
 def _content_header(slide, title, eyebrow=None):
     """Thin dark top strip + optional eyebrow tag + bold section title +
     full-width hairline accent rule, used on every content slide. Compact by
@@ -120,7 +150,8 @@ def _content_header(slide, title, eyebrow=None):
     if eyebrow:
         _textbox(slide, Inches(0.4), Inches(0.18), Inches(8), Inches(0.28), eyebrow.upper(), size=10.5, bold=True, color=_accent())
         title_y = Inches(0.44)
-    _textbox(slide, Inches(0.4), title_y, Inches(10.5), Inches(0.5), title, size=23, bold=True, color=TEXT_DARK)
+    title_size = _fit_title_font_size(title, _TITLE_MAX_WIDTH)
+    _textbox(slide, Inches(0.4), title_y, _TITLE_MAX_WIDTH, Inches(0.5), title, size=title_size, bold=True, color=TEXT_DARK)
 
     rule = slide.shapes.add_shape(1, Inches(0.4), Inches(0.92), SLIDE_W - Inches(0.8), Pt(1))
     _fill(rule, CARD_BORDER)
@@ -5025,6 +5056,102 @@ def add_geo_slide(prs: Presentation):
     return _next_steps_category_slide(prs, "Generative Engine Optimization (GEO)", None, items)
 
 
+def _shape_label(shape) -> str:
+    if shape.has_text_frame:
+        text = shape.text_frame.text.strip().replace("\n", " ")
+        if text:
+            return text[:40]
+    return shape.shape_type
+
+
+def _estimate_text_extent(shape):
+    """Best-effort rendered (width, height) for a text box's actual content,
+    since most title/label boxes here are declared far bigger than their
+    real single-line content in BOTH dimensions (a wide title box for a
+    two-word title; a tall hero-title box sized for wrapping that a short
+    client name never uses) — using the full declared box size as
+    "occupied" for overlap purposes made every title+source-label pair,
+    and the hero title vs. domain line, look like false collisions. Falls
+    back to the box's own width/height when they can't be safely measured
+    (multi-line, empty, or not left-aligned) — never UNDER-estimates."""
+    tf = shape.text_frame
+    paras = [p for p in tf.paragraphs if p.text.strip()]
+    if len(paras) != 1:
+        return shape.width, shape.height
+    p = paras[0]
+    text = p.text
+    size_pt = 14
+    for run in p.runs:
+        if run.font.size:
+            size_pt = run.font.size.pt
+            break
+    # Single line's real height ≈ 1.3x font size (typical line-height
+    # factor) — always safe to use regardless of alignment.
+    est_height = min(Emu(int(Pt(size_pt) * 1.3)), shape.height)
+    width = shape.width
+    if p.alignment in (None, PP_ALIGN.LEFT):
+        # ~0.55x font size per average proportional-font Latin character,
+        # padded 25% to stay conservative — approximate, but enough to
+        # tell "short title in a wide box" from genuinely occupied width.
+        estimated_w = Emu(int(Pt(size_pt) * 0.55 * len(text) * 1.25))
+        if estimated_w < shape.width:
+            width = estimated_w  # else likely wraps onto multiple lines — box width is the safer bound
+    return width, est_height
+
+
+def _audit_slide_geometry(prs: Presentation, tolerance=Emu(18288)) -> list[str]:
+    """Read-only pass over the finished deck: flags shapes that spill past
+    the slide edges, and text boxes that visibly overlap each other. Every
+    add_*_slide function is supposed to track its own max_y/x-cursor by
+    hand, but with 58+ slide functions and ~5000 lines that bookkeeping has
+    repeatedly drifted — content running off the bottom edge, two text
+    boxes landing on the same row — and each time it's the client (or the
+    user, reviewing the downloaded deck) who has to spot it and report it
+    back, rather than it showing up anywhere before the report ships. This
+    runs on every real build_report() call so a layout regression shows up
+    in the server logs immediately instead of only in a downloaded file.
+    Tolerance (~0.02in) absorbs float/EMU rounding, not real overflow.
+    Overlap is checked only between actual text boxes (add_textbox shapes)
+    — cards/rules/icons are AUTO_SHAPE backgrounds that text boxes are
+    deliberately drawn on top of, so including them would flag every
+    card+label pair as a false positive."""
+    issues = []
+    for slide_idx, slide in enumerate(prs.slides, 1):
+        text_boxes = []
+        for shape in slide.shapes:
+            left, top, width, height = shape.left, shape.top, shape.width, shape.height
+            if left is None or top is None or width is None or height is None:
+                continue
+            if (
+                left < -tolerance
+                or top < -tolerance
+                or left + width > SLIDE_W + tolerance
+                or top + height > SLIDE_H + tolerance
+            ):
+                issues.append(
+                    f"slide {slide_idx}: '{_shape_label(shape)}' out of bounds "
+                    f"(right={Emu(left + width).inches:.2f}in bottom={Emu(top + height).inches:.2f}in, "
+                    f"page is {Emu(SLIDE_W).inches:.2f}x{Emu(SLIDE_H).inches:.2f}in)"
+                )
+            if shape.shape_type == MSO_SHAPE_TYPE.TEXT_BOX:
+                eff_width, eff_height = _estimate_text_extent(shape)
+                text_boxes.append((shape, left, top, eff_width, eff_height))
+        for i in range(len(text_boxes)):
+            s1, l1, t1, w1, h1 = text_boxes[i]
+            for s2, l2, t2, w2, h2 in text_boxes[i + 1 :]:
+                overlap_w = min(l1 + w1, l2 + w2) - max(l1, l2)
+                overlap_h = min(t1 + h1, t2 + h2) - max(t1, t2)
+                if overlap_w <= 0 or overlap_h <= 0:
+                    continue
+                smaller_area = min(w1 * h1, w2 * h2)
+                if smaller_area and (overlap_w * overlap_h) / smaller_area > 0.25:
+                    issues.append(
+                        f"slide {slide_idx}: text boxes overlap: "
+                        f"'{_shape_label(s1)}' <-> '{_shape_label(s2)}'"
+                    )
+    return issues
+
+
 def build_report(
     client_name: str,
     website_url: str,
@@ -5396,6 +5523,13 @@ def _build_report(
     else:
         _next_steps_slide("geo", add_geo_slide, prs)
     _next_steps_slide("goals", add_goals_slide, prs, own_domain_rating, competitor_rows, keyword_rows)
+
+    geometry_issues = _audit_slide_geometry(prs)
+    if geometry_issues:
+        logger.warning(
+            "pptx layout issues in generated report for %s (%d): %s",
+            client_name, len(geometry_issues), "; ".join(geometry_issues),
+        )
 
     buf = BytesIO()
     prs.save(buf)

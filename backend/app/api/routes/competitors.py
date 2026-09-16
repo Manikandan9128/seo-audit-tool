@@ -32,12 +32,42 @@ async def upload_semrush_file(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _get_owned_client(client_id, db, current_user)
+    client = _get_owned_client(client_id, db, current_user)
     content = await file.read()
     try:
         import_type, parsed_data = parse_semrush_file(file.filename or "upload.csv", content)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
+
+    # Keyword Gap is the one import type that self-identifies its compared
+    # domains (parse_semrush_file stores each row's "domain_positions" dict
+    # keyed by every domain column found in the export). When uploaded as
+    # is_own_site=True, the client's own domain MUST be one of those keys —
+    # if it isn't, this is a Keyword Gap export for a different site entirely
+    # (confirmed real incident: a Tata Motors passenger-car keyword export
+    # got uploaded to a commercial-truck client's is_own_site slot, silently
+    # replacing every "Target Keywords" slide with unrelated keywords — the
+    # report pipeline has no way to tell "wrong domain" from "real data" once
+    # it's in the table, so this has to be caught here, at upload, generically
+    # for any client rather than patched per-incident).
+    if import_type == "keyword_gap" and is_own_site:
+        own_norm = _normalize_domain(
+            (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
+        )
+        file_domains = set()
+        for row in parsed_data.get("rows", []):
+            file_domains.update((row.get("domain_positions") or {}).keys())
+        file_domains_norm = {_normalize_domain(d) for d in file_domains}
+        if file_domains_norm and own_norm not in file_domains_norm:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"This Keyword Gap export doesn't include {client.website_url} as one of its "
+                    f"compared domains (found: {', '.join(sorted(file_domains))}). This looks like "
+                    "a file from a different site — re-check the export, or if this is genuinely "
+                    "meant as a competitor's file, upload it with \"is your own site\" unchecked."
+                ),
+            )
 
     record = SemrushImport(
         client_id=client_id,
