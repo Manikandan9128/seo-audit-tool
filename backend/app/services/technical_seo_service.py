@@ -179,6 +179,13 @@ _SCHEMA_TYPE_GROUP_MEMBERS: dict[str, set[str]] = {
     "Article-type": {"Article", "BlogPosting", "NewsArticle"},
 }
 _SITE_WIDE_SCHEMA_TYPES = ["Organization", "WebSite", "BreadcrumbList"]
+# 2026-09-16 user spec: prioritize schema fixes by traffic + business
+# importance, not traffic alone — Product/LocalBusiness/Event pages are
+# where a schema gap costs real conversions (rich-result eligibility on a
+# page someone's about to buy from or visit), unlike Article-type/FAQPage/
+# JobPosting, which matter for discovery/support/recruitment but aren't
+# where commercial intent converts.
+_COMMERCIAL_SCHEMA_PAGE_TYPES = {"Product", "LocalBusiness", "Event"}
 
 
 def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None) -> dict:
@@ -350,11 +357,31 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
             "valid_pct": round(100 * b["valid"] / b["pages"]) if b["pages"] else 0,
             "valid_pct_traffic_weighted": valid_pct_traffic_weighted,
             "pageviews": pageviews,
+            "valid_pageviews": valid_pageviews,
+            "is_priority": page_type in _COMMERCIAL_SCHEMA_PAGE_TYPES,
         })
-    # SEO priority proxy: real traffic first (business value is what makes
-    # a gap worth fixing), page count as tiebreaker for buckets analytics
-    # didn't cover.
-    by_page_type.sort(key=lambda r: (-r["pageviews"], -r["pages"]))
+    # SEO priority (2026-09-16 spec: traffic + business importance, not
+    # traffic alone) — a commercial/product type's pageviews count double
+    # toward this ranking, so a Product bucket outranks an Article-type
+    # bucket with similar traffic, while a MUCH higher-traffic informational
+    # bucket can still rank above a near-zero-traffic commercial one (a
+    # weighted multiplier, not a hard categorical override). Page count
+    # stays the tiebreaker for buckets analytics didn't cover at all.
+    by_page_type.sort(key=lambda r: (-(r["pageviews"] * (2 if r["is_priority"] else 1)), -r["pages"]))
+
+    # Two coverage figures (2026-09-16 spec: "report both overall coverage
+    # and priority-page coverage") — both traffic-weighted, both None (not
+    # 0) when there's no GA4 pageview data to weight by at all, same
+    # never-invent discipline as valid_pct_traffic_weighted per row. Only
+    # content-specific buckets count here (Other Pages/site-wide baseline
+    # schema excluded, same scoping build_schema_report_parts already
+    # applies) — coverage is a content-schema concept, not a whole-site one.
+    content_buckets = [r for r in by_page_type if r["page_type"] != "Other Pages"]
+    total_pv = sum(r["pageviews"] for r in content_buckets)
+    overall_coverage_pct = round(100 * sum(r["valid_pageviews"] for r in content_buckets) / total_pv) if total_pv else None
+    priority_buckets = [r for r in content_buckets if r["is_priority"]]
+    priority_pv = sum(r["pageviews"] for r in priority_buckets)
+    priority_page_coverage_pct = round(100 * sum(r["valid_pageviews"] for r in priority_buckets) / priority_pv) if priority_pv else None
 
     return {
         "total_pages": total_pages,
@@ -363,6 +390,8 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
         "missing_properties": missing_properties,
         "missing_types": missing_types,
         "by_page_type": by_page_type,
+        "overall_coverage_pct_traffic_weighted": overall_coverage_pct,
+        "priority_page_coverage_pct_traffic_weighted": priority_page_coverage_pct,
     }
 
 

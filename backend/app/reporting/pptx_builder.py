@@ -1977,6 +1977,22 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
     y = Inches(1.05)
     ROW_H = 0.28
 
+    # Overall vs. priority-page coverage (2026-09-16 spec: "report both") —
+    # a single compact line above the tables rather than summary metric
+    # cards, matching this slide's existing straight-into-tables design.
+    # Only rendered when there's real GA4 pageview data to weight by;
+    # silent otherwise rather than showing a misleading 0%/0%.
+    overall_cov = schema_validation.get("overall_coverage_pct_traffic_weighted")
+    priority_cov = schema_validation.get("priority_page_coverage_pct_traffic_weighted")
+    if overall_cov is not None or priority_cov is not None:
+        bits = []
+        if overall_cov is not None:
+            bits.append(f"Overall coverage: {overall_cov}%")
+        if priority_cov is not None:
+            bits.append(f"Priority pages (Product/LocalBusiness/Event): {priority_cov}%")
+        _textbox(slide, left, y, width, Inches(0.24), "  ·  ".join(bits) + "  (traffic-weighted)", size=11.5, bold=True, color=_accent())
+        y += Inches(0.32)
+
     if part1:
         _textbox(slide, left, y, width, Inches(0.24), "Part 1 — Applicable Schema by Page Type", size=12.5, bold=True, color=_accent())
         y += Inches(0.28)
