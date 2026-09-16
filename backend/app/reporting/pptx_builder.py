@@ -4294,7 +4294,7 @@ def add_competitor_opportunity_summary_slide(
         prs, "Cross-Competitor Opportunity Summary",
         ["Competitor", "Unique Angle", "Client Gap", "Opportunity"], rows,
         col_widths=[2.6, 3.0, 3.2, 3.3], insights=top_opportunities or None, row_cap=6,
-        insights_max=5,
+        insights_max=5, wrap_cols={1, 2, 3},
     )
 
 
