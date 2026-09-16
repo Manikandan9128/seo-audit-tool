@@ -11,13 +11,32 @@ logger = logging.getLogger(__name__)
 
 
 def list_properties(creds: Credentials) -> list[dict]:
+    """Every GA4 account + property visible to the connected Google login.
+    Both accounts().list and properties().list are paginated by the Admin
+    API (page size caps well under an agency account's real account count)
+    — without following nextPageToken, any account/property past page 1
+    silently disappears from this list with no error, even though it's
+    right there in the GA4 UI (which paginates correctly on its own).
+    Confirmed live 2026-09-16: 2 real client GA4 accounts missing from the
+    picker under an agency login connected to 50+ GA4 accounts."""
     admin = build("analyticsadmin", "v1beta", credentials=creds)
     results = []
-    accounts = admin.accounts().list().execute()
-    for acc in accounts.get("accounts", []):
-        props = admin.properties().list(filter=f"parent:{acc['name']}").execute()
-        for p in props.get("properties", []):
-            results.append({"name": p["name"], "display_name": p["displayName"]})
+    accounts, page_token = [], None
+    while True:
+        page = admin.accounts().list(pageSize=200, pageToken=page_token).execute()
+        accounts.extend(page.get("accounts", []))
+        page_token = page.get("nextPageToken")
+        if not page_token:
+            break
+    for acc in accounts:
+        prop_token = None
+        while True:
+            props = admin.properties().list(filter=f"parent:{acc['name']}", pageSize=200, pageToken=prop_token).execute()
+            for p in props.get("properties", []):
+                results.append({"name": p["name"], "display_name": p["displayName"]})
+            prop_token = props.get("nextPageToken")
+            if not prop_token:
+                break
     return results
 
 
