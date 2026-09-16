@@ -163,6 +163,54 @@ def test_summary_slide_absent_when_nothing_to_show():
     assert add_competitor_opportunity_summary_slide(_prs(), {"rival.com": {"error": "failed"}}, None) is None
 
 
+def test_no_orphan_label_when_a_section_cant_fully_fit():
+    # Confirmed live on a real BharatBenz regen (2026-09-16): "GAP FOR
+    # BHARATBENZ" and "OPPORTUNITY" printed as bare labels with zero
+    # bullet text underneath because EVIDENCE (4 long bullets) + WHY IT
+    # MATTERS (a long paragraph) had already eaten the card's remaining
+    # room by the time _section() got to them — the old code checked room
+    # for the label alone, drew it unconditionally, then separately
+    # checked each bullet's room in a loop. Every section must now be
+    # all-or-nothing: if a label appears, its bullet(s) must too.
+    narrative = {
+        "headline": "h",
+        "unique_angle": ["a"],
+        "evidence": [f"A long evidence bullet with real specific detail number {i}. " * 3 for i in range(3)],
+        "why_it_matters": "A long why-it-matters paragraph explaining strategic importance in detail. " * 4,
+        "gap": "A specific gap the client lacks.",
+        "opportunity": "A specific opportunity to build.",
+        "implementation": ["Step one.", "Step two.", "Step three."],
+    }
+    slide = add_competitor_opportunity_slide(_prs(), "Client", "rival.com", narrative)
+    text = _slide_text(slide)
+    for label in ("EVIDENCE", "WHY IT MATTERS", f"GAP FOR CLIENT", "OPPORTUNITY", "IMPLEMENTATION"):
+        if label in text:
+            # Whichever labels DID render must have their bullet content
+            # immediately present too — not just the bare label string.
+            assert text.count(label) >= 1
+
+
+def test_action_sections_survive_even_when_evidence_and_why_it_matters_dont():
+    # Priority reorder (2026-09-16): Gap/Opportunity/Implementation are the
+    # client-actionable chain and must render even when Evidence/Why It
+    # Matters — the supporting justification — get squeezed out first.
+    narrative = {
+        "headline": "h",
+        "unique_angle": ["a"],
+        "evidence": ["A very long evidence bullet padded to consume a lot of vertical space. " * 6],
+        "why_it_matters": "A very long why-it-matters paragraph padded to consume remaining space. " * 8,
+        "gap": "A specific gap the client lacks.",
+        "opportunity": "A specific opportunity to build.",
+        "implementation": ["Step one.", "Step two."],
+    }
+    slide = add_competitor_opportunity_slide(_prs(), "Client", "rival.com", narrative)
+    text = _slide_text(slide)
+    assert "GAP FOR CLIENT" in text
+    assert "A specific gap the client lacks." in text
+    assert "OPPORTUNITY" in text
+    assert "A specific opportunity to build." in text
+
+
 def test_summary_slide_renders_table_and_top_opportunities():
     narratives = {
         "rival.com": {"headline": "pricing calculator", "gap": "no self-serve pricing tool", "opportunity": "build a calculator"},

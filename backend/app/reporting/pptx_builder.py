@@ -2460,8 +2460,30 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
     if row_cap is None:
         row_cap = 9 if insights else 14
     n_cols = len(headers)
-    n_rows = min(len(rows), row_cap) + 1
-    height = Inches(row_height) * n_rows
+    shown_rows = rows[:row_cap]
+    n_rows = len(shown_rows) + 1
+
+    # Per-row height, computed for real instead of assumed uniform (2026-09-16
+    # fix — confirmed live: Key Insights strips overlapping the table above
+    # them on Priority Issues, Search Opportunities, and Cross-Competitor
+    # Summary, all tables using wrap_cols). PowerPoint auto-grows a row to
+    # fit wrapped cell text at DISPLAY time regardless of what height this
+    # code declares — python-pptx has no way to ask PowerPoint how tall that
+    # will actually render, so the only fix is to stop assuming every row is
+    # exactly row_height tall and estimate real wrapped-line count instead,
+    # the same _wrap_lines heuristic used elsewhere in this file, so the
+    # declared (and returned `bottom`) height tracks what will actually
+    # render closely enough that nothing positioned after it lands on top.
+    col_widths_emu = [Inches(w) for w in col_widths] if col_widths else [width // n_cols] * n_cols
+    row_heights = [Inches(row_height)]  # header row never wraps
+    for row in shown_rows:
+        lines_needed = 1
+        if wrap_cols:
+            for j in wrap_cols:
+                if j < len(row):
+                    lines_needed = max(lines_needed, _wrap_lines(str(row[j]), col_widths_emu[j], size_pt=11))
+        row_heights.append(Inches(row_height) * lines_needed)
+    height = sum(row_heights, Emu(0))
     gframe = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
     table = gframe.table
     table.first_row = False  # suppress the built-in banded-header theme so our colors apply cleanly
@@ -2469,6 +2491,8 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
     if col_widths:
         for i, w in enumerate(col_widths):
             table.columns[i].width = Inches(w)
+    for i, h in enumerate(row_heights):
+        table.rows[i].height = h
 
     for j, h in enumerate(headers):
         cell = table.cell(0, j)
@@ -4198,16 +4222,22 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
         nonlocal y
         if not bullets or y >= max_y:
             return
-        label_h = Inches(0.22)
-        if y + label_h > max_y:
+        # Whole section or nothing — precompute the full block height (label
+        # + every bullet) before drawing anything. Confirmed live: the old
+        # version checked room for the label alone, drew it unconditionally,
+        # THEN checked each bullet's room in a loop — so "GAP FOR
+        # BHARATBENZ" and "OPPORTUNITY" printed as orphan labels with zero
+        # bullet text under them once EVIDENCE/WHY IT MATTERS had already
+        # eaten the remaining room. A label with nothing under it is worse
+        # than no label at all.
+        item_heights = [line_h * _wrapped(b) + Inches(0.08) for b in bullets]
+        block_h = Inches(0.26) + sum(item_heights, Emu(0)) + Inches(0.12)
+        if y + block_h > max_y:
             return
-        _textbox(slide, Inches(0.9), y, text_width, label_h, label, size=10.5, bold=True, color=label_color)
+        _textbox(slide, Inches(0.9), y, text_width, Inches(0.22), label, size=10.5, bold=True, color=label_color)
         y += Inches(0.26)
-        for bullet in bullets:
+        for bullet, item_h in zip(bullets, item_heights):
             lines = _wrapped(bullet)
-            item_h = line_h * lines + Inches(0.08)
-            if y + item_h > max_y:
-                return
             if dot_color:
                 _icon_dot(slide, Inches(0.9), y + Inches(0.07), Inches(0.08), dot_color)
                 _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, bullet, size=11.5)
@@ -4216,17 +4246,21 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
             y += item_h
         y += Inches(0.12)
 
-    # Priority order matches the spec's own section order — _section()
-    # silently stops adding sections/bullets once max_y is reached, so
-    # whichever section runs out of room first is always the LEAST
-    # important one still queued, never a mid-priority one cut short while
-    # a lower-priority one after it still rendered.
+    # Priority order: the actionable chain (what's the angle, what's
+    # missing, what to build, how) renders before the supporting
+    # justification (Evidence/Why It Matters) — a client reading this slide
+    # cares most about what to DO; the evidence backing it up is the first
+    # thing that can be trimmed if the card runs out of room, not the
+    # action items themselves. _section() now either draws a section
+    # completely or skips it entirely (see above), so whichever section
+    # runs out of room first is always the LEAST important one still
+    # queued, cleanly absent rather than a half-rendered orphan.
     _section("UNIQUE ANGLE", _accent(), unique_angle[:2], dot_color=DEFAULT_ACCENT)
-    _section("EVIDENCE", TEXT_MUTED, evidence[:4], dot_color=TEXT_MUTED)
-    _section("WHY IT MATTERS", TEXT_MUTED, [why_it_matters] if why_it_matters else [])
     _section(f"GAP FOR {(client_name or 'CLIENT').upper()}", BAD, [gap] if gap else [], dot_color=BAD)
     _section("OPPORTUNITY", GOOD, [opportunity] if opportunity else [], dot_color=GOOD)
-    _section("IMPLEMENTATION", GOOD, implementation[:4], dot_color=GOOD)
+    _section("IMPLEMENTATION", GOOD, implementation[:3], dot_color=GOOD)
+    _section("EVIDENCE", TEXT_MUTED, evidence[:3], dot_color=TEXT_MUTED)
+    _section("WHY IT MATTERS", TEXT_MUTED, [why_it_matters] if why_it_matters else [])
     if shared_advantage:
         _section("SHARED ADVANTAGE", TEXT_MUTED, [shared_advantage])
 
