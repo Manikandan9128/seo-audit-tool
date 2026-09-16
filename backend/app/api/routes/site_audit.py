@@ -31,7 +31,7 @@ from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import (
     build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows,
-    build_schema_report_parts, schema_eligibility_notes,
+    build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
 )
 from app.services import ga4_service, gsc_service
@@ -619,6 +619,20 @@ def _generate_competitor_narratives(
             except Exception:
                 homepage_texts[domain] = None
 
+    # Client's own content/page-type footprint (2026-09-16 user spec: apply
+    # the same 1.5x meaningful-gap rule to "relevant content/page coverage"
+    # too) — counted from the client's own Keyword Gap rows' page_category
+    # field (already classified earlier in this same request), the closest
+    # available proxy to page coverage since competitors don't get their
+    # own site crawled here — a competitor's RANKING keyword footprint by
+    # page type is what ranking_page_types below already measures the same
+    # way, so both sides are counted identically.
+    client_page_type_counts: dict[str, int] = {}
+    for r in data.get("keyword_rows") or []:
+        category = r.get("page_category")
+        if category:
+            client_page_type_counts[category] = client_page_type_counts.get(category, 0) + 1
+
     # Gather each domain's grounding facts (pure data assembly, no AI call)
     # — a domain with nothing grounded to write from is dropped entirely
     # rather than sent to the AI to invent from.
@@ -648,6 +662,26 @@ def _generate_competitor_narratives(
             category = _classify_keyword_page_category(r.get("keyword") or "", r.get("intent"))
             if category:
                 ranking_page_types[category] = ranking_page_types.get(category, 0) + 1
+
+        # Same 1.5x meaningful-gap rule as the Competitor Analysis table's
+        # organic-traffic/referring-domains/backlinks/keyword insights,
+        # applied here to page-type coverage — a category where this
+        # competitor's ranking-keyword footprint is >=1.5x the client's own
+        # is a real content-coverage gap worth the AI's Evidence/Gap fields
+        # citing by name, not a vague "needs more content."
+        content_coverage_gaps = []
+        for category, competitor_count in ranking_page_types.items():
+            client_count = client_page_type_counts.get(category, 0)
+            if client_count <= 0:
+                if competitor_count >= 3:  # a handful of keywords isn't a real footprint to flag against zero
+                    content_coverage_gaps.append(f"{category}: {competitor_count} ranking keyword(s) vs none for the client")
+                continue
+            multiple = competitor_count / client_count
+            if multiple >= _COMPETITOR_MEANINGFUL_GAP_MULTIPLE:
+                content_coverage_gaps.append(
+                    f"{category}: {multiple:.1f}x the client's footprint ({competitor_count} vs {client_count} ranking keywords)"
+                )
+
         competitors_facts[domain] = {
             "domain_stats": row,
             "top_ranking_keywords": [
@@ -655,6 +689,7 @@ def _generate_competitor_narratives(
                 for r in top_keywords
             ],
             "ranking_page_types": ranking_page_types,
+            "content_coverage_gaps_vs_client": content_coverage_gaps,
             "gaps_vs_this_competitor": relevant_gaps,
             "homepage_url": f"https://{domain}",
             "homepage_text": homepage_text,

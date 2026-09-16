@@ -3660,6 +3660,9 @@ def _fmt_num(v):
     return str(int(n)) if n == int(n) else f"{n:.1f}"
 
 
+_COMPETITOR_MEANINGFUL_GAP_MULTIPLE = 1.5
+
+
 def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], keyword_sheet_link: str | None = None):
     """Matches the reference deck's Competitor Analysis table. Renders the
     full DR/Backlinks/Top Countries/Branded-split columns when the rows come
@@ -3736,25 +3739,42 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], k
     competitors = competitor_rows[1:] if own_row and len(competitor_rows) > 1 else []
     insights = []
     if own_row and competitors:
-        traffic_leader = max(competitors, key=lambda r: _num(r.get("organic_traffic")))
-        own_traffic = _num(own_row.get("organic_traffic"))
-        leader_traffic = _num(traffic_leader.get("organic_traffic"))
-        if leader_traffic > own_traffic:
-            multiple = f"{leader_traffic / own_traffic:.0f}x" if own_traffic else "significantly"
-            insights.append(f"{traffic_leader.get('domain', 'Top competitor')} gets {multiple} more organic traffic ({leader_traffic:,.0f} vs {own_traffic:,.0f}).")
+        # 2026-09-16 user spec: 1.5x is the trigger for a "meaningful"
+        # competitor gap, applied the SAME way across every metric below —
+        # not "any positive gap" (the old logic), which called out a 3%
+        # lead as if it were as significant as a 5x one. DR is excluded
+        # deliberately — Semrush's Authority Score is already a 0-100
+        # composite index, not a countable quantity, so a ratio between two
+        # index scores doesn't mean what a ratio of raw counts means; kept
+        # as its own always-shown gap (still real, just not multiple-gated).
+        def _meaningful_gap(metric_leader, own_value, label, unit_fmt=lambda v: f"{v:,.0f}"):
+            leader_value = _num(metric_leader.get(metric_key))
+            if own_value <= 0:
+                return f"{metric_leader.get('domain')} has {unit_fmt(leader_value)} {label} — you have none tracked." if leader_value > 0 else None
+            multiple = leader_value / own_value
+            if multiple < _COMPETITOR_MEANINGFUL_GAP_MULTIPLE:
+                return None
+            return f"{metric_leader.get('domain')} has {multiple:.1f}x your {label} ({unit_fmt(leader_value)} vs {unit_fmt(own_value)})."
+
+        for metric_key, label in (
+            ("organic_traffic", "organic traffic"),
+            ("referring_domains", "referring domains"),
+            ("backlinks_total", "backlinks"),
+            ("organic_keywords", "ranking keywords"),
+        ):
+            if metric_key == "referring_domains" and not any(r.get("referring_domains") is not None for r in competitor_rows):
+                continue  # not every Domain Overview export carries this field — skip rather than compare against a silent 0
+            leader = max(competitors, key=lambda r: _num(r.get(metric_key)))
+            own_value = _num(own_row.get(metric_key))
+            text = _meaningful_gap(leader, own_value, label)
+            if text:
+                insights.append(text)
+
         if has_rich_data:
             dr_leader = max(competitors, key=lambda r: _num(r.get("authority_score")))
             own_dr = _num(own_row.get("authority_score"))
             if _num(dr_leader.get("authority_score")) > own_dr:
                 insights.append(f"Domain authority gap: {dr_leader.get('domain')} sits at DR {int(_num(dr_leader.get('authority_score')))} vs your {int(own_dr)}.")
-            bl_leader = max(competitors, key=lambda r: _num(r.get("backlinks_total")))
-            own_bl = _num(own_row.get("backlinks_total"))
-            if _num(bl_leader.get("backlinks_total")) > own_bl:
-                insights.append(f"{bl_leader.get('domain')} has {_num(bl_leader.get('backlinks_total')):,.0f} backlinks vs your {own_bl:,.0f}.")
-        kw_leader = max(competitors, key=lambda r: _num(r.get("organic_keywords")))
-        own_kw = _num(own_row.get("organic_keywords"))
-        if _num(kw_leader.get("organic_keywords")) > own_kw:
-            insights.append(f"{kw_leader.get('domain')} ranks for {_num(kw_leader.get('organic_keywords')) - own_kw:,.0f} more organic keywords than you.")
 
     own_export_date = own_row.get("export_date") if own_row else None
     own_worldwide_date_raw = own_row.get("worldwide_as_of_date") if own_row else None

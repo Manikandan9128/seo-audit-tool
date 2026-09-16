@@ -81,7 +81,9 @@ slide. Rules for this part, strictly:
 5. "evidence": 2-4 bullets, each citing a SPECIFIC number/fact already present in this competitor's data \
    above (a keyword + its volume/position, a count of keywords following a pattern, a backlink/DR figure tied \
    to a specific page or pattern, a ranking-page-type count) — never a restatement of the headline without a \
-   number behind it, never invented.
+   number behind it, never invented. If "content_coverage_gaps_vs_client" is present and non-empty, treat it \
+   as a strong evidence/gap signal — it's a 1.5x-or-greater content-footprint gap already computed for you, \
+   not something to re-derive.
 6. "why_it_matters": 2-3 sentences on why this specific advantage matters strategically (search visibility, \
    qualified/commercial-intent traffic, customer journey stage, category ownership, competitive \
    defensibility) — not a generic "this helps SEO" statement.
