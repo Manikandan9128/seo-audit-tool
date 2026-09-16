@@ -3,6 +3,7 @@ dark top bar, blue section-title band, light-gray body, white content cards."""
 
 from __future__ import annotations
 
+import difflib
 import re
 import threading
 from collections import Counter
@@ -511,12 +512,43 @@ def add_pagespeed_score_breakdown_slide(prs: Presentation, mobile: dict | None, 
 
     current_score = primary["current_score"]
     insights = [f"{primary_label} Performance score is {current_score} — breakdown ranked by which metric costs the most points."]
+
+    # Top-2 by real improvement potential (value / good_threshold ratio,
+    # 2026-09-16 user spec Step 2/4) — same ranking _combined_projection
+    # used to pick its override metrics, recomputed here only to build the
+    # "Nx over threshold" sentence naming them.
+    ranked = sorted(
+        (w for w in primary["quick_wins"] if w["score_delta"] > 0),
+        key=lambda w: (w["value"] / w["p10"]) if w["p10"] else 0,
+        reverse=True,
+    )[:2]
+    if ranked:
+        parts = []
+        for w in ranked:
+            current_val = w.get("display_value") or _fmt_metric_value(w["id"], w["value"])
+            threshold_val = _fmt_metric_value(w["id"], w["p10"])
+            multiple = (w["value"] / w["p10"]) if w["p10"] else 0
+            parts.append(f"{w['label']} ({current_val}) is {multiple:.1f}x over the {threshold_val} threshold")
+        insights.append(" and ".join(parts) + " — these have the greatest combined potential impact.")
+
     projection = primary.get("combined_projection")
     if projection and projection["metrics"] and projection["score_after"] > projection["score_before"]:
         metrics_str = " + ".join(projection["metrics"])
+        insights.append(f"Fixing {metrics_str} would move Performance to approximately {projection['score_after']}.")
+    elif ranked:
         insights.append(
-            f"Fixing {metrics_str} alone would move Performance from {projection['score_before']} to {projection['score_after']}."
+            "Fixing these metrics has the greatest potential impact, but the exact resulting score requires "
+            "Lighthouse's real weighting formula, not a summed approximation — that figure isn't available yet."
         )
+
+    for w in primary.get("inconsistent_rows", []):
+        insights.append(
+            f"Data-quality flag: the {w['label']} row shows a current score of {w['score']} alongside an "
+            f"'if fixed' score of {w['score_if_fixed']} and a {w['score_delta']:+d} score impact — this is "
+            f"internally inconsistent and should be re-pulled before this row is trusted. It's excluded from "
+            f"the findings above."
+        )
+
     if mobile and desktop and mobile.get("current_score") is not None and desktop.get("current_score") is not None:
         gap = desktop["current_score"] - mobile["current_score"]
         if gap > 15:
@@ -560,14 +592,27 @@ def add_pagespeed_script_weight_slide(prs: Presentation, mobile: dict | None, de
             "External" if w["is_third_party"] else "Same domain",
         ))
 
-    # "External" only means the script loads from a different domain than the
-    # site itself — it may be a genuine third-party vendor (ads, chat, tag
-    # manager) or the client's own CDN subdomain. Deliberately not framed as
-    # vendor blame here; that call needs a human look at which domain it is.
+    # total_js_bytes/third_party_bytes are already summed from EVERY node in
+    # the script-treemap response (see _extract_script_weight), not just the
+    # top_waste rows shown in the table below — so the total reconciles to
+    # the full tracked script count, not the excerpt on the slide (2026-09-16
+    # user spec, Step 1). "External" only means the script loads from a
+    # different domain than the site itself — it may be a genuine third-
+    # party vendor (ads, chat, tag manager) or the client's own CDN
+    # subdomain; is_third_party is always resolved one way or the other
+    # (Step 2), never left an open question.
+    total_scripts = sw.get("total_script_count") or len(sw.get("top_scripts") or [])
+    shown_count = len(sw["top_waste"])
     insights = [
-        f"Total JS payload ({primary_label}): {_fmt_kb(sw['total_js_bytes'])}, {sw['third_party_pct']}% loads from an external domain "
+        f"Total JS payload ({primary_label}): {_fmt_kb(sw['total_js_bytes'])} across all {total_scripts} tracked "
+        f"scripts, not just the {shown_count} shown below — {sw['third_party_pct']}% loads from an external domain "
         "(own CDN or a genuine third-party vendor — worth checking which)."
     ]
+    third_party_named = [w for w in sw["top_waste"] if w["is_third_party"]]
+    if third_party_named:
+        names = " + ".join(_short_resource_name(w["url"]) for w in third_party_named[:3])
+        named_bytes = sum(w["total_bytes"] for w in third_party_named[:3])
+        insights.append(f"{names} account for {_fmt_kb(named_bytes)} of the external total shown below.")
     worst = sw["top_waste"][0]
     insights.append(
         f"\"{_short_resource_name(worst['url'])}\" wastes {worst['wasted_percent']:.0f}% of its {_fmt_kb(worst['total_bytes'])} "
@@ -2511,8 +2556,23 @@ def build_branded_vs_nonbranded_comparison(branded_queries: list[dict], nonbrand
     branded = _group_stats(branded_queries)
     nonbranded = _group_stats(nonbranded_queries)
     total_clicks = branded["clicks"] + nonbranded["clicks"]
+    total_impressions = branded["impressions"] + nonbranded["impressions"]
     branded_share_pct = round(branded["clicks"] / total_clicks * 100, 1) if total_clicks else 0.0
-    return {"branded": branded, "nonbranded": nonbranded, "branded_share_pct": branded_share_pct}
+    # Table shows share (%), not raw volume (2026-09-16 user spec) — the
+    # headline elsewhere on the slide already states branded_share_pct, so
+    # branded's clicks_pct here MUST come from this exact same division
+    # (same total_clicks, same rounding) or the slide would show two
+    # different percentages for one figure. Non-branded's pct is 100 minus
+    # branded's, not its own independent division, so the pair always sums
+    # to exactly 100.0 regardless of rounding.
+    branded["clicks_pct"] = branded_share_pct
+    nonbranded["clicks_pct"] = round(100.0 - branded_share_pct, 1)
+    branded["impressions_pct"] = round(branded["impressions"] / total_impressions * 100, 1) if total_impressions else 0.0
+    nonbranded["impressions_pct"] = round(100.0 - branded["impressions_pct"], 1) if total_impressions else 0.0
+    return {
+        "branded": branded, "nonbranded": nonbranded, "branded_share_pct": branded_share_pct,
+        "total_clicks": total_clicks, "total_impressions": total_impressions,
+    }
 
 
 _DEMAND_GAP_TARGET_PERIOD_DAYS = 30
@@ -2640,22 +2700,23 @@ def build_branded_dependency_narrative(
 
 _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE = 50
 
-# Country tiering (2026-09-11 user spec) — "material" is impressions high
-# enough that the click gap is a real number of visitors, OR clicks
-# already meaningful even below that impression floor; "low-signal" is
-# real impressions but single-digit clicks, never shown with the same
-# table weight as a material row.
-_COUNTRY_MATERIAL_MIN_IMPRESSIONS = 1000
-_COUNTRY_MATERIAL_MIN_CLICKS = 15
+# Country tiering (2026-09-16 user spec) — single split by click volume:
+# clicks >= threshold is "material" (gets an individual Fix), clicks below
+# it is "low-signal" (grouped summary only, never an individual Fix).
+_COUNTRY_MIN_CLICK_THRESHOLD = 15
 _COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS = 100
-_COUNTRY_LOW_SIGNAL_MAX_CLICKS = 9
+_COUNTRY_ANOMALY_CTR_MULTIPLE = 2.0
+
+
+_PAGE_CTR_BENCHMARK_SOURCE = "internal position-based CTR benchmark (not an external published study)"
 
 
 def _ctr_band_for_position(position: float) -> tuple[float, float] | None:
-    """Rough typical-CTR-by-position bands per the user's 2026-09-10 spec —
-    deliberately coarse (these vary a lot by query intent/vertical), used
-    only to catch a page whose CTR is NOTICEABLY under its band, not to
-    make a precise claim."""
+    """Rough typical-CTR-by-position bands, our own model, deliberately
+    coarse (these vary a lot by query intent/vertical) — used only to
+    catch a page whose CTR is NOTICEABLY under its band, not to make a
+    precise claim. Cited as _PAGE_CTR_BENCHMARK_SOURCE, never as an
+    external study, since these numbers aren't sourced from one."""
     if 1 <= position <= 3:
         return (15.0, 30.0)
     if 4 <= position <= 10:
@@ -2666,17 +2727,17 @@ def _ctr_band_for_position(position: float) -> tuple[float, float] | None:
 
 
 def build_high_potential_pages(page_rows: list[dict]) -> list[dict]:
-    """Part 2 flagging logic (2026-09-11 user spec): a page qualifies if
-    its position is 8-20 (close enough to page 1 for a realistic ranking
-    push) OR its CTR is noticeably under the typical band for its
-    position with meaningful impressions behind it. Pages below the
-    minimum-impressions floor are excluded outright — not enough signal
-    to act on. The "fix" field states the specific action to take, not
-    just the gap diagnosis, per spec; a real number is quoted instead of
-    a bare "CTR" claim so nothing reads as an unexplained benchmark.
-    Sorted by impressions (the pages worth the most attention first),
-    each row grounded only in its own real position/CTR/impressions, no
-    invented numbers."""
+    """Part 2 flagging logic (2026-09-16 user spec): the lever depends on
+    whether the page is already on page 1. position <= 10 -> lever is CTR
+    (page is visible, the opportunity is closing the click-through gap via
+    title/meta — only flagged if CTR is noticeably under the position's
+    benchmark band). position > 10 -> lever is RANKING (a title/meta
+    rewrite won't help until the page ranks higher; the opportunity is
+    internal links/content depth). Each row gets exactly ONE lever, never
+    both glued together. Pages below the minimum-impressions floor are
+    excluded outright — not enough signal to act on. Sorted by impressions
+    (the pages worth the most attention first), each row grounded only in
+    its own real position/CTR/impressions, no invented numbers."""
     flagged = []
     for r in page_rows:
         impressions = float(r.get("impressions", 0) or 0)
@@ -2684,22 +2745,28 @@ def build_high_potential_pages(page_rows: list[dict]) -> list[dict]:
             continue
         position = float(r.get("position", 0) or 0)
         ctr_pct = float(r.get("ctr", 0) or 0) * 100
-        fixes = []
-        band = _ctr_band_for_position(position)
-        if band and ctr_pct < band[0]:
-            fixes.append(
+
+        if position <= 10:
+            lever = "CTR"
+            band = _ctr_band_for_position(position)
+            if not (band and ctr_pct < band[0]):
+                continue  # already visible AND already clearing its CTR band — no fix to make
+            fix = (
                 f"Rewrite title/meta to close the click-through-rate gap — currently {ctr_pct:.1f}%, "
-                f"typical for position {position:.0f} is {band[0]:.0f}-{band[1]:.0f}%."
+                f"typical for position {position:.0f} is {band[0]:.0f}-{band[1]:.0f}% "
+                f"(source: {_PAGE_CTR_BENCHMARK_SOURCE})."
             )
-        if 8 <= position <= 20:
-            fixes.append(
-                f"Push for page-1 ranking via internal links and content refresh — already close at position {position:.1f}."
+        else:
+            lever = "RANKING"
+            fix = (
+                f"This page isn't ranking on page 1 (position {position:.1f}) — a title/meta rewrite won't "
+                f"move clicks until ranking improves. Focus on internal links and content depth to close the "
+                f"ranking gap first; revisit CTR once it reaches page 1."
             )
-        if not fixes:
-            continue
         flagged.append({
             "page": r.get("page"), "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1),
-            "position": round(position, 1), "fix": " ".join(fixes),
+            "position": round(position, 1), "fix": fix, "lever": lever,
+            "page_type": r.get("page_type"),
         })
     flagged.sort(key=lambda r: r["impressions"], reverse=True)
     return flagged
@@ -2742,48 +2809,53 @@ def _summarize_low_signal_countries(rows: list[dict]) -> dict | None:
     return {"countries": names, "summary": summary}
 
 
-def build_high_potential_countries(country_rows: list[dict]) -> dict:
-    """Part 3 flagging logic (2026-09-11 user spec): countries split into
-    two tiers so a near-zero-click country is never given the same table
-    weight as one with real click volume.
-
-    Material opportunities — impressions >= 1,000 (the click gap is a
-    real number of visitors), OR clicks already >= 15 even below that
-    impression floor (already-meaningful volume worth growing further).
-    Every material row gets a specific fix: countries already near the
-    best CTR get a targeting/budget-expansion fix, countries well below
-    it get a localization fix naming the actual CTR gap (a number, not a
-    bare label).
-
-    Low-signal, monitor only — real impressions (>= 100) but single-digit
-    clicks — rolled into one grouped summary, never individual rows.
-
-    Country codes are resolved to full names via _country_label so
-    nothing renders as an unexplained code."""
+def build_high_potential_countries(
+    country_rows: list[dict],
+    target_countries: list[str] | None = None,
+    benchmark_ctr_pct: float | None = None,
+    benchmark_source: str | None = None,
+    minimum_click_threshold: float = _COUNTRY_MIN_CLICK_THRESHOLD,
+) -> dict:
+    """Part 3 flagging logic (2026-09-16 user spec): split by signal
+    strength first — clicks < minimum_click_threshold never gets an
+    individual Fix, it's rolled into one grouped low-signal summary.
+    Material rows are benchmarked against a DEFINED external standard,
+    never against another country's row in this same table: if the
+    caller supplies benchmark_ctr_pct/benchmark_source (a position-based
+    CTR curve, or the client's stated target-market average), that's
+    used; otherwise the fallback is this dataset's own impression-
+    weighted average CTR across every material row — an aggregate, not
+    any single peer country's number, so no one row can become the bar
+    every other row is told to match (the exact bug the old best-country
+    benchmark had). Countries outside target_countries (when supplied)
+    are labeled explicitly as out-of-market instead of getting an
+    "expand" recommendation off CTR alone. A row whose CTR is >2x the
+    highest CTR among all other rows, with volume small next to the
+    top-impression row, is flagged as a possible anomaly (small-sample
+    luck) instead of a confident action. Country codes are resolved to
+    full names via _country_label so nothing renders as an unexplained
+    code."""
     candidates = [r for r in country_rows if float(r.get("impressions", 0) or 0) >= _COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS]
     if not candidates:
         return {"material": [], "low_signal": None}
 
-    material_pool = [
-        r for r in candidates
-        if float(r.get("impressions", 0) or 0) >= _COUNTRY_MATERIAL_MIN_IMPRESSIONS
-        or float(r.get("clicks", 0) or 0) >= _COUNTRY_MATERIAL_MIN_CLICKS
-    ]
+    material_pool = [r for r in candidates if float(r.get("clicks", 0) or 0) >= minimum_click_threshold]
+    low_signal_rows = [r for r in candidates if float(r.get("clicks", 0) or 0) < minimum_click_threshold]
     if not material_pool:
-        return {"material": [], "low_signal": _summarize_low_signal_countries([
-            r for r in candidates if float(r.get("clicks", 0) or 0) <= _COUNTRY_LOW_SIGNAL_MAX_CLICKS
-        ])}
-    # Best-CTR reference is drawn from material_pool, not the full
-    # low-signal-inclusive candidates list (2026-09-11 fix, confirmed live
-    # on a real report): a country with a handful of clicks can hit a high
-    # CTR by pure chance (e.g. 1 click off 20 impressions), and letting
-    # that become the benchmark every material country gets told to match
-    # undermines the fix's credibility — same problem the material/
-    # low-signal split exists to prevent, just leaking into the comparator
-    # instead of the display rows.
-    best = max(material_pool, key=lambda r: float(r.get("ctr", 0) or 0))
-    best_ctr_pct = float(best.get("ctr", 0) or 0) * 100
-    best_label = _country_label(best.get("country", ""))
+        return {"material": [], "low_signal": _summarize_low_signal_countries(low_signal_rows)}
+
+    target_set = {str(t).strip().lower() for t in target_countries} if target_countries else None
+
+    if benchmark_ctr_pct is not None and benchmark_source:
+        bench_ctr_pct, bench_source = benchmark_ctr_pct, benchmark_source
+    else:
+        agg_clicks = sum(float(r.get("clicks", 0) or 0) for r in material_pool)
+        agg_impressions = sum(float(r.get("impressions", 0) or 0) for r in material_pool)
+        bench_ctr_pct = round(agg_clicks / agg_impressions * 100, 1) if agg_impressions else 0.0
+        bench_source = "this dataset's own impression-weighted average CTR across all material countries"
+
+    top_impression_row = max(material_pool, key=lambda r: float(r.get("impressions", 0) or 0))
+    top_impression_clicks = float(top_impression_row.get("clicks", 0) or 0)
 
     material = []
     for r in material_pool:
@@ -2791,15 +2863,39 @@ def build_high_potential_countries(country_rows: list[dict]) -> dict:
         clicks = float(r.get("clicks", 0) or 0)
         ctr_pct = float(r.get("ctr", 0) or 0) * 100
         label = _country_label(r.get("country", ""))
-        if r is best or ctr_pct >= best_ctr_pct * 0.6:
+        code = str(r.get("country", "")).strip().lower()
+
+        others_max_ctr = max(
+            (float(o.get("ctr", 0) or 0) * 100 for o in material_pool if o is not r), default=0.0
+        )
+        is_anomaly = (
+            others_max_ctr > 0 and ctr_pct > others_max_ctr * _COUNTRY_ANOMALY_CTR_MULTIPLE
+            and clicks < top_impression_clicks
+        )
+        out_of_market = target_set is not None and code not in target_set
+
+        if is_anomaly:
+            fix = (
+                f"CTR here ({ctr_pct:.1f}%) is unusually high relative to volume ({int(clicks):,} clicks) — "
+                f"recommend checking query-level breakdown (branded vs. non-branded) before treating this as "
+                f"a targeting opportunity."
+            )
+        elif out_of_market:
+            fix = (
+                f"{label} is outside the client's stated target markets — not recommending budget expansion "
+                f"off CTR alone; check query-level intent (branded vs. non-branded) for this country first."
+            )
+        elif ctr_pct >= bench_ctr_pct:
             fix = (
                 f"Expand budget/content targeting for {label} — already converting {int(clicks):,} clicks "
-                f"at a {ctr_pct:.1f}% click-through rate, worth doubling down on."
+                f"at a {ctr_pct:.1f}% click-through rate, at or above the {bench_ctr_pct:.1f}% benchmark "
+                f"(source: {bench_source})."
             )
         else:
             fix = (
                 f"Localize title, meta description, and currency/language cues for {label} to close the "
-                f"click-through-rate gap — currently {ctr_pct:.1f}% vs {best_label}'s {best_ctr_pct:.1f}%."
+                f"click-through-rate gap — currently {ctr_pct:.1f}% vs the {bench_ctr_pct:.1f}% benchmark "
+                f"(source: {bench_source})."
             )
         material.append({
             "country": label, "impressions": int(impressions), "clicks": int(clicks),
@@ -2807,11 +2903,6 @@ def build_high_potential_countries(country_rows: list[dict]) -> dict:
         })
     material.sort(key=lambda r: r["impressions"], reverse=True)
 
-    material_codes = {r.get("country") for r in material_pool}
-    low_signal_rows = [
-        r for r in candidates
-        if r.get("country") not in material_codes and float(r.get("clicks", 0) or 0) <= _COUNTRY_LOW_SIGNAL_MAX_CLICKS
-    ]
     return {"material": material, "low_signal": _summarize_low_signal_countries(low_signal_rows)}
 
 
@@ -2860,13 +2951,19 @@ def add_branded_vs_nonbranded_slide(
     y += Inches(0.3) * headline_lines + Inches(0.1)
 
     rows = [
-        ("Branded", f"{branded['clicks']:,}", f"{branded['impressions']:,}", f"{branded['ctr_pct']:.1f}%", f"{branded['avg_position']:.1f}"),
-        ("Non-Branded", f"{nonbranded['clicks']:,}", f"{nonbranded['impressions']:,}", f"{nonbranded['ctr_pct']:.1f}%", f"{nonbranded['avg_position']:.1f}"),
+        ("Branded", f"{branded['clicks_pct']:.1f}%", f"{branded['impressions_pct']:.1f}%", f"{branded['ctr_pct']:.1f}%", f"{branded['avg_position']:.1f}"),
+        ("Non-Branded", f"{nonbranded['clicks_pct']:.1f}%", f"{nonbranded['impressions_pct']:.1f}%", f"{nonbranded['ctr_pct']:.1f}%", f"{nonbranded['avg_position']:.1f}"),
     ]
     y = _draw_table(
-        slide, ["Query Group", "Clicks", "Impressions", "CTR", "Avg. Position"], rows, y,
+        slide, ["Query Group", "Clicks (%)", "Impressions (%)", "CTR", "Avg. Position"], rows, y,
         col_widths=[3.0, 2.3, 2.3, 2.3, 2.2], left=left, width=width, row_height=0.35,
-    ) + Inches(0.2)
+    )
+    footnote = (
+        f"Based on {branded['clicks']:,} branded / {nonbranded['clicks']:,} non-branded clicks across "
+        f"{branded['impressions']:,} / {nonbranded['impressions']:,} impressions."
+    )
+    _textbox(slide, left, y, width, Inches(0.2), footnote, size=9, color=TEXT_MUTED)
+    y += Inches(0.28)
 
     demand_gap = narrative.get("demand_gap")
     if demand_gap:
@@ -2910,14 +3007,34 @@ def add_search_opportunities_pages_slide(prs: Presentation, high_pages: list[dic
     y = Inches(1.05)
     _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages", size=12.5, bold=True, color=_accent())
     y += Inches(0.28)
+    row_cap = 9
+    shown = high_pages[:row_cap]
     rows = [
         (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["fix"])
-        for r in high_pages
+        for r in shown
     ]
-    _draw_table(
+    y = _draw_table(
         slide, ["Page", "Impressions", "CTR", "Position", "Fix"], rows, y,
-        col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=9, row_height=0.4, wrap_cols={4},
-    )
+        col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=row_cap, row_height=0.4, wrap_cols={4},
+    ) + Inches(0.15)
+
+    # KEY INSIGHTS (2026-09-16 user spec): lead with the highest business-
+    # value (commercial/product) page if one exists, state the CTR-vs-
+    # RANKING lever split across the full flagged set (not just what's
+    # shown), and disclose how many candidates exist beyond the table.
+    insights = []
+    commercial = next((r for r in high_pages if str(r.get("page_type") or "").lower() in ("product", "commercial")), None)
+    if commercial:
+        insights.append(
+            f"\"{commercial['page']}\" (position {commercial['position']:.1f}, {commercial['impressions']:,} "
+            f"impressions, {commercial['lever']} lever) carries direct commercial intent — unlike the "
+            f"surrounding blog/informational pages, this one drives revenue directly."
+        )
+    ctr_count = sum(1 for r in high_pages if r["lever"] == "CTR")
+    ranking_count = sum(1 for r in high_pages if r["lever"] == "RANKING")
+    insights.append(f"{ranking_count} of {len(high_pages)} pages need a ranking push, not a CTR fix; {ctr_count} are visible on page 1 and need a click-through fix.")
+    insights.append(f"Showing top {len(shown)} of {len(high_pages)} pages below CTR benchmark.")
+    _insights_strip(slide, left, y, width, insights, max_y=SLIDE_H - Inches(0.4))
     return slide
 
 
@@ -4511,10 +4628,18 @@ _PROGRAMMATIC_MIN_CLUSTER_VOLUME = 300
 # the eligibility flow asks to rule out before recommending page
 # generation, not a second real sub-page.
 _PROGRAMMATIC_DEDUP_OVERLAP = 0.6
+# String-similarity floor for "this is a typo/near-identical spelling of
+# that word," e.g. "certifed" vs "certified" (2026-09-16 user spec, Step 1)
+# — high enough that genuinely different short words don't false-positive.
+_PROGRAMMATIC_TYPO_RATIO = 0.82
 
 
 def _keyword_tokens(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2}
+
+
+def _fuzzy_token_match(token: str, other_tokens: set[str]) -> bool:
+    return any(difflib.SequenceMatcher(None, token, t).ratio() >= _PROGRAMMATIC_TYPO_RATIO for t in other_tokens)
 
 
 def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | None):
@@ -4546,7 +4671,9 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
         hub_tokens = _keyword_tokens(label)
         top_keywords = sorted(rows_for_cluster, key=lambda r: _num(r.get("search_volume")), reverse=True)
         sub_slugs: list[str] = []
+        sub_keywords: list[str] = []
         sub_token_sets: list[set[str]] = []
+        quality_flags: list[str] = []
         for r in top_keywords:
             keyword = r.get("keyword", "")
             slug = _slugify(keyword)
@@ -4562,15 +4689,33 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             # uniqueness signal — same distinctive word(s) means same
             # intent, different distinctive words means a different page.
             tokens = _keyword_tokens(keyword) - hub_tokens
-            if not tokens:
-                continue  # nothing left but the cluster topic itself — same intent as the hub page
-            is_near_duplicate = any(
-                len(tokens & seen) / max(1, min(len(tokens), len(seen))) >= _PROGRAMMATIC_DEDUP_OVERLAP
-                for seen in sub_token_sets
-            )
-            if is_near_duplicate:
+            # Step 1 (2026-09-16 user spec): a leftover token that's just a
+            # MISSPELLING of a hub-topic word (e.g. "certifed" vs
+            # "certified") isn't a distinct sub-intent — it's the hub topic
+            # with a typo. Fuzzy-match every leftover token against the hub
+            # tokens; if none survive as genuinely new, this is
+            # SUBPAGE_DUPLICATES_HUB, not a real sub-page.
+            genuinely_new = {t for t in tokens if not _fuzzy_token_match(t, hub_tokens)}
+            if not genuinely_new:
+                if tokens:
+                    quality_flags.append(f"SUBPAGE_DUPLICATES_HUB: \"{keyword}\" is a typo/near-identical variant of the hub topic itself, not a distinct sub-intent — excluded.")
+                continue  # nothing left but the cluster topic (or a misspelling of it) — same intent as the hub page
+            # Step 2: flag as NEAR_DUPLICATE_PAIR if this keyword's leftover
+            # tokens overlap an already-kept sub-page's either by exact
+            # jaccard overlap (word-order variants) or fuzzy per-token match
+            # (tense/spelling variants, e.g. "calculating" vs "calculate").
+            dup_of = None
+            for seen_keyword, seen in zip(sub_keywords, sub_token_sets):
+                jaccard = len(tokens & seen) / max(1, min(len(tokens), len(seen)))
+                fuzzy_all = tokens and all(_fuzzy_token_match(t, seen) for t in tokens)
+                if jaccard >= _PROGRAMMATIC_DEDUP_OVERLAP or fuzzy_all:
+                    dup_of = seen_keyword
+                    break
+            if dup_of:
+                quality_flags.append(f"NEAR_DUPLICATE_PAIR: \"{keyword}\" is not a distinct intent from \"{dup_of}\" already kept — excluded, not counted twice.")
                 continue
             sub_slugs.append(slug)
+            sub_keywords.append(keyword)
             sub_token_sets.append(tokens)
             if len(sub_slugs) == 4:
                 break
@@ -4578,12 +4723,15 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             continue  # not enough genuinely distinct sub-pages to call this a template pattern
 
         subpages = ", ".join(f"/{hub_slug}/{s}" for s in sub_slugs)
-        items.append(
+        item = (
             f"{label} ({int(cluster_volume):,} combined monthly searches, {len(sub_slugs)} distinct sub-intents "
             f"eligible): main hub page /{hub_slug}, with sub-pages {subpages}. Each sub-page needs genuinely "
             "unique content per intent — canonical/noindex any page that ends up too similar to another rather "
             "than publishing near-duplicates."
         )
+        if quality_flags:
+            item += " Data-quality note: " + " ".join(quality_flags)
+        items.append(item)
     if not items:
         return None
 

@@ -122,14 +122,44 @@ def _quick_wins(breakdown: list[dict], current_score: int) -> list[dict]:
     return wins
 
 
+def _flag_inconsistent_rows(quick_wins: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Data-quality guard (2026-09-16 user spec, Step 1): a metric already
+    at/near the max score (100) can't have a worse 'if fixed' projection,
+    and fixing a metric can never legitimately produce a negative score
+    delta (our own self-consistent before/after model guarantees this by
+    construction, so this should normally find nothing — it exists to
+    catch a future regression or corrupted upstream data rather than a
+    case expected to fire today). Flagged rows are excluded from every
+    downstream ranking/projection/insight, surfaced only via their own
+    explicit data-quality note."""
+    consistent, inconsistent = [], []
+    for w in quick_wins:
+        if (w["score"] >= 100 and w["score_if_fixed"] < w["score"]) or w["score_delta"] < 0:
+            inconsistent.append(w)
+        else:
+            consistent.append(w)
+    return consistent, inconsistent
+
+
 def _combined_projection(breakdown: list[dict], quick_wins: list[dict], current_score: int, top_n: int = 2) -> dict:
-    top = [w for w in quick_wins if w["score_delta"] > 0][:top_n]
+    # Top metrics are the ones with the greatest REAL improvement
+    # potential — ranked by how far current value exceeds its good
+    # threshold (value/p10, as a ratio), not by score_delta (2026-09-16
+    # user spec, Step 2) — a metric can cost few points today yet still be
+    # wildly over its threshold, and that's the one worth naming first.
+    ranked = sorted(
+        (w for w in quick_wins if w["score_delta"] > 0),
+        key=lambda w: (w["value"] / w["p10"]) if w["p10"] else 0,
+        reverse=True,
+    )
+    top = ranked[:top_n]
     overrides = {w["id"]: w["p10"] for w in top}
     own_before = _overall_score(breakdown)
     own_after = _overall_score(breakdown, overrides)
     delta = own_after - own_before
     return {
         "metrics": [w["label"] for w in top],
+        "metric_ids": [w["id"] for w in top],
         "score_before": current_score,
         "score_after": min(100, current_score + delta),
     }
@@ -195,6 +225,7 @@ def _extract_script_weight(audits: dict, site_url: str, limit: int = 5) -> dict 
         "total_js_bytes": total_bytes,
         "third_party_bytes": third_party_bytes,
         "third_party_pct": round(third_party_bytes / total_bytes * 100) if total_bytes else 0,
+        "total_script_count": len(scripts),
         "top_scripts": scripts[:limit],
         "top_waste": waste_items[:limit],
     }
@@ -323,7 +354,8 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
     # relative to the number the client's actual PSI dashboard shows, so the
     # report never contradicts what they can go verify themselves.
     current_score = performance_score if performance_score is not None else _overall_score(breakdown)
-    quick_wins = _quick_wins(breakdown, current_score) if breakdown else []
+    quick_wins_all = _quick_wins(breakdown, current_score) if breakdown else []
+    quick_wins, inconsistent_rows = _flag_inconsistent_rows(quick_wins_all)
     combined_projection = _combined_projection(breakdown, quick_wins, current_score) if quick_wins else None
 
     return {
@@ -343,6 +375,7 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
         "current_score": current_score,
         "score_breakdown": breakdown,
         "quick_wins": quick_wins,
+        "inconsistent_rows": inconsistent_rows,
         "combined_projection": combined_projection,
         "script_weight": _extract_script_weight(audits, url),
         "core_web_vitals": {

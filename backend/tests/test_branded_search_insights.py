@@ -36,11 +36,13 @@ def test_branded_share_of_clicks_is_headline_number():
     assert comparison["nonbranded"]["clicks"] == 20
 
 
-def test_high_potential_page_flagged_for_near_page_one_position():
+def test_high_potential_page_flagged_for_ranking_lever_below_page_one():
     pages = [{"page": "https://x.com/a", "impressions": 500, "clicks": 5, "ctr": 0.01, "position": 12.0}]
     flagged = build_high_potential_pages(pages)
     assert len(flagged) == 1
-    assert "page-1" in flagged[0]["fix"]
+    assert flagged[0]["lever"] == "RANKING"
+    assert "isn't ranking on page 1" in flagged[0]["fix"]
+    assert "title/meta rewrite won't move clicks" in flagged[0]["fix"]
 
 
 def test_high_potential_page_flagged_for_low_ctr_in_band():
@@ -49,12 +51,37 @@ def test_high_potential_page_flagged_for_low_ctr_in_band():
     pages = [{"page": "https://x.com/b", "impressions": 1000, "clicks": 5, "ctr": 0.005, "position": 5.0}]
     flagged = build_high_potential_pages(pages)
     assert len(flagged) == 1
+    assert flagged[0]["lever"] == "CTR"
     assert "click-through-rate gap" in flagged[0]["fix"]
+    assert "source:" in flagged[0]["fix"]
 
 
 def test_page_below_impression_floor_excluded():
     pages = [{"page": "https://x.com/c", "impressions": 10, "clicks": 0, "ctr": 0.0, "position": 15.0}]
     assert build_high_potential_pages(pages) == []
+
+
+def test_page_lever_never_glues_ctr_and_ranking():
+    # Position 12 (RANKING territory) with a terrible CTR too — must state
+    # only the RANKING fix, never a CTR rewrite glued onto it.
+    pages = [{"page": "https://x.com/z", "impressions": 500, "clicks": 1, "ctr": 0.002, "position": 12.0}]
+    flagged = build_high_potential_pages(pages)
+    assert flagged[0]["lever"] == "RANKING"
+    assert "Rewrite title/meta" not in flagged[0]["fix"]
+
+
+def test_country_benchmark_never_cites_another_countrys_raw_ctr():
+    # Old behavior benchmarked every country against the single best-CTR
+    # peer row; must now cite an aggregate/external source, never a bare
+    # peer country CTR comparison like "vs France's 9.0%".
+    countries = [
+        {"country": "usa", "clicks": 50, "impressions": 1500, "ctr": 50 / 1500},
+        {"country": "fra", "clicks": 20, "impressions": 1000, "ctr": 90 / 1000},
+    ]
+    result = build_high_potential_countries(countries)
+    for r in result["material"]:
+        assert "source:" in r["fix"] or "outside the client's stated target markets" in r["fix"] or "checking query-level breakdown" in r["fix"]
+        assert "vs France" not in r["fix"] and "vs United States" not in r["fix"]
 
 
 def test_page_with_no_flag_reason_not_included():
