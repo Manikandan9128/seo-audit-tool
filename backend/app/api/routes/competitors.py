@@ -54,11 +54,22 @@ async def upload_semrush_file(
         own_norm = _normalize_domain(
             (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
         )
+
+        def _same_site(a: str, b: str) -> bool:
+            # Exact match, or either is a subdomain of the other (e.g. the
+            # client's own site shows up in the export as "shop.bharatbenz.com"
+            # or "trucks.bharatbenz.com" rather than the bare root domain —
+            # real Semrush exports mix both forms depending on what was
+            # actually queried) — a bare "." + root suffix check so it can't
+            # also match an unrelated domain that merely ends with the same
+            # letters (e.g. "notbharatbenz.com").
+            return a == b or a.endswith("." + b) or b.endswith("." + a)
+
         file_domains = set()
         for row in parsed_data.get("rows", []):
             file_domains.update((row.get("domain_positions") or {}).keys())
         file_domains_norm = {_normalize_domain(d) for d in file_domains}
-        if file_domains_norm and own_norm not in file_domains_norm:
+        if file_domains_norm and not any(_same_site(own_norm, d) for d in file_domains_norm):
             raise HTTPException(
                 status_code=400,
                 detail=(
