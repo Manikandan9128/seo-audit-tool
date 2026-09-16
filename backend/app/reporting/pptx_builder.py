@@ -1404,13 +1404,33 @@ def add_seo_issues_slide(
         errors = [f"{e['issue']} ({_issue_count_label(e['pages'], total_crawled)})" for e in error_entries]
         warnings = [f"{w['issue']} ({_issue_count_label(w['pages'], total_crawled)})" for w in warning_entries]
     else:
-        issues = list(audit.get("issues", []))
+        # No Semrush Site Audit issues rollup uploaded — fall back to our
+        # own homepage + up-to-20-page crawl. This used to list one raw
+        # "{issue} — {url}" row per occurrence, so the same issue type
+        # (e.g. "Title tag longer than 60 characters") showed up as several
+        # separate, uncounted rows instead of one row with a page count —
+        # the exact "not counting the numbers" gap the site_audit_issues
+        # branch above already solved with _issue_count_label. Group by
+        # issue text and count pages here too, so this fallback path looks
+        # and behaves the same way regardless of which Semrush exports a
+        # given client has or hasn't uploaded.
+        site_wide_issues = list(audit.get("issues", []))
+        per_page_issue_counts: dict[str, int] = {}
         if page_audit:
             for page in page_audit.get("pages", []):
                 for issue in page.get("issues", []):
-                    issues.append(f"{issue} — {page['url']}")
-        errors = [i for i in issues if any(k in i.lower() for k in ["not reachable", "https", "robots", "sitemap"])]
-        warnings = [i for i in issues if i not in errors]
+                    per_page_issue_counts[issue] = per_page_issue_counts.get(issue, 0) + 1
+        total_pages_checked = len(page_audit.get("pages", [])) if page_audit else None
+
+        def _is_error_text(text: str) -> bool:
+            return any(k in text.lower() for k in ["not reachable", "https", "robots", "sitemap"])
+
+        errors, warnings = [], []
+        for issue in site_wide_issues:
+            (errors if _is_error_text(issue) else warnings).append(issue)
+        for issue_text, count in sorted(per_page_issue_counts.items(), key=lambda kv: kv[1], reverse=True):
+            label = f"{issue_text} ({_issue_count_label(count, total_pages_checked)})"
+            (errors if _is_error_text(issue_text) else warnings).append(label)
 
     if not errors and not warnings:
         card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
