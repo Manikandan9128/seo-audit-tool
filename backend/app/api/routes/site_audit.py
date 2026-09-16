@@ -431,6 +431,54 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
         ]
 
 
+def _filter_own_keyword_rows(client: Client, data: dict) -> None:
+    """Classifies the client's OWN Keyword Gap rows (data["keyword_rows"] —
+    feeds the Target Keywords, Keyword Opportunity Analysis, Content SEO
+    Next Steps, and Programmatic SEO slides) for real business relevance,
+    the same way _filter_competitor_keywords already does for the separate
+    competitor-keyword-gap pipeline. A real Semrush Keyword Gap export
+    compares the client's own domain against several competitors in ONE
+    file and includes every keyword ANY compared domain ranks for —
+    including keywords entirely outside the client's own business that a
+    broader-scope competitor happens to rank for. Confirmed real: BharatBenz
+    (a commercial-truck brand) is compared against tatamotors.com in its own
+    Keyword Gap file — tatamotors.com also sells passenger cars, so "tata
+    nexon" / "tata sierra" / "tata motors share price" all showed up as
+    BharatBenz's own "Target Keywords" with zero filtering, because this row
+    set was never run through classify_keywords the way the competitor-facing
+    keyword_gap_rows already are. Same classify_keywords call, candidate cap,
+    and fail-open discipline as _filter_competitor_keywords."""
+    own_rows = data.get("keyword_rows") or []
+    if not own_rows:
+        return
+
+    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client_domain)) if t}
+
+    candidates = sorted(own_rows, key=lambda r: _num_for_sort(r.get("search_volume")), reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
+    candidate_keywords = [r.get("keyword", "") for r in candidates]
+    if not candidate_keywords:
+        return
+
+    client_description = _company_overview_context(data.get("company_overview"))
+    classifications = classify_keywords(client.name, client_domain, brand_tokens, candidate_keywords, client_description)
+    if not classifications:
+        return
+    keep = {"highly_relevant", "potentially_relevant"}
+    candidate_keyword_texts = {(r.get("keyword") or "").lower() for r in candidates}
+
+    # Only keywords actually sent to classification (top-volume candidate
+    # pool) are ever dropped — same discipline as _filter_search_queries
+    # below: a keyword outside that pool was never going to reach a slide's
+    # own row cap anyway, so it's left as-is rather than judged without ever
+    # being sent to the classifier.
+    data["keyword_rows"] = [
+        r for r in own_rows
+        if (r.get("keyword") or "").lower() not in candidate_keyword_texts
+        or classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
+    ]
+
+
 def _filter_search_queries(client: Client, data: dict) -> None:
     """Classifies GSC non-branded search queries for real business relevance
     before they become an "opportunity set" — teammate QA on the last
@@ -1731,6 +1779,7 @@ def _build_pptx_for_client(
     # ranking_page_types signal below, Next Steps findings — ever sees them.
     _filter_competitor_keywords(client, data)
     _filter_search_queries(client, data)
+    _filter_own_keyword_rows(client, data)
 
     competitor_narratives = _generate_competitor_narratives(
         client, data, on_progress=on_progress, content_issues=content_issues
