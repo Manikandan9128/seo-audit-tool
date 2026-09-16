@@ -431,39 +431,43 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
         ]
 
 
-def _filter_own_keyword_rows(client: Client, data: dict) -> None:
-    """Classifies the client's OWN Keyword Gap rows (data["keyword_rows"] —
-    feeds the Target Keywords, Keyword Opportunity Analysis, Content SEO
-    Next Steps, and Programmatic SEO slides) for real business relevance,
-    the same way _filter_competitor_keywords already does for the separate
-    competitor-keyword-gap pipeline. A real Semrush Keyword Gap export
-    compares the client's own domain against several competitors in ONE
-    file and includes every keyword ANY compared domain ranks for —
-    including keywords entirely outside the client's own business that a
-    broader-scope competitor happens to rank for. Confirmed real: BharatBenz
-    (a commercial-truck brand) is compared against tatamotors.com in its own
-    Keyword Gap file — tatamotors.com also sells passenger cars, so "tata
-    nexon" / "tata sierra" / "tata motors share price" all showed up as
-    BharatBenz's own "Target Keywords" with zero filtering, because this row
-    set was never run through classify_keywords the way the competitor-facing
-    keyword_gap_rows already are. Same classify_keywords call, candidate cap,
-    and fail-open discipline as _filter_competitor_keywords."""
-    own_rows = data.get("keyword_rows") or []
-    if not own_rows:
-        return
+def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dict | None) -> list[dict]:
+    """Core, side-effect-free relevance filter for the client's OWN Keyword
+    Gap rows — pulled out of _filter_own_keyword_rows so it can run INSIDE
+    _gather_report_data, right after these rows are first assembled and
+    before clustering/intent classification spend any AI budget on them,
+    instead of only after the whole report's other 6+ AI calls (clustering,
+    SEO Issues insights, Priority Issues page-wise, Core Problem, Structured
+    Data insights) have already run. Confirmed real (BharatBenz, 2026-09-16):
+    those 6 calls succeeding while this one silently failed-open twice in a
+    row strongly pointed at this filter simply running too late to get a
+    turn at a shared per-minute/daily AI quota, not a logic bug — moving it
+    to run first, before anything else competes for that same budget, is
+    the actual fix. A real Semrush Keyword Gap export compares the client's
+    own domain against several competitors in ONE file and includes every
+    keyword ANY compared domain ranks for — including keywords entirely
+    outside the client's own business that a broader-scope competitor
+    happens to rank for (BharatBenz, a commercial-truck brand, compared
+    against tatamotors.com, which also sells passenger cars, so "tata
+    nexon"/"tata sierra"/"tata motors share price" all showed up as
+    BharatBenz's own "Target Keywords" with zero filtering). Same
+    classify_keywords call, candidate cap, and fail-open discipline as
+    _filter_competitor_keywords."""
+    if not rows:
+        return rows
 
     client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
     brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client_domain)) if t}
 
-    candidates = sorted(own_rows, key=lambda r: _num_for_sort(r.get("search_volume")), reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
+    candidates = sorted(rows, key=lambda r: _num_for_sort(r.get("search_volume")), reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
     candidate_keywords = [r.get("keyword", "") for r in candidates]
     if not candidate_keywords:
-        return
+        return rows
 
-    client_description = _company_overview_context(data.get("company_overview"))
+    client_description = _company_overview_context(company_overview)
     classifications = classify_keywords(client.name, client_domain, brand_tokens, candidate_keywords, client_description)
     if not classifications:
-        return
+        return rows
     keep = {"highly_relevant", "potentially_relevant"}
     candidate_keyword_texts = {(r.get("keyword") or "").lower() for r in candidates}
 
@@ -472,8 +476,8 @@ def _filter_own_keyword_rows(client: Client, data: dict) -> None:
     # below: a keyword outside that pool was never going to reach a slide's
     # own row cap anyway, so it's left as-is rather than judged without ever
     # being sent to the classifier.
-    data["keyword_rows"] = [
-        r for r in own_rows
+    return [
+        r for r in rows
         if (r.get("keyword") or "").lower() not in candidate_keyword_texts
         or classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
     ]
@@ -1121,6 +1125,13 @@ def _gather_report_data(
     # "keyword gap opportunities" finding in semrush_analysis_service instead,
     # which intentionally wants both own + competitor rows).
     keyword_rows_all = _all_rows("keyword_gap", own_only=True)
+    # Relevance-filtered FIRST, before clustering/intent classification (or
+    # anything else in this function) spends any AI budget on these rows —
+    # see _filter_keyword_rows's docstring for why call ORDER, not just
+    # logic, was the actual bug here. Also means clustering only ever
+    # clusters real BharatBenz-relevant keywords instead of wasting part of
+    # its 100-keyword cap on off-topic ones that would've been dropped anyway.
+    keyword_rows_all = _filter_keyword_rows(client, keyword_rows_all, company_overview_result)
     # Real Semrush Keyword Gap exports carry no Cluster/Topic column at all
     # (confirmed against a real client file) — the manual reference decks'
     # grouped-by-topic keyword tables come from a different, clustered
@@ -1846,7 +1857,12 @@ def _build_pptx_for_client(
     # ranking_page_types signal below, Next Steps findings — ever sees them.
     _filter_competitor_keywords(client, data)
     _filter_search_queries(client, data)
-    _filter_own_keyword_rows(client, data)
+    # _filter_own_keyword_rows removed from here 2026-09-16 — the client's
+    # own keyword_rows are now filtered much earlier, inside
+    # _gather_report_data right after they're assembled (see
+    # _filter_keyword_rows), so this row set arriving in `data` is already
+    # filtered. Calling it again here would be a second, wasted
+    # classify_keywords AI call on data already filtered once.
 
     competitor_narratives = _generate_competitor_narratives(
         client, data, on_progress=on_progress, content_issues=content_issues
