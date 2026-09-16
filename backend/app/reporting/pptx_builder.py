@@ -1888,9 +1888,18 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
         })
         present = round(row["coverage_pct"] / 100 * pages)
         valid = round(row["valid_pct"] / 100 * pages)
+        # Traffic-weighted coverage (2026-09-16 spec: never a flat page-
+        # count percentage) when this bucket has real GA4 pageview data to
+        # weight by — falls back to the page-count basis only when there's
+        # genuinely no traffic data to weight with (valid_pct_traffic_
+        # weighted is None, not 0, in that case — see aggregate_schema_
+        # validation), never silently presented as if it were weighted.
+        traffic_weighted = row.get("valid_pct_traffic_weighted")
         part2.append({
             "schema_type": schema_label, "applicable": pages, "valid": valid,
-            "errors": max(present - valid, 0), "coverage_pct": row["valid_pct"],
+            "errors": max(present - valid, 0),
+            "coverage_pct": traffic_weighted if traffic_weighted is not None else row["valid_pct"],
+            "coverage_is_traffic_weighted": traffic_weighted is not None,
         })
 
     if total_pages:
@@ -1988,6 +1997,17 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
             slide, ["Schema Type", "Applicable Pages", "Valid", "Errors", "Coverage %"], rows2, y,
             col_widths=[2.6, 2.4, 2.0, 2.0, 3.1], left=left, width=width, row_cap=6, row_height=ROW_H,
         ) + Inches(0.15)
+        # Transparency note (2026-09-16 spec: never present a page-count %
+        # as if it were traffic-weighted) — only shown when at least one row
+        # actually IS traffic-weighted, so the reader knows Coverage % means
+        # "share of pageviews to valid pages," not "share of pages," where
+        # GA4 data made that possible; silently says nothing when no row has
+        # traffic data rather than claiming a basis that isn't true anywhere
+        # in the table.
+        if any(r.get("coverage_is_traffic_weighted") for r in part2) and y + Inches(0.22) <= SLIDE_H - Inches(0.5):
+            note = "Coverage % is traffic-weighted (share of pageviews reaching a valid page) where GA4 pageview data was available for that type; page-count share otherwise."
+            _textbox(slide, left, y, width, Inches(0.22), note, size=9.5, color=TEXT_MUTED)
+            y += Inches(0.26)
 
     insights = list((schema_ai_insights or {}).get("insights") or [])[:5]
     if insights:

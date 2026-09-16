@@ -211,7 +211,7 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     by_type: dict[str, dict] = {}
 
     def _bucket(label: str) -> dict:
-        return by_type.setdefault(label, {"pages": 0, "with_schema": 0, "valid": 0, "urls": []})
+        return by_type.setdefault(label, {"pages": 0, "with_schema": 0, "valid": 0, "urls": [], "valid_urls": []})
 
     def _dedup_key(u: str) -> str:
         p = urlparse(u)
@@ -274,6 +274,8 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
             )
             if not required_gap_for_type:
                 bucket["valid"] += 1
+                if url:
+                    bucket["valid_urls"].append(url)
         if url:
             bucket["urls"].append(url)
 
@@ -326,12 +328,27 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     by_page_type = []
     for page_type, b in by_type.items():
         pageviews = sum(pageviews_by_path.get(urlparse(u).path.rstrip("/"), 0) for u in b["urls"])
+        valid_pageviews = sum(pageviews_by_path.get(urlparse(u).path.rstrip("/"), 0) for u in b["valid_urls"])
+        # Traffic-weighted coverage (2026-09-16 spec: "never a flat page-
+        # count percentage") — what SHARE OF TRAFFIC to this page type is
+        # actually hitting a page with valid schema, not what share of
+        # pages. A type with 1 high-traffic valid page and 9 zero-traffic
+        # invalid ones is a very different business story from valid_pct's
+        # 10% reading. Only computed when this bucket actually has real
+        # GA4 pageview data to weight by — falls back to None (not 0, which
+        # would misread as "no traffic" rather than "no data") when
+        # analytics wasn't uploaded or none of this bucket's URLs matched
+        # the GA4 top_pages export, so the caller can fall back to
+        # valid_pct instead of dividing by zero or publishing a misleading
+        # figure.
+        valid_pct_traffic_weighted = round(100 * valid_pageviews / pageviews) if pageviews else None
         by_page_type.append({
             "page_type": page_type,
             "applicable_schema": _applicable_schema_label(page_type),
             "pages": b["pages"],
             "coverage_pct": round(100 * b["with_schema"] / b["pages"]) if b["pages"] else 0,
             "valid_pct": round(100 * b["valid"] / b["pages"]) if b["pages"] else 0,
+            "valid_pct_traffic_weighted": valid_pct_traffic_weighted,
             "pageviews": pageviews,
         })
     # SEO priority proxy: real traffic first (business value is what makes
