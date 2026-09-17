@@ -2512,25 +2512,37 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
     # declared (and returned `bottom`) height tracks what will actually
     # render closely enough that nothing positioned after it lands on top.
     col_widths_emu = [Inches(w) for w in col_widths] if col_widths else [width // n_cols] * n_cols
-    # Capped at 3 lines/row (2026-09-17 fix — confirmed live: Onboarding
-    # Breakdown's uncapped wrap let a long "Directional Suggestion" cell
-    # balloon a row past 1in tall, and with 5 such rows the table's real
-    # bottom ran 0.9in past the slide edge (caught by
-    # _audit_slide_geometry). An uncapped lines_needed makes the table
-    # exactly as tall as its longest cell demands regardless of how many
-    # rows there are or where on the slide it started — nothing here was
-    # ever checking that against the page. Cells are now truncated to match
-    # this cap (below) so the declared height and the rendered text agree.
-    row_line_caps = [1]  # header row never wraps
-    for row in shown_rows:
-        lines_needed = 1
-        if wrap_cols:
-            for j in wrap_cols:
-                if j < len(row):
-                    lines_needed = max(lines_needed, _wrap_lines(str(row[j]), col_widths_emu[j], size_pt=11))
-        row_line_caps.append(min(lines_needed, 3))
-    row_heights = [Inches(row_height) * cap for cap in row_line_caps]
-    height = sum(row_heights, Emu(0))
+    # Bounded against the actual page (2026-09-17 fix — confirmed live:
+    # Onboarding Breakdown's uncapped wrap let a long "Directional
+    # Suggestion" cell balloon a row past 1in tall, and with 5 such rows the
+    # table's real bottom ran 0.9in past the slide edge, caught by
+    # _audit_slide_geometry). A flat per-row line cap alone isn't enough —
+    # 5 rows at even 3 lines each can still overflow depending on `top` and
+    # row_height — so this tries progressively tighter uniform caps (3, then
+    # 2, then 1 line/row) and stops at the first one whose total height fits
+    # what's actually left on the slide below `top`. Cap 1 (single line,
+    # ellipsis-truncated — the same fallback _truncate_cell already uses on
+    # Priority Issues/Tech Fixes) always fits row_cap rows at row_height
+    # each, so this can never leave the table taller than the page.
+    available = SLIDE_H - top - Inches(0.3)
+
+    def _row_line_caps(max_lines: int) -> list[int]:
+        caps = [1]  # header row never wraps
+        for row in shown_rows:
+            lines_needed = 1
+            if wrap_cols:
+                for j in wrap_cols:
+                    if j < len(row):
+                        lines_needed = max(lines_needed, _wrap_lines(str(row[j]), col_widths_emu[j], size_pt=11))
+            caps.append(min(lines_needed, max_lines))
+        return caps
+
+    for max_lines in (3, 2, 1):
+        row_line_caps = _row_line_caps(max_lines)
+        row_heights = [Inches(row_height) * cap for cap in row_line_caps]
+        height = sum(row_heights, Emu(0))
+        if height <= available or max_lines == 1:
+            break
     gframe = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
     table = gframe.table
     table.first_row = False  # suppress the built-in banded-header theme so our colors apply cleanly
@@ -4603,16 +4615,39 @@ def add_keyword_opportunity_slide(prs: Presentation, keyword_rows: list[dict], m
     )
 
 
+def _same_domain(a: str | None, b: str | None) -> bool:
+    """Loose domain match (strip scheme/www/trailing slash, case-insensitive)
+    — used to confirm a Domain Overview row is really the client's own site
+    before trusting its backlinks_total, since a row's own "domain" field can
+    disagree with website_url on "www." (see site_audit.py's own-row
+    handling in domain_overview_rows)."""
+    def _norm(d: str | None) -> str:
+        d = (d or "").lower().strip()
+        for prefix in ("https://", "http://"):
+            if d.startswith(prefix):
+                d = d[len(prefix):]
+        return d.removeprefix("www.").rstrip("/")
+    return bool(a) and bool(b) and _norm(a) == _norm(b)
+
+
 def add_backlink_profile_slide(
     prs: Presentation, backlink_rows: list[dict], row_count: int, backlink_summary: dict | None = None,
-    own_domain_rating: int | None = None,
+    own_domain_rating: int | None = None, domain_overview_backlinks_total: int | None = None,
 ):
     """Ahrefs/Semrush-widget-style summary — Backlinks, Referring Domains,
     Domain Rating, % dofollow, plus a Link Attributes breakdown when a
     Semrush Backlink List PDF summary was uploaded (backlink_summary). That
     export's aggregate stats are a real site-wide count, more authoritative
     than what's computed from a possibly-partial backlinks CSV, so they're
-    preferred wherever both are available.
+    preferred wherever both are available. Total backlinks falls back next
+    to a Domain Overview upload's own aggregate (domain_overview_backlinks_
+    total) before the raw CSV row_count — row_count is the literal number of
+    rows in the uploaded Backlink List export, which silently equals
+    Semrush's export-tier row cap (e.g. exactly 10,000) rather than the
+    site's real total whenever the real count exceeds that cap (2026-09-17
+    fix — this mismatch against the Competitor Analysis table's own
+    Domain-Overview-sourced backlinks_total for the same site is why this
+    slide was pulled from the report entirely on 2026-09-08).
 
     Domain Rating itself is NOT sourced from Semrush at all (2026-08-28
     decision) — the manual report uses Ahrefs DR, a different metric on a
@@ -4632,7 +4667,12 @@ def add_backlink_profile_slide(
 
     ref_domains = {urlparse(r["source_url"]).netloc for r in backlink_rows if r.get("source_url")}
 
-    total_backlinks = backlink_summary["backlinks_total"] if backlink_summary else (row_count or None)
+    if backlink_summary:
+        total_backlinks = backlink_summary["backlinks_total"]
+    elif domain_overview_backlinks_total is not None:
+        total_backlinks = domain_overview_backlinks_total
+    else:
+        total_backlinks = row_count or None
     total_referring_domains = backlink_summary["referring_domains"] if backlink_summary else (len(ref_domains) or None)
     pct_dofollow = backlink_summary.get("follow_pct") if backlink_summary and backlink_summary.get("follow_pct") is not None else csv_pct_dofollow
     authority_score = own_domain_rating
@@ -5433,6 +5473,7 @@ def build_report(
     high_potential_pages: list[dict] | None = None,
     high_potential_countries: list[dict] | None = None,
     competitor_top_opportunities: list[str] | None = None,
+    content_issues: list[str] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -5458,6 +5499,7 @@ def build_report(
             schema_ai_insights, branded_vs_nonbranded_comparison, branded_vs_nonbranded_narrative,
             branded_vs_nonbranded_ai_insights, high_potential_pages, high_potential_countries,
             competitor_top_opportunities=competitor_top_opportunities,
+            content_issues=content_issues,
         )
     finally:
         _theme["footer"] = ""
@@ -5507,6 +5549,7 @@ def _build_report(
     high_potential_pages: list[dict] | None = None,
     high_potential_countries: list[dict] | None = None,
     competitor_top_opportunities: list[str] | None = None,
+    content_issues: list[str] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -5565,12 +5608,30 @@ def _build_report(
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
 
-    # Backlink Profile slide temporarily pulled from the report per user
-    # request 2026-09-08 — re-enable this call (function untouched below)
-    # once the backlink-total inconsistency (see pending_data_inconsistencies
-    # memory) is resolved.
-    # if backlink_rows or backlink_summary or own_domain_rating is not None:
-    #     add_backlink_profile_slide(prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating)
+    # Backlink Profile slide re-enabled 2026-09-17 — was pulled 2026-09-08
+    # over a real backlink-total mismatch (10,000 vs 33,800 on Lumber): this
+    # slide's own total fell back to `row_count`, the literal row count of
+    # the uploaded Backlink List CSV, which is Semrush's export-tier row cap
+    # on free/lower tiers — not the site's real total. Competitor Analysis
+    # (add_competitor_table_slide) never had this bug: it reads
+    # `backlinks_total` off a Domain Overview upload, a real site-wide
+    # aggregate stat. competitor_rows[0] is that same own-domain Domain
+    # Overview row when one was uploaded (see site_audit.py's
+    # domain_overview_rows, sorted own-row-first) — matched by domain here,
+    # not just assumed to be index 0, in case no own-site Domain Overview
+    # was ever uploaded and competitor_rows[0] is a real competitor instead.
+    if backlink_rows or backlink_summary or own_domain_rating is not None:
+        own_domain_overview_total = next(
+            (
+                r.get("backlinks_total") for r in (competitor_rows or [])
+                if r.get("backlinks_total") is not None and _same_domain(r.get("domain"), website_url)
+            ),
+            None,
+        )
+        add_backlink_profile_slide(
+            prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating,
+            domain_overview_backlinks_total=own_domain_overview_total,
+        )
 
     # Brand Citation Opportunities slide cut again 2026-09-09 per user
     # request ("remove as of now, will suggest if needed") — disambiguation
@@ -5779,6 +5840,15 @@ def _build_report(
             "pptx layout issues in generated report for %s (%d): %s",
             client_name, len(geometry_issues), "; ".join(geometry_issues),
         )
+        # Surfaced into the same content_issues list every other content-
+        # generation gap already reports through to the job record
+        # (2026-09-17 fix) — logger.warning alone meant a layout regression
+        # only ever showed up if someone happened to be reading server logs
+        # at generation time; it never reached the user who actually
+        # downloads and reviews the deck. Same list, same visibility as a
+        # failed AI-insights call or a failed keyword-sheet creation.
+        if content_issues is not None:
+            content_issues.append(f"Slide layout ({len(geometry_issues)} issue(s)): {'; '.join(geometry_issues)}")
 
     buf = BytesIO()
     prs.save(buf)

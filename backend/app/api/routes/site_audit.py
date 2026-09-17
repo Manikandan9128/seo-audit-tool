@@ -1956,6 +1956,7 @@ def _build_pptx_for_client(
             brand_citations=brand_citations,
             brand_wikipedia=brand_wikipedia,
             keyword_sheet_link=keyword_sheet_link,
+            content_issues=content_issues,
             **data,
         )
     except Exception as e:
