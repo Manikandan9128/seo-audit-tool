@@ -199,11 +199,24 @@ def get_sheets_oauth_email(db: Session) -> str | None:
     return row.value if row and row.value else None
 
 
+class SheetsTokenExpired(Exception):
+    """The stored Sheets OAuth refresh token itself is dead — most commonly
+    Google's hard 7-day refresh-token expiry on an External+Testing OAuth
+    consent screen (confirmed live 2026-09-17: `invalid_grant: Token has
+    been expired or revoked` on a connection set up just 9 days earlier).
+    Publishing the OAuth consent screen to Production in Google Cloud
+    Console removes this 7-day limit — a one-time Console change, not
+    something retriable in code. Until then this WILL recur on the same
+    cadence regardless of how the refresh is retried."""
+
+
 def get_sheets_oauth_credentials(db: Session):
     """Loads the app-owned Google account connected for creating competitor
     keyword Sheets (see google_sheets_service.py), refreshing the access
     token if expired and persisting the refreshed token back. Returns None
     if not connected — caller falls back to the service-account path."""
+    from google.auth.exceptions import RefreshError
+
     from app.integrations import google_oauth
     from app.integrations.crypto import decrypt, encrypt
 
@@ -211,7 +224,18 @@ def get_sheets_oauth_credentials(db: Session):
     refresh_row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN)
     if not access_row or not refresh_row or not access_row.value or not refresh_row.value:
         return None
-    creds = google_oauth.sheets_credentials_from_stored(decrypt(access_row.value), decrypt(refresh_row.value))
+    try:
+        creds = google_oauth.sheets_credentials_from_stored(decrypt(access_row.value), decrypt(refresh_row.value))
+    except RefreshError as e:
+        # Dead refresh token would otherwise fail this exact same way on
+        # every future report forever — clearing it now means
+        # get_sheets_oauth_email() goes back to "not connected" (a clean,
+        # obvious state in Settings) instead of a connection that LOOKS
+        # active but silently fails each time.
+        disconnect_sheets_oauth(db)
+        raise SheetsTokenExpired(
+            "Google Sheets connection expired (Google revoked the refresh token) — reconnect it in Settings > Google Sheets."
+        ) from e
     access_row.value = encrypt(creds.token)
     db.commit()
     return creds
