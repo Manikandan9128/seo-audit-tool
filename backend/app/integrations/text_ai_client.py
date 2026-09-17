@@ -335,8 +335,15 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
 # Previously meta-llama/llama-4-scout-17b-16e-instruct, deprecated by Groq
 # 2026-07-17 (404 model_not_found) — confirmed live 2026-09-12 forcing
 # every vision call onto Gemini and exhausting its daily quota. Swapped to
-# Groq's own documented replacement.
-GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
+# Groq's own documented replacement, then qwen3.6-27b ITSELF started 404ing
+# 2026-09-17 with "does not exist or you do not have access to it" — Groq's
+# own docs still list it as supported, so this reads as a per-account
+# entitlement/waitlist gate, not a renamed or retired model, and isn't
+# something a code fix alone can guarantee around. qwen3.8-27b is Groq's
+# other currently-documented vision model (same docs page) — tried second,
+# in case entitlement differs per model on this account, before falling all
+# the way to Gemini's much scarcer daily quota.
+GROQ_VISION_MODELS = ("qwen/qwen3.6-27b", "qwen/qwen3.8-27b")
 GROQ_VISION_TIMEOUT_SECONDS = 45
 
 
@@ -351,35 +358,43 @@ def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens
             f"prompt+image too large for Groq's shared TPM budget to leave room for the requested "
             f"output ({safe_max_tokens} available vs {max_tokens} needed) — skipping to next provider"
         )
-    _reserve_groq_budget(estimated_prompt_tokens + safe_max_tokens)
-    response = httpx.post(
-        GROQ_API_URL,
-        headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-        json={
-            "model": GROQ_VISION_MODEL,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
-                ],
-            }],
-            "max_tokens": safe_max_tokens,
-            # Qwen 3.6 27B only accepts "none" or "default" for
-            # reasoning_effort (unlike gpt-oss-120b's low/medium/high) — see
-            # the same reasoning-eats-max_tokens note on _try_groq above.
-            "reasoning_effort": "none",
-        },
-        timeout=60,
-    )
-    if response.status_code >= 400:
-        raise httpx.HTTPStatusError(
-            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
-            request=response.request,
-            response=response,
+    model_errors: list[str] = []
+    for model in GROQ_VISION_MODELS:
+        _reserve_groq_budget(estimated_prompt_tokens + safe_max_tokens)
+        response = httpx.post(
+            GROQ_API_URL,
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            json={
+                "model": model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
+                    ],
+                }],
+                "max_tokens": safe_max_tokens,
+                # Both Qwen vision models only accept "none" or "default" for
+                # reasoning_effort (unlike gpt-oss-120b's low/medium/high) —
+                # see the same reasoning-eats-max_tokens note on _try_groq.
+                "reasoning_effort": "none",
+            },
+            timeout=60,
         )
-    data = response.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
+        if response.status_code == 404:
+            # Model not found/not entitled on this account — try the next
+            # Groq vision model before giving up on Groq entirely.
+            model_errors.append(f"{model}: {response.status_code} {response.text[:200]}")
+            continue
+        if response.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+                request=response.request,
+                response=response,
+            )
+        data = response.json()
+        return (data["choices"][0]["message"]["content"] or "").strip()
+    raise RuntimeError(f"no Groq vision model available on this account: {'; '.join(model_errors)}")
 
 
 def _try_gemini_vision(prompt: str, image_bytes: bytes, mime_type: str) -> str:
@@ -409,8 +424,8 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
     """Same fallback shape as generate_text(), but for a prompt grounded in
     a real screenshot (e.g. the client's own homepage) instead of text
     alone. GROQ_MODEL itself is text-only, but the same free Groq key also
-    reaches Llama 4 Scout (see GROQ_VISION_MODEL/_try_groq_vision above),
-    tried first for the same fast-recovery-budget reason generate_text()
+    reaches Groq's vision models (see GROQ_VISION_MODELS/_try_groq_vision
+    above), tried first for the same fast-recovery-budget reason generate_text()
     tries Groq first — Gemini then Claude follow as before. Raises
     NoAIProviderConfigured if no key is set or every call fails."""
     if not settings.groq_api_key and not settings.gemini_api_key and not settings.claude_api_key:

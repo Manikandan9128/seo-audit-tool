@@ -11,6 +11,7 @@ of drift fails here first."""
 
 from pptx import Presentation
 
+from app.reporting import pptx_builder
 from app.reporting.pptx_builder import (
     _audit_slide_geometry,
     _draw_table,
@@ -136,3 +137,45 @@ def test_backlink_profile_prefers_domain_overview_total_over_csv_row_cap():
     ]
     assert "33,800" in texts
     assert "10,000" not in texts
+
+
+def test_seo_issues_insights_section_does_not_overlap_footer():
+    # Confirmed live on Geopits (2026-09-17): a real AI-generated headline +
+    # 4 supporting bullets + takeaway advanced y by a flat per-item guess
+    # with no check against the footer's fixed position, landing the
+    # takeaway line on top of the "{client} · {domain}" footer text.
+    pptx_builder._theme["footer"] = "Geopits  ·  www.geopits.com"
+    try:
+        audit = {"issues": []}
+        site_audit_issues = [
+            {"issue": f"Real error type {i}", "issue_type": "ERROR", "failed_checks": 10 + i}
+            for i in range(6)
+        ]
+        insights_ai = {
+            "headline": (
+                "A long, realistic AI-generated headline summarizing the dominant pattern across every "
+                "error and warning found on this crawl, written the way the real prompt actually produces it."
+            ),
+            "supporting": [
+                "A long supporting bullet point restating one specific finding with enough detail to wrap "
+                "across more than one line at this column width, same as real AI output regularly does.",
+                "Another long supporting bullet, similarly detailed, about a second distinct finding from "
+                "the same crawl, also long enough to wrap onto a second line here.",
+                "A third bullet, again realistically long, covering yet another distinct issue category "
+                "found across the site's crawled pages.",
+                "A fourth and final bullet, just as long as the others, rounding out the maximum four "
+                "supporting points this section ever renders.",
+            ],
+            "takeaway": (
+                "The majority of problems stem from missing structured data and oversized title tags "
+                "across the site's most heavily trafficked page templates."
+            ),
+        }
+
+        prs = Presentation()
+        add_seo_issues_slide(prs, audit, page_audit=None, site_audit_issues=site_audit_issues, insights_ai=insights_ai)
+
+        issues = _audit_slide_geometry(prs)
+        assert not any("overlap" in i for i in issues), issues
+    finally:
+        pptx_builder._theme["footer"] = ""

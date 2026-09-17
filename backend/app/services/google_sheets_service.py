@@ -64,7 +64,7 @@ def _sanitize_tab_title(name: str) -> str:
     return (cleaned or "Sheet")[:100]
 
 
-def create_combined_keyword_sheet(
+def _create_combined_keyword_sheet_inner(
     client_name: str, client_keyword_rows: list[dict], competitor_positions: dict[str, list[dict]], db,
     client_positions_rows: list[dict] | None = None,
 ) -> str | None:
@@ -159,3 +159,37 @@ def create_combined_keyword_sheet(
     ).execute()
 
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+
+
+def create_combined_keyword_sheet(
+    client_name: str, client_keyword_rows: list[dict], competitor_positions: dict[str, list[dict]], db,
+    client_positions_rows: list[dict] | None = None,
+) -> str | None:
+    """Thin wrapper around _create_combined_keyword_sheet_inner that catches
+    a dead refresh token at the point it actually fails. Confirmed live
+    2026-09-17: _resolve_credentials' own get_sheets_oauth_credentials call
+    already auto-disconnects on RefreshError, but only when the access
+    token is ALREADY expired at that moment — Credentials objects rebuilt
+    from storage (sheets_credentials_from_stored) carry no `expiry`, so
+    `creds.valid` reads True regardless of the refresh token's real state,
+    and the eager refresh check there never fires. The actual invalid_grant
+    only surfaces later, deep inside googleapiclient's own lazy refresh on
+    the first 401 from a real Sheets/Drive API call below — outside that
+    earlier catch entirely, and previously propagated as Google's raw
+    RefreshError tuple repr straight into the user-visible content_issues
+    list. Caught here instead, at the one place that wraps every real API
+    call this function makes."""
+    from google.auth.exceptions import RefreshError
+
+    from app.services.app_settings_service import SheetsTokenExpired, disconnect_sheets_oauth
+
+    try:
+        return _create_combined_keyword_sheet_inner(
+            client_name, client_keyword_rows, competitor_positions, db, client_positions_rows,
+        )
+    except RefreshError as e:
+        if db is not None:
+            disconnect_sheets_oauth(db)
+        raise SheetsTokenExpired(
+            "Google Sheets connection expired (Google revoked the refresh token) — reconnect it in Settings > Google Sheets."
+        ) from e

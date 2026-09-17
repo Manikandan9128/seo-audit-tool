@@ -1578,25 +1578,55 @@ def _seo_issues_insights_section(slide, top, insights_ai: dict):
     distinct visual weight per part so a reader can skim just the headline
     + takeaway without reading the supporting bullets, per the spec's own
     "one sentence a non-technical stakeholder could read" framing for the
-    takeaway line."""
+    takeaway line.
+
+    Every item advanced y by a flat guess regardless of how many lines it
+    actually wrapped to, with no check against the footer's own fixed
+    position (SLIDE_H - 0.4in) — confirmed live 2026-09-17: a long headline
+    or 4 wrapped supporting bullets pushed the takeaway line down onto the
+    "{client} · {domain}" footer text. Now advances by each item's real
+    wrapped-line count (same _wrap_lines heuristic used elsewhere in this
+    file) and stops adding items once the next one would cross into the
+    footer's zone, truncating the takeaway to one line as a last resort
+    instead of dropping it — it's the one line meant to survive a skim."""
     left, width = Inches(0.6), Inches(12.1)
+    max_y = SLIDE_H - Inches(0.55)  # stay clear of the footer at SLIDE_H - 0.4in
+    line_h = Inches(0.2)
     y = top
+    if y >= max_y:
+        return
+
     _textbox(slide, left, y, width, Inches(0.22), "INSIGHTS", size=9.5, bold=True, color=_accent())
     y += Inches(0.26)
 
     headline = insights_ai.get("headline") or ""
-    _textbox(slide, left, y, width, Inches(0.4), headline, size=12.5, bold=True, color=TEXT_DARK)
-    y += Inches(0.34)
+    if headline:
+        lines = _wrap_lines(headline, width, size_pt=12.5)
+        item_h = line_h * lines + Inches(0.14)
+        if y + item_h <= max_y:
+            _textbox(slide, left, y, width, line_h * lines, headline, size=12.5, bold=True, color=TEXT_DARK)
+            y += item_h
 
     for point in (insights_ai.get("supporting") or [])[:4]:
+        lines = _wrap_lines(point, width - Inches(0.18), size_pt=11)
+        item_h = line_h * lines + Inches(0.08)
+        if y + item_h > max_y:
+            break
         _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
-        _textbox(slide, left + Inches(0.18), y, width - Inches(0.18), Inches(0.3), point, size=11)
-        y += Inches(0.28)
+        _textbox(slide, left + Inches(0.18), y, width - Inches(0.18), line_h * lines, point, size=11)
+        y += item_h
 
     takeaway = insights_ai.get("takeaway")
     if takeaway:
-        y += Inches(0.05)
-        _textbox(slide, left, y, width, Inches(0.3), f"Takeaway: {takeaway}", size=11, bold=True, color=_accent())
+        text = f"Takeaway: {takeaway}"
+        lines = _wrap_lines(text, width, size_pt=11)
+        item_h = line_h * lines + Inches(0.05)
+        if y + item_h > max_y:
+            text = _truncate_cell(text, width / 914400, size_pt=11, max_lines=1)
+            lines, item_h = 1, line_h + Inches(0.05)
+        if y + item_h <= max_y:
+            y += Inches(0.05)
+            _textbox(slide, left, y, width, line_h * lines, text, size=11, bold=True, color=_accent())
 
 
 def _traffic_by_path(analytics: dict | None) -> tuple[dict[str, int], dict[str, int]]:
