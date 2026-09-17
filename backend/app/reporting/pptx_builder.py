@@ -980,12 +980,19 @@ def add_site_health_slide(
             "No Semrush Site Audit data uploaded yet.", size=12.5, color=TEXT_MUTED,
         )
 
-    card2 = _card(slide, Inches(4.5), Inches(1.2), Inches(3.6), Inches(2.6))
+    # Card grown from 2.6in to 3.0in and the AI Search Health line
+    # repositioned below _score_ring's own "full site crawl" sub-label
+    # (2026-09-17 fix — _audit_slide_geometry caught the two text boxes
+    # overlapping: the ring's diameter grew after this fixed y=3.45 was
+    # written, but nothing here tracked the ring's real bottom edge).
+    ring_cy, ring_diameter = Inches(1.85), Inches(1.4)
+    card2 = _card(slide, Inches(4.5), Inches(1.2), Inches(3.6), Inches(3.0))
     _textbox(slide, Inches(4.7), Inches(1.35), Inches(3), Inches(0.4), "Site Health", size=15, bold=True)
-    _score_ring(slide, Inches(5.6), Inches(1.85), Inches(1.4), health_pct, "full site crawl")
+    _score_ring(slide, Inches(5.6), ring_cy, ring_diameter, health_pct, "full site crawl")
     if site_audit_overview and site_audit_overview.get("ai_search_health_pct") is not None:
+        ring_label_bottom = ring_cy + ring_diameter + Inches(0.05) + Inches(0.35)
         _textbox(
-            slide, Inches(4.7), Inches(3.45), Inches(3.2), Inches(0.3),
+            slide, Inches(4.7), ring_label_bottom + Inches(0.05), Inches(3.2), Inches(0.3),
             f"AI Search Health: {site_audit_overview['ai_search_health_pct']}%", size=11.5, color=TEXT_MUTED, align=PP_ALIGN.CENTER,
         )
 
@@ -1435,8 +1442,38 @@ def add_seo_issues_slide(
         # (including the homepage) without double-counting.
         site_wide_issues = [i for i in audit.get("issues", []) if i not in per_page_issue_counts]
 
+        # No real severity comes back from this fallback's own crawler
+        # (_meta_issues in technical_seo_service.py returns a flat list of
+        # strings, no severity field) — unlike the site_audit_issues branch
+        # above, which gets Semrush's own ERROR/WARNING classification per
+        # issue type. Confirmed live on a Geopits regen where NO Semrush
+        # Site Audit Issues export was uploaded: this fallback ran, and the
+        # old keyword list here (only "not reachable"/https/robots/sitemap)
+        # never matches any of _meta_issues's 8 real issue strings, so every
+        # single finding landed in Warnings and the Errors column came up
+        # completely empty. A page missing an element outright (no title,
+        # no meta description, no h1, no canonical, no structured data at
+        # all) is a real on-page defect, not a style nitpick — those now
+        # classify as Errors, matching how Semrush itself treats the same
+        # findings (confirmed against a Semrush-sourced Geopits report the
+        # day before). Length/multiplicity/recommended-but-optional issues
+        # ("Title tag longer than 60 characters", "Multiple <h1> tags
+        # found", "Missing recommended schema types: ...") stay Warnings.
         def _is_error_text(text: str) -> bool:
-            return any(k in text.lower() for k in ["not reachable", "https", "robots", "sitemap"])
+            lower = text.lower()
+            if any(k in lower for k in ["not reachable", "https", "robots", "sitemap"]):
+                return True
+            return any(
+                lower.startswith(k) or lower == k
+                for k in [
+                    "missing <title> tag",
+                    "missing meta description",
+                    "no <h1> tag found",
+                    "missing canonical tag",
+                    "missing mobile viewport meta tag",
+                    "missing structured data (json-ld)",
+                ]
+            )
 
         errors, warnings = [], []
         for issue in site_wide_issues:
@@ -2475,14 +2512,24 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
     # declared (and returned `bottom`) height tracks what will actually
     # render closely enough that nothing positioned after it lands on top.
     col_widths_emu = [Inches(w) for w in col_widths] if col_widths else [width // n_cols] * n_cols
-    row_heights = [Inches(row_height)]  # header row never wraps
+    # Capped at 3 lines/row (2026-09-17 fix — confirmed live: Onboarding
+    # Breakdown's uncapped wrap let a long "Directional Suggestion" cell
+    # balloon a row past 1in tall, and with 5 such rows the table's real
+    # bottom ran 0.9in past the slide edge (caught by
+    # _audit_slide_geometry). An uncapped lines_needed makes the table
+    # exactly as tall as its longest cell demands regardless of how many
+    # rows there are or where on the slide it started — nothing here was
+    # ever checking that against the page. Cells are now truncated to match
+    # this cap (below) so the declared height and the rendered text agree.
+    row_line_caps = [1]  # header row never wraps
     for row in shown_rows:
         lines_needed = 1
         if wrap_cols:
             for j in wrap_cols:
                 if j < len(row):
                     lines_needed = max(lines_needed, _wrap_lines(str(row[j]), col_widths_emu[j], size_pt=11))
-        row_heights.append(Inches(row_height) * lines_needed)
+        row_line_caps.append(min(lines_needed, 3))
+    row_heights = [Inches(row_height) * cap for cap in row_line_caps]
     height = sum(row_heights, Emu(0))
     gframe = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
     table = gframe.table
@@ -2507,7 +2554,11 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
     for i, row in enumerate(rows[:row_cap], start=1):
         for j, val in enumerate(row):
             cell = table.cell(i, j)
-            cell.text = str(val)
+            text = str(val)
+            if wrap_cols and j in wrap_cols:
+                width_in = col_widths_emu[j] / 914400
+                text = _truncate_cell(text, width_in, size_pt=11, max_lines=row_line_caps[i])
+            cell.text = text
             cell.fill.solid()
             cell.fill.fore_color.rgb = ROW_ALT if i % 2 == 0 else WHITE
             cell.text_frame.word_wrap = wrap_cols is not None and j in wrap_cols
