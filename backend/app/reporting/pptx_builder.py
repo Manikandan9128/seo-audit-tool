@@ -1401,6 +1401,7 @@ def add_seo_issues_slide(
     slide = _blank_slide(prs)
     _content_header(slide, "SEO Issues")
 
+    scope_note = None
     if site_audit_issues:
         # Semrush Site Audit's own issue-type rollup — a real full-site crawl
         # result (hundreds of pages, ~95 issue categories), strictly richer
@@ -1482,6 +1483,33 @@ def add_seo_issues_slide(
             label = f"{issue_text} ({_issue_count_label(count, total_pages_checked)})"
             (errors if _is_error_text(issue_text) else warnings).append(label)
 
+        # This whole fallback only ever covers the ~20 pages this tool
+        # crawled directly — but Priority Issues - Page Wise reads a much
+        # bigger, real dataset (Semrush's Crawled Pages export,
+        # site_audit_pages_rows, often 1,000+ pages) whenever that export IS
+        # uploaded, which it can be even when the separate Site Audit Issues
+        # export (the one this slide actually needs) isn't. Confirmed real:
+        # a Geopits report where SEO Issues showed 2 tiny rows while Priority
+        # Issues, one slide over, listed 1,137 issues across 150 blog pages
+        # alone — same client, same crawl, reading two different Semrush
+        # exports with wildly different scope, with nothing on either slide
+        # explaining why. This note makes that gap visible instead of
+        # letting the two slides silently disagree.
+        real_totals = _canonical_page_totals(site_audit_pages_rows, None)
+        if real_totals and real_totals.get("with_issues") and (
+            not total_pages_checked or real_totals["total"] > total_pages_checked
+        ):
+            total_issue_count = sum(
+                int(float(r.get("issues") or 0)) for r in (site_audit_pages_rows or []) if r.get("issues")
+            )
+            scope_note = (
+                f"This breakdown covers only the {total_pages_checked or 0} page(s) this tool crawled directly. "
+                f"Semrush's full crawl found {real_totals['with_issues']:,} of {real_totals['total']:,} pages with "
+                f"at least one issue ({total_issue_count:,} issues total) — see Priority Issues - Page Wise for the "
+                "full page-by-page list, or upload Semrush's Site Audit Issues export to see these broken down by "
+                "type here."
+            )
+
     if not errors and not warnings:
         card = _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
         _textbox(slide, Inches(0.9), Inches(1.3), Inches(10), Inches(0.4), "No issues found on the checked pages.", size=14, color=GOOD)
@@ -1495,8 +1523,13 @@ def add_seo_issues_slide(
     # 1.6in of card height was previously just empty space at the bottom of
     # each card, now reclaimed for the insights section instead.
     has_insights = bool(insights_ai and insights_ai.get("headline"))
+    has_scope_note = bool(scope_note)
+    scope_note_line_h = Inches(0.19)
+    scope_note_lines = _wrap_lines(scope_note, Inches(12.1), size_pt=10) if has_scope_note else 0
+    scope_note_h = scope_note_line_h * scope_note_lines
     col_top = Inches(1.1)
-    col_height = Inches(4.0) if has_insights else Inches(5.6)
+    reserved = Inches(0) if not has_scope_note else scope_note_h + Inches(0.15)
+    col_height = (Inches(4.0) if has_insights else Inches(5.6)) - reserved
     col_width = Inches(5.85)
     columns = [("Errors", errors, BAD, Inches(0.6)), ("Warnings", warnings, WARN, Inches(6.85))]
     row_h = Inches(0.32)
@@ -1526,8 +1559,16 @@ def add_seo_issues_slide(
             _issue_row(slide, col_left + Inches(0.3), y, col_width - Inches(0.6), issue, severity=("error" if color == BAD else "warn"))
             y += row_h
 
+    note_bottom = col_top + col_height
+    if has_scope_note:
+        note_bottom += Inches(0.15)
+        _textbox(
+            slide, Inches(0.6), note_bottom, Inches(12.1), scope_note_h,
+            scope_note, size=10, color=TEXT_MUTED,
+        )
+        note_bottom += scope_note_h
     if has_insights:
-        _seo_issues_insights_section(slide, col_top + col_height + Inches(0.15), insights_ai)
+        _seo_issues_insights_section(slide, note_bottom + Inches(0.15), insights_ai)
     return slide
 
 

@@ -19,6 +19,37 @@ from app.reporting.pptx_builder import (
 )
 
 
+def test_seo_issues_fallback_surfaces_real_full_crawl_scope():
+    # Confirmed live on Geopits (2026-09-17): SEO Issues showed 2 tiny rows
+    # from this tool's own ~20-page crawl, while Priority Issues - Page
+    # Wise (same client, same generation) read the real Crawled Pages
+    # export and listed 1,137 issues across 150 blog pages alone. Same
+    # underlying data (site_audit_pages_rows) was already uploaded and
+    # already used one slide over — SEO Issues' fallback just never looked
+    # at it. User: "priority issues slide has information whereas SEO
+    # issues slide shows empty — data problem or did you miss this?"
+    # Answer: code gap, not missing data — this note makes the real scope
+    # visible instead of letting the two slides silently disagree.
+    audit = {"issues": []}
+    page_audit = {"pages": [{"issues": ["Missing structured data (JSON-LD)"]} for _ in range(20)]}
+    site_audit_pages_rows = [{"page_url": f"https://example.com/p{i}", "issues": 5} for i in range(200)]
+
+    prs = Presentation()
+    add_seo_issues_slide(prs, audit, page_audit, site_audit_issues=None, site_audit_pages_rows=site_audit_pages_rows)
+
+    texts = [
+        run.text
+        for shape in prs.slides[0].shapes
+        if shape.has_text_frame
+        for para in shape.text_frame.paragraphs
+        for run in para.runs
+    ]
+    scope_note = next((t for t in texts if "full crawl found" in t), None)
+    assert scope_note is not None
+    assert "200" in scope_note and "1,000" in scope_note
+    assert not any("overlap" in i or "out of bounds" in i for i in _audit_slide_geometry(prs))
+
+
 def test_seo_issues_fallback_classifies_missing_elements_as_errors():
     # No site_audit_issues uploaded -> fallback path. Before the fix, only
     # "not reachable/https/robots/sitemap" counted as Errors, so a page
