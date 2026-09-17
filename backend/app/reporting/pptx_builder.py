@@ -4892,14 +4892,10 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     fixes = ux_findings.get("ui_fixes") or []
     if fixes:
         rows = [(f.get("issue", ""), f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
-        critical = sum(1 for f in fixes if (f.get("severity") or "").lower() == "critical")
         source = "Homepage screenshot analysis" if ux_findings.get("ui_fixes_source") == "vision" else "Manual UX walkthrough"
-        insights = [f"{len(fixes)} UI issue(s) found."]
-        if critical:
-            insights.append(f"{critical} flagged Critical — these block a purchase or signup and should be fixed first.")
         slides.append(_table_slide(
             prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
-            col_widths=[3.4, 2.8, 4.4, 1.5], source=source, insights=insights,
+            col_widths=[3.4, 2.8, 4.4, 1.5], source=source,
         ))
     elif ux_findings.get("note"):
         slide = _blank_slide(prs)
