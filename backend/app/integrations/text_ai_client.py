@@ -438,6 +438,26 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
             if text:
                 return text, "groq"
             errors.append("Groq returned an empty response")
+        except httpx.HTTPStatusError as e:
+            # Same per-minute-vs-daily distinction _attempt_groq already
+            # makes for text calls — a burst of vision calls (UI-Level
+            # Fixes + Onboarding Breakdown back to back) can trip Groq's
+            # per-minute cap even when the account's daily budget is fine.
+            if e.response.status_code == 429:
+                retry_after = _groq_retry_after_seconds(e.response)
+                if retry_after is not None and retry_after > RATE_LIMIT_RETRY_DELAY_SECONDS:
+                    errors.append(f"Groq vision rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:200]}")
+                else:
+                    time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                    try:
+                        text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
+                        if text:
+                            return text, "groq"
+                        errors.append("Groq returned an empty response")
+                    except Exception as e2:
+                        errors.append(f"Groq vision request failed: {str(e2)[:300]}")
+            else:
+                errors.append(f"Groq vision request failed: {str(e)[:300]}")
         except Exception as e:
             errors.append(f"Groq vision request failed: {str(e)[:300]}")
     if settings.gemini_api_key:
@@ -447,7 +467,24 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
                 return text, "gemini"
             errors.append("Gemini returned an empty response")
         except Exception as e:
-            errors.append(friendly_gemini_error(e))
+            # Same retry _attempt_gemini already does for text calls — a
+            # transient "servers are temporarily unavailable" or a
+            # per-minute RESOURCE_EXHAUSTED both recover inside a short
+            # wait; a daily-quota exhaustion won't, so don't bother there.
+            error_text = str(e)
+            is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
+            is_transient = "UNAVAILABLE" in error_text or "temporarily unavailable" in error_text.lower()
+            if not is_daily_quota and (is_transient or "RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
+                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                try:
+                    text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
+                    if text:
+                        return text, "gemini"
+                    errors.append("Gemini returned an empty response")
+                except Exception as e2:
+                    errors.append(friendly_gemini_error(e2))
+            else:
+                errors.append(friendly_gemini_error(e))
     if settings.claude_api_key:
         try:
             text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
