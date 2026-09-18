@@ -5937,7 +5937,9 @@ def _build_report(
         # after SEO Issues) per 2026-09-18 user instruction: Semrush ERROR-
         # severity issues get their own standalone slide, distinct from SEO
         # Issues' capped Errors column.
-        add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows)
+        # Critical Issues slide cut 2026-09-18 per user request. Function
+        # kept below for fast re-enable.
+        # add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows)
         add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
         if schema_validation and schema_validation.get("total_pages"):
             add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
@@ -5965,18 +5967,20 @@ def _build_report(
     # domain_overview_rows, sorted own-row-first) — matched by domain here,
     # not just assumed to be index 0, in case no own-site Domain Overview
     # was ever uploaded and competitor_rows[0] is a real competitor instead.
-    if backlink_rows or backlink_summary or own_domain_rating is not None:
-        own_domain_overview_total = next(
-            (
-                r.get("backlinks_total") for r in (competitor_rows or [])
-                if r.get("backlinks_total") is not None and _same_domain(r.get("domain"), website_url)
-            ),
-            None,
-        )
-        add_backlink_profile_slide(
-            prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating,
-            domain_overview_backlinks_total=own_domain_overview_total,
-        )
+    # Backlink Profile slide cut 2026-09-18 per user request. Function kept
+    # below for fast re-enable.
+    # if backlink_rows or backlink_summary or own_domain_rating is not None:
+    #     own_domain_overview_total = next(
+    #         (
+    #             r.get("backlinks_total") for r in (competitor_rows or [])
+    #             if r.get("backlinks_total") is not None and _same_domain(r.get("domain"), website_url)
+    #         ),
+    #         None,
+    #     )
+    #     add_backlink_profile_slide(
+    #         prs, backlink_rows or [], backlink_row_count, backlink_summary, own_domain_rating,
+    #         domain_overview_backlinks_total=own_domain_overview_total,
+    #     )
 
     # Brand Citation Opportunities slide cut again 2026-09-09 per user
     # request ("remove as of now, will suggest if needed") — disambiguation
@@ -6090,7 +6094,10 @@ def _build_report(
             # combined Sheet (client + all competitors, multiple tabs)
             # wasn't created (Sheets not connected, or creation failed),
             # same graceful-degradation discipline as before.
-            add_competitor_positions_slides(prs, competitor_positions)
+            # Competitor Keywords per-domain slides cut 2026-09-18 per user
+            # request. Function kept below for fast re-enable.
+            # add_competitor_positions_slides(prs, competitor_positions)
+            pass
         if competitor_narratives:
             for domain, narrative in competitor_narratives.items():
                 if "error" not in narrative:
