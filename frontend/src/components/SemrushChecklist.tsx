@@ -39,8 +39,8 @@ function ChecklistTable({
   columns: ChecklistItem[];
 }) {
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ fontSize: 12.5 }}>
+    <div className="matrix-wrap">
+      <table className="matrix" style={{ fontSize: 12.5 }}>
         <thead>
           <tr>
             <th style={{ textAlign: "left" }}>Domain</th>
@@ -51,13 +51,21 @@ function ChecklistTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.label}>
-              <td style={{ textAlign: "left", fontWeight: row.bold ? 600 : 400 }}>{row.label}</td>
+            <tr key={row.label} className={row.bold ? "own-row" : undefined}>
+              <td style={{ textAlign: "left" }}>{row.label}</td>
               {columns.map((item) => {
                 const has = row.types.has(item.type) || (item.altType ? row.types.has(item.altType) : false);
                 return (
-                  <td key={item.type} title={item.label} style={{ textAlign: "center" }}>
-                    {has ? <span style={{ color: "#1f9d66" }}>✓</span> : <span style={{ color: "#c9ccd1" }}>—</span>}
+                  <td key={item.type} title={item.label}>
+                    {has ? (
+                      <span className="dot yes">
+                        <svg viewBox="0 0 24 24" fill="none" width="12" height="12">
+                          <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    ) : (
+                      <span className="dot no">—</span>
+                    )}
                   </td>
                 );
               })}

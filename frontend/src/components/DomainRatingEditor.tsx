@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import ConfirmDeleteButton from "./ConfirmDeleteButton";
 
 interface DomainRatingRow {
   id: string;
@@ -7,7 +8,11 @@ interface DomainRatingRow {
   dr: number;
 }
 
-export default function DomainRatingEditor({ clientId }: { clientId: string }) {
+function normalizeDomain(d: string) {
+  return d.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "").toLowerCase();
+}
+
+export default function DomainRatingEditor({ clientId, ownDomain }: { clientId: string; ownDomain?: string }) {
   const [rows, setRows] = useState<DomainRatingRow[]>([]);
   const [domain, setDomain] = useState("");
   const [dr, setDr] = useState("");
@@ -58,6 +63,8 @@ export default function DomainRatingEditor({ clientId }: { clientId: string }) {
     }
   }
 
+  const ownNorm = ownDomain ? normalizeDomain(ownDomain) : null;
+
   return (
     <div className="card">
       <h3 style={{ marginTop: 0 }}>Domain Rating</h3>
@@ -80,35 +87,51 @@ export default function DomainRatingEditor({ clientId }: { clientId: string }) {
           onChange={(e) => setDr(e.target.value)}
           style={{ width: 80 }}
         />
-        <button onClick={save} disabled={saving || !domain.trim() || dr.trim() === ""}>
+        <button className="btn btn-primary" onClick={save} disabled={saving || !domain.trim() || dr.trim() === ""}>
           {saving ? "Saving..." : "Add / Update"}
         </button>
       </div>
       {msg && <p style={{ fontSize: 13, color: "#991b1b", marginTop: 8 }}>{msg}</p>}
 
       {rows.length > 0 && (
-        <table style={{ marginTop: 16 }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left" }}>Domain</th>
-              <th style={{ textAlign: "left" }}>DR</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td>{r.domain}</td>
-                <td>{r.dr}</td>
-                <td>
-                  <button className="secondary" onClick={() => remove(r.id)}>
-                    Delete
-                  </button>
-                </td>
+        <div className="table-wrap" style={{ marginTop: 16 }}>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left" }}>Domain</th>
+                <th style={{ textAlign: "left", width: 220 }}>Rating</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const isSelf = ownNorm !== null && normalizeDomain(r.domain) === ownNorm;
+                return (
+                  <tr key={r.id}>
+                    <td>
+                      {r.domain}
+                      {isSelf && <span className="self-tag">Own site</span>}
+                    </td>
+                    <td>
+                      <div className="dr-cell">
+                        <div className="dr-bar-wrap">
+                          <div
+                            className={`dr-bar${isSelf ? " self" : ""}`}
+                            style={{ width: `${Math.max(0, Math.min(100, r.dr))}%` }}
+                          />
+                        </div>
+                        <span className="dr-num">{r.dr}</span>
+                      </div>
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <ConfirmDeleteButton label={r.domain} onConfirm={() => remove(r.id)} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

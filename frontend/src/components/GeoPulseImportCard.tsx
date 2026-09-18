@@ -1,6 +1,9 @@
 import { useState } from "react";
-import type { ChangeEvent } from "react";
 import { api } from "../api/client";
+import Dropzone from "./Dropzone";
+import { fileTypeChip } from "./fileTypeChip";
+import ConfirmDeleteButton from "./ConfirmDeleteButton";
+import { useToast } from "./ToastProvider";
 
 interface GeoPulseImportSummary {
   id: string;
@@ -22,38 +25,48 @@ export default function GeoPulseImportCard({
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<{ name: string; pct: number } | null>(null);
+  const { showToast } = useToast();
 
   const rows = imports.filter((i) => i.import_type === "geopulse");
-
-  function onFileChange(e: ChangeEvent<HTMLInputElement>) {
-    setFiles(Array.from(e.target.files || []));
-  }
 
   async function upload() {
     if (files.length === 0) return;
     setUploading(true);
     setMsg("");
     const results: string[] = [];
+    let successCount = 0;
     for (const file of files) {
+      setUploadProgress({ name: file.name, pct: 0 });
       try {
         const formData = new FormData();
         formData.append("file", file);
         await api.post(`/clients/${clientId}/geopulse-upload`, formData, {
           headers: { "Content-Type": "multipart/form-data" },
+          onUploadProgress: (evt) => {
+            const pct = evt.total ? Math.round((evt.loaded / evt.total) * 100) : 0;
+            setUploadProgress({ name: file.name, pct });
+          },
         });
         results.push(`${file.name}: uploaded`);
+        successCount += 1;
       } catch (err: any) {
         results.push(`${file.name}: ${err?.response?.data?.detail || "upload failed"}`);
       }
     }
+    setUploadProgress(null);
     setMsg(results.join(" · "));
+    if (successCount === files.length) {
+      showToast(`${successCount} file${successCount > 1 ? "s" : ""} uploaded successfully`);
+    } else if (successCount > 0) {
+      showToast(`${successCount} of ${files.length} file(s) uploaded — see details below`);
+    }
     setFiles([]);
     setUploading(false);
     onChanged();
   }
 
   async function deleteImport(importId: string) {
-    if (!confirm("Delete this GeoPulse file?")) return;
     try {
       await api.delete(`/clients/${clientId}/semrush-imports/${importId}`);
       onChanged();
@@ -70,33 +83,62 @@ export default function GeoPulseImportCard({
         (AEO) and Generative Engine (GEO) Next Steps slides are generated from this data instead
         of the generic checklist once uploaded.
       </p>
+
+      <Dropzone multiple onFiles={setFiles} compact />
+
+      {uploadProgress && (
+        <div className="upload-progress">
+          <div className="upload-progress-top">
+            <span className="fname">
+              <span className={`file-icon ${fileTypeChip(uploadProgress.name).cls}`} style={{ width: 20, height: 20, fontSize: 7 }}>
+                {fileTypeChip(uploadProgress.name).label}
+              </span>
+              {uploadProgress.name}
+            </span>
+            <span className="upload-pct">{uploadProgress.pct}%</span>
+          </div>
+          <div className="progress-track">
+            <div className="progress-fill" style={{ width: `${uploadProgress.pct}%` }} />
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <input type="file" multiple onChange={onFileChange} />
-        <button onClick={upload} disabled={files.length === 0 || uploading}>
-          {uploading ? "Uploading..." : files.length > 1 ? `Upload ${files.length} files` : "Upload"}
+        <button className="btn btn-primary" onClick={upload} disabled={files.length === 0 || uploading}>
+          {uploading ? "Uploading..." : files.length > 0 ? `Upload ${files.length} file${files.length > 1 ? "s" : ""}` : "Upload"}
         </button>
       </div>
       {msg && <p style={{ fontSize: 13, marginTop: 8 }}>{msg}</p>}
 
       {rows.length > 0 && (
-        <table style={{ marginTop: 16 }}>
-          <thead>
-            <tr>
-              <th>File</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((imp) => (
-              <tr key={imp.id}>
-                <td>{imp.original_filename}</td>
-                <td>
-                  <button onClick={() => deleteImport(imp.id)}>Delete</button>
-                </td>
+        <div className="table-wrap" style={{ marginTop: 16 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((imp) => {
+                const chip = fileTypeChip(imp.original_filename);
+                return (
+                  <tr key={imp.id}>
+                    <td>
+                      <div className="file-name">
+                        <span className={`file-icon ${chip.cls}`}>{chip.label}</span>
+                        {imp.original_filename}
+                      </div>
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <ConfirmDeleteButton label={imp.original_filename} onConfirm={() => deleteImport(imp.id)} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

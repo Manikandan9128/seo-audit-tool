@@ -5,6 +5,8 @@ import ClientListPage from "./clients/ClientListPage";
 import ClientDetailPage from "./clients/ClientDetailPage";
 import SettingsPage from "./settings/SettingsPage";
 import Layout from "./components/Layout";
+import ToastProvider from "./components/ToastProvider";
+import ReportReadinessProvider from "./components/ReportReadinessProvider";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -48,9 +50,13 @@ function AppRoutes() {
 export default function App() {
   return (
     <AuthProvider>
-      <Layout>
-        <AppRoutes />
-      </Layout>
+      <ToastProvider>
+        <ReportReadinessProvider>
+          <Layout>
+            <AppRoutes />
+          </Layout>
+        </ReportReadinessProvider>
+      </ToastProvider>
     </AuthProvider>
   );
 }

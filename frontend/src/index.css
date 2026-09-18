@@ -1,25 +1,62 @@
 :root {
-  --bg: #faf9f6;
-  --surface: #ffffff;
-  --border: #e4e1d8;
-  --border-strong: #cfcabb;
-  --text: #23241f;
-  --text-muted: #6d6a5e;
-  --accent: #ff0000;
-  --accent-soft: #ffe5e5;
-  --success: #1a7f37;
-  --success-soft: #e7f6ec;
-  --danger: #b3401f;
-  --danger-soft: #fbece5;
-  --radius: 10px;
-  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
-  --font-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* ---- Design-system tokens (2026-09 redesign) ---- */
+  --color-bg: #F8FAFC;
+  --color-surface: #FFFFFF;
+  --color-border: #E2E8F0;
+  --color-border-strong: #CBD5E1;
+  --color-text-primary: #0F172A;
+  --color-text-secondary: #64748B;
+  --color-text-tertiary: #94A3B8;
+  --color-primary: #4F46E5;
+  --color-primary-hover: #4338CA;
+  --color-primary-subtle: #EEF2FF;
+  --color-secondary-bg: #F1F5F9;
+  --color-secondary-bg-hover: #E2E8F0;
+  --color-danger: #DC2626;
+  --color-danger-subtle: #FEF2F2;
+  --color-success: #16A34A;
+  --color-success-subtle: #F0FDF4;
+  --color-warning: #D97706;
+  --color-warning-subtle: #FFFBEB;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 6px rgba(15, 23, 42, 0.04);
+  --shadow-pop: 0 8px 24px rgba(15, 23, 42, 0.14);
+
+  /* ---- Legacy token names, aliased to the tokens above ----
+     Every existing component (CSS and inline style={{}}) still reads
+     these old names — aliasing them means the whole app repaints with
+     the new palette/type without touching those files. New work should
+     prefer the --color- and --radius- tokens above directly. */
+  --bg: var(--color-bg);
+  --surface: var(--color-surface);
+  --border: var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --text: var(--color-text-primary);
+  --text-muted: var(--color-text-secondary);
+  --accent: var(--color-primary);
+  --accent-hover: var(--color-primary-hover);
+  --accent-soft: var(--color-primary-subtle);
+  --success: var(--color-success);
+  --success-soft: var(--color-success-subtle);
+  --danger: var(--color-danger);
+  --danger-soft: var(--color-danger-subtle);
+  --radius: var(--radius-md);
+  --font-display: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   font-family: var(--font-body);
 }
 
 * {
   box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 body {
@@ -55,8 +92,8 @@ button {
   transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
 }
 button:hover {
-  background: #cc0000;
-  box-shadow: 0 4px 12px rgba(255, 0, 0, 0.22);
+  background: var(--accent-hover);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.22);
 }
 button:active {
   transform: translateY(1px);
@@ -480,4 +517,697 @@ tbody tr:last-child td {
 td.mono {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* =====================================================================
+   Redesign v2 — Stage 1: theme tokens (above) + button, badge, tab
+   components. New, opt-in classes — nothing below is wired into any
+   page yet except the sidebar logout button. See seo-audit-tool-redesign
+   -v2.html for the visual reference these match.
+   ===================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: none;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.04s ease;
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+}
+.btn-secondary {
+  background: var(--color-secondary-bg);
+  color: var(--color-text-primary);
+}
+.btn-secondary:hover {
+  background: var(--color-secondary-bg-hover);
+}
+.btn-outline {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+.btn-outline:hover {
+  background: var(--color-secondary-bg);
+}
+.btn-sm {
+  padding: 6px 11px;
+  font-size: 12.5px;
+}
+.btn-icon {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-tertiary);
+  box-shadow: none;
+}
+.btn-icon:hover {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.btn-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---- Sidebar logout — compact, not a full CTA-sized button ---- */
+.btn-logout {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  font-size: 12.5px;
+  box-shadow: none;
+}
+.btn-logout:hover {
+  background: var(--color-secondary-bg);
+  color: var(--color-text-primary);
+  box-shadow: none;
+}
+.btn-logout svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* ---- Status badges: icon + color as the dominant signal (point 8) ---- */
+.badge-ready,
+.badge-pending,
+.badge-neutral {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+}
+.badge-ready::before,
+.badge-pending::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  background: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+.badge-ready {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+.badge-ready::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E");
+}
+.badge-pending {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+.badge-pending::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E");
+}
+.badge-neutral {
+  background: var(--color-secondary-bg);
+  color: var(--color-text-secondary);
+}
+
+/* ---- Tabs (sticky, directly under the sticky topbar in Stage 2) ---- */
+.tabs {
+  display: flex;
+  gap: 22px;
+}
+.tab {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 10px 2px 12px 2px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.tab:hover {
+  background: transparent;
+  color: var(--color-text-primary);
+}
+.tab.active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+.tab-count {
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--color-secondary-bg);
+  color: var(--color-text-secondary);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+.tab.active .tab-count {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+.panel {
+  display: none;
+}
+.panel.active {
+  display: block;
+}
+
+/* =====================================================================
+   Redesign v2 — Stage 3: tables, dropzones, accordion.
+   Table enhancements are scoped to `.table-wrap table` (opt-in per
+   component) rather than the bare `table`/`th`/`td` element rules above,
+   so untouched tables elsewhere in the app (TechStack, PageAuditTable,
+   SiteAuditReport, etc.) keep their current look until they're migrated.
+   ===================================================================== */
+
+.table-wrap {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  overflow-x: auto;
+}
+.table-wrap table {
+  width: 100%;
+  margin: 0;
+}
+.table-wrap thead th {
+  position: sticky;
+  top: 0;
+  background: var(--color-bg);
+  z-index: 1;
+}
+.table-wrap tbody tr:nth-child(even) {
+  background: #FBFCFE;
+}
+.table-wrap tbody tr:hover {
+  background: var(--color-primary-subtle);
+}
+.table-wrap td.num,
+.table-wrap th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 12px;
+}
+.search-input {
+  position: relative;
+  width: 240px;
+}
+.search-input svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-tertiary);
+  pointer-events: none;
+}
+.search-input input {
+  width: 100%;
+  padding-left: 32px;
+}
+
+.file-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.file-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.file-icon.csv {
+  background: #DCFCE7;
+  color: #15803D;
+}
+.file-icon.pdf {
+  background: #FEE2E2;
+  color: #B91C1C;
+}
+.file-icon.xls {
+  background: #DBEAFE;
+  color: #1D4ED8;
+}
+.file-icon.other {
+  background: var(--color-secondary-bg);
+  color: var(--color-text-secondary);
+}
+.type-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--color-secondary-bg);
+  color: var(--color-text-secondary);
+  display: inline-block;
+}
+
+/* ---- Dropzone ---- */
+.dropzone {
+  border: 1.5px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--color-bg);
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  cursor: pointer;
+}
+.dropzone:hover,
+.dropzone.dragover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+.dropzone-compact {
+  padding: 14px 16px;
+}
+.dropzone-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.dropzone-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+.dropzone-compact .dropzone-icon {
+  width: 32px;
+  height: 32px;
+}
+.dropzone-icon svg {
+  width: 19px;
+  height: 19px;
+}
+.dropzone-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  margin-bottom: 2px;
+}
+.dropzone-sub {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.dropzone-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+/* ---- Checklist matrix ---- */
+.matrix-wrap {
+  overflow-x: auto;
+}
+table.matrix th,
+table.matrix td {
+  text-align: center;
+}
+table.matrix td:first-child,
+table.matrix th:first-child {
+  text-align: left;
+}
+.dot {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+}
+.dot.yes {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+.dot.no {
+  color: var(--color-text-tertiary);
+}
+.own-row td {
+  font-weight: 700;
+  background: var(--color-primary-subtle) !important;
+}
+
+/* ---- Domain Rating bar ---- */
+.dr-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dr-bar-wrap {
+  flex: 1;
+  height: 6px;
+  background: var(--color-secondary-bg);
+  border-radius: 999px;
+  overflow: hidden;
+  max-width: 160px;
+}
+.dr-bar {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 999px;
+}
+.dr-bar.self {
+  background: var(--color-success);
+}
+.dr-num {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  width: 26px;
+  text-align: right;
+}
+.self-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--color-success);
+  background: var(--color-success-subtle);
+  padding: 2px 7px;
+  border-radius: 5px;
+  margin-left: 8px;
+}
+
+/* ---- Competitor accordion ---- */
+.competitor-group {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.competitor-group.open {
+  border-color: #C7D2FE;
+}
+.competitor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  cursor: pointer;
+  background: var(--color-surface);
+}
+.competitor-head:hover {
+  background: var(--color-secondary-bg);
+}
+.competitor-head-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.competitor-chev {
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-tertiary);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+.competitor-group.open .competitor-chev {
+  transform: rotate(90deg);
+}
+.competitor-domain {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.competitor-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.competitor-dr-badge {
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--color-secondary-bg);
+  padding: 3px 9px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+}
+.competitor-file-count {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.competitor-body {
+  display: none;
+  border-top: 1px solid var(--color-border);
+  padding: 14px 18px 18px 18px;
+}
+.competitor-group.open .competitor-body {
+  display: block;
+}
+
+/* =====================================================================
+   Redesign v2 — Stage 4: confirm-before-delete, upload progress, toast.
+   ===================================================================== */
+
+/* ---- Delete confirm pattern ---- */
+.delete-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.delete-confirm {
+  display: none;
+  align-items: center;
+  gap: 4px;
+}
+.delete-wrap.confirming .delete-trigger {
+  display: none;
+}
+.delete-wrap.confirming .delete-confirm {
+  display: flex;
+}
+.confirm-yes,
+.confirm-no {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  box-shadow: none;
+}
+.confirm-yes {
+  background: var(--color-danger);
+  color: #fff;
+}
+.confirm-yes:hover {
+  background: #B91C1C;
+}
+.confirm-no {
+  background: var(--color-secondary-bg);
+  color: var(--color-text-secondary);
+}
+.confirm-no:hover {
+  background: var(--color-secondary-bg-hover);
+}
+.confirm-yes svg,
+.confirm-no svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- Upload progress ---- */
+.upload-progress {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+.upload-progress-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.upload-progress-top .fname {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-pct {
+  color: var(--color-primary);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.progress-track {
+  height: 6px;
+  background: var(--color-secondary-bg);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+/* ---- Toast ---- */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: var(--color-text-primary);
+  color: #fff;
+  padding: 13px 18px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  z-index: 100;
+  pointer-events: none;
+  max-width: 420px;
+}
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.toast svg {
+  width: 16px;
+  height: 16px;
+  color: var(--color-success);
+  flex-shrink: 0;
+}
+.toast-close {
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: #94A3B8;
+  cursor: pointer;
+  padding: 2px;
+  margin-left: 6px;
+}
+.toast-close:hover {
+  background: none;
+  color: #fff;
+}
+
+/* =====================================================================
+   Redesign v2 — Stage 5: sidebar report-readiness indicator (point 7).
+   ===================================================================== */
+
+.sidebar-progress {
+  margin-top: 18px;
+  padding: 14px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.sidebar-progress-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.sidebar-progress-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sidebar-progress-frac {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+.sidebar-progress-track {
+  height: 6px;
+  background: var(--color-secondary-bg);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.sidebar-progress-fill {
+  height: 100%;
+  background: var(--color-success);
+  border-radius: 999px;
+  transition: width 0.3s ease;
 }

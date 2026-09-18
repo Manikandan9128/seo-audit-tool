@@ -13,6 +13,8 @@ import GeoPulseImportCard from "../components/GeoPulseImportCard";
 import SemrushChecklist from "../components/SemrushChecklist";
 import DomainRatingEditor from "../components/DomainRatingEditor";
 import SemrushAnalysis from "../components/SemrushAnalysis";
+import { useToast } from "../components/ToastProvider";
+import { useReportReadiness } from "../components/ReportReadinessProvider";
 import ReportPreviewModal from "../components/ReportPreviewModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
@@ -48,6 +50,8 @@ interface SemrushImportSummary {
 
 export default function ClientDetailPage() {
   const { clientId } = useParams();
+  const { showToast } = useToast();
+  const { setReadiness } = useReportReadiness();
   const [searchParams] = useSearchParams();
   const missingScopes = searchParams.get("missing_scopes") === "1";
   const [client, setClient] = useState<Client | null>(null);
@@ -103,6 +107,13 @@ export default function ClientDetailPage() {
 
   const [uxNotes, setUxNotes] = useState("");
 
+  type TabKey = "overview" | "datasources" | "analytics";
+  const [activeTab, setActiveTab] = useState<TabKey>("overview");
+  function goToTab(tab: TabKey) {
+    setActiveTab(tab);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   const SECTION_OPTIONS = [
     { key: "overview", label: "Company Overview" },
     { key: "site_audit", label: "Site Audit" },
@@ -146,6 +157,7 @@ export default function ClientDetailPage() {
   }
 
   async function generateSelectedReport() {
+    showToast("Report generation started — this can take a minute.");
     setGenerating(true);
     setError("");
     setCollapsedSections((prev) => prev.filter((k) => !selectedSections.includes(k)));
@@ -560,142 +572,199 @@ export default function ClientDetailPage() {
     );
   }
 
+  // Sidebar "Report readiness" (point 7) — same hasData signal each
+  // SectionCard/Analytics block below already uses, just totalled up.
+  // Fixed 6-section denominator (SECTION_OPTIONS.length), independent of
+  // which are currently checked, so the count doesn't jump around as the
+  // Sections dropdown selection changes.
+  useEffect(() => {
+    const siteAuditReady = true; // Site Audit's own SectionCard always passes hasData={true}
+    setReadiness({
+      ready: [siteAuditReady, !!overview, !!psiMobile, !!techStack, !!pageAuditResult, !!analyticsResult].filter(Boolean).length,
+      total: SECTION_OPTIONS.length,
+    });
+    return () => setReadiness(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overview, psiMobile, techStack, pageAuditResult, analyticsResult]);
+
   if (!client) return <p>Loading...</p>;
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20 }}>
+    <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20 }}>
       <div
-        className="card"
         style={{
           position: "sticky",
-          top: 76,
-          zIndex: 20,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          boxShadow: "0 4px 16px rgba(20, 20, 15, 0.06)",
+          top: 0,
+          zIndex: 30,
+          background: "var(--bg)",
+          margin: "-32px -24px 0 -24px",
+          padding: "24px 24px 0 24px",
+          borderBottom: "1px solid var(--border)",
         }}
       >
-        <div>
-          <p className="eyebrow" style={{ margin: "0 0 4px" }}>
-            Client
-          </p>
-          <h2 style={{ margin: 0 }}>{client.name}</h2>
-          <p style={{ color: "var(--text-muted)", margin: "4px 0 0", fontSize: 13.5 }}>{client.website_url}</p>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", position: "relative" }}>
-          <div style={{ position: "relative" }}>
-            <button className="secondary" onClick={() => setSectionDropdownOpen((o) => !o)}>
-              Sections ({selectedSections.length}) ▾
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 24 }}>
+          <div>
+            <p className="eyebrow" style={{ margin: "0 0 4px" }}>
+              Client
+            </p>
+            <h2 style={{ margin: 0 }}>{client.name}</h2>
+            <p style={{ color: "var(--text-muted)", margin: "4px 0 0", fontSize: 13.5 }}>{client.website_url}</p>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-start", position: "relative", flexWrap: "wrap" }}>
+            <div style={{ position: "relative" }}>
+              <button className="secondary" onClick={() => setSectionDropdownOpen((o) => !o)}>
+                Sections ({selectedSections.length}) ▾
+              </button>
+              {sectionDropdownOpen && (
+                <>
+                  <div
+                    onClick={() => setSectionDropdownOpen(false)}
+                    style={{ position: "fixed", inset: 0, zIndex: 10 }}
+                  />
+                  <div
+                    className="card"
+                    style={{
+                      position: "absolute",
+                      top: "110%",
+                      right: 0,
+                      zIndex: 11,
+                      width: 260,
+                      padding: 12,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                      boxShadow: "0 12px 32px rgba(20, 20, 15, 0.14)",
+                    }}
+                  >
+                    {SECTION_OPTIONS.map((opt) => (
+                      <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedSections.includes(opt.key)}
+                          onChange={() => toggleSection(opt.key)}
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            {availableProviders.length > 1 && (
+              <select
+                value={preferredProvider}
+                onChange={(e) => setPreferredProvider(e.target.value)}
+                title="AI provider to try first for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — still falls back to the others on failure"
+                style={{ marginRight: 8 }}
+              >
+                <option value="">Auto (default order)</option>
+                {availableProviders.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label} first
+                  </option>
+                ))}
+              </select>
+            )}
+            <button className="btn btn-primary" onClick={generateSelectedReport} disabled={generating || selectedSections.length === 0}>
+              {generating ? "Generating..." : "Generate Report"}
             </button>
-            {sectionDropdownOpen && (
+            {hasGenerated && (
               <>
-                <div
-                  onClick={() => setSectionDropdownOpen(false)}
-                  style={{ position: "fixed", inset: 0, zIndex: 10 }}
-                />
-                <div
-                  className="card"
-                  style={{
-                    position: "absolute",
-                    top: "110%",
-                    right: 0,
-                    zIndex: 11,
-                    width: 260,
-                    padding: 12,
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 8,
-                    boxShadow: "0 12px 32px rgba(20, 20, 15, 0.14)",
-                  }}
-                >
-                  {SECTION_OPTIONS.map((opt) => (
-                    <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-                      <input
-                        type="checkbox"
-                        checked={selectedSections.includes(opt.key)}
-                        onChange={() => toggleSection(opt.key)}
-                      />
-                      {opt.label}
-                    </label>
-                  ))}
-                </div>
+                <button className="btn btn-secondary" onClick={openPreview} disabled={previewLoading}>
+                  {previewLoading ? "Loading..." : "Preview Report"}
+                </button>
+                <button className="btn btn-secondary" onClick={downloadReportDirect} disabled={reportLoading}>
+                  {reportLoading ? "Generating..." : "Download Report (PPTX)"}
+                </button>
+                {reportLoading && reportStatusMsg && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {reportStatusMsg}
+                      {typeof reportProgressPct === "number" ? ` — ${reportProgressPct}%` : ""}
+                    </span>
+                    {typeof reportProgressPct === "number" && (
+                      <div style={{ height: 6, borderRadius: 3, background: "#e5e7eb", overflow: "hidden" }}>
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${reportProgressPct}%`,
+                            background: "#2563eb",
+                            transition: "width 0.3s ease",
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {!reportLoading && contentGenerationIssues && (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#92400e",
+                      background: "#fef3c7",
+                      border: "1px solid #fde68a",
+                      borderRadius: 6,
+                      padding: "8px 10px",
+                      maxWidth: 420,
+                    }}
+                  >
+                    <strong>Heads up:</strong> {contentGenerationIssues.length} section(s) didn't generate this run
+                    (shown below, not in the downloaded file) — usually a temporary AI rate limit. Regenerating often
+                    fixes it.
+                    <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                      {contentGenerationIssues.map((issue, i) => (
+                        <li key={i}>{issue}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </>
             )}
           </div>
-          {availableProviders.length > 1 && (
-            <select
-              value={preferredProvider}
-              onChange={(e) => setPreferredProvider(e.target.value)}
-              title="AI provider to try first for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — still falls back to the others on failure"
-              style={{ marginRight: 8 }}
-            >
-              <option value="">Auto (default order)</option>
-              {availableProviders.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label} first
-                </option>
-              ))}
-            </select>
-          )}
-          <button onClick={generateSelectedReport} disabled={generating || selectedSections.length === 0}>
-            {generating ? "Generating..." : "Generate Report"}
+        </div>
+        <div className="tabs" role="tablist" style={{ marginTop: 16 }}>
+          <button className={`tab ${activeTab === "overview" ? "active" : ""}`} onClick={() => setActiveTab("overview")}>
+            Overview
           </button>
-          {hasGenerated && (
-            <>
-              <button onClick={openPreview} disabled={previewLoading}>
-                {previewLoading ? "Loading..." : "Preview Report"}
-              </button>
-              <button onClick={downloadReportDirect} disabled={reportLoading}>
-                {reportLoading ? "Generating..." : "Download Report (PPTX)"}
-              </button>
-              {reportLoading && reportStatusMsg && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    {reportStatusMsg}
-                    {typeof reportProgressPct === "number" ? ` — ${reportProgressPct}%` : ""}
-                  </span>
-                  {typeof reportProgressPct === "number" && (
-                    <div style={{ height: 6, borderRadius: 3, background: "#e5e7eb", overflow: "hidden" }}>
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${reportProgressPct}%`,
-                          background: "#2563eb",
-                          transition: "width 0.3s ease",
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-              {!reportLoading && contentGenerationIssues && (
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "#92400e",
-                    background: "#fef3c7",
-                    border: "1px solid #fde68a",
-                    borderRadius: 6,
-                    padding: "8px 10px",
-                    maxWidth: 420,
-                  }}
-                >
-                  <strong>Heads up:</strong> {contentGenerationIssues.length} section(s) didn't generate this run
-                  (shown below, not in the downloaded file) — usually a temporary AI rate limit. Regenerating often
-                  fixes it.
-                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-                    {contentGenerationIssues.map((issue, i) => (
-                      <li key={i}>{issue}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </>
-          )}
+          <button className={`tab ${activeTab === "datasources" ? "active" : ""}`} onClick={() => setActiveTab("datasources")}>
+            Data Sources <span className="tab-count">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
+          </button>
+          <button className={`tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
+            Analytics
+          </button>
         </div>
       </div>
 
+      {previewData && (
+        <ReportPreviewModal
+          data={previewData}
+          companyOverview={previewOverview}
+          onCompanyOverviewChange={setPreviewOverview}
+          competitorAnalysis={previewCompetitorAnalysis}
+          onCompetitorAnalysisChange={setPreviewCompetitorAnalysis}
+          onDownload={downloadReportFromPreview}
+          onClose={() => setPreviewData(null)}
+          downloading={reportLoading}
+          clientId={clientId}
+          gscConnected={!!client.gsc_site_url}
+        />
+      )}
+
+      {missingScopes && (
+        <div className="card" style={{ borderColor: "#fcd34d", background: "#fffbeb", color: "#92400e" }}>
+          Google was connected, but Analytics / Search Console permission wasn't granted. Click{" "}
+          <strong>Connect Google</strong> again and check <strong>both</strong> boxes ("See and download your Google
+          Analytics data" and "View Search Console data") on the consent screen.
+        </div>
+      )}
+
+      {error && (
+        <div className="card" style={{ borderColor: "#fca5a5", background: "#fef2f2", color: "#991b1b" }}>
+          {error}
+        </div>
+      )}
+
+      <section className={`panel ${activeTab === "overview" ? "active" : ""}`} style={{ display: activeTab === "overview" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
       {(() => {
         const steps = [
           {
@@ -703,14 +772,14 @@ export default function ClientDetailPage() {
             label: "Connect Google (GA4 / Search Console)",
             hint: "Optional — enables the Analytics section",
             done: client.google_connected && !!(client.ga4_property_id || client.gsc_site_url),
-            onClick: () => document.getElementById("google-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+            onClick: () => goToTab("analytics"),
           },
           {
             n: 2,
             label: "Upload Semrush data",
             hint: "Optional — competitor & keyword slides",
             done: imports.length > 0,
-            onClick: () => document.getElementById("semrush-section")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+            onClick: () => goToTab("datasources"),
           },
           {
             n: 3,
@@ -1050,10 +1119,12 @@ export default function ClientDetailPage() {
           )}
         </SectionCard>
       )}
+      </section>
 
+      <section className={`panel ${activeTab === "datasources" ? "active" : ""}`} style={{ display: activeTab === "datasources" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
       {/* Semrush uploads — one for our domain, one for competitors */}
       <div id="semrush-section" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <DomainRatingEditor clientId={clientId!} />
+        <DomainRatingEditor clientId={clientId!} ownDomain={client.website_url} />
         <SemrushChecklist imports={imports} />
         <SemrushImportCard
           clientId={clientId!}
@@ -1075,7 +1146,9 @@ export default function ClientDetailPage() {
         />
         <GeoPulseImportCard clientId={clientId!} imports={imports} onChanged={loadImports} />
       </div>
+      </section>
 
+      <section className={`panel ${activeTab === "analytics" ? "active" : ""}`} style={{ display: activeTab === "analytics" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
       <SemrushAnalysis clientId={clientId!} />
 
       {/* Google Analytics / Search Console */}
@@ -1179,6 +1252,7 @@ export default function ClientDetailPage() {
           </div>
         )}
       </div>
+      </section>
     </div>
   );
 }

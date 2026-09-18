@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { useReportReadiness } from "./ReportReadinessProvider";
 
 const NAV_ITEMS = [
   { to: "/clients", label: "Dashboard", icon: "⌂" },
@@ -14,6 +15,7 @@ function isNavActive(pathname: string, to: string) {
 export default function Layout({ children }: { children: ReactNode }) {
   const { logout, isAuthenticated } = useAuth();
   const { pathname } = useLocation();
+  const { readiness } = useReportReadiness();
 
   if (!isAuthenticated) {
     return <main style={{ padding: "32px 24px" }}>{children}</main>;
@@ -77,12 +79,31 @@ export default function Layout({ children }: { children: ReactNode }) {
           })}
         </nav>
 
+        {readiness && (
+          <div style={{ padding: "0 12px" }}>
+            <div className="sidebar-progress">
+              <div className="sidebar-progress-top">
+                <span className="sidebar-progress-label">Report readiness</span>
+                <span className="sidebar-progress-frac">
+                  {readiness.ready} / {readiness.total}
+                </span>
+              </div>
+              <div className="sidebar-progress-track">
+                <div
+                  className="sidebar-progress-fill"
+                  style={{ width: `${readiness.total > 0 ? (readiness.ready / readiness.total) * 100 : 0}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{ padding: 12, borderTop: "1px solid var(--border)" }}>
-          <button
-            className="secondary"
-            onClick={logout}
-            style={{ width: "100%", justifyContent: "center", display: "flex" }}
-          >
+          <button className="btn-logout" onClick={logout} aria-label="Log out">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <path d="M16 17l5-5-5-5M21 12H9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
             Log out
           </button>
         </div>
