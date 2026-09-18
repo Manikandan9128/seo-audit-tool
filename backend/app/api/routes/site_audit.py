@@ -466,6 +466,50 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
         competitor_analysis["keyword_gap_off_topic_count"] = off_topic_count
 
 
+def _merge_keyword_gap_and_positions(keyword_gap_rows: list[dict], organic_positions_rows: list[dict]) -> list[dict]:
+    """Target Keywords clustering used to read ONLY the client's own Keyword
+    Gap rows — a small comparison-against-competitors export that doesn't
+    reliably include keywords the client already ranks well for on their
+    own (real gap reported 2026-09-18: BharatBenz's own Organic Positions
+    upload had 3,000+ rows the Keyword Gap file never surfaced, so
+    clustering was missing the client's real keyword picture — specifically
+    the keywords they're already winning). Combines both own-site keyword
+    sources into one deduped list, kept in keyword_gap's own dict shape
+    (cluster/intent/cpc/domain_positions — fields Organic Positions never
+    has) so everything downstream (relevance filter, clustering, Primary/
+    Secondary labeling, per-cluster insights, the flat-table fallback on
+    clustering failure) is untouched. On a keyword present in both files,
+    Organic Positions' search_volume/position/url win — the more accurate,
+    direct source for what the client currently ranks for right now."""
+    by_keyword: dict[str, dict] = {}
+    order: list[str] = []
+    for r in keyword_gap_rows:
+        kw = (r.get("keyword") or "").strip()
+        if not kw:
+            continue
+        key = kw.lower()
+        if key not in by_keyword:
+            order.append(key)
+        by_keyword[key] = r
+    for r in organic_positions_rows:
+        kw = (r.get("keyword") or "").strip()
+        if not kw:
+            continue
+        key = kw.lower()
+        existing = by_keyword.get(key)
+        if existing is None:
+            order.append(key)
+            by_keyword[key] = r
+            continue
+        if r.get("search_volume") not in (None, ""):
+            existing["search_volume"] = r["search_volume"]
+        if r.get("position") not in (None, ""):
+            existing["position"] = r["position"]
+        if r.get("url"):
+            existing["url"] = r["url"]
+    return [by_keyword[key] for key in order]
+
+
 def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dict | None) -> list[dict]:
     """Core, side-effect-free relevance filter for the client's OWN Keyword
     Gap rows — pulled out of _filter_own_keyword_rows so it can run INSIDE
@@ -1158,8 +1202,13 @@ def _gather_report_data(
     # Target Keywords slide is the client's own keyword research — exclude
     # competitor-labeled keyword_gap uploads (those feed the separate
     # "keyword gap opportunities" finding in semrush_analysis_service instead,
-    # which intentionally wants both own + competitor rows).
-    keyword_rows_all = _all_rows("keyword_gap", own_only=True)
+    # which intentionally wants both own + competitor rows). Merged with the
+    # client's own Organic Positions rows (2026-09-18 fix) — see
+    # _merge_keyword_gap_and_positions's docstring for why Keyword Gap alone
+    # was missing a big chunk of the client's real keyword picture.
+    keyword_rows_all = _merge_keyword_gap_and_positions(
+        _all_rows("keyword_gap", own_only=True), _all_rows("organic_positions", own_only=True),
+    )
     # Relevance-filtered FIRST, before clustering/intent classification (or
     # anything else in this function) spends any AI budget on these rows —
     # see _filter_keyword_rows's docstring for why call ORDER, not just
@@ -1253,6 +1302,19 @@ def _gather_report_data(
                     url = urls.get(own_col)
                     if url:
                         r["current_url"] = url
+
+        # Organic Positions fills the same current_position/current_url gap
+        # for rows the Keyword Gap matrix step above had nothing for (no
+        # domain_positions at all, or no own-domain column in it) — the
+        # keyword-level fallback half of the 2026-09-18 merge fix, using the
+        # "position"/"url" fields _merge_keyword_gap_and_positions already
+        # carried onto these rows. Keyword Gap's matrix value (set above)
+        # is left as-is when both sources have one, unchanged behavior.
+        for r in keyword_rows_all:
+            if r.get("current_position") in (None, "") and r.get("position") not in (None, ""):
+                r["current_position"] = r["position"]
+            if not r.get("current_url") and r.get("url"):
+                r["current_url"] = r["url"]
 
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
