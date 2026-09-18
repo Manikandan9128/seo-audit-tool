@@ -5,6 +5,7 @@ from app.reporting.pptx_builder import (
     add_search_opportunities_pages_slide, add_search_opportunities_countries_slide,
     build_branded_dependency_narrative, build_branded_vs_nonbranded_comparison,
     build_high_potential_countries, build_high_potential_pages, build_search_opportunity_pages,
+    _audit_slide_geometry,
 )
 
 
@@ -279,6 +280,23 @@ def test_search_opportunity_pages_sorted_by_estimated_opportunity_clicks():
     flagged = build_search_opportunity_pages(pages)
     assert flagged[0]["page"] == "https://x.com/big"
     assert flagged[0]["opportunity_clicks"] > flagged[1]["opportunity_clicks"]
+
+
+def test_search_opportunity_pages_slide_no_overlap_worst_case():
+    # Standing no-overlap/fit-to-page rule: max flagged rows, long slugs
+    # (long Recommended Action text), no crawled title for any of them —
+    # the worst case for table row growth + Key Insights strip height.
+    pages = [
+        {
+            "page": f"https://example.com/very-long-descriptive-category-slug-{i}/hydraulic-lift-industrial-equipment",
+            "impressions": 5000 - i * 100, "ctr": 0.01, "position": 4.0 + (i % 6),
+        }
+        for i in range(12)
+    ]
+    flagged = build_search_opportunity_pages(pages)
+    prs = _prs()
+    add_search_opportunities_pages_slide(prs, flagged, "Google Search Console")
+    assert _audit_slide_geometry(prs) == []
 
 
 def test_countries_slide_low_signal_line_never_a_table_row():
