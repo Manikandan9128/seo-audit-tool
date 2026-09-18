@@ -5907,16 +5907,18 @@ def _build_report(
     # if domain_strategy:
     #     add_domain_strategy_slide(prs, domain_strategy)
 
-    # Understanding Current Scenario section — template order: Website
-    # Performance (PageSpeed), then Web Structure, then the "Understanding
-    # Current Scenario" crawl/site-health stats itself (template's own 3-
-    # item sub-order; Web Structure and site-health were previously
-    # reversed here). Tech Stack & Hosting renders right after this whole
-    # section, before SEO Issues/Critical Issues/Tech Fixes/UI-UX — it was
-    # drifting to render after ALL of those instead, because it sat outside
-    # this `if site_audit:` block but the block itself grew to include SEO
-    # Issues/Tech Fixes/Schema below it. Split into two blocks so Tech
-    # Stack's call site sits between them, matching the template order.
+    # Understanding Current Scenario section — locked to the 2026-09-18
+    # canonical slide order (same deck every generation, no drift): Website
+    # Performance (PageSpeed) -> Score Breakdown -> JS Bundle Breakdown ->
+    # Script Weight Breakdown -> the "Understanding Current Scenario"
+    # crawl/site-health card -> Website Structure -> SEO Issues (+ Critical
+    # Issues, not in the canonical list but kept at its existing position
+    # right after SEO Issues per 2026-09-18 user instruction) -> Priority
+    # Issues - Page-wise -> Structured Data & Schema Validator -> Tech
+    # Stack & Hosting -> UI-Level Fixes -> Onboarding Breakdown. Tech Stack
+    # moved here (was previously rendering before SEO Issues) to match the
+    # canonical position; site-health/Website Structure swapped to match it
+    # too (previously Website Structure rendered first).
     if site_audit or page_audit or psi_mobile or psi_desktop:
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if psi_mobile or psi_desktop:
@@ -5925,17 +5927,16 @@ def _build_report(
             add_script_treemap_slide(prs, psi_mobile, psi_desktop, website_url)
             add_pagespeed_script_weight_slide(prs, psi_mobile, psi_desktop)
         if site_audit:
+            add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
             if site_audit_pages_rows:
                 add_site_structure_slide(prs, site_audit_pages_rows)
-            add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
-
-    if tech_stack:
-        add_tech_stack_slide(prs, tech_stack)
 
     if site_audit:
         add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights)
-        # Template item 8: Semrush ERROR-severity issues get their own
-        # standalone slide, distinct from SEO Issues' capped Errors column.
+        # Not in the canonical list — kept at its existing position (right
+        # after SEO Issues) per 2026-09-18 user instruction: Semrush ERROR-
+        # severity issues get their own standalone slide, distinct from SEO
+        # Issues' capped Errors column.
         add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows)
         add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
         if schema_validation and schema_validation.get("total_pages"):
@@ -5943,9 +5944,15 @@ def _build_report(
         elif structured_data_rows:
             add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
 
+    if tech_stack:
+        add_tech_stack_slide(prs, tech_stack)
+
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
 
+    # Not in the 2026-09-18 canonical slide-order list — kept at its
+    # existing position (right after Onboarding Breakdown, before the
+    # Traffic & Search Performance divider) per 2026-09-18 user instruction.
     # Backlink Profile slide re-enabled 2026-09-17 — was pulled 2026-09-08
     # over a real backlink-total mismatch (10,000 vs 33,800 on Lumber): this
     # slide's own total fell back to `row_count`, the literal row count of
