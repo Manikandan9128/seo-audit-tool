@@ -4567,6 +4567,42 @@ def _strip_trailing_url_citation(text: str) -> str:
     return stripped or text
 
 
+_SCREENSHOT_EMBED_MAX_WIDTH_PX = 700
+_SCREENSHOT_EMBED_JPEG_QUALITY = 78
+
+
+def _compress_screenshot_for_embed(raw_bytes: bytes) -> bytes:
+    """Competitor homepage screenshots come back from Playwright as a raw
+    1280x800 lossless PNG (screenshot_client.py) but render at only ~3.9in
+    wide on the slide — embedding the untouched capture bloats the PPTX by
+    hundreds of KB to a couple MB per competitor for pixel detail nobody
+    ever sees at that display size. Capture success/failure also varies
+    run to run (bot detection, timeouts, network flakiness), which is why
+    the SAME client's report can swing wildly in file size between two
+    separate generations even though the actual report content — text,
+    tables, insights — is identical (flagged live 2026-09-18: one run's
+    competitor screenshots alone pushed a report from ~700KB to ~2MB).
+    Downscaled and re-encoded as JPEG right before embedding — purely
+    decorative, never fed to any AI call (the vision-analysis path uses
+    its own separate, uncompressed capture of the CLIENT's own homepage,
+    site_audit.py's homepage_shot — untouched by this), so lossy
+    recompression here costs nothing but file size. Falls back to the raw
+    bytes on any decode failure so a corrupt capture still gets a chance
+    at add_picture's own try/except rather than silently vanishing here."""
+    try:
+        from PIL import Image
+
+        img = Image.open(BytesIO(raw_bytes)).convert("RGB")
+        if img.width > _SCREENSHOT_EMBED_MAX_WIDTH_PX:
+            ratio = _SCREENSHOT_EMBED_MAX_WIDTH_PX / img.width
+            img = img.resize((_SCREENSHOT_EMBED_MAX_WIDTH_PX, max(1, int(img.height * ratio))), Image.LANCZOS)
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=_SCREENSHOT_EMBED_JPEG_QUALITY, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return raw_bytes
+
+
 def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narrative: dict):
     """Matches the reference decks' "What {Competitor} Does Well" slide —
     objective bullets on the competitor's own tactics/strengths, grounded in
@@ -4591,7 +4627,7 @@ def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narr
     if screenshot:
         img_left, img_width = Inches(8.7), Inches(3.9)
         try:
-            slide.shapes.add_picture(BytesIO(screenshot), img_left, card_top, width=img_width)
+            slide.shapes.add_picture(BytesIO(_compress_screenshot_for_embed(screenshot)), img_left, card_top, width=img_width)
         except Exception:
             pass
         else:
@@ -4655,7 +4691,7 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     if screenshot:
         img_left, img_width = Inches(8.7), Inches(3.9)
         try:
-            slide.shapes.add_picture(BytesIO(screenshot), img_left, card_top, width=img_width)
+            slide.shapes.add_picture(BytesIO(_compress_screenshot_for_embed(screenshot)), img_left, card_top, width=img_width)
         except Exception:
             pass  # corrupt/unreadable capture — skip the image, text side is unaffected
         else:
