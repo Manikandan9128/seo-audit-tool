@@ -168,52 +168,70 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     # tables. Capped at 20 rows, same "highest volume first" ordering.
     keyword_gap_result_rows: list[dict] = []
 
-    # A keyword only counts as a gap if you're literally invisible for it —
-    # position 0 (not ranking) — OR a competitor is on page 1 (top 10) while
-    # you're buried past position 20. Position-0-only missed real cases like
-    # ranking #56 against a competitor's #7 for a 1,600/mo keyword — still
-    # ranking "something" but effectively as invisible as not ranking at all.
-    _RANKING_BEHIND_COMPETITOR_MAX = 10
-    _RANKING_BEHIND_OWN_MIN = 20
-
+    # gap_category per keyword, matching every domain compared against the
+    # client in one Keyword Gap export (domain_positions), not just a single
+    # fixed competitor column:
+    #   Shared    — you rank AND at least one competitor ranks (however close
+    #               the race — a keyword you're winning outright, own_pos with
+    #               no ranking competitor, isn't a gap at all and is dropped).
+    #   Missing   — you don't rank, at least one competitor does.
+    #   Untapped  — nobody compared ranks for it yet (a genuine white-space
+    #               keyword, not just a competitor blind spot).
     if matrix_rows and own_col:
         seen_keywords = set()
-        real_gaps = []
+        classified = []
         for r in matrix_rows:
             kw = r.get("keyword")
             if not kw or kw in seen_keywords:
                 continue
-            positions = r.get("domain_positions") or {}
-            own_pos = _num(positions.get(own_col))
-            competitor_ranks = {d: _num(p) for d, p in positions.items() if d != own_col and _num(p) > 0}
-            if not competitor_ranks:
-                continue  # nobody ranks for it either — not a real gap
-            best_domain, best_pos = min(competitor_ranks.items(), key=lambda kv: kv[1])
-            if own_pos <= 0:
-                gap_type = "not_ranking"
-            elif best_pos <= _RANKING_BEHIND_COMPETITOR_MAX and own_pos > _RANKING_BEHIND_OWN_MIN:
-                gap_type = "ranking_behind"
-            else:
-                continue  # you're competitive enough here — not a real gap
             seen_keywords.add(kw)
-            real_gaps.append((r, best_domain, best_pos, own_pos, gap_type))
-        if real_gaps:
-            real_gaps.sort(key=lambda g: -_num(g[0].get("search_volume")))
-            total_volume = sum(_num(g[0].get("search_volume")) for g in real_gaps)
-            not_ranking_count = sum(1 for g in real_gaps if g[4] == "not_ranking")
-            ranking_behind_count = len(real_gaps) - not_ranking_count
-            top_row, top_domain, top_pos, top_own_pos, top_type = real_gaps[0]
-            if top_type == "not_ranking":
-                top_detail = f"{top_domain} ranks #{int(top_pos)}, you don't rank at all"
+            positions = r.get("domain_positions") or {}
+            urls = r.get("domain_ranking_urls") or {}
+            own_pos = _num(positions.get(own_col))
+            has_own = own_pos > 0
+            competitor_ranks = {d: _num(p) for d, p in positions.items() if d != own_col and _num(p) > 0}
+            if has_own and competitor_ranks:
+                gap_category = "Shared"
+            elif not has_own and competitor_ranks:
+                gap_category = "Missing"
+            elif not has_own and not competitor_ranks:
+                gap_category = "Untapped"
             else:
-                top_detail = f"{top_domain} ranks #{int(top_pos)}, you're at #{int(top_own_pos)} — effectively invisible by comparison"
+                continue  # you rank, nobody else does — not a gap, belongs elsewhere
+            # Every ranking competitor, not just the best one (2026-09-18 spec:
+            # "never drop a competitor to show only the best one") — sorted
+            # best-position-first so the table/Sheet can show them in a stable,
+            # meaningful order regardless of which columns end up displayed.
+            ranking_competitors = sorted(
+                (
+                    {"competitor": d, "position": int(p), "ranking_url": urls.get(d) or None}
+                    for d, p in competitor_ranks.items()
+                ),
+                key=lambda c: c["position"],
+            )
+            classified.append((r, gap_category, ranking_competitors, own_pos if has_own else None, urls.get(own_col) or None))
+        if classified:
+            classified.sort(key=lambda c: -_num(c[0].get("search_volume")))
+            shared_count = sum(1 for c in classified if c[1] == "Shared")
+            missing_count = sum(1 for c in classified if c[1] == "Missing")
+            untapped_count = sum(1 for c in classified if c[1] == "Untapped")
+            total_volume = sum(_num(c[0].get("search_volume")) for c in classified)
+            top_row, top_cat, top_competitors, top_own_pos, _top_own_url = classified[0]
+            if top_cat == "Missing":
+                top_detail = f"{top_competitors[0]['competitor']} ranks #{top_competitors[0]['position']}, you don't rank at all"
+            elif top_cat == "Shared":
+                top_detail = f"{top_competitors[0]['competitor']} ranks #{top_competitors[0]['position']}, you're at #{int(top_own_pos)}"
+            else:
+                top_detail = "no domain compared ranks for it yet — open white space"
             summary_bits = []
-            if not_ranking_count:
-                summary_bits.append(f"{not_ranking_count} not ranking at all")
-            if ranking_behind_count:
-                summary_bits.append(f"{ranking_behind_count} ranking far behind a page-1 competitor")
+            if shared_count:
+                summary_bits.append(f"{shared_count} shared")
+            if missing_count:
+                summary_bits.append(f"{missing_count} missing")
+            if untapped_count:
+                summary_bits.append(f"{untapped_count} untapped")
             issues.append({
-                "summary": f"{len(real_gaps)} keyword gap(s) ({', '.join(summary_bits)}), {int(total_volume):,} combined monthly searches",
+                "summary": f"{len(classified)} keyword gap(s) ({', '.join(summary_bits)}), {int(total_volume):,} combined monthly searches",
                 "detail": (
                     f"Highest-volume gap: \"{top_row.get('keyword')}\" — {top_detail} "
                     f"({int(_num(top_row.get('search_volume'))):,} monthly searches)."
@@ -221,18 +239,24 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
             })
+            # Semrush's own export caps at 500 rows per file (semrush_parser.py)
+            # — matched here rather than the old 20-row cap, since the report
+            # now links the full filtered list out to a Google Sheet tab
+            # (add_keyword_gap_slide / create_combined_keyword_sheet) instead
+            # of silently truncating what candidates ever reach that Sheet.
             keyword_gap_result_rows = [
                 {
                     "keyword": r.get("keyword"),
-                    "competitor_domain": best_domain,
-                    "competitor_position": int(best_pos),
-                    "your_position": int(own_pos) if own_pos > 0 else None,
+                    "competitor_positions": ranking_competitors,
+                    "your_position": int(own_pos) if own_pos else None,
+                    "your_url": own_url,
                     "search_volume": int(_num(r.get("search_volume"))),
                     "keyword_difficulty": r.get("keyword_difficulty"),
                     "cpc": r.get("cpc"),
-                    "gap_type": gap_type,
+                    "gap_category": gap_category,
+                    "intent": r.get("intent") or None,
                 }
-                for r, best_domain, best_pos, own_pos, gap_type in real_gaps[:20]
+                for r, gap_category, ranking_competitors, own_pos, own_url in classified[:500]
             ]
     elif keyword_gap_rows:
         # Fallback: a simple (non-matrix) Keyword Gap upload, or we don't
@@ -259,15 +283,16 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
             keyword_gap_result_rows = [
                 {
                     "keyword": r.get("keyword"),
-                    "competitor_domain": None,
-                    "competitor_position": None,
+                    "competitor_positions": [],
                     "your_position": None,
+                    "your_url": None,
                     "search_volume": int(_num(r.get("search_volume"))),
                     "keyword_difficulty": r.get("keyword_difficulty"),
                     "cpc": r.get("cpc"),
-                    "gap_type": None,
+                    "gap_category": None,
+                    "intent": r.get("intent") or None,
                 }
-                for r in opportunities[:20]
+                for r in opportunities[:500]
             ]
 
     # Technical/on-page issues from a Semrush Site Audit "crawled pages" export of our own site

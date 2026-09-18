@@ -4288,6 +4288,12 @@ _CTR_DECAY_TIERS = [
 # step from a real CTR jump (11->10 is 0.2%->1.5%, not a rounding blip).
 _CTR_TIER_CROSSING_POSITIONS = {11: 10, 6: 5, 21: 20}
 
+# Step 3 of the 2026-09-18 Competitor Keyword Gap Analysis spec: keep the
+# table to keywords realistically climbable rather than aspirational
+# page-1-of-a-saturated-niche terms. No per-client override exists yet —
+# a fixed, documented default rather than silently unfiltered.
+_KEYWORD_GAP_MAX_KD = 70
+
 
 def _ctr_decay_pct(position) -> float:
     try:
@@ -4302,110 +4308,190 @@ def _ctr_decay_pct(position) -> float:
     return 0.0
 
 
-def add_keyword_gap_slide(prs: Presentation, competitor_analysis: dict):
-    """Conservative organic-traffic projection (2026-09-10 user spec):
-    applies the strict CTR-decay-by-position model above to both the
-    client's and the top competitor's position for every keyword gap,
-    rather than just listing positions with no traffic estimate. Includes
-    both gap types semrush_analysis_service surfaces: not ranking at all,
-    and ranking so far behind a page-1 competitor it's effectively
-    invisible — a missing/absent position (either side) projects to 0
-    clicks, a genuinely MISSING competitor_position is marked "no data"
-    rather than guessed."""
+def _short_display_url(url: str | None) -> str:
+    if not url:
+        return "—"
+    return url.replace("https://", "").replace("http://", "").rstrip("/")
+
+
+def _position_url_cell(position, url: str | None) -> str:
+    """"Not ranking" is always exactly that string — never a variant with a
+    trailing dash or an empty URL slot (2026-09-18 spec hard rule)."""
+    if not position:
+        return "Not ranking"
+    disp = _short_display_url(url)
+    return f"#{int(position)} — {disp}" if disp != "—" else f"#{int(position)}"
+
+
+_KEYWORD_GAP_MAX_COMPETITOR_COLS = 3
+
+
+def _prepare_keyword_gap_rows(rows: list[dict], max_kd: float = _KEYWORD_GAP_MAX_KD):
+    """Shared by add_keyword_gap_slide and the Keyword Gap Sheet export
+    (site_audit.create_combined_keyword_sheet call) so both apply identical
+    relevance/KD filtering and use the identical fixed competitor-to-column
+    mapping (2026-09-18 spec: "same competitor-to-column assignment across
+    all rows" — the slide and the full Sheet list must agree on which
+    domain is "Competitor 1"). Returns (kd_filtered_rows, ambiguous_rows,
+    kd_unavailable_count, competitor_columns) — kd_filtered_rows sorted by
+    volume descending; competitor_columns is the ordered list of up to
+    _KEYWORD_GAP_MAX_COMPETITOR_COLS domains, picked by how many surviving
+    keywords each one ranks for (most-covered first), so a domain that only
+    shows up on a couple of long-tail rows doesn't bump one that's a real,
+    consistent competitor across the dataset."""
+    rows = [
+        r for r in rows
+        if not any(
+            _is_branded_keyword(r.get("keyword", ""), _brand_token(cp.get("competitor", "")))
+            for cp in (r.get("competitor_positions") or [])
+        )
+    ]
+    ambiguous_rows = [r for r in rows if r.get("relevance") == "potentially_relevant"]
+    # Rows with no "relevance" key (non-matrix fallback, or a failed-open AI
+    # classification) are treated as RELEVANT, not AMBIGUOUS — this file's
+    # established fail-open discipline: a missing signal must never cause
+    # real gap keywords to vanish from the slide.
+    relevant_rows = [r for r in rows if r.get("relevance") != "potentially_relevant"]
+
+    kd_unavailable_count = sum(1 for r in relevant_rows if r.get("keyword_difficulty") in (None, ""))
+    kd_filtered = [
+        r for r in relevant_rows
+        if r.get("keyword_difficulty") not in (None, "") and _num(r.get("keyword_difficulty")) <= max_kd
+    ]
+    kd_filtered.sort(key=lambda r: -_num(r.get("search_volume")))
+
+    coverage: dict[str, int] = {}
+    for r in kd_filtered:
+        for cp in (r.get("competitor_positions") or []):
+            domain = cp.get("competitor")
+            if domain:
+                coverage[domain] = coverage.get(domain, 0) + 1
+    competitor_columns = sorted(coverage, key=lambda d: -coverage[d])[:_KEYWORD_GAP_MAX_COMPETITOR_COLS]
+
+    return kd_filtered, ambiguous_rows, kd_unavailable_count, competitor_columns
+
+
+def add_keyword_gap_slide(
+    prs: Presentation, competitor_analysis: dict, business_description: str | None = None,
+    keyword_gap_sheet_link: str | None = None,
+):
+    """Competitor Keyword Gap Analysis (2026-09-18 spec, replaces the
+    single-best-competitor + CTR-projected-clicks version): every tracked
+    competitor's position/URL shown side by side with the client's own,
+    using the SAME competitor-to-column mapping on every row (never "show
+    whichever competitor ranks best for this particular keyword"). Gap
+    category (Shared/Missing/Untapped) leads the table as its own column,
+    and separately drives the KEY INSIGHTS grouping. Only the top rows by
+    volume that fit the slide are rendered; the full filtered list (same
+    relevance/KD filters,
+    same competitor columns) is linked out via keyword_gap_sheet_link — a
+    "KEYWORD LIST — Open full keyword list →" button, same pattern as
+    add_competitor_table_slide, so nothing is silently truncated."""
+    off_topic_count = competitor_analysis.get("keyword_gap_off_topic_count") or 0
     rows = competitor_analysis.get("keyword_gap_rows") or []
-    rows = [r for r in rows if not _is_branded_keyword(r.get("keyword", ""), _brand_token(r.get("competitor_domain", "")))]
     if not rows:
         return None
 
-    projected = []
-    for r in rows:
-        volume = r.get("search_volume") or 0
-        your_position = r.get("your_position")
-        competitor_position = r.get("competitor_position")
-        your_clicks = round(volume * _ctr_decay_pct(your_position) / 100)
-        competitor_clicks = round(volume * _ctr_decay_pct(competitor_position) / 100) if competitor_position else None
-        projected.append({
-            "keyword": r["keyword"], "volume": volume, "your_position": your_position,
-            "your_clicks": your_clicks, "competitor_position": competitor_position, "competitor_clicks": competitor_clicks,
-        })
+    kd_filtered, ambiguous_rows, kd_unavailable_count, competitor_columns = _prepare_keyword_gap_rows(rows)
+    if not kd_filtered:
+        return None
 
-    total_your = sum(p["your_clicks"] for p in projected)
-    total_competitor = sum(p["competitor_clicks"] for p in projected if p["competitor_clicks"] is not None)
+    shared_n = sum(1 for r in kd_filtered if r.get("gap_category") == "Shared")
+    missing_n = sum(1 for r in kd_filtered if (r.get("gap_category") or "Missing") == "Missing")
+    untapped_n = sum(1 for r in kd_filtered if r.get("gap_category") == "Untapped")
 
-    table_rows = [
-        (
-            p["keyword"], f"{p['volume']:,}",
-            f"#{p['your_position']}" if p["your_position"] else "Not ranking",
-            f"{p['your_clicks']:,}",
-            f"#{p['competitor_position']}" if p["competitor_position"] else "—",
-            f"{p['competitor_clicks']:,}" if p["competitor_clicks"] is not None else "no data",
-        )
-        for p in projected
-    ]
+    def _row_competitors_text(r: dict) -> str:
+        cps = r.get("competitor_positions") or []
+        return ", ".join(f"{cp.get('competitor')} (#{cp.get('position')})" for cp in cps) or "none tracked"
 
     insights = []
-    if total_your == 0:
-        insights.append(
-            "Your projected monthly clicks across these gaps: 0 — every tracked position falls in a tier this "
-            "model treats as negligible (position 11-20 is 0.2% CTR, 21+ rounds to 0%)."
-        )
-    else:
-        insights.append(
-            f"Your projected monthly clicks across these gaps: {total_your:,} — the minimal organic demand your "
-            "current positions actually capture on these terms."
-        )
+    topic_ref = business_description.strip() if business_description and business_description.strip() else "the client's business"
     insights.append(
-        f"Competitor projected monthly clicks: {total_competitor:,} — demand currently going to them on the "
-        "exact same search terms."
+        f"{off_topic_count} off-topic excluded (unrelated to {topic_ref}), {len(kd_filtered)} relevant keyword(s), "
+        f"split {shared_n} Shared / {missing_n} Missing / {untapped_n} Untapped."
     )
-
-    crossing = [p for p in projected if p["your_position"] in _CTR_TIER_CROSSING_POSITIONS]
-    if crossing:
-        crossing.sort(key=lambda p: p["volume"], reverse=True)
-        top_c = crossing[0]
-        next_pos = _CTR_TIER_CROSSING_POSITIONS[top_c["your_position"]]
-        potential_clicks = round(top_c["volume"] * _ctr_decay_pct(next_pos) / 100)
+    missing_rows = [r for r in kd_filtered if (r.get("gap_category") or "Missing") == "Missing" and r.get("competitor_positions")]
+    if missing_rows:
+        top_m = missing_rows[0]
         insights.append(
-            f"\"{top_c['keyword']}\" sits at #{top_c['your_position']} — closing just "
-            f"{top_c['your_position'] - next_pos} spot(s) to #{next_pos} would move it into a higher CTR tier, "
-            f"from {top_c['your_clicks']:,} to ~{potential_clicks:,} projected monthly clicks."
+            f"Highest-volume Missing keyword: \"{top_m['keyword']}\" ({int(_num(top_m.get('search_volume'))):,}/mo) — "
+            f"ranking competitors: {_row_competitors_text(top_m)}."
         )
-
-    # Semrush's own keyword_gap export is capped at 500 rows on import (see
-    # semrush_parser.py) — a real, verifiable ceiling, not a guess at a
-    # figure "found elsewhere."
-    if len(rows) >= 500:
+    untapped_rows = [r for r in kd_filtered if r.get("gap_category") == "Untapped"]
+    if untapped_rows:
+        top_u = untapped_rows[0]
         insights.append(
-            f"This dataset covers {len(rows)} keyword gap(s) — Semrush's own export caps at 500 rows per file, "
-            "so if the true gap count is larger, this projection understates total competitor demand."
+            f"Highest-volume Untapped keyword: \"{top_u['keyword']}\" ({int(_num(top_u.get('search_volume'))):,}/mo) — "
+            "no tracked domain ranks for it yet."
         )
+    if ambiguous_rows:
+        review_examples = ", ".join(f"\"{r.get('keyword')}\"" for r in ambiguous_rows[:3])
+        insights.append(f"Needs manual relevance review: {review_examples} — could not confidently judge against the client's business.")
+    if kd_unavailable_count:
+        insights.append(f"{kd_unavailable_count} keyword(s) excluded — KD_UNAVAILABLE (keyword difficulty missing in the source export).")
 
-    insights.append(
-        "Positions 21+ are modeled at 0.0% CTR — a conservative rounding-down assumption for this projection, "
-        "not a claim that real-world traffic is literally zero at those positions."
-    )
+    headers = ["Gap Category", "Keyword", "Volume", "KD", "My Position + URL"]
+    headers += [f"{domain} Position + URL" for domain in competitor_columns]
+    col_widths = [0.9, 2.2, 0.65, 0.45, 2.0]
+    remaining = 12.1 - sum(col_widths)
+    if competitor_columns:
+        col_widths += [round(remaining / len(competitor_columns), 2)] * len(competitor_columns)
 
-    # Totals get their own visible card row (spec's Part 2 is a distinct
-    # output from Part 3's insights, not just a number buried in a
-    # sentence), same KPI-card pattern as the Traffic Overview slide.
+    table_rows = []
+    for r in kd_filtered:
+        by_domain = {cp.get("competitor"): cp for cp in (r.get("competitor_positions") or [])}
+        row = [
+            r.get("gap_category") or "Missing", r.get("keyword"),
+            f"{int(_num(r.get('search_volume'))):,}", f"{int(_num(r.get('keyword_difficulty')))}",
+            _position_url_cell(r.get("your_position"), r.get("your_url")),
+        ]
+        for domain in competitor_columns:
+            cp = by_domain.get(domain)
+            row.append(_position_url_cell(cp.get("position"), cp.get("ranking_url")) if cp else "Not ranking")
+        table_rows.append(tuple(row))
+
     slide = _blank_slide(prs)
     _content_header(slide, "Competitor Keyword Gap Analysis")
-    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export — CTR decay model", size=11, color=TEXT_MUTED)
-    metrics = [("Your Projected Monthly Clicks", f"{total_your:,}"), ("Competitor Projected Monthly Clicks", f"{total_competitor:,}")]
-    gap = Inches(0.15)
-    total_width = Inches(12.1)
-    card_width = Emu(int((total_width - gap) / 2))
-    card_height = Inches(0.85)
-    card_top = Inches(1.05)
-    for i, (label, value) in enumerate(metrics):
-        left = Inches(0.6) + Emu(i * (card_width + gap))
-        _card(slide, left, card_top, card_width, card_height)
-        _textbox(slide, left + Inches(0.15), card_top + Inches(0.1), card_width - Inches(0.3), Inches(0.35), label, size=11, color=TEXT_MUTED)
-        _textbox(slide, left + Inches(0.15), card_top + Inches(0.4), card_width - Inches(0.3), Inches(0.4), value, size=20, bold=True, color=_accent())
-    _draw_table(
-        slide, ["Keyword", "Volume", "Your Position", "Your Projected Clicks", "Competitor Position", "Competitor Projected Clicks"],
-        table_rows, card_top + card_height + Inches(0.2), col_widths=[2.6, 1.3, 1.5, 1.9, 1.9, 2.1], insights=insights[:5],
-    )
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
+
+    # Same reserved-footer-zone discipline as add_competitor_table_slide's
+    # own keyword_sheet_link button — confirmed live there that skipping
+    # this cap lets a long insights list grow straight over the button/
+    # footer instead of stopping short of it.
+    insights_max_y = (SLIDE_H - Inches(1.10)) if keyword_gap_sheet_link else None
+    wrap_cols = set(range(1, len(headers)))  # keyword + every Position+URL cell can wrap
+    bottom = _draw_table(slide, headers, table_rows, Inches(1.2), col_widths=col_widths, wrap_cols=wrap_cols)
+    if insights:
+        _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), insights[:5], max_y=insights_max_y)
+
+    if keyword_gap_sheet_link:
+        _textbox(
+            slide, Inches(0.6), SLIDE_H - Inches(1.00), Inches(3.0), Inches(0.20),
+            "KEYWORD LIST", size=9.5, bold=True, color=TEXT_MUTED,
+        )
+        btn = slide.shapes.add_shape(5, Inches(0.6), SLIDE_H - Inches(0.76), Inches(4.3), Inches(0.32))
+        try:
+            btn.adjustments[0] = 0.35
+        except (IndexError, AttributeError):
+            pass
+        btn.fill.solid()
+        btn.fill.fore_color.rgb = _accent()
+        btn.line.fill.background()
+        btn.shadow.inherit = False
+        tf = btn.text_frame
+        tf.word_wrap = False
+        tf.margin_left = Pt(10)
+        tf.margin_right = Pt(10)
+        tf.margin_top = Pt(2)
+        tf.margin_bottom = Pt(2)
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        run = p.add_run()
+        run.text = "Open full keyword list →"
+        run.font.size = Pt(11.5)
+        run.font.bold = True
+        run.font.color.rgb = WHITE
+        btn.click_action.hyperlink.address = keyword_gap_sheet_link
     return slide
 
 
@@ -6005,7 +6091,10 @@ def _build_report(
                     add_competitor_opportunity_slide(prs, client_name, domain, narrative)
             add_competitor_opportunity_summary_slide(prs, competitor_narratives, competitor_top_opportunities)
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
-            add_keyword_gap_slide(prs, competitor_analysis)
+            add_keyword_gap_slide(
+                prs, competitor_analysis, business_description=(company_overview or {}).get("description"),
+                keyword_gap_sheet_link=keyword_sheet_link,
+            )
 
     if core_problem:
         add_core_problem_slide(prs, core_problem)

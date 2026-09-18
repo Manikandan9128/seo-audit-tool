@@ -12,7 +12,7 @@ def _record(rows, own_domain=True):
     }
 
 
-def test_keyword_gap_flags_not_ranking():
+def test_keyword_gap_flags_missing():
     rows = [
         {
             "keyword": "widget insurance",
@@ -23,33 +23,15 @@ def test_keyword_gap_flags_not_ranking():
     result = analyze([_record(rows)], own_domain="client.com")
     gap_rows = result["keyword_gap_rows"]
     assert len(gap_rows) == 1
-    assert gap_rows[0]["gap_type"] == "not_ranking"
-    assert gap_rows[0]["competitor_domain"] == "rival.com"
+    assert gap_rows[0]["gap_category"] == "Missing"
+    assert gap_rows[0]["competitor_positions"] == [{"competitor": "rival.com", "position": 5, "ranking_url": None}]
     assert gap_rows[0]["your_position"] is None
 
 
-def test_keyword_gap_flags_ranking_far_behind_page1_competitor():
-    # Regression test: a keyword where you rank (not 0) but so far behind a
-    # page-1 competitor it's effectively invisible was previously missed
-    # entirely by the old "position 0 only" rule.
-    rows = [
-        {
-            "keyword": "government certified payroll",
-            "search_volume": 1600,
-            "domain_positions": {"client.com": 56, "rival.com": 7},
-        }
-    ]
-    result = analyze([_record(rows)], own_domain="client.com")
-    gap_rows = result["keyword_gap_rows"]
-    assert len(gap_rows) == 1
-    assert gap_rows[0]["gap_type"] == "ranking_behind"
-    assert gap_rows[0]["your_position"] == 56
-    assert gap_rows[0]["competitor_position"] == 7
-
-
-def test_keyword_gap_excludes_competitive_positions():
-    # You rank #15, competitor ranks #12 — both roughly page 1-2, not a
-    # real gap under either rule.
+def test_keyword_gap_flags_shared_even_when_close_race():
+    # You rank #15, competitor ranks #12 — both roughly page 1-2. Per the
+    # 2026-09-18 spec, existence of a ranking on both sides makes this
+    # "Shared", not excluded — how close the race is doesn't matter here.
     rows = [
         {
             "keyword": "close race keyword",
@@ -58,10 +40,14 @@ def test_keyword_gap_excludes_competitive_positions():
         }
     ]
     result = analyze([_record(rows)], own_domain="client.com")
-    assert result["keyword_gap_rows"] == []
+    gap_rows = result["keyword_gap_rows"]
+    assert len(gap_rows) == 1
+    assert gap_rows[0]["gap_category"] == "Shared"
+    assert gap_rows[0]["your_position"] == 15
+    assert gap_rows[0]["competitor_positions"][0]["position"] == 12
 
 
-def test_keyword_gap_excludes_keywords_nobody_ranks_for():
+def test_keyword_gap_flags_untapped_when_nobody_ranks():
     rows = [
         {
             "keyword": "nobody ranks this",
@@ -70,10 +56,26 @@ def test_keyword_gap_excludes_keywords_nobody_ranks_for():
         }
     ]
     result = analyze([_record(rows)], own_domain="client.com")
+    gap_rows = result["keyword_gap_rows"]
+    assert len(gap_rows) == 1
+    assert gap_rows[0]["gap_category"] == "Untapped"
+    assert gap_rows[0]["competitor_positions"] == []
+
+
+def test_keyword_gap_excludes_when_only_you_rank():
+    # You rank, nobody else compared does — not a gap at all.
+    rows = [
+        {
+            "keyword": "your own turf",
+            "search_volume": 500,
+            "domain_positions": {"client.com": 3, "rival.com": 0},
+        }
+    ]
+    result = analyze([_record(rows)], own_domain="client.com")
     assert result["keyword_gap_rows"] == []
 
 
-def test_keyword_gap_picks_best_ranking_competitor_when_multiple():
+def test_keyword_gap_keeps_every_ranking_competitor_not_just_best():
     rows = [
         {
             "keyword": "multi competitor keyword",
@@ -84,8 +86,24 @@ def test_keyword_gap_picks_best_ranking_competitor_when_multiple():
     result = analyze([_record(rows)], own_domain="client.com")
     gap_rows = result["keyword_gap_rows"]
     assert len(gap_rows) == 1
-    assert gap_rows[0]["competitor_domain"] == "leader.com"
-    assert gap_rows[0]["competitor_position"] == 3
+    competitors = gap_rows[0]["competitor_positions"]
+    assert [c["competitor"] for c in competitors] == ["leader.com", "rival.com"]
+    assert [c["position"] for c in competitors] == [3, 40]
+
+
+def test_keyword_gap_carries_ranking_urls():
+    rows = [
+        {
+            "keyword": "url keyword",
+            "search_volume": 400,
+            "domain_positions": {"client.com": 5, "rival.com": 2},
+            "domain_ranking_urls": {"client.com": "client.com/page", "rival.com": "rival.com/page"},
+        }
+    ]
+    result = analyze([_record(rows)], own_domain="client.com")
+    gap_rows = result["keyword_gap_rows"]
+    assert gap_rows[0]["your_url"] == "client.com/page"
+    assert gap_rows[0]["competitor_positions"][0]["ranking_url"] == "rival.com/page"
 
 
 def test_keyword_gap_sorted_by_search_volume_descending():

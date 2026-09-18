@@ -390,7 +390,13 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
     the existing volume-sort + row caps on those slides already surface
     only the highest-value rows once excludes are stripped out. Only the
     top _CLASSIFY_CANDIDATE_CAP rows per domain/list (by search volume) are
-    even considered — see that constant's comment for why."""
+    even considered — see that constant's comment for why. Exception:
+    keyword_gap_rows also gets each surviving row's relevance label
+    ("highly_relevant"/"potentially_relevant") stamped onto it in place, so
+    add_keyword_gap_slide can treat "potentially_relevant" as AMBIGUOUS
+    (excluded from its table with its own manual-review note) per the
+    2026-09-18 Competitor Keyword Gap Analysis relevance-filter spec —
+    competitor_positions is untouched by that distinction."""
     competitor_positions: dict[str, list[dict]] = data.get("competitor_positions") or {}
     competitor_analysis = data.get("competitor_analysis") or {}
     keyword_gap_rows = competitor_analysis.get("keyword_gap_rows") or []
@@ -400,7 +406,11 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
     client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
     brand_tokens = {_brand_token(client_domain)}
     brand_tokens.update(_brand_token(d) for d in competitor_positions.keys())
-    brand_tokens.update(_brand_token(r.get("competitor_domain") or "") for r in keyword_gap_rows)
+    brand_tokens.update(
+        _brand_token(cp.get("competitor") or "")
+        for r in keyword_gap_rows
+        for cp in (r.get("competitor_positions") or [])
+    )
     brand_tokens.discard("")
 
     def _top_by_volume(rows: list[dict]) -> list[dict]:
@@ -426,10 +436,34 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
         ]
 
     if keyword_gap_rows:
-        competitor_analysis["keyword_gap_rows"] = [
-            r for r in gap_candidates
-            if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
-        ]
+        # The Competitor Keyword Gap Analysis slide + its full-list Sheet tab
+        # (add_keyword_gap_slide / create_combined_keyword_sheet) need the
+        # actual relevance label per surviving row, not just a keep/drop
+        # decision — "potentially_relevant" (AMBIGUOUS: relevance unclear
+        # either way) gets excluded from the table with its own manual-review
+        # note, while "highly_relevant" rows go in normally. Only "exclude"
+        # (OFF_TOPIC) is dropped here. Only rows in the classified candidate
+        # pool (top _CLASSIFY_CANDIDATE_CAP by volume) can be dropped or
+        # tagged at all — a row outside that pool was never sent to the AI,
+        # so it's kept untouched (no "relevance" key), same discipline as
+        # _filter_keyword_rows/_filter_search_queries above. This keeps the
+        # full up-to-500-row list (now capped for the Sheet, not just the
+        # slide's own display cap) from being silently truncated to just the
+        # 40-row AI candidate pool.
+        gap_candidate_keywords = {(r.get("keyword") or "").lower() for r in gap_candidates}
+        kept_gap_rows = []
+        off_topic_count = 0
+        for r in keyword_gap_rows:
+            kwl = (r.get("keyword") or "").lower()
+            if kwl in gap_candidate_keywords:
+                label = classifications.get(kwl, "potentially_relevant")
+                if label == "exclude":
+                    off_topic_count += 1
+                    continue
+                r["relevance"] = label
+            kept_gap_rows.append(r)
+        competitor_analysis["keyword_gap_rows"] = kept_gap_rows
+        competitor_analysis["keyword_gap_off_topic_count"] = off_topic_count
 
 
 def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dict | None) -> list[dict]:
@@ -1941,11 +1975,19 @@ def _build_pptx_for_client(
     # Semrush's own export-tier limit on the file, not a truncation here
     # (see create_combined_keyword_sheet's docstring).
     keyword_sheet_link: str | None = None
-    if get_sheets_oauth_email(db) and (full_competitor_positions or data.get("keyword_rows") or data.get("own_site_positions_rows")):
+    keyword_gap_rows_for_sheet = (data.get("competitor_analysis") or {}).get("keyword_gap_rows") or []
+    if get_sheets_oauth_email(db) and (full_competitor_positions or data.get("keyword_rows") or data.get("own_site_positions_rows") or keyword_gap_rows_for_sheet):
         try:
+            # Keyword Gap Analysis gets its own tab in this same combined
+            # spreadsheet (2026-09-18 spec) — its full filtered list, same
+            # relevance/KD filters and competitor-column mapping as
+            # add_keyword_gap_slide uses (google_sheets_service._keyword_
+            # gap_tab_values reuses that exact helper), rather than a
+            # second spreadsheet — one link, one place the client looks.
             keyword_sheet_link = create_combined_keyword_sheet(
                 client.name, data.get("keyword_rows") or [], full_competitor_positions, db=db,
                 client_positions_rows=data.get("own_site_positions_rows") or [],
+                keyword_gap_rows=keyword_gap_rows_for_sheet,
             )
         except Exception as e:
             logger.warning("Combined keyword sheet creation failed for client %s: %s", client.id, e)
