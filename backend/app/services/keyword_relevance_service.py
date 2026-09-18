@@ -41,14 +41,59 @@ _CAREERS_WORDS = [
 ]
 
 
+_MULTI_PART_TLDS = {
+    "co.uk", "co.in", "co.jp", "co.nz", "co.za", "co.id", "co.kr",
+    "com.au", "com.br", "com.mx", "com.sg", "com.cn", "com.tw",
+}
+
+
 def _brand_token(domain: str) -> str:
     """Best-effort brand name extracted from a domain, e.g.
     "www.taskus.com" -> "taskus". Semrush's exports have no per-keyword
     branded flag, so this is the only signal available short of a manual
-    list."""
+    list. Takes the label before the TLD, not always the first label — a
+    competitor row can be a subdomain (e.g. "trucks.tatamotors.com", a real
+    Semrush export value), and label[0] there would wrongly extract
+    "trucks" as the brand instead of "tatamotors" (confirmed live 2026-09-18
+    on a BharatBenz report: "trucks.tatamotors.com" is a real per-domain
+    competitor row). Handles the common multi-part ccTLDs (co.uk, co.in,
+    etc.) so "example.co.uk" still resolves to "example", not "co"."""
     host = re.sub(r"^https?://", "", (domain or "").strip().lower())
     host = re.sub(r"^www\.", "", host).split("/")[0]
-    return host.split(".")[0] if host else ""
+    labels = host.split(".") if host else []
+    if len(labels) < 2:
+        return labels[0] if labels else ""
+    if len(labels) >= 3 and ".".join(labels[-2:]) in _MULTI_PART_TLDS:
+        return labels[-3]
+    return labels[-2]
+
+
+_CORPORATE_SUFFIX_WORDS = (
+    "motors", "motor", "group", "industries", "industry", "corp", "corporation",
+    "international", "enterprises", "holdings", "ventures", "systems", "technologies", "technology", "solutions",
+)
+
+
+def brand_token_variants(domain: str) -> set[str]:
+    """`_brand_token` alone catches a keyword only when it repeats the
+    domain's exact registrable label — but "tatamotors.com" ranks in real
+    search queries as "tata" (e.g. "tata sierra"), not "tatamotors", and a
+    plain substring/domain match never bridges that gap. Strips a small set
+    of common corporate suffix words (Motors, Group, Industries, Corp, ...)
+    off the domain-derived token to also catch the shorter, colloquial brand
+    name customers actually type — confirmed needed live 2026-09-18 on a
+    BharatBenz report, where "tata sierra" / "tata nexon" kept surviving the
+    filter as legitimate own-keyword targets purely because
+    "tatamotors.com" doesn't literally contain the substring "tata sierra"
+    without this split."""
+    token = _brand_token(domain)
+    if not token:
+        return set()
+    variants = {token}
+    for suffix in _CORPORATE_SUFFIX_WORDS:
+        if token.endswith(suffix) and len(token) > len(suffix):
+            variants.add(token[: -len(suffix)])
+    return variants
 
 
 def _is_branded_keyword(keyword: str, brand: str) -> bool:
@@ -81,6 +126,26 @@ def is_branded_or_near_brand(keyword: str, brand_tokens) -> bool:
                 if brand and first != brand and len(brand) > 3 and _edit_distance(first, brand) <= 2:
                     return True
     return False
+
+
+def filter_other_brand_keywords(keyword_rows: list[dict], client_domain: str, competitor_domains) -> list[dict]:
+    """Standing rule for every client, not just one: an export of the
+    CLIENT's own ranking keywords can still legitimately contain another
+    company's brand name in the query text (e.g. a comparison/blog page on
+    the client's own site ranking for "tata sierra") — that's a real
+    ranking, but a client should never be told to TARGET a competitor's
+    brand name as if it were their own keyword opportunity, so rows like
+    that must never reach the Target Keywords slide. Excludes only
+    competitor brand tokens — never the client's own brand, since an
+    own-branded keyword is a normal, legitimate target."""
+    client_brands = brand_token_variants(client_domain)
+    competitor_brands: set[str] = set()
+    for d in competitor_domains or []:
+        competitor_brands |= brand_token_variants(d)
+    competitor_brands -= client_brands
+    if not competitor_brands:
+        return keyword_rows
+    return [r for r in keyword_rows if not is_branded_or_near_brand(r.get("keyword", ""), competitor_brands)]
 
 
 def _edit_distance(a: str, b: str) -> int:

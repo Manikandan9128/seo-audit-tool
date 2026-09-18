@@ -25,6 +25,7 @@ from app.services.keyword_relevance_service import (
     _brand_token,
     _classify_keyword_page_category,
     _is_branded_keyword,
+    filter_other_brand_keywords,
     is_branded_or_near_brand,
 )
 
@@ -5948,6 +5949,17 @@ def _build_report(
     prs = Presentation()
     prs.slide_width = SLIDE_W
     prs.slide_height = SLIDE_H
+
+    # Standing rule for every client (2026-09-18): the client's own ranking-
+    # keyword export can legitimately contain a competitor's brand name in
+    # the query text — that's a real ranking, never a real target — so it
+    # must be stripped before it reaches ANY slide built off keyword_rows
+    # (Target Keywords, Keyword Opportunity, Content SEO, Programmatic SEO,
+    # Goals), not just the one slide that first surfaced the bug.
+    if keyword_rows:
+        keyword_rows = filter_other_brand_keywords(
+            keyword_rows, website_url, [r.get("domain") for r in (competitor_rows or [])]
+        )
 
     add_title_slide(prs, client_name, website_url, logo_bytes=logo_bytes, analytics=analytics)
 
