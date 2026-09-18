@@ -248,7 +248,7 @@ def test_search_opportunity_pages_flags_real_ctr_gap_in_band():
     flagged = build_search_opportunity_pages(pages)
     assert len(flagged) == 1
     assert flagged[0]["position"] == 6.0
-    assert "internal benchmark, not an industry standard" in flagged[0]["recommended_action"]
+    assert "internal" in flagged[0]["recommended_action"]  # labeled internal, never an external/industry standard
     assert flagged[0]["priority"] == "High"
 
 
@@ -280,6 +280,29 @@ def test_search_opportunity_pages_sorted_by_estimated_opportunity_clicks():
     flagged = build_search_opportunity_pages(pages)
     assert flagged[0]["page"] == "https://x.com/big"
     assert flagged[0]["opportunity_clicks"] > flagged[1]["opportunity_clicks"]
+
+
+def test_search_opportunity_pages_slide_recommended_action_not_truncated_to_one_line():
+    # Regression: confirmed live on the BharatBenz regen (2026-09-18) — 9
+    # rows of real 2-line Recommended Action text made _draw_table's
+    # row-height auto-shrink collapse every row to a single truncated
+    # line, cutting the page-specific half of every sentence off. row_cap
+    # is now 6 (not 9) specifically so this doesn't happen at realistic
+    # sentence lengths.
+    pages = [
+        {"page": f"https://www.bharatbenz.com/trucks/tipper-trucks-{i}", "impressions": 99931 - i * 1000, "ctr": 0.012, "position": 4.3}
+        for i in range(9)
+    ]
+    flagged = build_search_opportunity_pages(pages)
+    slide = add_search_opportunities_pages_slide(_prs(), flagged, "Google Search Console")
+    for shape in slide.shapes:
+        if shape.has_table:
+            for i, row in enumerate(shape.table.rows):
+                if i == 0:
+                    continue
+                text = row.cells[4].text_frame.text
+                assert not text.endswith("…"), f"row {i} truncated: {text!r}"
+                assert text.endswith("."), f"row {i} incomplete: {text!r}"
 
 
 def test_search_opportunity_pages_slide_no_overlap_worst_case():

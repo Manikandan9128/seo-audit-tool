@@ -3098,10 +3098,10 @@ _SOP_PAGE_TYPE_PATTERNS = [
 ]
 
 _SOP_TITLE_ANGLE_BY_PAGE_TYPE = {
-    "product/category": "name the specific product/category in the title and add a clear call to action (e.g. \"Shop\", \"Compare\", \"Get a Quote\") instead of a generic descriptor",
-    "service/pricing": "lead with the specific service/plan named in the URL and add an outcome-led call to action",
-    "blog/informational": "make the title promise a direct answer to the query behind these impressions rather than a generic description",
-    "location": "make the location explicit in the title itself, not just implied by the URL",
+    "product/category": "add a clear CTA (e.g. \"Shop\", \"Compare\")",
+    "service/pricing": "add an outcome-led CTA",
+    "blog/informational": "lead with a direct answer, not a description",
+    "location": "make the location explicit in the title",
 }
 
 
@@ -3148,6 +3148,9 @@ def _sop_crawled_meta_index(crawled_pages: list[dict] | None) -> dict:
     return index
 
 
+_SOP_TOPIC_MAX_CHARS = 40  # keeps the whole sentence table-cell-sized (2026-09-18 fix — see below)
+
+
 def _sop_recommended_action(
     position: float, ctr_pct: float, band: tuple[float, float],
     page_type: str | None, topic: str | None, meta: dict | None, known_place_names: list[str] | None,
@@ -3158,12 +3161,20 @@ def _sop_recommended_action(
     sample covers it) its own crawled title. Never invents a keyword,
     benefit, spec, or claim the row's data doesn't carry — where the data
     genuinely isn't enough for a specific fix, says so instead of
-    defaulting to a generic 'rewrite title/meta' line."""
-    parts = [
-        f"Position {position:.1f} keeps this page on page 1, but CTR ({ctr_pct:.1f}%) trails the "
-        f"{band[0]:.0f}-{band[1]:.0f}% internal benchmark for that range (internal benchmark, not an "
-        f"industry standard)."
-    ]
+    defaulting to a generic 'rewrite title/meta' line.
+
+    Kept deliberately to ONE short sentence (2026-09-18 fix — confirmed
+    live on the BharatBenz regen: the original 2-3 sentence version ran
+    300-360 chars, which _draw_table's row-height auto-shrink couldn't fit
+    at 9 rows and collapsed every row to a single truncated line, losing
+    the page-specific half of the sentence entirely — the exact opposite
+    of the ask). A long topic phrase is trimmed so one unusually long URL
+    slug can't blow the budget for every row's readability."""
+    gap = f"CTR {ctr_pct:.1f}% trails the internal {band[0]:.0f}-{band[1]:.0f}% benchmark for position {position:.0f}."
+
+    short_topic = None
+    if topic:
+        short_topic = topic if len(topic) <= _SOP_TOPIC_MAX_CHARS else topic[:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
 
     location_hit = None
     if topic:
@@ -3176,44 +3187,23 @@ def _sop_recommended_action(
     if title:
         has_topic = bool(topic) and topic.lower() in title.lower()
         if topic and not has_topic:
-            parts.append(
-                f"Current title (\"{title}\") doesn't lead with \"{topic}\", the term this URL is built around — "
-                f"move it to the front of the title/H1 so the snippet visibly matches the intent behind these "
-                f"impressions."
-            )
+            action = f"Front-load \"{short_topic}\" in the title/H1 — current title doesn't lead with it."
         elif topic:
             angle = _SOP_TITLE_ANGLE_BY_PAGE_TYPE.get(page_type)
-            if angle:
-                parts.append(f"\"{topic}\" already appears in the title — the gap is differentiation, not relevance: {angle}.")
-            else:
-                parts.append(
-                    f"\"{topic}\" already appears in the title, so relevance isn't the issue — additional "
-                    f"query-level or SERP data is required to identify what's suppressing clicks here."
-                )
-        else:
-            parts.append(
-                "URL structure doesn't expose a clear topic term to check the title against — additional "
-                "query-level or SERP data is required for a specific title/meta recommendation."
+            action = f"Title already covers \"{short_topic}\" — {angle}." if angle else (
+                "Title already covers the URL's topic — query-level or SERP data needed to find the click blocker."
             )
+        else:
+            action = "No clear topic term to check the title against — query-level or SERP data required."
     elif topic:
-        parts.append(
-            f"No crawled title/meta available for this URL in this run's crawl sample — write the title/meta "
-            f"around \"{topic}\", the term this URL is structured around, and re-check once the next crawl "
-            f"covers it."
-        )
+        action = f"No crawled title in this sample — write title/meta around \"{short_topic}\"."
     else:
-        parts.append(
-            "URL structure doesn't expose a clear topic and no crawled title/meta is available for this page — "
-            "additional query-level or SERP data is required before a page-specific recommendation can be made."
-        )
+        action = "No topic term or crawled title available — additional query-level or SERP data is required."
 
     if location_hit:
-        parts.append(
-            f"The URL already centers on {location_hit} — carry that location term into the title/meta "
-            f"explicitly, since location-intent pages win clicks on named-place specificity."
-        )
+        action += f" Surface \"{location_hit}\" explicitly in the title."
 
-    return " ".join(parts)
+    return f"{gap} {action}"
 
 
 def build_search_opportunity_pages(
@@ -3503,7 +3493,13 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
     y = Inches(1.05)
     _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages (Existing Pages, CTR Opportunity)", size=12.5, bold=True, color=_accent())
     y += Inches(0.28)
-    row_cap = 9
+    # 6, not the 9 other Search Opportunities/Traffic Sources tables use
+    # (2026-09-18 fix): Recommended Action here runs ~2 lines even at its
+    # shortest, and 9 rows of 2-line cells don't fit this slide's available
+    # height — _draw_table's auto-shrink then collapsed every row to a
+    # single truncated line, cutting the page-specific half of the sentence
+    # off entirely. 6 rows of up to 2 lines fits without that collapse.
+    row_cap = 6
     shown = opportunity_pages[:row_cap]
     rows = [
         (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["recommended_action"])
