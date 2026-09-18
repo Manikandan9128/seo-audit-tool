@@ -45,13 +45,13 @@ from app.services.branded_search_insights_service import generate_branded_search
 from app.services.geopulse_ai_service import generate_aeo_geo_content
 from app.services.google_sheets_service import create_combined_keyword_sheet
 from app.services.app_settings_service import get_sheets_oauth_email
-from app.services.keyword_cluster_service import generate_keyword_clusters
 from app.services.search_intent_service import generate_search_intents
+from app.services.keyword_cluster_pipeline import build_final_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch, generate_cross_competitor_opportunities
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, is_branded_or_near_brand, match_existing_page
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, is_branded_or_near_brand
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -1216,16 +1216,17 @@ def _gather_report_data(
     # clusters real BharatBenz-relevant keywords instead of wasting part of
     # its 100-keyword cap on off-topic ones that would've been dropped anyway.
     keyword_rows_all = _filter_keyword_rows(client, keyword_rows_all, company_overview_result)
-    # Real Semrush Keyword Gap exports carry no Cluster/Topic column at all
-    # (confirmed against a real client file) — the manual reference decks'
-    # grouped-by-topic keyword tables come from a different, clustered
-    # Semrush export nobody's uploaded here. When no row already has a real
-    # cluster value, cluster them ourselves via AI — pure classification of
-    # keywords that are already there, nothing invented — so Target
-    # Keywords still renders grouped instead of one flat table. Capped at
-    # the 100 highest-volume keywords to keep the prompt bounded; any
-    # keyword beyond that just renders without a cluster label, same as
-    # when no clustering happens at all.
+    # FINAL PIPELINE (lead's spec, 2026-09-19): Merge+Dedupe (above) ->
+    # Relevance Filter (above) -> Search Intent -> Page Category -> Business
+    # Theme -> Candidate Clustering -> Cluster Validation -> Automatic
+    # Splitting -> Primary/Secondary Selection -> Ranking Enrichment (below)
+    # -> Existing Page Matching -> Cannibalization Check. Intent and Page
+    # Category now run BEFORE clustering (previously clustering ran first) —
+    # clustering needs both to enforce that a cluster never mixes search
+    # intents or page formats. Capped at the 100 highest-volume keywords for
+    # every AI call in this block to keep prompts bounded; any keyword
+    # beyond that just renders without a cluster label, same as when no
+    # clustering happens at all.
     if keyword_rows_all:
         def _kw_volume(r: dict) -> float:
             try:
@@ -1241,22 +1242,9 @@ def _gather_report_data(
                 seen_kw.add(kw)
                 unique_keywords.append(kw)
 
-        if not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
-            try:
-                cluster_map = generate_keyword_clusters(unique_keywords[:100])
-            except Exception as e:
-                logger.warning("Keyword clustering failed for client %s: %s", client_id, e)
-                content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
-                cluster_map = {}
-            for r in keyword_rows_all:
-                label = cluster_map.get(r.get("keyword"))
-                if label:
-                    r["cluster"] = label
-
         # Semrush's own "Intent" column doesn't always survive into the
-        # uploaded export either (same gap as Cluster above) — fill it via
-        # AI when missing so _classify_keyword_page_category and the Target
-        # Keywords slide's commercial/transactional insight (both already
+        # uploaded export either — fill it via AI when missing so page
+        # category and business-theme-aware clustering below (both already
         # read this field) get real search-intent data instead of falling
         # back to their cruder keyword-text word-list heuristic.
         if not any((r.get("intent") or "").strip() for r in keyword_rows_all):
@@ -1274,11 +1262,30 @@ def _gather_report_data(
         # Page/Content Type per keyword — deterministic, no AI call needed
         # (reuses the same classifier the Content SEO Next Steps slide
         # already relies on), now that real intent is filled in above where
-        # Semrush didn't provide it.
+        # Semrush didn't provide it. Runs before clustering so clustering
+        # can treat page format as a hard cluster boundary.
         for r in keyword_rows_all:
             category = _classify_keyword_page_category(r.get("keyword") or "", r.get("intent"))
             if category:
                 r["page_category"] = category
+
+        # Business Theme -> Candidate Clustering -> Validation/Auto-Split ->
+        # Primary/Secondary -> Existing Page Matching -> Cannibalization
+        # Check, all in one pass — see keyword_cluster_pipeline.py's module
+        # docstring for why validation/splitting is structural rather than a
+        # separate pass. Only runs when no row already has a real cluster
+        # value (a real Semrush Cluster/Topic column), same guard as before.
+        if not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
+            try:
+                build_final_keyword_clusters(
+                    keyword_rows_all,
+                    client.name,
+                    _company_overview_context(company_overview_result),
+                    _all_rows("site_audit_pages", own_only=True),
+                )
+            except Exception as e:
+                logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
+                content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
 
         # Current Ranking / Traffic (lead's reference flow, doc 2) — real
         # Semrush data when a Keyword Gap export's own-domain column exists
@@ -1335,27 +1342,12 @@ def _gather_report_data(
     # the manual report's "Site Structure" table.
     site_audit_pages_rows = _all_rows("site_audit_pages", own_only=True)
     # Existing-URL check (lead's reference flow, doc 2) — does a page we've
-    # already crawled cover this keyword's terms, or is it a genuine New
-    # Page Opportunity? Word-overlap match only, no AI — see
-    # match_existing_page's docstring for why. Bounded to the same top-100
-    # highest-volume keywords already used for clustering/intent above (a
-    # cluster's primary keyword — the one actually rendered — always comes
-    # from this same set, so nothing rendered is left unmatched).
-    if keyword_rows_all and site_audit_pages_rows:
-        seen_for_match = set()
-        for r in sorted(keyword_rows_all, key=lambda r: _num_for_sort(r.get("search_volume")), reverse=True):
-            kw = r.get("keyword")
-            if not kw or kw in seen_for_match:
-                continue
-            seen_for_match.add(kw)
-            if len(seen_for_match) > 100:
-                break
-            match = match_existing_page(kw, site_audit_pages_rows)
-            if match:
-                for other in keyword_rows_all:
-                    if other.get("keyword") == kw:
-                        other["existing_page_url"] = match["url"]
-                        other["existing_page_title"] = match["title"]
+    # already crawled cover a cluster's keywords, or is it a genuine New
+    # Page Opportunity? Now matched at the CLUSTER level (every keyword in
+    # the cluster contributes signal) by build_final_keyword_clusters above,
+    # which already set existing_page_url/existing_page_title/
+    # existing_page_match_strength (and cannibalization_status) on every
+    # row — nothing left to do here.
     # Semrush Site Audit's own crawl-health summary (Site Health %, AI Search
     # Health %, Blocked/Redirect/Have issues/Broken/Healthy page counts) — a
     # real full-site crawl, replaces our own homepage + 20-page approximation

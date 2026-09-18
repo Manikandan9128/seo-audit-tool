@@ -4818,7 +4818,14 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         volumes = [_num(r.get("search_volume")) for r in rows_for_group]
         kds = [_num(r.get("keyword_difficulty")) for r in rows_for_group if r.get("keyword_difficulty") not in (None, "")]
         total_volume = sum(volumes)
-        top = max(rows_for_group, key=lambda r: _num(r.get("search_volume")))
+        # Prefer the upstream pipeline's own Primary keyword selection (which
+        # weighs commercial intent and ranking opportunity, not just volume)
+        # when present, so "Top opportunity" always names the same keyword
+        # the Role column marks Primary — falls back to highest-volume when
+        # no primary_or_secondary field was set (e.g. a real Semrush Cluster
+        # column was uploaded and the pipeline never ran).
+        top = next((r for r in rows_for_group if r.get("primary_or_secondary") == "Primary"), None) \
+            or max(rows_for_group, key=lambda r: _num(r.get("search_volume")))
         easy_wins = [r for r in rows_for_group if _num(r.get("keyword_difficulty"), default=100) < 20 and _num(r.get("search_volume")) > 0]
         out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
         out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month, KD {top.get('keyword_difficulty', 'n/a')}.")
@@ -4902,7 +4909,11 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             seen.add(kw)
             deduped.append(r)
         rows = [
-            (r.get("keyword", ""), "Primary" if i == 0 else "Secondary", r.get("search_volume", ""), r.get("keyword_difficulty", ""))
+            (
+                r.get("keyword", ""),
+                r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
+                r.get("search_volume", ""), r.get("keyword_difficulty", ""),
+            )
             for i, r in enumerate(deduped)
         ]
         title = f"Target Keywords: {label}" if label else "Target Keywords"
@@ -4951,7 +4962,10 @@ def add_keyword_opportunity_slide(prs: Presentation, keyword_rows: list[dict], m
 
     candidates = []
     for label, rows_for_cluster in clusters.items():
-        primary = max(rows_for_cluster, key=lambda r: _num(r.get("search_volume")))
+        # Same Primary-selection preference as add_keyword_research_slide
+        # above — use the upstream pipeline's own pick when available.
+        primary = next((r for r in rows_for_cluster if r.get("primary_or_secondary") == "Primary"), None) \
+            or max(rows_for_cluster, key=lambda r: _num(r.get("search_volume")))
         volume = _num(primary.get("search_volume"))
         if volume <= 0:
             continue

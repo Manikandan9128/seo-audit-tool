@@ -423,3 +423,44 @@ def match_existing_page(primary_keyword: str, site_audit_pages_rows: list[dict] 
     if best and best_score >= min_required:
         return best
     return None
+
+
+def match_existing_page_for_cluster(
+    cluster_keywords: list[str], site_audit_pages_rows: list[dict] | None
+) -> dict | None:
+    """Cluster-level existing-page match (FINAL PIPELINE step 11) — pools
+    token signal from every keyword in a validated cluster (primary +
+    secondary), not just one keyword, since a page can legitimately match a
+    cluster's overall topic more strongly than any single keyword's exact
+    wording. Still pure word-overlap, no AI/embeddings, same determinism as
+    match_existing_page above. Returns {"url", "title", "match_strength"}
+    where match_strength is one of "strong" (most of the cluster's terms
+    are on the page), "partial" (a meaningful chunk), or "weak" (some
+    incidental overlap) — or None when there's no overlap at all, i.e. a
+    genuine New Page Opportunity. Never returns a match just because a
+    competitor page or unrelated page happens to share one word."""
+    if not site_audit_pages_rows or not cluster_keywords:
+        return None
+    kw_tokens: set[str] = set()
+    for kw in cluster_keywords:
+        kw_tokens |= _match_tokens(kw)
+    if not kw_tokens:
+        return None
+
+    best = None
+    best_score = 0
+    for row in site_audit_pages_rows:
+        url = row.get("page_url") or ""
+        title = row.get("page_title") or ""
+        path = re.sub(r"[/\-_]", " ", url)
+        page_tokens = _match_tokens(title) | _match_tokens(path)
+        score = len(kw_tokens & page_tokens)
+        if score > best_score:
+            best_score = score
+            best = {"url": url, "title": title}
+    if not best or best_score == 0:
+        return None
+
+    ratio = best_score / len(kw_tokens)
+    best["match_strength"] = "strong" if ratio >= 0.66 else "partial" if ratio >= 0.35 else "weak"
+    return best
