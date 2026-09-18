@@ -4,7 +4,7 @@ from app.reporting.pptx_builder import (
     SLIDE_H, SLIDE_W, add_branded_vs_nonbranded_slide,
     add_search_opportunities_pages_slide, add_search_opportunities_countries_slide,
     build_branded_dependency_narrative, build_branded_vs_nonbranded_comparison,
-    build_high_potential_countries, build_high_potential_pages,
+    build_high_potential_countries, build_high_potential_pages, build_search_opportunity_pages,
 )
 
 
@@ -232,6 +232,53 @@ def test_pages_slide_absent_when_no_pages_flagged():
 
 def test_countries_slide_absent_when_nothing_flagged():
     assert add_search_opportunities_countries_slide(_prs(), {}, "Google Search Console") is None
+
+
+def test_search_opportunity_pages_excludes_outside_4_to_10_band():
+    pages = [
+        {"page": "https://x.com/a", "impressions": 500, "ctr": 0.01, "position": 2.0},  # top-3, out of band
+        {"page": "https://x.com/b", "impressions": 500, "ctr": 0.01, "position": 12.0},  # below page 1, out of band
+    ]
+    assert build_search_opportunity_pages(pages) == []
+
+
+def test_search_opportunity_pages_flags_real_ctr_gap_in_band():
+    pages = [{"page": "https://x.com/hydraulic-lifts", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    flagged = build_search_opportunity_pages(pages)
+    assert len(flagged) == 1
+    assert flagged[0]["position"] == 6.0
+    assert "internal benchmark, not an industry standard" in flagged[0]["recommended_action"]
+    assert flagged[0]["priority"] == "High"
+
+
+def test_search_opportunity_pages_excludes_row_already_meeting_band():
+    pages = [{"page": "https://x.com/c", "impressions": 1000, "ctr": 0.08, "position": 6.0}]
+    assert build_search_opportunity_pages(pages) == []
+
+
+def test_search_opportunity_pages_recommendation_uses_crawled_title_when_topic_missing():
+    pages = [{"page": "https://x.com/hydraulic-lifts", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    crawled = [{"url": "https://x.com/hydraulic-lifts", "meta": {"title": "Home - Acme Corp"}}]
+    flagged = build_search_opportunity_pages(pages, crawled)
+    action = flagged[0]["recommended_action"]
+    assert "Hydraulic Lifts" in action
+    assert "doesn't lead with" in action
+
+
+def test_search_opportunity_pages_states_data_insufficient_for_numeric_slug():
+    pages = [{"page": "https://x.com/12345", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    flagged = build_search_opportunity_pages(pages)
+    assert "additional query-level or SERP data is required" in flagged[0]["recommended_action"]
+
+
+def test_search_opportunity_pages_sorted_by_estimated_opportunity_clicks():
+    pages = [
+        {"page": "https://x.com/small", "impressions": 100, "ctr": 0.01, "position": 6.0},
+        {"page": "https://x.com/big", "impressions": 5000, "ctr": 0.01, "position": 6.0},
+    ]
+    flagged = build_search_opportunity_pages(pages)
+    assert flagged[0]["page"] == "https://x.com/big"
+    assert flagged[0]["opportunity_clicks"] > flagged[1]["opportunity_clicks"]
 
 
 def test_countries_slide_low_signal_line_never_a_table_row():

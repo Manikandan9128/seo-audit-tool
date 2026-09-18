@@ -3078,6 +3078,192 @@ def build_high_potential_pages(page_rows: list[dict]) -> list[dict]:
     return flagged
 
 
+# Search Opportunities — Pages, CTR-fix-only re-scope (2026-09-18 user spec).
+# Distinct from build_high_potential_pages above (which still feeds the
+# Branded vs Non-Branded Key Insights prompt unchanged): this narrows
+# selection to the position band GSC's own CTR curve is well-behaved for
+# (4-10 — page 1 but not the top 3, where CTR bands are noisy at the extremes)
+# and to pages an on-page fix can realistically move, per the explicit ask
+# ("pages where improving CTR can generate additional organic clicks without
+# requiring a new page") — position >10 pages need ranking work, not a
+# title/meta fix, so they're out of scope for this table entirely.
+_SOP_MIN_IMPRESSIONS = _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE
+_SOP_POSITION_LO, _SOP_POSITION_HI = 4.0, 10.0
+
+_SOP_PAGE_TYPE_PATTERNS = [
+    ("product/category", re.compile(r"/(products?|shop|store|item|sku|categor(y|ies)|collections?|catalog)(/|$)", re.I)),
+    ("service/pricing", re.compile(r"/(services?|solutions?|pricing|plans?)(/|$)", re.I)),
+    ("location", re.compile(r"/(locations?|near-me|branches?|stores?)(/|$)", re.I)),
+    ("blog/informational", re.compile(r"/(blog|articles?|guides?|resources?|news|faq)(/|$)", re.I)),
+]
+
+_SOP_TITLE_ANGLE_BY_PAGE_TYPE = {
+    "product/category": "name the specific product/category in the title and add a clear call to action (e.g. \"Shop\", \"Compare\", \"Get a Quote\") instead of a generic descriptor",
+    "service/pricing": "lead with the specific service/plan named in the URL and add an outcome-led call to action",
+    "blog/informational": "make the title promise a direct answer to the query behind these impressions rather than a generic description",
+    "location": "make the location explicit in the title itself, not just implied by the URL",
+}
+
+
+def _sop_page_type(url: str) -> str | None:
+    """Page type inferred from URL structure only (real data, never
+    guessed from content) — used to vary the Recommended Action instead
+    of writing the same "rewrite title/meta" line for every row."""
+    path = urlparse(url or "").path
+    for label, pattern in _SOP_PAGE_TYPE_PATTERNS:
+        if pattern.search(path):
+            return label
+    return None
+
+
+def _sop_slug_topic(url: str) -> str | None:
+    """Last URL path segment as a human-readable topic phrase — real text
+    taken from the page's own URL, not invented. Returns None for a
+    numeric/UUID-style slug, which carries no topic signal."""
+    path = (urlparse(url or "").path or "").strip("/")
+    if not path:
+        return None
+    segment = re.sub(r"\.(html?|php|aspx?)$", "", path.rsplit("/", 1)[-1], flags=re.IGNORECASE)
+    if not segment or re.fullmatch(r"[0-9-]+", segment) or re.fullmatch(r"[0-9a-f-]{8,}", segment, re.IGNORECASE):
+        return None
+    topic = re.sub(r"[-_]+", " ", segment).strip()
+    return topic.title() if topic else None
+
+
+def _sop_normalize_url(url: str) -> str:
+    p = urlparse(url or "")
+    return f"{p.netloc}{p.path.rstrip('/')}".lower()
+
+
+def _sop_crawled_meta_index(crawled_pages: list[dict] | None) -> dict:
+    """Maps normalized URL -> crawled {title, meta_description, ...} for
+    pages the technical crawl actually fetched (page_limit=20, so this
+    won't cover every GSC page — a row without a match falls back to
+    slug-only reasoning, or an explicit data-insufficient statement)."""
+    index = {}
+    for p in crawled_pages or []:
+        meta = p.get("meta")
+        if p.get("url") and meta and meta.get("title"):
+            index[_sop_normalize_url(p["url"])] = meta
+    return index
+
+
+def _sop_recommended_action(
+    position: float, ctr_pct: float, band: tuple[float, float],
+    page_type: str | None, topic: str | None, meta: dict | None, known_place_names: list[str] | None,
+) -> str:
+    """Builds a page-specific Recommended Action from only what this row's
+    real data supports: its own position/CTR gap against the internal
+    benchmark, its own URL-derived topic/page-type, and (when the crawl
+    sample covers it) its own crawled title. Never invents a keyword,
+    benefit, spec, or claim the row's data doesn't carry — where the data
+    genuinely isn't enough for a specific fix, says so instead of
+    defaulting to a generic 'rewrite title/meta' line."""
+    parts = [
+        f"Position {position:.1f} keeps this page on page 1, but CTR ({ctr_pct:.1f}%) trails the "
+        f"{band[0]:.0f}-{band[1]:.0f}% internal benchmark for that range (internal benchmark, not an "
+        f"industry standard)."
+    ]
+
+    location_hit = None
+    if topic:
+        for place in known_place_names or []:
+            if place and len(place) > 3 and place.lower() in topic.lower():
+                location_hit = place
+                break
+
+    title = (meta or {}).get("title")
+    if title:
+        has_topic = bool(topic) and topic.lower() in title.lower()
+        if topic and not has_topic:
+            parts.append(
+                f"Current title (\"{title}\") doesn't lead with \"{topic}\", the term this URL is built around — "
+                f"move it to the front of the title/H1 so the snippet visibly matches the intent behind these "
+                f"impressions."
+            )
+        elif topic:
+            angle = _SOP_TITLE_ANGLE_BY_PAGE_TYPE.get(page_type)
+            if angle:
+                parts.append(f"\"{topic}\" already appears in the title — the gap is differentiation, not relevance: {angle}.")
+            else:
+                parts.append(
+                    f"\"{topic}\" already appears in the title, so relevance isn't the issue — additional "
+                    f"query-level or SERP data is required to identify what's suppressing clicks here."
+                )
+        else:
+            parts.append(
+                "URL structure doesn't expose a clear topic term to check the title against — additional "
+                "query-level or SERP data is required for a specific title/meta recommendation."
+            )
+    elif topic:
+        parts.append(
+            f"No crawled title/meta available for this URL in this run's crawl sample — write the title/meta "
+            f"around \"{topic}\", the term this URL is structured around, and re-check once the next crawl "
+            f"covers it."
+        )
+    else:
+        parts.append(
+            "URL structure doesn't expose a clear topic and no crawled title/meta is available for this page — "
+            "additional query-level or SERP data is required before a page-specific recommendation can be made."
+        )
+
+    if location_hit:
+        parts.append(
+            f"The URL already centers on {location_hit} — carry that location term into the title/meta "
+            f"explicitly, since location-intent pages win clicks on named-place specificity."
+        )
+
+    return " ".join(parts)
+
+
+def build_search_opportunity_pages(
+    page_rows: list[dict], crawled_pages: list[dict] | None = None, known_place_names: list[str] | None = None,
+) -> list[dict]:
+    """Search Opportunities — Pages table (2026-09-18 user spec): existing,
+    already-indexed pages where an on-page fix (not a new page) can win
+    more clicks. Selection: real impressions signal (>= the same minimum-
+    signal floor used elsewhere), position 4-10 (page 1, CTR bands well-
+    behaved), and CTR noticeably under this position range's internal
+    benchmark. Priority = estimated extra monthly clicks if CTR reached
+    the benchmark floor (impressions x CTR gap) — a real, computed number,
+    not a subjective label — so "high impressions + strong ranking + low
+    CTR" naturally sorts first without a separate scoring system to
+    maintain. Recommended Action is built per-row in _sop_recommended_action
+    from that row's own URL/crawled-title data only."""
+    meta_index = _sop_crawled_meta_index(crawled_pages)
+    scored = []
+    for r in page_rows:
+        impressions = float(r.get("impressions", 0) or 0)
+        if impressions < _SOP_MIN_IMPRESSIONS:
+            continue
+        position = float(r.get("position", 0) or 0)
+        if not (_SOP_POSITION_LO <= position <= _SOP_POSITION_HI):
+            continue
+        ctr_pct = float(r.get("ctr", 0) or 0) * 100
+        band = _ctr_band_for_position(position)
+        if not (band and ctr_pct < band[0]):
+            continue  # already clearing its band — nothing to fix here
+
+        url = r.get("page") or ""
+        page_type = _sop_page_type(url)
+        topic = _sop_slug_topic(url)
+        meta = meta_index.get(_sop_normalize_url(url))
+        opportunity_clicks = impressions * (band[0] - ctr_pct) / 100
+
+        scored.append({
+            "page": url, "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1),
+            "position": round(position, 1), "page_type": page_type,
+            "recommended_action": _sop_recommended_action(position, ctr_pct, band, page_type, topic, meta, known_place_names),
+            "opportunity_clicks": round(opportunity_clicks, 1),
+        })
+
+    scored.sort(key=lambda r: r["opportunity_clicks"], reverse=True)
+    third = max(1, -(-len(scored) // 3))
+    for i, r in enumerate(scored):
+        r["priority"] = "High" if i < third else ("Medium" if i < 2 * third else "Low")
+    return scored
+
+
 def _country_label(raw_code: str) -> str:
     """GSC's country dimension returns raw ISO-3166-1 alpha-3 codes (e.g.
     "usa", "grc") — resolved here to the full country name via pycountry
@@ -3296,13 +3482,17 @@ def add_branded_vs_nonbranded_slide(
     return slide
 
 
-def add_search_opportunities_pages_slide(prs: Presentation, high_pages: list[dict], source: str) -> object | None:
-    """High-potential landing pages, split out to its own slide (2026-09-11
-    user spec — was "Search Opportunities — Pages & Countries" combined
-    with the countries half below). Full slide to itself now, so row_cap
-    goes from the shared slide's 5 up to 9, same cap Traffic Sources uses,
-    instead of leaving the extra room empty."""
-    if not high_pages:
+def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: list[dict], source: str) -> object | None:
+    """Search Opportunities — Pages (2026-09-18 user spec rebuild): existing
+    page-1 (position 4-10) pages with a real CTR gap against the internal
+    benchmark for that range, sorted by estimated extra monthly clicks if
+    that gap closed — so "high impressions + strong ranking + low CTR"
+    naturally lands first. Table matches the requested 5-column format
+    exactly (Page/Impressions/CTR/Position/Recommended Action); the row
+    count comes from build_search_opportunity_pages, which already excludes
+    anything without a real CTR gap in this position band — nothing here
+    is a generic "improve CTR" placeholder."""
+    if not opportunity_pages:
         return None
 
     slide = _blank_slide(prs)
@@ -3311,35 +3501,34 @@ def add_search_opportunities_pages_slide(prs: Presentation, high_pages: list[dic
 
     left, width = Inches(0.6), Inches(12.1)
     y = Inches(1.05)
-    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages", size=12.5, bold=True, color=_accent())
+    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages (Existing Pages, CTR Opportunity)", size=12.5, bold=True, color=_accent())
     y += Inches(0.28)
     row_cap = 9
-    shown = high_pages[:row_cap]
+    shown = opportunity_pages[:row_cap]
     rows = [
-        (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["fix"])
+        (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["recommended_action"])
         for r in shown
     ]
     y = _draw_table(
-        slide, ["Page", "Impressions", "CTR", "Position", "Fix"], rows, y,
+        slide, ["Page", "Impressions", "CTR", "Position", "Recommended Action"], rows, y,
         col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=row_cap, row_height=0.4, wrap_cols={4},
     ) + Inches(0.15)
 
-    # KEY INSIGHTS (2026-09-16 user spec): lead with the highest business-
-    # value (commercial/product) page if one exists, state the CTR-vs-
-    # RANKING lever split across the full flagged set (not just what's
-    # shown), and disclose how many candidates exist beyond the table.
+    # KEY INSIGHTS: name the single highest-opportunity row (its own
+    # computed opportunity_clicks number, not a guess), disclose how many
+    # candidates exist beyond the table, and flag data-insufficient rows
+    # explicitly rather than letting them read like every other row.
     insights = []
-    commercial = next((r for r in high_pages if str(r.get("page_type") or "").lower() in ("product", "commercial")), None)
-    if commercial:
-        insights.append(
-            f"\"{commercial['page']}\" (position {commercial['position']:.1f}, {commercial['impressions']:,} "
-            f"impressions, {commercial['lever']} lever) carries direct commercial intent — unlike the "
-            f"surrounding blog/informational pages, this one drives revenue directly."
-        )
-    ctr_count = sum(1 for r in high_pages if r["lever"] == "CTR")
-    ranking_count = sum(1 for r in high_pages if r["lever"] == "RANKING")
-    insights.append(f"{ranking_count} of {len(high_pages)} pages need a ranking push, not a CTR fix; {ctr_count} are visible on page 1 and need a click-through fix.")
-    insights.append(f"Showing top {len(shown)} of {len(high_pages)} pages below CTR benchmark.")
+    top = opportunity_pages[0]
+    insights.append(
+        f"Highest-priority page: \"{top['page']}\" (position {top['position']:.1f}, {top['impressions']:,} "
+        f"impressions) — closing its CTR gap to the internal benchmark could add roughly "
+        f"{top['opportunity_clicks']:.0f} clicks/month, the largest single opportunity in this set."
+    )
+    insufficient = sum(1 for r in opportunity_pages if "additional query-level or SERP data is required" in r["recommended_action"])
+    if insufficient:
+        insights.append(f"{insufficient} of {len(opportunity_pages)} flagged pages need additional query-level or SERP data before a specific title/meta fix can be written — listed with position/CTR only, not a generic recommendation.")
+    insights.append(f"Showing top {len(shown)} of {len(opportunity_pages)} pages ranked by estimated recoverable clicks/month.")
     _insights_strip(slide, left, y, width, insights, max_y=SLIDE_H - Inches(0.4))
     return slide
 

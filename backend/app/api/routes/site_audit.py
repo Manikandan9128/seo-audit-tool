@@ -33,6 +33,7 @@ from app.reporting.pptx_builder import (
     build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows,
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
+    build_search_opportunity_pages, _country_label,
 )
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
@@ -1604,6 +1605,7 @@ def _gather_report_data(
     branded_vs_nonbranded_ai_insights = None
     high_potential_pages = None
     high_potential_countries = None
+    search_opportunity_pages = None
     # analytics stays None (not {}) when GA4/GSC isn't connected for this
     # client at all (see the `analytics = None` above, only ever assigned a
     # dict inside the `if include_analytics and (...)` branch) — confirmed
@@ -1634,6 +1636,19 @@ def _gather_report_data(
         country_rows = (analytics.get("search_by_country") or {}).get("rows") or []
         high_potential_pages = build_high_potential_pages(page_clicks_rows)
         high_potential_countries = build_high_potential_countries(country_rows)
+
+        # Search Opportunities — Pages slide (2026-09-18 user spec) reads a
+        # separately re-scoped list, not high_potential_pages above (that one
+        # still feeds the Branded vs Non-Branded Key Insights prompt
+        # unchanged) — narrower position band, per-row Recommended Action
+        # grounded in the crawled title/meta sample (page_audit_result,
+        # already fetched above) plus the client's own top GSC countries
+        # (used only as a place-name lookup for the URL slug, never as a
+        # per-page traffic claim).
+        known_place_names = [_country_label(r.get("country", "")) for r in country_rows]
+        search_opportunity_pages = build_search_opportunity_pages(
+            page_clicks_rows, (page_audit_result or {}).get("pages") or [], known_place_names,
+        )
 
         if settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key:
             top_branded = sorted(branded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
@@ -1751,7 +1766,7 @@ def _gather_report_data(
         "branded_vs_nonbranded_comparison": branded_vs_nonbranded_comparison,
         "branded_vs_nonbranded_narrative": branded_vs_nonbranded_narrative,
         "branded_vs_nonbranded_ai_insights": branded_vs_nonbranded_ai_insights,
-        "high_potential_pages": high_potential_pages,
+        "high_potential_pages": search_opportunity_pages,
         "high_potential_countries": high_potential_countries,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
