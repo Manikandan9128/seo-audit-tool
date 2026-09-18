@@ -71,7 +71,7 @@ def test_position_and_url_shown_together_when_ranking():
     ]}
     slide = add_keyword_gap_slide(_prs(), analysis)
     text = _slide_text(slide)
-    assert "#7 — rival.com/payroll-compliance" in text
+    assert "#7 · /payroll-compliance" in text
 
 
 def test_same_competitor_column_mapping_across_rows():
@@ -93,8 +93,8 @@ def test_same_competitor_column_mapping_across_rows():
     slide = add_keyword_gap_slide(_prs(), analysis)
     table = next(s for s in slide.shapes if s.has_table).table
     headers = [c.text_frame.text for c in table.rows[0].cells]
-    rival_col = headers.index("rival.com Position + URL")
-    leader_col = headers.index("leader.com Position + URL")
+    rival_col = headers.index("rival.com")
+    leader_col = headers.index("leader.com")
     row1 = [c.text_frame.text for c in table.rows[1].cells]
     row2 = [c.text_frame.text for c in table.rows[2].cells]
     assert row1[rival_col] == "#5"

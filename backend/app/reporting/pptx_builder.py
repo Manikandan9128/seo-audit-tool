@@ -2549,7 +2549,7 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     return y
 
 
-def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=None, width=None, insights=None, row_height=0.4, wrap_cols=None, insights_max=5):
+def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=None, width=None, insights=None, row_height=0.4, wrap_cols=None, insights_max=5, return_table=False):
     """Shared table-drawing body behind _table_slide, factored out so a
     slide needing extra content above the table (e.g. a stat card) can draw
     its own header/card and still reuse this instead of duplicating the
@@ -2652,6 +2652,8 @@ def _draw_table(slide, headers, rows, top, col_widths=None, row_cap=None, left=N
     bottom = top + height
     if insights:
         bottom = _insights_strip(slide, left, bottom + Inches(0.15), width, insights, max_items=insights_max)
+    if return_table:
+        return bottom, table
     return bottom
 
 
@@ -4314,13 +4316,32 @@ def _short_display_url(url: str | None) -> str:
     return url.replace("https://", "").replace("http://", "").rstrip("/")
 
 
+_URL_PATH_MAX_CHARS = 26
+
+
+def _short_path(url: str | None, max_chars: int = _URL_PATH_MAX_CHARS) -> str | None:
+    """Just the path, domain stripped — the Position+URL cells sit under a
+    column header that already names the domain (or under "My Position",
+    where the domain is obviously the client's own), so repeating it in
+    every cell only added width with no new information. Truncated with an
+    ellipsis rather than wrapped, so a long slug can't blow a table row to
+    multiple lines (2026-09-18 gap-analysis redesign)."""
+    if not url:
+        return None
+    stripped = url.replace("https://", "").replace("http://", "").rstrip("/")
+    path = "/" + stripped.split("/", 1)[1] if "/" in stripped else "/"
+    if len(path) > max_chars:
+        path = path[: max_chars - 1].rstrip() + "…"
+    return path
+
+
 def _position_url_cell(position, url: str | None) -> str:
     """"Not ranking" is always exactly that string — never a variant with a
     trailing dash or an empty URL slot (2026-09-18 spec hard rule)."""
     if not position:
         return "Not ranking"
-    disp = _short_display_url(url)
-    return f"#{int(position)} — {disp}" if disp != "—" else f"#{int(position)}"
+    path = _short_path(url)
+    return f"#{int(position)} · {path}" if path and path != "/" else f"#{int(position)}"
 
 
 _KEYWORD_GAP_MAX_COMPETITOR_COLS = 3
@@ -4430,18 +4451,30 @@ def add_keyword_gap_slide(
     if kd_unavailable_count:
         insights.append(f"{kd_unavailable_count} keyword(s) excluded — KD_UNAVAILABLE (keyword difficulty missing in the source export).")
 
-    headers = ["Gap Category", "Keyword", "Volume", "KD", "My Position + URL"]
-    headers += [f"{domain} Position + URL" for domain in competitor_columns]
-    col_widths = [0.9, 2.2, 0.65, 0.45, 2.0]
+    # Gap Category dropped as a text column (2026-09-18 redesign) — with up
+    # to 3 competitor columns already competing for width, spelling out
+    # "Missing"/"Untapped"/"Shared" in every row cost a full column for
+    # information a color chip conveys at a glance. The chip column keeps
+    # only a one-letter code (still readable if color rendering is ever
+    # lost, e.g. printed greyscale); a legend under the header spells out
+    # what each color means once, not per row.
+    _GAP_CHIP = {"Missing": ("M", BAD), "Untapped": ("U", GOOD), "Shared": ("S", TEXT_MUTED)}
+
+    headers = ["", "Keyword", "Volume", "KD", "My Position"]
+    headers += [domain for domain in competitor_columns]
+    col_widths = [0.35, 2.35, 0.65, 0.45, 2.0]
     remaining = 12.1 - sum(col_widths)
     if competitor_columns:
         col_widths += [round(remaining / len(competitor_columns), 2)] * len(competitor_columns)
 
     table_rows = []
+    row_categories = []
     for r in kd_filtered:
         by_domain = {cp.get("competitor"): cp for cp in (r.get("competitor_positions") or [])}
+        category = r.get("gap_category") or "Missing"
+        row_categories.append(category)
         row = [
-            r.get("gap_category") or "Missing", r.get("keyword"),
+            _GAP_CHIP[category][0], r.get("keyword"),
             f"{int(_num(r.get('search_volume'))):,}", f"{int(_num(r.get('keyword_difficulty')))}",
             _position_url_cell(r.get("your_position"), r.get("your_url")),
         ]
@@ -4454,13 +4487,36 @@ def add_keyword_gap_slide(
     _content_header(slide, "Competitor Keyword Gap Analysis")
     _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
 
+    legend_x = Inches(0.6)
+    for label, (letter, color) in _GAP_CHIP.items():
+        sq = slide.shapes.add_shape(1, legend_x, Inches(0.98), Inches(0.13), Inches(0.13))
+        _fill(sq, color)
+        sq.shadow.inherit = False
+        _textbox(slide, legend_x + Inches(0.18), Inches(0.935), Inches(1.1), Inches(0.2), f"{letter} — {label}", size=9, color=TEXT_MUTED)
+        legend_x += Inches(1.25)
+
     # Same reserved-footer-zone discipline as add_competitor_table_slide's
     # own keyword_sheet_link button — confirmed live there that skipping
     # this cap lets a long insights list grow straight over the button/
     # footer instead of stopping short of it.
     insights_max_y = (SLIDE_H - Inches(1.10)) if keyword_gap_sheet_link else None
-    wrap_cols = set(range(1, len(headers)))  # keyword + every Position+URL cell can wrap
-    bottom = _draw_table(slide, headers, table_rows, Inches(1.2), col_widths=col_widths, wrap_cols=wrap_cols)
+    wrap_cols = set(range(1, len(headers)))  # keyword + every Position/URL cell can wrap, not the chip column
+    bottom, table = _draw_table(
+        slide, headers, table_rows, Inches(1.32), col_widths=col_widths, wrap_cols=wrap_cols, return_table=True,
+    )
+    # Color each row's chip cell by gap category — _draw_table has no notion
+    # of per-cell color, only uniform header/row-band fill, so this repaints
+    # just the chip column after the fact. Capped to however many data rows
+    # _draw_table actually rendered (len(table.rows) includes the header).
+    for i in range(1, len(table.rows)):
+        _, color = _GAP_CHIP[row_categories[i - 1]]
+        cell = table.cell(i, 0)
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = color
+        para = cell.text_frame.paragraphs[0]
+        para.alignment = PP_ALIGN.CENTER
+        para.font.color.rgb = WHITE
+        para.font.bold = True
     if insights:
         _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), insights[:5], max_y=insights_max_y)
 
