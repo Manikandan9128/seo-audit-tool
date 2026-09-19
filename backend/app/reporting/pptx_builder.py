@@ -3508,10 +3508,24 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
         (_truncate_cell(r["page"], 3.2), f"{r['impressions']:,}", f"{r['ctr_pct']:.1f}%", f"{r['position']:.1f}", r["recommended_action"])
         for r in shown
     ]
-    y = _draw_table(
+    y, table = _draw_table(
         slide, ["Page", "Impressions", "CTR", "Position", "Recommended Action"], rows, y,
         col_widths=[3.2, 1.3, 1.1, 1.1, 5.4], left=left, width=width, row_cap=row_cap, row_height=0.4, wrap_cols={4},
-    ) + Inches(0.15)
+        return_table=True,
+    )
+    y += Inches(0.15)
+    # Page URL as a real clickable hyperlink (2026-09-19 user spec) — the
+    # cell text can be the truncated display string, the link target is
+    # always the full, untruncated URL. python-pptx has no per-cell
+    # hyperlink helper anywhere in this file yet, so this sets it directly
+    # on the run _draw_table's own `cell.text = ...` already created.
+    for i, r in enumerate(shown, start=1):
+        if i >= len(table.rows):
+            break
+        run = table.cell(i, 0).text_frame.paragraphs[0].runs[0]
+        run.hyperlink.address = r["page"]
+        run.font.color.rgb = _accent()
+        run.font.underline = True
 
     # KEY INSIGHTS: name the single highest-opportunity row (its own
     # computed opportunity_clicks number, not a guess), disclose how many
@@ -4446,6 +4460,13 @@ def add_keyword_gap_slide(
             f"Highest-volume Untapped keyword: \"{top_u['keyword']}\" ({int(_num(top_u.get('search_volume'))):,}/mo) — "
             "no tracked domain ranks for it yet."
         )
+    shared_rows = [r for r in kd_filtered if r.get("gap_category") == "Shared"]
+    if shared_rows:
+        top_s = shared_rows[0]
+        insights.append(
+            f"Highest-volume Shared keyword: \"{top_s['keyword']}\" ({int(_num(top_s.get('search_volume'))):,}/mo) — "
+            f"you and {_row_competitors_text(top_s)} both rank."
+        )
     if ambiguous_rows:
         review_examples = ", ".join(f"\"{r.get('keyword')}\"" for r in ambiguous_rows[:3])
         insights.append(f"Needs manual relevance review: {review_examples} — could not confidently judge against the client's business.")
@@ -4468,9 +4489,30 @@ def add_keyword_gap_slide(
     if competitor_columns:
         col_widths += [round(remaining / len(competitor_columns), 2)] * len(competitor_columns)
 
+    # Show all three gap categories, not just whichever has the most
+    # high-volume keywords — kd_filtered is volume-sorted across ALL
+    # categories combined, and for a client that's ranking-weak against
+    # its competitors, Missing keywords alone can fill every slot up to
+    # the row cap, silently pushing every real Untapped/Shared example
+    # off the slide even though the legend advertises all three (confirmed
+    # live 2026-09-19: a real report's Gap Analysis table rendered 14/14
+    # "M" rows). Top _GAP_CATEGORY_ROW_CAP per category, in legend order,
+    # guarantees each represented category that HAS real rows gets shown —
+    # a category with fewer than the cap (or none at all) just contributes
+    # fewer rows, never a forced/invented one.
+    _GAP_CATEGORY_ROW_CAP = 4
+    by_category: dict[str, list[dict]] = {"Missing": [], "Untapped": [], "Shared": []}
+    for r in kd_filtered:
+        by_category.setdefault(r.get("gap_category") or "Missing", []).append(r)
+    selected_rows = [
+        r
+        for category in ("Missing", "Untapped", "Shared")
+        for r in by_category.get(category, [])[:_GAP_CATEGORY_ROW_CAP]
+    ]
+
     table_rows = []
     row_categories = []
-    for r in kd_filtered:
+    for r in selected_rows:
         by_domain = {cp.get("competitor"): cp for cp in (r.get("competitor_positions") or [])}
         category = r.get("gap_category") or "Missing"
         row_categories.append(category)
@@ -4503,7 +4545,8 @@ def add_keyword_gap_slide(
     insights_max_y = (SLIDE_H - Inches(1.10)) if keyword_gap_sheet_link else None
     wrap_cols = set(range(1, len(headers)))  # keyword + every Position/URL cell can wrap, not the chip column
     bottom, table = _draw_table(
-        slide, headers, table_rows, Inches(1.32), col_widths=col_widths, wrap_cols=wrap_cols, return_table=True,
+        slide, headers, table_rows, Inches(1.32), col_widths=col_widths, wrap_cols=wrap_cols,
+        row_cap=len(table_rows), return_table=True,
     )
     # Color each row's chip cell by gap category — _draw_table has no notion
     # of per-cell color, only uniform header/row-band fill, so this repaints
@@ -4916,7 +4959,16 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             )
             for i, r in enumerate(deduped)
         ]
-        title = f"Target Keywords: {label}" if label else "Target Keywords"
+        # An empty label here means real clustering DID run (this loop only
+        # runs when `clusters` has at least one non-"" key — the fully-flat
+        # no-clustering-at-all case returns early above) but these specific
+        # keywords couldn't be confidently grouped with anything — confirmed
+        # live 2026-09-19: rendering that bucket as a bare "Target Keywords"
+        # title made it look identical to (and get confused with) the
+        # separate no-clustering-ran-at-all fallback, when every OTHER slide
+        # in the same deck clearly has a real cluster subheading. "Other /
+        # Ungrouped Keywords" makes the distinction explicit instead.
+        title = f"Target Keywords: {label}" if label else "Target Keywords: Other / Ungrouped Keywords"
         insights = _keyword_insights(deduped) if deduped else []
         slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source="Semrush export", insights=insights))
     return slides

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.google_sheets_service import NoSheetsCredentials, create_combined_keyword_sheet
+from app.services.google_sheets_service import NoSheetsCredentials, _keyword_gap_tabs, create_combined_keyword_sheet
 
 
 def test_raises_when_no_oauth_connection():
@@ -18,7 +18,7 @@ def test_returns_none_when_nothing_to_write():
     assert url is None
 
 
-def _run_with_mocks(client_rows, competitor_positions, client_positions_rows=None):
+def _run_with_mocks(client_rows, competitor_positions, client_positions_rows=None, keyword_gap_rows=None):
     fake_creds = MagicMock()
     fake_drive = MagicMock()
     fake_drive.files.return_value.create.return_value.execute.return_value = {"id": "sheet123"}
@@ -29,7 +29,8 @@ def _run_with_mocks(client_rows, competitor_positions, client_positions_rows=Non
         fake_sheets if name == "sheets" else fake_drive
     )):
         url = create_combined_keyword_sheet(
-            "Client", client_rows, competitor_positions, db=MagicMock(), client_positions_rows=client_positions_rows,
+            "Client", client_rows, competitor_positions, db=MagicMock(),
+            client_positions_rows=client_positions_rows, keyword_gap_rows=keyword_gap_rows,
         )
     return url, fake_sheets, fake_drive
 
@@ -80,3 +81,48 @@ def test_client_gets_a_full_positions_tab_matching_competitor_scale():
     value_ranges = fake_sheets.spreadsheets.return_value.values.return_value.batchUpdate.call_args.kwargs["body"]["data"]
     client_full_range = next(v for v in value_ranges if "Client (All Rankings)" in v["range"])
     assert len(client_full_range["values"]) == 1200 + 1  # + header row — same scale as the competitor tab
+
+
+def _gap_row(keyword, category, volume=100, kd=30, competitor="rival.com", competitor_position=5):
+    return {
+        "keyword": keyword, "gap_category": category, "search_volume": volume, "keyword_difficulty": kd,
+        "your_position": None if category != "Shared" else 8, "your_url": None,
+        "competitor_positions": [{"competitor": competitor, "position": competitor_position, "ranking_url": "https://rival.com/x"}],
+    }
+
+
+def test_keyword_gap_tabs_splits_into_one_tab_per_category():
+    # 2026-09-19 spec: a client-facing sheet with one mixed "Gap Category"
+    # column made it hard to open just the category you care about —
+    # split into three separate tabs instead.
+    rows = [
+        _gap_row("missing kw", "Missing"),
+        _gap_row("untapped kw", "Untapped"),
+        _gap_row("shared kw", "Shared"),
+    ]
+    tabs = _keyword_gap_tabs(rows)
+    titles = [t for t, _values in tabs]
+    assert titles == ["Keyword Gap - Missing", "Keyword Gap - Untapped", "Keyword Gap - Shared"]
+    for _title, values in tabs:
+        assert values[0] == ["Keyword", "Volume", "KD", "My Position + URL", "rival.com Position + URL"]
+        assert len(values) == 2  # header + one row
+
+
+def test_keyword_gap_tabs_skips_category_with_no_rows():
+    tabs = _keyword_gap_tabs([_gap_row("missing kw", "Missing")])
+    titles = [t for t, _values in tabs]
+    assert titles == ["Keyword Gap - Missing"]
+
+
+def test_keyword_gap_tabs_empty_for_no_rows():
+    assert _keyword_gap_tabs([]) == []
+
+
+def test_combined_sheet_creates_three_keyword_gap_tabs():
+    rows = [_gap_row("missing kw", "Missing"), _gap_row("shared kw", "Shared")]
+    _, fake_sheets, _ = _run_with_mocks([{"keyword": "x"}], {}, keyword_gap_rows=rows)
+    batch_requests = fake_sheets.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    added_titles = [r["addSheet"]["properties"]["title"] for r in batch_requests if "addSheet" in r]
+    assert "Keyword Gap - Missing" in added_titles
+    assert "Keyword Gap - Shared" in added_titles
+    assert "Keyword Gap - Untapped" not in added_titles

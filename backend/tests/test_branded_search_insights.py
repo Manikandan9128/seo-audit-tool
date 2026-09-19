@@ -305,6 +305,17 @@ def test_search_opportunity_pages_slide_recommended_action_not_truncated_to_one_
                 assert text.endswith("."), f"row {i} incomplete: {text!r}"
 
 
+def test_search_opportunity_pages_slide_page_column_is_a_real_hyperlink():
+    # 2026-09-19 user spec: a viewer must be able to click the Page column
+    # straight through to the real page, not copy-paste a truncated URL.
+    pages = [{"page": "https://www.bharatbenz.com/trucks/tipper-trucks-1", "impressions": 5000, "ctr": 0.01, "position": 4.5}]
+    flagged = build_search_opportunity_pages(pages)
+    slide = add_search_opportunities_pages_slide(_prs(), flagged, "Google Search Console")
+    table = next(s for s in slide.shapes if s.has_table).table
+    run = table.cell(1, 0).text_frame.paragraphs[0].runs[0]
+    assert run.hyperlink.address == "https://www.bharatbenz.com/trucks/tipper-trucks-1"
+
+
 def test_search_opportunity_pages_slide_no_overlap_worst_case():
     # Standing no-overlap/fit-to-page rule: max flagged rows, long slugs
     # (long Recommended Action text), no crawled title for any of them —

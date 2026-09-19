@@ -81,3 +81,22 @@ def test_no_page_category_data_omits_validation_bullet():
     slides = add_keyword_research_slide(_prs(), rows)
     text = _slide_text(slides[0])
     assert "Cluster validation" not in text
+
+
+def test_unclustered_bucket_gets_a_distinguishing_subheading_not_bare_title():
+    # Regression (2026-09-19 live report): when real clustering DID run and
+    # produced several real clusters PLUS a leftover unclustered bucket
+    # (cluster == ""), that bucket's slide rendered as a bare "Target
+    # Keywords" title — identical to, and easily confused with, the
+    # separate no-clustering-ran-at-all fallback — even though every other
+    # slide in the same deck has a real subheading.
+    rows = [
+        {"keyword": "clustered kw", "cluster": "Real Cluster", "search_volume": 900},
+        {"keyword": "leftover kw one", "cluster": "", "search_volume": 500},
+        {"keyword": "leftover kw two", "cluster": "", "search_volume": 400},
+    ]
+    slides = add_keyword_research_slide(_prs(), rows)
+    all_text = [_slide_text(s) for s in slides]
+    unclustered_slide_text = next(t for t in all_text if "leftover kw one" in t)
+    assert "Target Keywords: Other / Ungrouped Keywords" in unclustered_slide_text
+    assert unclustered_slide_text.split("\n")[0] != "Target Keywords"

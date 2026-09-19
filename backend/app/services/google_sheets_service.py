@@ -71,34 +71,44 @@ def _keyword_gap_position_url(position, url) -> str:
     return f"#{int(position)} — {disp}" if disp else f"#{int(position)}"
 
 
-def _keyword_gap_tab_values(keyword_gap_rows: list[dict]) -> list[list] | None:
-    """Full Keyword Gap Analysis list for the combined Sheet — same
-    relevance/KD filter and the identical fixed competitor-to-column
-    mapping as add_keyword_gap_slide (pptx_builder._prepare_keyword_gap_
-    rows), so the slide's capped table and this tab's full list never
-    disagree on which domain is "Competitor 1" or which rows qualify.
-    Uncapped (unlike the slide) — this tab IS the overflow destination."""
+def _keyword_gap_tabs(keyword_gap_rows: list[dict]) -> list[tuple[str, list[list]]]:
+    """Full Keyword Gap Analysis lists for the combined Sheet, ONE TAB PER
+    GAP CATEGORY (Missing/Untapped/Shared) — same relevance/KD filter and
+    the identical fixed competitor-to-column mapping as add_keyword_gap_
+    slide (pptx_builder._prepare_keyword_gap_rows), so the slide's capped
+    table and these tabs' full lists never disagree on which domain is
+    "Competitor 1" or which rows qualify. Uncapped (unlike the slide) —
+    these tabs ARE the overflow destination for the slide's top-5-per-
+    category table (2026-09-19 spec: split from one mixed "Gap Category"-
+    column tab into three, so a client can open exactly the category they
+    care about instead of filtering a single huge list). A category with
+    no qualifying rows contributes no tab at all rather than an empty one."""
     from app.reporting.pptx_builder import _prepare_keyword_gap_rows
 
     kd_filtered, _ambiguous, _kd_unavailable, competitor_columns = _prepare_keyword_gap_rows(keyword_gap_rows)
     if not kd_filtered:
-        return None
+        return []
 
-    header = ["Gap Category", "Keyword", "Volume", "KD", "My Position + URL"]
+    header = ["Keyword", "Volume", "KD", "My Position + URL"]
     header += [f"{domain} Position + URL" for domain in competitor_columns]
-    values = [header]
+
+    by_category: dict[str, list[list]] = {"Missing": [], "Untapped": [], "Shared": []}
     for r in kd_filtered:
         by_domain = {cp.get("competitor"): cp for cp in (r.get("competitor_positions") or [])}
         row = [
-            r.get("gap_category") or "Missing", r.get("keyword", ""),
-            r.get("search_volume", ""), r.get("keyword_difficulty", ""),
+            r.get("keyword", ""), r.get("search_volume", ""), r.get("keyword_difficulty", ""),
             _keyword_gap_position_url(r.get("your_position"), r.get("your_url")),
         ]
         for domain in competitor_columns:
             cp = by_domain.get(domain)
             row.append(_keyword_gap_position_url(cp.get("position"), cp.get("ranking_url")) if cp else "Not ranking")
-        values.append(row)
-    return values
+        by_category.setdefault(r.get("gap_category") or "Missing", []).append(row)
+
+    return [
+        (f"Keyword Gap - {category}", [header] + rows)
+        for category in ("Missing", "Untapped", "Shared")
+        if (rows := by_category.get(category))
+    ]
 
 
 def _create_combined_keyword_sheet_inner(
@@ -160,9 +170,8 @@ def _create_combined_keyword_sheet_inner(
         ]
         tabs.append((_sanitize_tab_title(domain), values))
     if keyword_gap_rows:
-        gap_values = _keyword_gap_tab_values(keyword_gap_rows)
-        if gap_values:
-            tabs.append((_sanitize_tab_title("Keyword Gap Analysis"), gap_values))
+        for tab_title, gap_values in _keyword_gap_tabs(keyword_gap_rows):
+            tabs.append((_sanitize_tab_title(tab_title), gap_values))
     if not tabs:
         return None
 

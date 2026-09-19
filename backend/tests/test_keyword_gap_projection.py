@@ -1,6 +1,6 @@
 from pptx import Presentation
 
-from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _ctr_decay_pct, add_keyword_gap_slide
+from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _audit_slide_geometry, _ctr_decay_pct, add_keyword_gap_slide
 
 
 def _prs():
@@ -132,6 +132,55 @@ def test_ambiguous_relevance_excluded_from_table_with_review_note():
     assert "unsure keyword" not in text.split("KEY INSIGHTS")[0]
     assert "manual relevance review" in text
     assert "unsure keyword" in text
+
+
+def test_all_three_categories_shown_even_when_missing_dominates_volume():
+    # Regression (2026-09-19 live report): a client ranking-weak against
+    # its competitors can have Missing keywords fill every high-volume
+    # slot, silently pushing every real Untapped/Shared example off the
+    # slide even though the legend advertises all three. 20 high-volume
+    # Missing rows plus one lower-volume row each of Untapped/Shared —
+    # both must still appear, not just Missing.
+    rows = [
+        _gap_row(f"missing {i}", 10000 - i, 30, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing")
+        for i in range(20)
+    ]
+    rows.append(_gap_row("untapped kw", 50, 20, competitors=[], gap_category="Untapped"))
+    rows.append(_gap_row("shared kw", 40, 20, your_position=6, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Shared"))
+    analysis = {"keyword_gap_rows": rows}
+    slide = add_keyword_gap_slide(_prs(), analysis)
+    text = _slide_text(slide)
+    assert "untapped kw" in text.split("KEY INSIGHTS")[0]
+    assert "shared kw" in text.split("KEY INSIGHTS")[0]
+
+
+def test_all_categories_worst_case_fits_slide_no_overlap():
+    # Standing no-overlap/fit-to-page rule — worst case for the new
+    # per-category row selection: the max row count (4 per category x 3),
+    # 3 competitor columns, long wrapping URLs, and the keyword-sheet-link
+    # button all present at once. Caught a real overflow during development
+    # at 5 rows/category (table ran 0.22in past the slide edge) — 4 is the
+    # safe cap.
+    competitors = [
+        {"competitor": "rivalonecompany.com", "position": 3, "ranking_url": "https://rivalonecompany.com/very-long-descriptive-category-slug/product-page"},
+        {"competitor": "competitortwo.com", "position": 5, "ranking_url": "https://competitortwo.com/another-long-slug/product"},
+        {"competitor": "thirdrivalbrand.com", "position": 8, "ranking_url": "https://thirdrivalbrand.com/yet-another-long-path/here"},
+    ]
+    rows = []
+    for i in range(4):
+        rows.append(_gap_row(f"missing keyword number {i} long tail phrase", 5000 - i, 30, competitors=competitors, gap_category="Missing"))
+    for i in range(4):
+        rows.append(_gap_row(f"untapped keyword number {i} long tail phrase", 4000 - i, 30, gap_category="Untapped"))
+    for i in range(4):
+        rows.append(_gap_row(
+            f"shared keyword number {i} long tail phrase", 3000 - i, 30,
+            your_position=6, your_url="https://example.com/very-long-descriptive-category-slug/product-page",
+            competitors=competitors, gap_category="Shared",
+        ))
+    analysis = {"keyword_gap_rows": rows, "keyword_gap_off_topic_count": 3}
+    prs = _prs()
+    add_keyword_gap_slide(prs, analysis, business_description="a commercial vehicle manufacturer", keyword_gap_sheet_link="https://sheets.google.com/x")
+    assert _audit_slide_geometry(prs) == []
 
 
 def test_off_topic_count_and_split_stated_in_insights():
