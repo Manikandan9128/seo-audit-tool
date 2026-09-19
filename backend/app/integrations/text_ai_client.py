@@ -234,7 +234,7 @@ def _attempt_groq(prompt: str, max_tokens: int, errors: list[str]) -> str | None
             # reports stalling for minutes at the competitor-narrative AI
             # call.
             if retry_after is not None and retry_after > RATE_LIMIT_RETRY_DELAY_SECONDS:
-                errors.append(f"Groq rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:200]}")
+                errors.append(f"Groq rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:300]}")
             else:
                 time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
                 try:
@@ -322,7 +322,19 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
         if text:
             return text, provider
 
-    raise NoAIProviderConfigured(" / ".join(errors))
+    # " / " used to join these (confirmed real, 2026-09-19): a raw provider
+    # error can itself legitimately contain " / " (Groq's own org id in its
+    # JSON body, e.g. ".../ organization `org_...`"), and that string is
+    # truncated separately per-provider above — a truncation cut can land
+    # right next to that separator, making one provider's cut-off message
+    # visually run straight into the NEXT provider's message with no
+    # readable boundary (looked, on a real report, like Gemini's quota text
+    # was somehow embedded INSIDE Groq's own error body). Each message
+    # already names its own provider ("Groq ...", "Gemini ...", "Claude
+    # ...") — " | " is a character that essentially never appears inside
+    # real provider error text, so it can't be confused with content, only
+    # ever read as this join's own separator.
+    raise NoAIProviderConfigured(" | ".join(errors))
 
 
 # Free-tier vision model — GROQ_MODEL (openai/gpt-oss-120b) is text-only,
