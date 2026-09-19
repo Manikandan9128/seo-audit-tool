@@ -2030,7 +2030,26 @@ def _build_pptx_for_client(
     # (see create_combined_keyword_sheet's docstring).
     keyword_sheet_link: str | None = None
     keyword_gap_rows_for_sheet = (data.get("competitor_analysis") or {}).get("keyword_gap_rows") or []
-    if get_sheets_oauth_email(db) and (full_competitor_positions or data.get("keyword_rows") or data.get("own_site_positions_rows") or keyword_gap_rows_for_sheet):
+    has_sheet_worthy_data = bool(
+        full_competitor_positions or data.get("keyword_rows") or data.get("own_site_positions_rows") or keyword_gap_rows_for_sheet
+    )
+    if has_sheet_worthy_data and not get_sheets_oauth_email(db):
+        # Confirmed real (2026-09-17/19): the stored Sheets OAuth refresh
+        # token can silently die between report runs (Google's 7-day
+        # refresh-token expiry on an External+Testing OAuth consent screen —
+        # see SheetsTokenExpired's docstring; get_sheets_oauth_credentials
+        # already auto-disconnects on that failure). Before this note, that
+        # left get_sheets_oauth_email() simply False on the NEXT report with
+        # zero signal anywhere — no content_issue, no button on the
+        # Competitor Analysis/Keyword Gap slides, nothing to tell the user
+        # why the link they'd come to expect had quietly stopped appearing.
+        content_issues.append(
+            "Keyword list sheet: Google Sheets isn't connected (it may have disconnected on its own — "
+            "Google expires this app's refresh token every 7 days until the OAuth consent screen is "
+            "published to Production) — reconnect it in Settings > Google Sheets to get the \"Open full "
+            "keyword list\" link on the Competitor Analysis and Keyword Gap Analysis slides again."
+        )
+    elif has_sheet_worthy_data and get_sheets_oauth_email(db):
         try:
             # Keyword Gap Analysis gets its own tab in this same combined
             # spreadsheet (2026-09-18 spec) — its full filtered list, same
