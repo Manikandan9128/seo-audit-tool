@@ -34,7 +34,7 @@ signal would violate the spec's explicit "never invent SERP overlap" rule.
 import logging
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
-from app.services.keyword_cluster_service import generate_candidate_clusters
+from app.services.keyword_cluster_service import generate_batched_candidate_clusters
 from app.services.keyword_relevance_service import match_existing_page_for_cluster
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 # Same bound as the existing clustering/intent/page-matching AI calls
 # elsewhere in this pipeline (site_audit.py) — keeps every AI call in the
 # keyword pipeline working from the same top-N-by-volume candidate pool
-# instead of adding a new, inconsistent cap.
+# instead of adding a new, inconsistent cap. Also caps candidate-clustering
+# prompt size — see _build_candidate_clusters' docstring for why this cap
+# is load-bearing there, not just a nice-to-have.
 _BUSINESS_THEME_CANDIDATE_CAP = 100
 
 
@@ -87,7 +89,21 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
     `cluster` on every row with a non-empty keyword; a row is left
     unclustered (`cluster` = "") only when there isn't enough evidence to
     group it with anything — spec's explicit fallback, never a forced
-    group."""
+    group.
+
+    Bucketing itself runs over every row (cheap, no AI). The AI sub-split
+    is ONE batched call covering every bucket at once, not one call per
+    bucket — confirmed real (2026-09-19): a client with many distinct
+    buckets turned into that many sequential Groq calls, each also queued
+    behind Groq's shared per-minute token budget alongside this same
+    report's other AI calls, chaining past the 15-minute stale-job
+    threshold and killing the whole report. That single call's input is
+    capped at the same _BUSINESS_THEME_CANDIDATE_CAP keywords business
+    theme classification already used, for the same reason: bounded AI
+    cost regardless of how many thousand keyword rows a real export has.
+    A row whose keyword falls outside that cap still gets its bucket's
+    theme-based default cluster (or stays unclustered for an Unclassified
+    bucket) — never silently dropped, just not AI-sub-split."""
     buckets: dict[tuple[str, str, str], list[dict]] = {}
     for r in rows:
         if not (r.get("keyword") or "").strip():
@@ -97,23 +113,35 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
         category = (r.get("page_category") or "").strip() or "Unspecified Format"
         buckets.setdefault((theme, intent, category), []).append(r)
 
+    # Global cap keeps the one batched AI call bounded regardless of how
+    # many buckets or total rows exist — mirrors _assign_business_themes'
+    # own top-N-by-volume cap.
+    capped_keywords = set(_unique_keywords_by_volume(rows)[:_BUSINESS_THEME_CANDIDATE_CAP])
+
+    groups: list[tuple[str, list[str]]] = []
+    for bucket_key, bucket_rows in buckets.items():
+        theme, intent, category = bucket_key
+        unique_kw = [kw for kw in _unique_keywords_by_volume(bucket_rows) if kw in capped_keywords]
+        if len(unique_kw) <= 1:
+            continue
+        if theme != UNCLASSIFIED_THEME:
+            context_label = f'business theme "{theme}", search intent "{intent}", recommended page format "{category}"'
+        else:
+            context_label = f'search intent "{intent}", recommended page format "{category}" (business theme unknown)'
+        groups.append((context_label, unique_kw))
+
+    sub_label_map: dict[str, str] = {}
+    if groups:
+        try:
+            sub_label_map = generate_batched_candidate_clusters(groups)
+        except Exception as e:
+            logger.warning("Batched candidate clustering failed: %s", e)
+            sub_label_map = {}
+
     label_owner: dict[str, tuple[str, str, str]] = {}
 
     for bucket_key, bucket_rows in buckets.items():
-        theme, intent, category = bucket_key
-        unique_kw = _unique_keywords_by_volume(bucket_rows)
-
-        sub_label_map: dict[str, str] = {}
-        if len(unique_kw) > 1:
-            if theme != UNCLASSIFIED_THEME:
-                context_hint = f'business theme "{theme}", search intent "{intent}", and recommended page format "{category}"'
-            else:
-                context_hint = f'search intent "{intent}" and recommended page format "{category}" (business theme could not be determined)'
-            try:
-                sub_label_map = generate_candidate_clusters(unique_kw, context_hint)
-            except Exception as e:
-                logger.warning("Candidate clustering failed for bucket %s: %s", bucket_key, e)
-                sub_label_map = {}
+        theme, intent, _category = bucket_key
 
         # A known business theme is itself real evidence a page-level group
         # exists, so a bucket the AI didn't (or couldn't) sub-split still
@@ -135,7 +163,10 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
                 # Same short label text independently chosen for a
                 # genuinely different (theme, intent, category) bucket —
                 # disambiguate so it doesn't silently merge two different
-                # page opportunities under one displayed cluster name.
+                # page opportunities under one displayed cluster name. This
+                # is the structural safety net that makes the single
+                # shared AI call above safe even if it ignores the "never
+                # combine different groups" instruction.
                 label_key = f"{label} ({intent})"
             label_owner[label_key] = bucket_key
             r["cluster"] = label_key

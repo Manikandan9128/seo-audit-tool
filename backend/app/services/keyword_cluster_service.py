@@ -32,36 +32,50 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 """
 
 
-def generate_candidate_clusters(keywords: list[str], context_hint: str | None = None) -> dict[str, str]:
-    """Candidate clustering scoped to a single (business_theme, search_intent,
-    page_category) bucket — the FINAL PIPELINE's "which keywords can
-    realistically be satisfied by the SAME page?" step. Reuses
-    generate_keyword_clusters' exact call/parse/fail-open behavior; the only
-    difference is an optional `context_hint` (e.g. "business theme:
-    Certified Payroll; search intent: Informational; page format: Blog /
-    Guide") that tells the AI these keywords already share theme, intent,
-    and page format, so it should only split further on genuine semantic/
-    pattern differences (e.g. "certified payroll" vs. "certified payroll
-    services" vs. "how certified payroll works" within the same bucket),
-    not re-decide the bucket boundary itself - that boundary is enforced
-    deterministically by the caller regardless of what the AI returns."""
-    if not keywords:
+def generate_batched_candidate_clusters(groups: list[tuple[str, list[str]]]) -> dict[str, str]:
+    """Candidate clustering (the FINAL PIPELINE's "which keywords can
+    realistically be satisfied by the SAME page?" step) for EVERY
+    (business_theme, search_intent, page_category) bucket in ONE AI call,
+    not one call per bucket. Confirmed real (2026-09-19, live report
+    stall): a client with many distinct buckets turned into that many
+    sequential Groq calls, each also waiting on Groq's shared per-minute
+    token budget (see text_ai_client._reserve_groq_budget) alongside this
+    same report's other AI calls (company overview, core problem,
+    competitor narratives, next steps) — easily chaining past the
+    15-minute stale-job threshold. `groups` is [(context_label, keywords)];
+    bucket boundaries are still a HARD constraint enforced by the caller
+    after parsing (label_owner disambiguation in
+    keyword_cluster_pipeline.py), not by trusting the AI to respect the
+    "never combine different groups" instruction below — this call is
+    best-effort grouping input, the boundary itself is structural
+    regardless of what comes back."""
+    groups = [(label, kws) for label, kws in groups if kws]
+    if not groups:
         return {}
-    if len(keywords) == 1:
-        return {}
-    prompt = PROMPT_TEMPLATE.format(keyword_list="\n".join(f"- {k}" for k in keywords))
-    if context_hint:
-        prompt = (
-            f"These keywords already share the same {context_hint}, so a single page could plausibly "
-            "satisfy all of them - only split further if genuinely different sub-topics or page needs "
-            "are present within that shared context.\n\n"
-        ) + prompt
+    all_keywords = [kw for _label, kws in groups for kw in kws]
+
+    sections = []
+    for i, (label, kws) in enumerate(groups, 1):
+        sections.append(f"Group {i} ({label}):\n" + "\n".join(f"- {k}" for k in kws))
+    prompt = (
+        "Below are several pre-grouped sets of SEO keywords. Each group already shares the same "
+        "business theme, search intent, and recommended page format - keywords in DIFFERENT groups "
+        "must NEVER be combined into the same cluster, even if they look related or share words. "
+        "Within each group, split it further into finer clusters only if genuinely different "
+        "sub-topics or page needs exist within that group (the same kind of split an SEO strategist "
+        "would make between, e.g., \"certified payroll\" and \"how certified payroll works\"); "
+        "otherwise return the whole group as one cluster. Never force a fixed number of clusters, "
+        "and never invent a keyword that isn't listed below. Cluster names should be short (2-5 "
+        "words) and specific to the group's actual topic.\n\n" + "\n\n".join(sections) +
+        "\n\nReturn ONLY valid JSON, no markdown fences, no commentary, matching this shape:\n"
+        '[{"cluster": string, "keywords": [string]}]\n'
+    )
     try:
         raw, _provider = generate_text(prompt)
     except NoAIProviderConfigured as e:
-        logger.warning("Candidate keyword clustering AI call failed: %s", e)
+        logger.warning("Batched candidate clustering AI call failed: %s", e)
         return {}
-    return _parse_cluster_response(raw, keywords)
+    return _parse_cluster_response(raw, all_keywords)
 
 
 def generate_keyword_clusters(keywords: list[str]) -> dict[str, str]:
