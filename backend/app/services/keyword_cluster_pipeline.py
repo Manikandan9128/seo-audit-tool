@@ -340,12 +340,29 @@ def _select_primary_secondary(rows: list[dict]) -> None:
             r["primary_or_secondary"] = "Primary" if r is primary else "Secondary"
 
 
+# Existing Page Matching action menu (Universal SEO Audit Engine spec,
+# section 20) — the default, match-strength-driven action before any
+# cannibalization override. "Consolidate"/"Redirect / Merge" are
+# deliberately NOT here: those only make sense once _apply_cannibalization_
+# check finds MULTIPLE clusters resolving to the same URL, not from a
+# single cluster's own match strength alone.
+_EXISTING_PAGE_ACTION_BY_STRENGTH = {
+    "strong": "Optimize Existing Page",
+    "partial": "Expand Existing Page",
+    "weak": "Differentiate",
+    "none": "Create New Page",
+}
+
+
 def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[dict] | None) -> None:
     """Spec step 11 — matched at the CLUSTER level (every keyword in the
     cluster contributes signal), not per individual keyword, then the same
     match is applied to every row in that cluster so downstream consumers
     (PPT renderer, Content SEO Next Steps slide, cannibalization check
-    below) all see one consistent existing-page decision per cluster."""
+    below) all see one consistent existing-page decision per cluster —
+    including existing_page_action, so the renderer never has to re-derive
+    "update vs. create" itself (spec section 47: the PPT renderer is
+    presentation-only, every decision must already be made upstream)."""
     clusters: dict[str, list[dict]] = {}
     for r in rows:
         label = (r.get("cluster") or "").strip()
@@ -355,15 +372,17 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
     for _label, cluster_rows in clusters.items():
         keywords = [r.get("keyword") for r in cluster_rows if r.get("keyword")]
         match = match_existing_page_for_cluster(keywords, site_audit_pages_rows)
+        strength = match["match_strength"] if match else "none"
         for r in cluster_rows:
             if match:
                 r["existing_page_url"] = match["url"]
                 r["existing_page_title"] = match["title"]
-                r["existing_page_match_strength"] = match["match_strength"]
+                r["existing_page_match_strength"] = strength
             else:
                 r["existing_page_url"] = None
                 r["existing_page_title"] = None
                 r["existing_page_match_strength"] = "none"
+            r["existing_page_action"] = _EXISTING_PAGE_ACTION_BY_STRENGTH[strength]
 
 
 def _apply_cannibalization_check(rows: list[dict]) -> None:
@@ -372,18 +391,42 @@ def _apply_cannibalization_check(rows: list[dict]) -> None:
     meaning that one page would otherwise be asked to satisfy two distinct
     page opportunities at once. A "weak"/no match never counts toward
     cannibalization — too little evidence that URL is really the target
-    for either cluster."""
+    for either cluster.
+
+    Also overrides existing_page_action for the affected clusters (spec
+    section 21: "recommend Consolidation, Differentiation, Primary URL
+    selection... do not automatically create another page") — the cluster
+    with the strongest match (then highest combined volume) is picked as
+    the URL's Primary owner and keeps "Consolidate"; every other cluster
+    sharing that URL is told to differentiate or redirect/merge into the
+    primary, instead of every sibling cluster independently reading
+    "Optimize Existing Page" for the identical URL."""
     cluster_url: dict[str, str] = {}
+    cluster_match_strength: dict[str, str] = {}
+    cluster_volume: dict[str, float] = {}
     for r in rows:
         label = (r.get("cluster") or "").strip()
+        if not label:
+            continue
+        cluster_volume[label] = cluster_volume.get(label, 0.0) + _num(r.get("search_volume"))
         url = r.get("existing_page_url")
         strength = r.get("existing_page_match_strength")
-        if label and url and strength in ("strong", "partial") and label not in cluster_url:
+        if url and strength in ("strong", "partial") and label not in cluster_url:
             cluster_url[label] = url
+            cluster_match_strength[label] = strength
 
     url_clusters: dict[str, set[str]] = {}
     for label, url in cluster_url.items():
         url_clusters.setdefault(url, set()).add(label)
+
+    # Primary URL selection: strongest match wins, combined search volume
+    # breaks a tie — real, already-computed evidence, nothing invented.
+    primary_cluster_for_url: dict[str, str] = {}
+    for url, siblings in url_clusters.items():
+        if len(siblings) > 1:
+            primary_cluster_for_url[url] = max(
+                siblings, key=lambda c: (cluster_match_strength.get(c) == "strong", cluster_volume.get(c, 0.0)),
+            )
 
     for r in rows:
         label = (r.get("cluster") or "").strip()
@@ -396,6 +439,11 @@ def _apply_cannibalization_check(rows: list[dict]) -> None:
                 f"{len(others)} other cluster(s) ({', '.join(others)}) — consolidate onto one page, "
                 "differentiate the content, or confirm this is the right existing URL for this cluster."
             )
+            primary_cluster = primary_cluster_for_url.get(url)
+            if label == primary_cluster:
+                r["existing_page_action"] = f"Consolidate — Primary URL for this topic ({url})"
+            else:
+                r["existing_page_action"] = f'Differentiate or Redirect / Merge into "{primary_cluster}"'
         else:
             r["cannibalization_status"] = None
 

@@ -71,6 +71,48 @@ def test_primary_selection_prefers_ranking_signal_over_raw_volume():
     assert primary["keyword"] == "construction payroll provider"
 
 
+def test_existing_page_action_maps_from_match_strength():
+    for strength, expected_action in [
+        ("strong", "Optimize Existing Page"),
+        ("partial", "Expand Existing Page"),
+        ("weak", "Differentiate"),
+        (None, "Create New Page"),
+    ]:
+        rows = [{"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"}]
+        match = None if strength is None else {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": strength}
+        with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
+             patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+             patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=match):
+            build_final_keyword_clusters(rows, "Acme", None, None)
+        assert rows[0]["existing_page_action"] == expected_action, f"strength={strength}"
+
+
+def test_cannibalization_overrides_action_with_primary_and_differentiate():
+    # 2026-09-20 spec section 21: the stronger/higher-volume cluster is the
+    # URL's Primary owner (keeps Consolidate); the other cluster sharing
+    # the same URL is told to differentiate/redirect instead of both
+    # clusters independently reading "Optimize Existing Page".
+    rows = [
+        {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
+        {"keyword": "certified payroll", "search_volume": 200, "intent": "Transactional", "page_category": "Landing Page"},
+    ]
+    themes = {"construction payroll": "Construction Payroll", "certified payroll": "Certified Payroll"}
+
+    def fake_match(keywords, pages):
+        return {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}
+
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", side_effect=fake_match):
+        build_final_keyword_clusters(rows, "Acme", None, [{"page_url": "https://example.com/payroll", "page_title": "Payroll"}])
+
+    primary_row = next(r for r in rows if r["cluster"] == "Construction Payroll")  # higher volume
+    other_row = next(r for r in rows if r["cluster"] == "Certified Payroll")
+    assert "Consolidate" in primary_row["existing_page_action"]
+    assert "Primary URL" in primary_row["existing_page_action"]
+    assert "Differentiate or Redirect / Merge into \"Construction Payroll\"" == other_row["existing_page_action"]
+
+
 def test_cannibalization_flags_two_clusters_sharing_a_strong_existing_page_match():
     rows = [
         {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
