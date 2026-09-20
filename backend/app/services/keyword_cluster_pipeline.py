@@ -526,6 +526,25 @@ def _assign_core_category_and_priority(rows: list[dict]) -> None:
         r["cluster_priority"] = priority_by_label.get(label) if label else None
 
 
+def _assign_evidence_confidence(rows: list[dict]) -> None:
+    """Spec section 41 — evidence_confidence (High/Medium/Low) per row,
+    summarizing how much REAL evidence backs its cluster: a known business
+    theme (not Unclassified), a real ranking signal, and a strong/partial
+    existing-page match are each independently corroborating evidence.
+    Never a new judgment call — purely derived from fields every earlier
+    step in this pipeline already set. An unclustered row (no real
+    evidence to group it with anything) is always Low."""
+    for r in rows:
+        if not (r.get("cluster") or "").strip():
+            r["evidence_confidence"] = "Low"
+            continue
+        theme_known = (r.get("business_theme") or UNCLASSIFIED_THEME) != UNCLASSIFIED_THEME
+        strong_page_match = r.get("existing_page_match_strength") in ("strong", "partial")
+        has_ranking = r.get("current_position") not in (None, "")
+        signals = sum([theme_known, strong_page_match, has_ranking])
+        r["evidence_confidence"] = "High" if signals >= 2 else ("Medium" if signals == 1 else "Low")
+
+
 def build_final_keyword_clusters(
     rows: list[dict],
     client_name: str,
@@ -535,8 +554,9 @@ def build_final_keyword_clusters(
     """Runs Business Theme -> Candidate Clustering -> Validation/Auto-Split
     (structural, see module docstring) -> Core Category + Cluster
     Prioritization -> Primary/Secondary -> Existing Page Matching ->
-    Cannibalization Check, mutating and returning `rows`. Caller must
-    already have `intent` and `page_category` set on every row (FINAL
+    Cannibalization Check -> Evidence Confidence, mutating and returning
+    `rows`. Caller must already have `intent` and `page_category` set on
+    every row (FINAL
     PIPELINE steps 3-4) before calling this — this function only reads
     those fields, never sets them. Ranking enrichment (current_position/
     current_url) may run before or after this call; nothing here reads or
@@ -553,4 +573,5 @@ def build_final_keyword_clusters(
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)
     _apply_cannibalization_check(rows)
+    _assign_evidence_confidence(rows)
     return rows

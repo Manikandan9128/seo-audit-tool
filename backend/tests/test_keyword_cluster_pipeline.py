@@ -306,6 +306,41 @@ def test_genuinely_distinct_topics_still_split_even_with_shared_words():
     assert clusters == {"Heavy Trucks", "6x4 Truck Specifications"}
 
 
+def test_evidence_confidence_low_for_unclustered_rows():
+    rows = [
+        {"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+    assert rows[0]["cluster"] == ""
+    assert rows[0]["evidence_confidence"] == "Low"
+
+
+def test_evidence_confidence_high_with_theme_and_ranking_signal():
+    rows = [
+        {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional",
+         "page_category": "Landing Page", "current_position": 5},
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+    assert rows[0]["evidence_confidence"] == "High"
+
+
+def test_evidence_confidence_medium_with_theme_only():
+    rows = [
+        {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+    assert rows[0]["evidence_confidence"] == "Medium"
+
+
 def test_existing_business_theme_is_preserved_not_reclassified():
     # A real Semrush export can already carry its own theme/topic data —
     # generate_business_themes must not be called (and must not overwrite
