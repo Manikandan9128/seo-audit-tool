@@ -49,7 +49,7 @@ from app.services.keyword_cluster_pipeline import build_final_keyword_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
-from app.services.competitor_narrative_service import generate_competitor_narratives_batch, generate_cross_competitor_opportunities
+from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, is_branded_or_near_brand
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
@@ -799,17 +799,12 @@ def _generate_competitor_narratives(
             else:
                 narratives[domain] = result
 
-    # One more AI call across ALL competitors together (not per-chunk) —
-    # generate_competitor_narratives_batch's own chunking means no single
-    # call above necessarily saw every competitor at once, so the "Top 3-5
-    # Strategic Opportunities" cross-competitor synthesis has to happen
-    # here, after every chunk is done. Written into `data` directly (same
-    # pattern as content_generation_issues) rather than changing this
-    # function's return type.
-    if narratives:
-        data["competitor_top_opportunities"] = generate_cross_competitor_opportunities(
-            client.name, client_domain, narratives
-        )
+    # Cross-Competitor Opportunity Summary slide removed per 2026-09-20
+    # user request — the AI call that only fed that slide's Top 3-5
+    # Strategic Opportunities is no longer made (was pure wasted AI-budget
+    # spend with the slide gone, and every avoided call also reduces
+    # contention on the shared Groq/Gemini per-minute budget the rest of
+    # this report's AI sections compete for).
 
     # Best-effort homepage screenshot per competitor, for visual grounding
     # on the narrative slide (matches the manual reference deck). Run

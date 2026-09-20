@@ -4,7 +4,7 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from app.reporting.pptx_builder import (
-    SLIDE_H, SLIDE_W, add_competitor_opportunity_slide, add_competitor_opportunity_summary_slide,
+    SLIDE_H, SLIDE_W, add_competitor_opportunity_slide,
 )
 
 # Minimal valid 1x1 transparent PNG — a well-known tiny test fixture, used
@@ -158,11 +158,6 @@ def test_full_schema_with_long_text_never_overlaps_or_runs_past_card():
     assert all(bottom <= card_bottom + Inches(0.05) for _, bottom in spans)
 
 
-def test_summary_slide_absent_when_nothing_to_show():
-    assert add_competitor_opportunity_summary_slide(_prs(), {}, None) is None
-    assert add_competitor_opportunity_summary_slide(_prs(), {"rival.com": {"error": "failed"}}, None) is None
-
-
 def test_no_orphan_label_when_a_section_cant_fully_fit():
     # Confirmed live on a real BharatBenz regen (2026-09-16): "GAP FOR
     # BHARATBENZ" and "OPPORTUNITY" printed as bare labels with zero
@@ -211,18 +206,3 @@ def test_action_sections_survive_even_when_evidence_and_why_it_matters_dont():
     assert "A specific opportunity to build." in text
 
 
-def test_summary_slide_renders_table_and_top_opportunities():
-    narratives = {
-        "rival.com": {"headline": "pricing calculator", "gap": "no self-serve pricing tool", "opportunity": "build a calculator"},
-        "other.com": {"headline": "comparison hub", "gap": "no vs-pages", "opportunity": "build comparison pages"},
-    }
-    top_opportunities = [
-        "Build a self-serve pricing calculator to capture decision-stage, price-comparing buyers.",
-        "Launch a comparison-page hub targeting head-to-head competitor searches.",
-    ]
-    slide = add_competitor_opportunity_summary_slide(_prs(), narratives, top_opportunities)
-    text = _slide_text(slide)
-    assert "Cross-Competitor Opportunity Summary" in text
-    assert "rival.com" in text and "other.com" in text
-    assert "pricing calculator" in text
-    assert "Build a self-serve pricing calculator" in text

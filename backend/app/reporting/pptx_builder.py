@@ -4915,37 +4915,6 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     return slide
 
 
-def add_competitor_opportunity_summary_slide(
-    prs: Presentation, competitor_narratives: dict[str, dict], top_opportunities: list[str] | None
-) -> object | None:
-    """Cross-Competitor Opportunity Summary (2026-09-16 user spec) — closes
-    the per-competitor Opportunity Analysis slides with one table (domain |
-    unique angle | client gap | opportunity, straight from the already-
-    generated narratives, no new AI call) plus the Top 3-5 Strategic
-    Opportunities (from generate_cross_competitor_opportunities, the one
-    extra AI call that sees every competitor together). Silent-skip if
-    there's nothing to summarize, same convention as every other AI-derived
-    slide here."""
-    rows = [
-        (
-            domain,
-            n.get("headline") or "—",
-            n.get("gap") or "—",
-            n.get("opportunity") or "—",
-        )
-        for domain, n in competitor_narratives.items()
-        if "error" not in n and (n.get("headline") or n.get("gap") or n.get("opportunity"))
-    ]
-    if not rows and not top_opportunities:
-        return None
-    return _table_slide(
-        prs, "Cross-Competitor Opportunity Summary",
-        ["Competitor", "Unique Angle", "Client Gap", "Opportunity"], rows,
-        col_widths=[2.6, 3.0, 3.2, 3.3], insights=top_opportunities or None, row_cap=6,
-        insights_max=5, wrap_cols={1, 2, 3},
-    )
-
-
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
     """One table slide per keyword cluster (Educational Toys, Development
     Skills, etc.), matching the reference deck's "Target Keywords" format —
@@ -6393,7 +6362,11 @@ def _build_report(
             add_keyword_research_slide(prs, keyword_rows)
             add_keyword_opportunity_slide(prs, keyword_rows)
         if competitor_rows:
-            add_competitor_table_slide(prs, competitor_rows, keyword_sheet_link)
+            # 2026-09-20 user request: the "Open full keyword list" button
+            # must appear only on Competitor Keyword Gap Analysis (see
+            # add_keyword_gap_slide below), not here too — Competitor
+            # Analysis no longer receives keyword_sheet_link.
+            add_competitor_table_slide(prs, competitor_rows)
         if competitor_positions and not keyword_sheet_link:
             # Old per-competitor capped-table fallback — only when the
             # combined Sheet (client + all competitors, multiple tabs)
@@ -6408,7 +6381,9 @@ def _build_report(
                 if "error" not in narrative:
                     add_competitor_best_at_slide(prs, domain, narrative)
                     add_competitor_opportunity_slide(prs, client_name, domain, narrative)
-            add_competitor_opportunity_summary_slide(prs, competitor_narratives, competitor_top_opportunities)
+            # Cross-Competitor Opportunity Summary slide removed per
+            # 2026-09-20 user request ("remove ... from here onward from
+            # any of my report") — no longer rendered.
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
             add_keyword_gap_slide(
                 prs, competitor_analysis, business_description=(company_overview or {}).get("description"),
