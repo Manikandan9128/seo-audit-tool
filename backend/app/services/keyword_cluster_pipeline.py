@@ -597,6 +597,55 @@ def _assign_evidence_confidence(rows: list[dict]) -> None:
         r["evidence_confidence"] = "High" if signals >= 2 else ("Medium" if signals == 1 else "Low")
 
 
+def _final_cluster_acceptance_check(rows: list[dict]) -> None:
+    """Spec section 44 — Final Cluster Acceptance Check, enforced as an
+    actual gate rather than left implicit across the earlier steps that
+    already guarantee most of the checklist structurally (bucketing by
+    (business_theme, intent, page_category) makes the one-page/over-merge/
+    over-fragmentation/parent-child/intent/page-type items structural
+    guarantees, not best-effort checks — see the module docstring).
+
+    This pass is the single place that VERIFIES a final cluster before it
+    can reach the PPT renderer and demotes (never silently keeps) any
+    cluster failing a checkable item — catching a bug elsewhere in the
+    pipeline letting an incomplete cluster slip through, not re-litigating
+    decisions already correctly made upstream. Checked here specifically:
+    cluster name isn't generic/catch-all (re-verified defensively — the
+    disambiguation suffix a same-named cluster in a different bucket gets,
+    e.g. "Pricing (Commercial)", is stripped first so it's judged on its
+    real name), a primary keyword was actually selected, and existing-page
+    matching actually ran (existing_page_action always gets set to
+    something by _apply_existing_page_matching — an empty value here means
+    that step never ran for this cluster, a real pipeline defect, not a
+    legitimate "no data" case)."""
+    clusters: dict[str, list[dict]] = {}
+    for r in rows:
+        label = (r.get("cluster") or "").strip()
+        if label:
+            clusters.setdefault(label, []).append(r)
+
+    for label, cluster_rows in clusters.items():
+        failures = []
+        bare_name = label.split(" (")[0]
+        if _is_catchall_cluster_name(bare_name):
+            failures.append("generic/catch-all cluster name")
+        if not any((r.get("primary_or_secondary") or "") == "Primary" for r in cluster_rows):
+            failures.append("no primary keyword selected")
+        if any(not (r.get("existing_page_action") or "").strip() for r in cluster_rows):
+            failures.append("existing-page match never evaluated")
+        if failures:
+            logger.warning(
+                "Cluster %r rejected at final acceptance check (%s) — %d keyword(s) demoted to unclustered",
+                label, "; ".join(failures), len(cluster_rows),
+            )
+            for r in cluster_rows:
+                r["cluster"] = ""
+                r["cluster_status"] = f"Rejected: {'; '.join(failures)}"
+                r["primary_or_secondary"] = None
+                r["cluster_priority"] = None
+                r["core_category"] = None
+
+
 def build_final_keyword_clusters(
     rows: list[dict],
     client_name: str,
@@ -606,9 +655,9 @@ def build_final_keyword_clusters(
     """Runs Business Theme -> Candidate Clustering -> Validation/Auto-Split
     (structural, see module docstring) -> Core Category + Cluster
     Prioritization -> Primary/Secondary -> Existing Page Matching ->
-    Cannibalization Check -> Evidence Confidence, mutating and returning
-    `rows`. Caller must already have `intent` and `page_category` set on
-    every row (FINAL
+    Cannibalization Check -> Final Cluster Acceptance Check -> Evidence
+    Confidence, mutating and returning `rows`. Caller must already have
+    `intent` and `page_category` set on every row (FINAL
     PIPELINE steps 3-4) before calling this — this function only reads
     those fields, never sets them. Ranking enrichment (current_position/
     current_url) may run before or after this call; nothing here reads or
@@ -625,5 +674,6 @@ def build_final_keyword_clusters(
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)
     _apply_cannibalization_check(rows)
+    _final_cluster_acceptance_check(rows)
     _assign_evidence_confidence(rows)
     return rows

@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME
-from app.services.keyword_cluster_pipeline import _strip_modifiers, build_final_keyword_clusters
+from app.services.keyword_cluster_pipeline import _final_cluster_acceptance_check, _strip_modifiers, build_final_keyword_clusters
 
 
 def _rows():
@@ -354,3 +354,53 @@ def test_existing_business_theme_is_preserved_not_reclassified():
     mock_theme.assert_not_called()
     assert rows[0]["business_theme"] == "Already Set Theme"
     assert rows[0]["cluster"] == "Already Set Theme"
+
+
+def _valid_cluster_row(**overrides) -> dict:
+    row = {
+        "keyword": "kw", "cluster": "Real Topic", "cluster_status": "Validated",
+        "primary_or_secondary": "Primary", "existing_page_action": "Optimize Existing Page",
+        "cannibalization_status": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_final_acceptance_check_leaves_a_fully_valid_cluster_untouched():
+    rows = [_valid_cluster_row()]
+    _final_cluster_acceptance_check(rows)
+    assert rows[0]["cluster"] == "Real Topic"
+    assert rows[0]["cluster_status"] == "Validated"
+
+
+def test_final_acceptance_check_demotes_cluster_with_no_primary_keyword():
+    # Spec section 44 — a real pipeline defect (e.g. _select_primary_secondary
+    # never ran for this cluster) must never silently reach the renderer.
+    rows = [_valid_cluster_row(primary_or_secondary="Secondary")]
+    _final_cluster_acceptance_check(rows)
+    assert rows[0]["cluster"] == ""
+    assert "no primary keyword" in rows[0]["cluster_status"]
+    assert rows[0]["primary_or_secondary"] is None
+
+
+def test_final_acceptance_check_demotes_cluster_missing_existing_page_evaluation():
+    rows = [_valid_cluster_row(existing_page_action="")]
+    _final_cluster_acceptance_check(rows)
+    assert rows[0]["cluster"] == ""
+    assert "existing-page match never evaluated" in rows[0]["cluster_status"]
+
+
+def test_final_acceptance_check_demotes_catchall_name_defensively():
+    rows = [_valid_cluster_row(cluster="Miscellaneous")]
+    _final_cluster_acceptance_check(rows)
+    assert rows[0]["cluster"] == ""
+    assert "catch-all" in rows[0]["cluster_status"]
+
+
+def test_final_acceptance_check_strips_disambiguation_suffix_before_judging_name():
+    # "Pricing (Commercial)" is a disambiguated label from label_owner
+    # collision handling, not itself a catch-all name — only its bare
+    # "Pricing" part (not a catch-all word) should be judged.
+    rows = [_valid_cluster_row(cluster="Pricing (Commercial)")]
+    _final_cluster_acceptance_check(rows)
+    assert rows[0]["cluster"] == "Pricing (Commercial)"
