@@ -5968,7 +5968,21 @@ def add_conversion_seo_next_steps_slide(
             "tested calls-to-action on the pages that authority actually lands on."
         )
     if not items:
-        return None
+        # Universal SEO Audit Engine spec (2026-09-20) section 39: "If a
+        # step lacks tracking data: 'Tracking data required.' Do not assume
+        # a conversion problem without conversion evidence." No manual UX
+        # pass and no backlink data means there's genuinely no real
+        # conversion-funnel evidence at all (no GA4 goal/event/conversion
+        # data is pulled by this tool) — state that explicitly instead of
+        # silently omitting the slide, same discipline as every other
+        # "nothing to show" case fixed this session (Schema Key Insights,
+        # Programmatic SEO, GA4/GSC OAuth).
+        return _next_steps_category_slide(
+            prs, "Next Steps: Conversion SEO",
+            "Tracking data required — no manual UX walkthrough and no conversion/funnel data available for this site yet.",
+            ["Run a manual UX walkthrough of the core purchase/signup flow (checkout, forms, primary CTAs), and connect "
+             "GA4 conversion/goal tracking, to unlock evidence-based conversion recommendations here."],
+        )
     intro = "Turning existing traffic into leads and sales — from the manual UX walkthrough where available."
     return _next_steps_category_slide(prs, "Next Steps: Conversion SEO", intro, items)
 
