@@ -35,18 +35,21 @@ signal would violate the spec's explicit "never invent SERP overlap" rule.
 see _is_catchall_cluster_name) and Core Category Prioritization (the
 final cluster order must lead with the client's strongest core commercial
 opportunity, never simply the highest-combined-volume cluster — see
-_assign_core_category_and_priority). Semantic Topic/Entity and Keyword
-Modifier Classification (spec steps 7-8) are deliberately NOT implemented
-as a separate AI pass here — the existing Business Theme + candidate-
-clustering AI call already collapses same-topic modifier variants
-("Certified Payroll Basics/Fundamentals/Overview") into one cluster (see
-keyword_cluster_service.generate_batched_candidate_clusters' own
-instruction to that effect), and adding a dedicated third AI classification
-pass purely to store an internal-only field the PPT never renders (spec
-step 27 doesn't list semantic_topic in the rendered table) wasn't judged
-worth its added AI cost/latency risk (see this pipeline's own "one batched
-call, not one per bucket" incident above) — flagged here rather than
-silently claimed as done.
+_assign_core_category_and_priority).
+
+Modifier/Attribute Detection (Universal SEO Audit Engine spec, same date,
+sections 7-11 + 46's "CRITICAL ARCHITECTURE RULE"): semantic_topic and
+modifier are now real intermediate fields computed BEFORE clustering
+(_strip_modifiers), not left to the clustering AI call's own judgment —
+"product pricing"/"product features"/"product benefits" all strip down to
+the same core phrase "product" deterministically, so the candidate-
+clustering AI call only ever sees ONE representative keyword per distinct
+core phrase per bucket, never the raw modifier-laden phrase — the AI
+structurally cannot invent "Product Pricing" as its own cluster name for
+a bucket that collapses to one topic group, because "pricing" is stripped
+before the AI's input is even built. A bucket whose every keyword shares
+one core phrase skips the AI entirely and uses the (title-cased) core
+phrase itself as the cluster name — real evidence, not an AI guess.
 """
 
 import logging
@@ -84,6 +87,38 @@ def _is_catchall_cluster_name(label: str) -> bool:
     if "miscellaneous" in normalized or "ungrouped" in normalized:
         return True
     return False
+
+
+# Modifier/attribute words (spec section 8's own list) — describe the
+# search need/content treatment/commercial qualifier, never the topic
+# itself. Matched as whole words only (see _strip_modifiers), so this
+# never accidentally eats part of a real multi-word topic.
+_MODIFIER_WORDS = {
+    "pricing", "price", "cost", "plans", "plan", "features", "feature", "benefits", "benefit",
+    "types", "type", "options", "option", "reviews", "review", "examples", "example", "overview",
+    "information", "info", "basics", "basic", "fundamentals", "fundamental", "guide", "guides",
+    "how-to", "howto", "best", "top", "tools", "tool", "providers", "provider", "companies", "company",
+    "manufacturers", "manufacturer", "services", "service", "solutions", "solution", "platforms",
+    "platform", "software", "calculators", "calculator", "templates", "template", "resources", "resource",
+}
+
+
+def _strip_modifiers(keyword: str) -> tuple[str, list[str]]:
+    """Splits a keyword into its core semantic-topic phrase and whichever
+    modifier/attribute words it carries (spec sections 7-9) — pure
+    deterministic tokenization/list-matching, no AI, no invention: real
+    words from the real keyword, nothing added. "product pricing plans" ->
+    ("product", ["pricing", "plans"]). If every word is a modifier (no
+    anchor noun left at all — e.g. the keyword IS just "pricing"), the
+    core phrase falls back to the full original keyword rather than an
+    empty string, so it never silently collapses into some other
+    unrelated all-modifier keyword's group."""
+    words = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", keyword.lower())
+    core_words = [w for w in words if w not in _MODIFIER_WORDS]
+    modifier_words = [w for w in words if w in _MODIFIER_WORDS]
+    core_phrase = " ".join(core_words) if core_words else keyword.strip().lower()
+    return core_phrase, modifier_words
+
 
 # Same bound as the existing clustering/intent/page-matching AI calls
 # elsewhere in this pipeline (site_audit.py) — keeps every AI call in the
@@ -131,29 +166,50 @@ def _assign_business_themes(rows: list[dict], client_name: str, client_descripti
 
 def _build_candidate_clusters(rows: list[dict]) -> None:
     """Buckets every row by (business_theme, search_intent, page_category),
-    then sub-splits each bucket via AI into real per-page clusters. Sets
-    `cluster` on every row with a non-empty keyword; a row is left
+    strips modifiers to a core semantic_topic phrase within each bucket
+    (spec sections 7-9 — see _strip_modifiers), then sub-splits each
+    bucket's distinct topic phrases via AI into real per-page clusters.
+    Sets `cluster` on every row with a non-empty keyword; a row is left
     unclustered (`cluster` = "") only when there isn't enough evidence to
     group it with anything — spec's explicit fallback, never a forced
     group.
 
-    Bucketing itself runs over every row (cheap, no AI). The AI sub-split
-    is ONE batched call covering every bucket at once, not one call per
-    bucket — confirmed real (2026-09-19): a client with many distinct
-    buckets turned into that many sequential Groq calls, each also queued
-    behind Groq's shared per-minute token budget alongside this same
-    report's other AI calls, chaining past the 15-minute stale-job
-    threshold and killing the whole report. That single call's input is
-    capped at the same _BUSINESS_THEME_CANDIDATE_CAP keywords business
-    theme classification already used, for the same reason: bounded AI
-    cost regardless of how many thousand keyword rows a real export has.
-    A row whose keyword falls outside that cap still gets its bucket's
-    theme-based default cluster (or stays unclustered for an Unclassified
-    bucket) — never silently dropped, just not AI-sub-split."""
+    Modifier stripping happens BEFORE the AI ever sees anything (spec
+    section 46's "CRITICAL ARCHITECTURE RULE" — semantic_topic/modifier
+    must be real fields the clustering engine CONSUMES, not something a
+    prompt asks the AI to figure out): "product", "product pricing",
+    "product features", "product benefits" all strip to the same core
+    phrase "product", so a bucket built entirely from modifier variants of
+    ONE topic never reaches the AI at all — it's labeled by that shared
+    core phrase directly, real evidence, not an AI guess. Only bucket
+    topic phrases that are GENUINELY DIFFERENT after stripping go to the
+    AI, which decides only real topic-level merges/splits (e.g. is "6x4
+    truck" its own opportunity distinct from "heavy truck"), never a
+    modifier-vs-topic judgment call the AI could get wrong.
+
+    Bucketing and modifier-stripping both run over every row (cheap, no
+    AI). The AI sub-split is still ONE batched call covering every
+    bucket's distinct topic phrases at once, not one call per bucket —
+    confirmed real (2026-09-19): a client with many distinct buckets
+    turned into that many sequential Groq calls, each also queued behind
+    Groq's shared per-minute token budget alongside this same report's
+    other AI calls, chaining past the 15-minute stale-job threshold and
+    killing the whole report. That single call's input is capped at the
+    same _BUSINESS_THEME_CANDIDATE_CAP keywords business theme
+    classification already used, for the same reason: bounded AI cost
+    regardless of how many thousand keyword rows a real export has. A
+    topic group whose representative keyword falls outside that cap still
+    gets its bucket's theme/topic-based default cluster (or stays
+    unclustered for an Unclassified bucket) — never silently dropped, just
+    not AI-sub-split."""
     buckets: dict[tuple[str, str, str], list[dict]] = {}
     for r in rows:
-        if not (r.get("keyword") or "").strip():
+        keyword = (r.get("keyword") or "").strip()
+        if not keyword:
             continue
+        core_phrase, modifier_words = _strip_modifiers(keyword)
+        r["semantic_topic"] = core_phrase.title() if core_phrase else keyword
+        r["modifier"] = ", ".join(modifier_words) if modifier_words else ""
         theme = (r.get("business_theme") or UNCLASSIFIED_THEME).strip() or UNCLASSIFIED_THEME
         intent = (r.get("intent") or "").strip() or "Unknown Intent"
         category = (r.get("page_category") or "").strip() or "Unspecified Format"
@@ -164,17 +220,34 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
     # own top-N-by-volume cap.
     capped_keywords = set(_unique_keywords_by_volume(rows)[:_BUSINESS_THEME_CANDIDATE_CAP])
 
-    groups: list[tuple[str, list[str]]] = []
+    # Topic groups within each bucket: rows sharing the same modifier-
+    # stripped core phrase (case-insensitive) are structurally the SAME
+    # candidate topic — grouped here BEFORE the AI call even exists, so
+    # "product pricing" and "product features" are already one group by
+    # the time any AI involvement happens.
+    bucket_topic_groups: dict[tuple[str, str, str], dict[str, list[dict]]] = {}
     for bucket_key, bucket_rows in buckets.items():
+        topic_groups: dict[str, list[dict]] = {}
+        for r in bucket_rows:
+            topic_groups.setdefault(r["semantic_topic"].lower(), []).append(r)
+        bucket_topic_groups[bucket_key] = topic_groups
+
+    def _representative(topic_rows: list[dict]) -> str:
+        return max(topic_rows, key=lambda r: _num(r.get("search_volume"))).get("keyword")
+
+    groups: list[tuple[str, list[str]]] = []
+    for bucket_key, topic_groups in bucket_topic_groups.items():
         theme, intent, category = bucket_key
-        unique_kw = [kw for kw in _unique_keywords_by_volume(bucket_rows) if kw in capped_keywords]
-        if len(unique_kw) <= 1:
+        if len(topic_groups) <= 1:
+            continue  # whole bucket is one topic — no AI needed, see below
+        representatives = [kw for kw in (_representative(tr) for tr in topic_groups.values()) if kw in capped_keywords]
+        if len(representatives) <= 1:
             continue
         if theme != UNCLASSIFIED_THEME:
             context_label = f'business theme "{theme}", search intent "{intent}", recommended page format "{category}"'
         else:
             context_label = f'search intent "{intent}", recommended page format "{category}" (business theme unknown)'
-        groups.append((context_label, unique_kw))
+        groups.append((context_label, representatives))
 
     sub_label_map: dict[str, str] = {}
     if groups:
@@ -186,7 +259,7 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
 
     label_owner: dict[str, tuple[str, str, str]] = {}
 
-    for bucket_key, bucket_rows in buckets.items():
+    for bucket_key, topic_groups in bucket_topic_groups.items():
         theme, intent, _category = bucket_key
 
         # A known business theme is itself real evidence a page-level group
@@ -196,35 +269,48 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
         # ("Unclassified") theme carries no such evidence, so with no AI
         # sub-split result those keywords stay unclustered rather than
         # forcing them into a fake shared group.
-        default_label = theme if theme != UNCLASSIFIED_THEME else None
+        theme_default_label = theme if theme != UNCLASSIFIED_THEME else None
 
-        for r in bucket_rows:
-            kw = r.get("keyword")
-            label = sub_label_map.get(kw)
-            if label and _is_catchall_cluster_name(label):
-                # Cluster Name Validation (spec steps 15-17): reject a
-                # catch-all/generic-only AI-returned name outright — fall
-                # back to the theme label (still real evidence) rather
-                # than rendering "Overview" or "Miscellaneous X Topics".
-                label = None
-            label = label or default_label
-            if not label or _is_catchall_cluster_name(label):
-                r["cluster"] = ""
-                r["cluster_status"] = "Unvalidated"
-                continue
-            label_key = label
-            if label_key in label_owner and label_owner[label_key] != bucket_key:
-                # Same short label text independently chosen for a
-                # genuinely different (theme, intent, category) bucket —
-                # disambiguate so it doesn't silently merge two different
-                # page opportunities under one displayed cluster name. This
-                # is the structural safety net that makes the single
-                # shared AI call above safe even if it ignores the "never
-                # combine different groups" instruction.
-                label_key = f"{label} ({intent})"
-            label_owner[label_key] = bucket_key
-            r["cluster"] = label_key
-            r["cluster_status"] = "Validated"
+        for topic_key, topic_rows in topic_groups.items():
+            representative = _representative(topic_rows)
+
+            if len(topic_groups) == 1:
+                # Whole bucket already collapsed to one topic phrase —
+                # modifier-stripping alone proved every keyword here is the
+                # same candidate topic (spec section 46), so no AI call was
+                # even made for it. Naming still prefers the known business
+                # theme (same discipline as before this feature existed) —
+                # a real theme name is more business-meaningful than a
+                # literal keyword phrase, and an Unclassified theme still
+                # means "not enough evidence to name a cluster" rather than
+                # falling back to whatever text one keyword happens to be.
+                label = theme_default_label
+            else:
+                label = sub_label_map.get(representative)
+                if label and _is_catchall_cluster_name(label):
+                    # Cluster Name Validation (spec steps 15-17): reject a
+                    # catch-all/generic-only AI-returned name outright.
+                    label = None
+                label = label or theme_default_label
+
+            for r in topic_rows:
+                if not label or _is_catchall_cluster_name(label):
+                    r["cluster"] = ""
+                    r["cluster_status"] = "Unvalidated"
+                    continue
+                label_key = label
+                if label_key in label_owner and label_owner[label_key] != bucket_key:
+                    # Same short label text independently chosen for a
+                    # genuinely different (theme, intent, category) bucket —
+                    # disambiguate so it doesn't silently merge two different
+                    # page opportunities under one displayed cluster name.
+                    # This is the structural safety net that makes the
+                    # single shared AI call above safe even if it ignores
+                    # the "never combine different groups" instruction.
+                    label_key = f"{label} ({intent})"
+                label_owner[label_key] = bucket_key
+                r["cluster"] = label_key
+                r["cluster_status"] = "Validated"
 
 
 def _select_primary_secondary(rows: list[dict]) -> None:

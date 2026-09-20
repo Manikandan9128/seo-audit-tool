@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME
-from app.services.keyword_cluster_pipeline import build_final_keyword_clusters
+from app.services.keyword_cluster_pipeline import _strip_modifiers, build_final_keyword_clusters
 
 
 def _rows():
@@ -109,8 +109,14 @@ def test_candidate_clustering_is_one_batched_call_not_one_per_bucket():
     # sequential AI call per bucket, chaining past Groq's shared rate
     # limit and stalling report generation past the 15-minute timeout.
     rows = [
+        # "construction payroll rates" (not "... services" — "services" is a
+        # modifier word, see _strip_modifiers, and would pre-merge with
+        # "construction payroll" before ever reaching the AI, which is
+        # exactly right but not what THIS test is guarding — this test is
+        # about the one-call-not-N-calls regression, so every pair here
+        # deliberately produces two genuinely distinct topic phrases).
         {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
-        {"keyword": "construction payroll services", "search_volume": 800, "intent": "Transactional", "page_category": "Landing Page"},
+        {"keyword": "construction payroll rates", "search_volume": 800, "intent": "Transactional", "page_category": "Landing Page"},
         {"keyword": "certified payroll", "search_volume": 700, "intent": "Commercial", "page_category": "Comparison / Alternative"},
         {"keyword": "certified payroll vs regular", "search_volume": 600, "intent": "Commercial", "page_category": "Comparison / Alternative"},
         {"keyword": "how construction payroll works", "search_volume": 500, "intent": "Informational", "page_category": "Blog / Guide"},
@@ -138,8 +144,13 @@ def test_catchall_cluster_name_is_rejected_and_left_unclustered():
     # name), so this exercises the reject-then-fall-back-to-theme path
     # separately from "AI returned nothing at all."
     rows = [
-        {"keyword": "certified payroll basics", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
-        {"keyword": "certified payroll fundamentals", "search_volume": 40, "intent": "Informational", "page_category": "Blog / Guide"},
+        # "compliance"/"audit trail" — deliberately NOT modifier words (see
+        # "basics"/"fundamentals" in _MODIFIER_WORDS), so these two keep
+        # distinct topic phrases and this test genuinely exercises the AI
+        # catch-all-name-rejection path rather than pre-merging before the
+        # AI is ever called.
+        {"keyword": "certified payroll compliance", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
+        {"keyword": "certified payroll audit trail", "search_volume": 40, "intent": "Informational", "page_category": "Blog / Guide"},
     ]
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Certified Payroll" for r in rows}), \
          patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={r["keyword"]: "Overview" for r in rows}), \
@@ -190,6 +201,67 @@ def test_core_category_requires_validation_when_every_theme_unclassified():
         build_final_keyword_clusters(rows, "Acme", None, None)
     assert rows[0]["core_category"] is None
     assert rows[0]["core_category_status"] == "Requires Validation"
+
+
+def test_strip_modifiers_separates_core_topic_from_attribute():
+    assert _strip_modifiers("product pricing") == ("product", ["pricing"])
+    assert _strip_modifiers("product pricing plans") == ("product", ["pricing", "plans"])
+    assert _strip_modifiers("product features") == ("product", ["features"])
+    assert _strip_modifiers("product") == ("product", [])
+
+
+def test_strip_modifiers_falls_back_to_full_keyword_when_all_words_are_modifiers():
+    core, modifiers = _strip_modifiers("pricing")
+    assert core == "pricing"
+    assert modifiers == ["pricing"]
+
+
+def test_modifier_variants_merge_into_one_cluster_without_an_ai_call():
+    # Universal SEO Audit Engine spec (2026-09-20), sections 8-11: "product
+    # pricing", "product features", "product benefits" must NOT become
+    # separate clusters — they're the same core topic ("Product") with
+    # different modifiers, and this must be provable WITHOUT the
+    # clustering AI even being invoked (section 46's architecture rule).
+    rows = [
+        {"keyword": "product", "search_volume": 500, "intent": "Commercial", "page_category": "Product"},
+        {"keyword": "product pricing", "search_volume": 400, "intent": "Commercial", "page_category": "Product"},
+        {"keyword": "product pricing plans", "search_volume": 300, "intent": "Commercial", "page_category": "Product"},
+        {"keyword": "product features", "search_volume": 200, "intent": "Commercial", "page_category": "Product"},
+        {"keyword": "product benefits", "search_volume": 100, "intent": "Commercial", "page_category": "Product"},
+    ]
+    themes = {r["keyword"]: "Widget Product" for r in rows}
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters") as mock_candidate, \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    mock_candidate.assert_not_called()  # all 5 collapsed to one topic group pre-AI
+    assert all(r["cluster"] == "Widget Product" for r in rows)
+    assert all(r["cluster_status"] == "Validated" for r in rows)
+    pricing_row = next(r for r in rows if r["keyword"] == "product pricing plans")
+    assert pricing_row["semantic_topic"] == "Product"
+    assert "pricing" in pricing_row["modifier"] and "plans" in pricing_row["modifier"]
+
+
+def test_genuinely_distinct_topics_still_split_even_with_shared_words():
+    # spec section 11's "6x4 truck" example — different core topics after
+    # stripping must NOT be forced together just because they share a word;
+    # this is a real AI decision (both distinct here since neither word is
+    # a modifier), unaffected by the modifier-stripping feature.
+    rows = [
+        {"keyword": "heavy truck", "search_volume": 500, "intent": "Commercial", "page_category": "Product"},
+        {"keyword": "6x4 truck specifications", "search_volume": 400, "intent": "Commercial", "page_category": "Product"},
+    ]
+    themes = {r["keyword"]: "Trucks" for r in rows}
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={
+             "heavy truck": "Heavy Trucks", "6x4 truck specifications": "6x4 Truck Specifications",
+         }), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    clusters = {r["cluster"] for r in rows}
+    assert clusters == {"Heavy Trucks", "6x4 Truck Specifications"}
 
 
 def test_existing_business_theme_is_preserved_not_reclassified():
