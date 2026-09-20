@@ -2348,6 +2348,50 @@ def _tech_fixes_scored_rows(
     return scored_rows
 
 
+_TECH_IMPACT_BY_SEVERITY_RANK = {
+    0: "High — error-level issue, likely blocking indexing/rankings or breaking the user experience.",
+    1: "Medium — warning-level issue, weakens on-page SEO signal quality.",
+    2: "Low — informational issue or issue-count-only evidence (no per-issue detail available).",
+}
+
+
+def build_structured_technical_recommendations(
+    page_audit: dict | None, analytics: dict | None = None, site_audit_pages_rows: list[dict] | None = None,
+) -> list[dict]:
+    """Universal SEO Audit Engine spec (2026-09-20) section 31: every
+    technical recommendation as its own record carrying Issue, Evidence,
+    Affected URLs, Impact, Action, and Priority — not just the single
+    combined Fix sentence the Priority Issues - Page Wise TABLE renders
+    (that table's own compact free-text cell is a presentation choice, per
+    section 47's "renderer is presentation-only" — the underlying decision
+    data itself must exist as real fields, which is what this returns).
+    Reuses _tech_fixes_scored_rows' exact same evidence and ordering — never
+    a second, independently-derived judgment of severity or priority.
+    Filtered to category "other" — the one combined per-page row
+    _tech_fixes_scored_rows already builds from every individual issue
+    detected on that URL (see its page_issues_by_path grouping) — so each
+    real page gets exactly ONE recommendation record here, not one row per
+    individual issue PLUS a duplicate combined row for the same page."""
+    if not page_audit:
+        return []
+    scored_rows = [r for r in _tech_fixes_scored_rows(page_audit, analytics, site_audit_pages_rows) if r[6] == "other"]
+    recommendations = []
+    for i, (severity_rank, _neg_score, issue, path, fix_text, page_views, category) in enumerate(scored_rows):
+        evidence = f"Detected on {path}"
+        if page_views:
+            evidence += f" ({page_views:,} pageviews in the analytics window)"
+        recommendations.append({
+            "issue": issue,
+            "evidence": evidence,
+            "affected_urls": [path],
+            "impact": _TECH_IMPACT_BY_SEVERITY_RANK.get(severity_rank, "Low"),
+            "action": fix_text,
+            "priority": i + 1,
+            "category": category,
+        })
+    return recommendations
+
+
 def _issue_noun(count: int) -> str:
     """Clean 'N issue'/'N issues' — 2026-09-20 spec bans '(s)' formatting
     and appending the source (e.g. '(Semrush)') beside the count; the

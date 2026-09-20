@@ -33,7 +33,7 @@ from app.reporting.pptx_builder import (
     build_report, classify_seo_issues, _canonical_page_totals,
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
-    build_search_opportunity_pages,
+    build_search_opportunity_pages, build_structured_technical_recommendations,
 )
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
@@ -1944,9 +1944,19 @@ def _gather_report_data(
             logger.warning("Structured Data insights generation failed for client %s: %s", client.id, schema_insights_candidate["error"])
             content_issues.append(f"Structured Data insights: {schema_insights_candidate['error']}")
 
+    # Universal SEO Audit Engine spec (2026-09-20) section 31: structured
+    # Issue/Evidence/Affected URLs/Impact/Action/Priority records — the real
+    # underlying data behind the Priority Issues - Page Wise table's own
+    # combined-text cells, exposed here for any consumer (API/UI/export)
+    # that needs the fields separately rather than one rendered sentence.
+    technical_recommendations = build_structured_technical_recommendations(
+        page_audit_result, analytics, site_audit_pages_rows,
+    )
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
+        "technical_recommendations": technical_recommendations or None,
         "schema_validation": schema_validation_result,
         "site_audit_issues": site_audit_issues_rows or None,
         "structured_data_rows": structured_data_rows or None,
@@ -2182,6 +2192,10 @@ def _build_pptx_for_client(
     # report parameter, since every other key in `data` doubles as a
     # build_report kwarg).
     data.pop("own_site_positions_rows", None)
+    # Same discipline — technical_recommendations (spec section 31's
+    # structured Issue/Evidence/Affected URLs/Impact/Action/Priority
+    # records) is API/export-only, build_report has no matching parameter.
+    data.pop("technical_recommendations", None)
 
     progress("Building presentation...", 96)
     try:
