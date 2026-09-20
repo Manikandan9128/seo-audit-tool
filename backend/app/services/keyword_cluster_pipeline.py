@@ -169,10 +169,19 @@ def _num(value) -> float:
         return 0.0
 
 
+def _demand_proxy(r: dict) -> float:
+    """Same reasoning as site_audit.py's _demand_proxy — a GSC-only row
+    (spec sections 1-3 merge) has no real Semrush search_volume at all, so
+    it falls back to its own real gsc_clicks for candidate-pool ranking
+    only, never for cluster priority/demand math itself (_cluster_score
+    stays search_volume-only). A row with real search_volume is unaffected."""
+    return max(_num(r.get("search_volume")), _num(r.get("gsc_clicks")))
+
+
 def _unique_keywords_by_volume(rows: list[dict]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
-    for r in sorted(rows, key=lambda r: _num(r.get("search_volume")), reverse=True):
+    for r in sorted(rows, key=_demand_proxy, reverse=True):
         kw = r.get("keyword")
         if kw and kw not in seen:
             seen.add(kw)

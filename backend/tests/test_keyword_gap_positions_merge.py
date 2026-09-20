@@ -67,3 +67,37 @@ def test_rows_without_a_keyword_are_skipped():
     positions_rows = [{"keyword": None, "search_volume": 900}]
     merged = _merge_keyword_gap_and_positions(gap_rows, positions_rows)
     assert [r["keyword"] for r in merged] == ["real keyword"]
+
+
+def test_gsc_only_query_becomes_new_row_without_invented_search_volume():
+    # Universal SEO Audit Engine spec (2026-09-20) sections 1-3: GSC demand
+    # evidence is added as its own row when no Semrush source has it —
+    # search_volume must stay unset, never backfilled from impressions/clicks.
+    gsc_rows = [{"query": "widget maintenance tips", "clicks": 40, "impressions": 900, "position": 6.2, "ctr": 0.044}]
+    merged = _merge_keyword_gap_and_positions([], [], gsc_rows)
+    assert len(merged) == 1
+    row = merged[0]
+    assert row["keyword"] == "widget maintenance tips"
+    assert row["search_volume"] is None
+    assert row["gsc_clicks"] == 40
+    assert row["gsc_impressions"] == 900
+    assert row["source"] == "GSC"
+
+
+def test_gsc_query_matching_existing_keyword_only_adds_evidence_fields():
+    gap_rows = [{"keyword": "widget insurance", "search_volume": 500, "cluster": "Insurance"}]
+    gsc_rows = [{"query": "widget insurance", "clicks": 12, "impressions": 300, "position": 8.1}]
+    merged = _merge_keyword_gap_and_positions(gap_rows, [], gsc_rows)
+    assert len(merged) == 1
+    row = merged[0]
+    # Semrush's own search_volume/cluster are never overwritten by GSC.
+    assert row["search_volume"] == 500
+    assert row["cluster"] == "Insurance"
+    assert row["gsc_clicks"] == 12
+    assert "GSC" in row["source"]
+
+
+def test_gsc_query_with_no_keyword_text_is_skipped():
+    gsc_rows = [{"query": "", "clicks": 10}, {"query": None, "clicks": 5}]
+    merged = _merge_keyword_gap_and_positions([], [], gsc_rows)
+    assert merged == []

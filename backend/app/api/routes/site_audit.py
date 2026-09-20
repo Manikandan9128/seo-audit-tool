@@ -341,6 +341,20 @@ def _num_for_sort(v) -> float:
         return 0.0
 
 
+def _demand_proxy(r: dict) -> float:
+    """Which candidates get AI attention first, for keyword rows merged from
+    multiple sources (spec sections 1-3) — real Semrush search_volume when
+    present; a GSC-only row (no Semrush volume at all, see
+    _merge_keyword_gap_and_positions) falls back to its own real gsc_clicks
+    so it can still compete for a spot in the classification/clustering
+    candidate pool instead of always sorting behind every volume-having row.
+    Never used for priority/ranking math itself (that stays search_volume-
+    only per spec section 40) — only for deciding which rows the bounded AI
+    calls see at all. A row with real search_volume is unaffected (max()
+    with its own smaller/absent click count never lowers it)."""
+    return max(_num_for_sort(r.get("search_volume")), _num_for_sort(r.get("gsc_clicks")))
+
+
 # A real Semrush export can carry hundreds of keyword rows per competitor —
 # classifying every single one would blow past classify_keywords' AI-call
 # token budget (the response gets truncated mid-JSON, fails to parse, and
@@ -487,7 +501,9 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
         competitor_analysis["keyword_gap_off_topic_count"] = off_topic_count
 
 
-def _merge_keyword_gap_and_positions(keyword_gap_rows: list[dict], organic_positions_rows: list[dict]) -> list[dict]:
+def _merge_keyword_gap_and_positions(
+    keyword_gap_rows: list[dict], organic_positions_rows: list[dict], gsc_query_rows: list[dict] | None = None,
+) -> list[dict]:
     """Target Keywords clustering used to read ONLY the client's own Keyword
     Gap rows — a small comparison-against-competitors export that doesn't
     reliably include keywords the client already ranks well for on their
@@ -501,7 +517,20 @@ def _merge_keyword_gap_and_positions(keyword_gap_rows: list[dict], organic_posit
     Secondary labeling, per-cluster insights, the flat-table fallback on
     clustering failure) is untouched. On a keyword present in both files,
     Organic Positions' search_volume/position/url win — the more accurate,
-    direct source for what the client currently ranks for right now."""
+    direct source for what the client currently ranks for right now.
+
+    Universal SEO Audit Engine spec (2026-09-20) sections 1-3, 43: GSC's own
+    non-branded search queries (real demand evidence Semrush never captures
+    — queries with clicks/impressions but zero Semrush volume data) are
+    folded in as a third source. A GSC-only query becomes a new row with its
+    own gsc_impressions/gsc_clicks/gsc_position fields — search_volume is
+    left unset rather than invented from impressions (a different metric,
+    never substituted for Semrush's own volume figure, per section 3's
+    "never replace source metrics with AI-generated/other-source values").
+    A query already present from Keyword Gap/Organic Positions instead just
+    gets those GSC fields attached as supplementary evidence — never
+    overwrites what the Semrush sources already established. `source`
+    records provenance on every row (section 43)."""
     by_keyword: dict[str, dict] = {}
     order: list[str] = []
     for r in keyword_gap_rows:
@@ -509,6 +538,7 @@ def _merge_keyword_gap_and_positions(keyword_gap_rows: list[dict], organic_posit
         if not kw:
             continue
         key = kw.lower()
+        r.setdefault("source", "Keyword Gap")
         if key not in by_keyword:
             order.append(key)
         by_keyword[key] = r
@@ -517,6 +547,7 @@ def _merge_keyword_gap_and_positions(keyword_gap_rows: list[dict], organic_posit
         if not kw:
             continue
         key = kw.lower()
+        r.setdefault("source", "Organic Positions")
         existing = by_keyword.get(key)
         if existing is None:
             order.append(key)
@@ -528,6 +559,29 @@ def _merge_keyword_gap_and_positions(keyword_gap_rows: list[dict], organic_posit
             existing["position"] = r["position"]
         if r.get("url"):
             existing["url"] = r["url"]
+        existing["source"] = f'{existing["source"]}, Organic Positions'
+    for r in gsc_query_rows or []:
+        kw = (r.get("query") or "").strip()
+        if not kw:
+            continue
+        key = kw.lower()
+        existing = by_keyword.get(key)
+        if existing is None:
+            order.append(key)
+            by_keyword[key] = {
+                "keyword": kw,
+                "search_volume": None,
+                "position": r.get("position"),
+                "gsc_impressions": r.get("impressions"),
+                "gsc_clicks": r.get("clicks"),
+                "gsc_ctr": r.get("ctr"),
+                "source": "GSC",
+            }
+            continue
+        existing["gsc_impressions"] = r.get("impressions")
+        existing["gsc_clicks"] = r.get("clicks")
+        existing["gsc_ctr"] = r.get("ctr")
+        existing["source"] = f'{existing["source"]}, GSC'
     return [by_keyword[key] for key in order]
 
 
@@ -559,7 +613,7 @@ def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dic
     client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
     brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client_domain)) if t}
 
-    candidates = sorted(rows, key=lambda r: _num_for_sort(r.get("search_volume")), reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
+    candidates = sorted(rows, key=_demand_proxy, reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
     candidate_keywords = [r.get("keyword", "") for r in candidates]
     if not candidate_keywords:
         return rows
@@ -1270,9 +1324,19 @@ def _gather_report_data(
     # which intentionally wants both own + competitor rows). Merged with the
     # client's own Organic Positions rows (2026-09-18 fix) — see
     # _merge_keyword_gap_and_positions's docstring for why Keyword Gap alone
-    # was missing a big chunk of the client's real keyword picture.
+    # was missing a big chunk of the client's real keyword picture. Also
+    # merged with GSC's own non-branded search queries (spec sections 1-3,
+    # 2026-09-20) — branded queries are excluded here the same way
+    # _filter_search_queries excludes them from its own slide; brand demand
+    # doesn't belong in Target Keywords topic clustering.
+    _kw_client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    _kw_brand_tokens = {t for t in (_brand_token(client.name), _brand_token(_kw_client_domain)) if t}
+    gsc_query_rows_for_merge = [
+        r for r in (analytics.get("search_queries") or {}).get("rows", [])
+        if not is_branded_or_near_brand(r.get("query") or "", _kw_brand_tokens)
+    ]
     keyword_rows_all = _merge_keyword_gap_and_positions(
-        _all_rows("keyword_gap", own_only=True), _all_rows("organic_positions", own_only=True),
+        _all_rows("keyword_gap", own_only=True), _all_rows("organic_positions", own_only=True), gsc_query_rows_for_merge,
     )
     # Relevance-filtered FIRST, before clustering/intent classification (or
     # anything else in this function) spends any AI budget on these rows —
