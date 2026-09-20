@@ -171,7 +171,19 @@ def _rule_exclude(keyword: str, brand_tokens: set[str]) -> str | None:
         return "empty"
     for brand in brand_tokens:
         if brand and _is_branded_keyword(text, brand):
-            return "brand"
+            # Universal SEO Audit Engine spec (2026-09-20) section 22:
+            # competitor keywords are NOT automatically irrelevant —
+            # comparison/alternative-intent queries mentioning a
+            # competitor's brand ("mailchimp vs constant contact",
+            # "mailchimp alternative") are a real content opportunity
+            # (Competitor Comparison Opportunity), not noise. Confirmed
+            # real: the old blanket "any brand-token match -> exclude"
+            # rule discarded these before the AI classification prompt —
+            # which already explicitly judges this exact case — ever saw
+            # them. Let a comparison-shaped brand mention through to that
+            # AI judgment instead of mechanically dropping it here.
+            if not any(re.search(rf"\b{re.escape(sig)}\b", text) for sig in _COMPARISON_KEYWORD_SIGNALS):
+                return "brand"
     if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _NAV_LOGIN_WORDS):
         return "nav_login"
     if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _CAREERS_WORDS):
