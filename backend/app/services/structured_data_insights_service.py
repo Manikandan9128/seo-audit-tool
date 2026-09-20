@@ -69,6 +69,72 @@ Return ONLY valid JSON, no markdown fences, no commentary:
 """
 
 
+def _eligibility_clause(schema_type: str, eligibility_notes: dict[str, str]) -> str:
+    note = eligibility_notes.get(schema_type)
+    if not note:
+        return ""
+    if note.startswith("ELIGIBILITY_CHECK_STALE"):
+        return " (rich-result eligibility for this type hasn't been verified against Google's current docs)"
+    return f" ({note})"
+
+
+def _deterministic_schema_insights(part2: list[dict], eligibility_notes: dict[str, str]) -> list[str]:
+    """Non-AI fallback so Key Insights can never fully disappear (2026-09-20
+    spec section 30: "MUST NOT disappear ... even when coverage is 0%").
+    Mechanically derived straight from part2's own Missing/Invalid/Present/
+    Valid/Coverage numbers — same ISSUE->EVIDENCE->ACTION shape and wording
+    rules as the AI prompt above (no unsupported ranking/CTR claims, respects
+    eligibility_notes, JobPosting never appears since it's excluded from
+    part2 entirely upstream). Used only when every configured AI provider
+    failed or is unconfigured — real numbers only, nothing invented.
+    Ordered gaps first (largest-affected first), then invalid-schema
+    findings, confirmed wins last, capped to 4 per spec's own "2-4 concise
+    insights" guidance."""
+    items: list[tuple[int, int, str]] = []
+    for row in part2:
+        schema_type = row["schema_type"]
+        clause = _eligibility_clause(schema_type, eligibility_notes)
+        if row.get("site_level"):
+            if row.get("present") == "No":
+                items.append((0, 0, (
+                    f"{schema_type} schema gap — no {schema_type} structured data was detected at the site "
+                    f"level{clause}. Fix: implement {schema_type} structured data in the global site template."
+                )))
+            elif row.get("valid") == "No":
+                items.append((1, 0, (
+                    f"{schema_type} schema validation issue — present at the site level but fails a required-"
+                    f"field check. Fix: correct the identified {schema_type} structured data errors and revalidate."
+                )))
+            elif row.get("present") == "Yes" and row.get("valid") == "Yes":
+                items.append((3, 0, f"{schema_type} schema — confirmed present and valid at the site level. No fix needed."))
+            continue
+
+        applicable = row.get("applicable") or 0
+        if not applicable:
+            continue
+        missing = row.get("missing") or 0
+        invalid = row.get("invalid") or 0
+        present = row.get("present") or 0
+        coverage = row.get("coverage_pct")
+
+        if missing and present == 0:
+            items.append((0, -missing, (
+                f"{schema_type} schema gap — {missing} applicable page(s) have no {schema_type} structured data "
+                f"detected{clause}. Fix: implement {schema_type} schema through the relevant page template."
+            )))
+        elif invalid:
+            items.append((1, -invalid, (
+                f"{schema_type} schema validation issue — {invalid} of {present} page(s) with {schema_type} "
+                f"markup contain validation errors. Fix: correct the identified {schema_type} structured data "
+                "errors and revalidate the affected pages."
+            )))
+        elif invalid == 0 and coverage == 100:
+            items.append((3, 0, f"{schema_type} schema — confirmed valid on all {applicable} applicable page(s) (Coverage: 100%). No fix needed."))
+
+    items.sort(key=lambda it: (it[0], it[1]))
+    return [text for _rank, _impact, text in items][:4]
+
+
 def generate_structured_data_insights(
     part1: list[dict], part2: list[dict], pageviews_by_page_type: dict[str, int], eligibility_notes: dict[str, str]
 ) -> dict:
@@ -83,7 +149,12 @@ def generate_structured_data_insights(
     own parse of it came back empty" — so Gemini, which DOES handle this
     prompt correctly, never even got tried). Now keeps trying the next
     provider until one returns a non-empty insights list or a parseable-
-    but-still-empty result, or every provider is exhausted."""
+    but-still-empty result, or every provider is exhausted. If every
+    provider still fails, falls back to _deterministic_schema_insights
+    (2026-09-20 spec section 30: Key Insights must never fully disappear)
+    rather than surfacing an AI-failure error with no insights at all —
+    only returns {"error": ...} when even that deterministic pass finds
+    nothing meaningful to say (e.g. every schema type is Not Applicable)."""
     if not part1 and not part2:
         return {"error": "No schema data to analyze"}
 
@@ -107,9 +178,12 @@ def generate_structured_data_insights(
             if data.get("insights"):
                 return data
             empty_from.append(provider)
-    except NoAIProviderConfigured as e:
-        return {"error": str(e)}
+    except NoAIProviderConfigured:
+        pass  # fall through to the deterministic pass below
 
+    fallback = _deterministic_schema_insights(part2, eligibility_notes)
+    if fallback:
+        return {"insights": fallback, "fallback": True}
     if empty_from:
         return {"error": f"Model returned no insights (tried: {', '.join(empty_from)})"}
     return {"error": " | ".join(errors) if errors else "Model returned no insights"}

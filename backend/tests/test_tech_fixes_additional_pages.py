@@ -18,7 +18,11 @@ def test_semrush_only_row_fix_text_does_not_repeat_the_source_header():
     assert "Semrush" not in fix_text
     assert issue_text == "12 issues"
     assert "issue(s)" not in issue_text
-    assert "review the individual failed checks for this URL" in fix_text
+    # 2026-09-20 spec section 32 bans "review the individual failed
+    # checks" as unacceptable generic text; section 34's own preferred
+    # wording for genuinely insufficient issue-level evidence is used
+    # instead.
+    assert "Specific fix requires issue-level validation" in fix_text
 
 
 def test_issue_noun_singular_plural():

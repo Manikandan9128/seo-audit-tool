@@ -2243,13 +2243,28 @@ def _tech_fixes_scored_rows(
 
     scored_rows = []
     covered_paths: set[str] = set()
+    # Per-page combined evidence (2026-09-20 spec sections 32-36): Priority
+    # Issues - Page Wise must show a page-specific Fix built from the
+    # ACTUAL detected issues for that URL, not a generic "review the
+    # individual failed checks" line — that generic phrasing is explicitly
+    # banned by the new spec (section 32's own example list). This tool's
+    # own ~20-page crawl sample DOES carry real per-issue names/fixes (see
+    # _PAGE_ISSUE_FIXES below); collected here per page (not per single
+    # issue, unlike the "technical"/"seo" rows this same loop still emits
+    # below for _tech_fixes_next_steps_items) so a page with 4 detected
+    # issues gets ONE combined, evidence-based Fix sentence instead of not
+    # appearing on this table at all (previously only Semrush's count-only
+    # export fed this table — the least-evidence source, backwards from
+    # what the new spec wants).
+    page_issues_by_path: dict[str, dict] = {}
     for page in page_audit.get("pages", []):
         if not _is_content_page_url(page.get("url", "")):
             continue
         path = urlparse(page.get("url", "")).path or "/"
-        covered_paths.add(path.rstrip("/") or "/")
-        page_views = pageviews_by_path.get(path.rstrip("/"), 0)
-        clicks = clicks_by_path.get(path.rstrip("/"), 0)
+        key = path.rstrip("/") or "/"
+        covered_paths.add(key)
+        page_views = pageviews_by_path.get(key, 0)
+        clicks = clicks_by_path.get(key, 0)
         score = _page_value_score(page_views, clicks)
         for issue in page.get("issues", []):
             fix = _PAGE_ISSUE_FIXES.get(issue)
@@ -2257,6 +2272,20 @@ def _tech_fixes_scored_rows(
                 continue
             fix_text, severity, category = fix
             scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -score, issue, path, fix_text, page_views, category))
+            entry = page_issues_by_path.setdefault(key, {"path": path, "page_views": page_views, "clicks": clicks, "items": []})
+            entry["items"].append((_ISSUE_SEVERITY_RANK[severity], fix_text))
+
+    for entry in page_issues_by_path.values():
+        items = sorted(entry["items"], key=lambda it: it[0])  # worst severity first
+        seen_fix_texts: list[str] = []
+        for _rank, fix_text in items:
+            if fix_text not in seen_fix_texts:
+                seen_fix_texts.append(fix_text)
+        score = _page_value_score(entry["page_views"], entry["clicks"])
+        scored_rows.append((
+            items[0][0], -score, _issue_noun(len(items)), entry["path"],
+            _combined_page_fix(seen_fix_texts, len(items)), entry["page_views"], "other",
+        ))
 
     # Semrush's Crawled Pages export (site_audit_pages_rows) covers the
     # site's real full crawl (e.g. 1,340 pages) vs. this tool's own ~20-page
@@ -2298,19 +2327,16 @@ def _tech_fixes_scored_rows(
             page_views = pageviews_by_path.get(key, 0)
             clicks = clicks_by_path.get(key, 0)
             score = _page_value_score(page_views, clicks)
-            # 2026-09-20 spec: the Fix must be grounded in what's actually
-            # known for THIS url — an issue COUNT, nothing else (Semrush's
-            # per-page export carries no issue names/severity here) — never
-            # a page-type-guessed checklist ("audit meta tags on this blog
-            # post"). "Insufficient evidence for a specific recommendation"
-            # is the compliant action when only a count is available; this
-            # still points at a concrete next step (review THIS url's
-            # checks) rather than a generic "optimize the page" filler.
-            # Source is named once in the slide header, never repeated here.
-            fix_text = (
-                f"{_issue_noun(issue_count)} detected on this page by the Site Audit crawl — "
-                "review the individual failed checks for this URL and prioritize by severity."
-            )
+            # 2026-09-20 spec section 34: the Fix must be grounded in what's
+            # actually known for THIS url — an issue COUNT, nothing else
+            # (Semrush's per-page export carries no issue names/severity
+            # here) — never a page-type-guessed checklist. Section 32
+            # explicitly bans "Review the individual failed checks" as
+            # unacceptable generic text; section 34's own preferred wording
+            # for this exact case ("issue-level evidence is insufficient")
+            # is used verbatim instead. Source is named once in the slide
+            # header, never repeated here.
+            fix_text = f"{_issue_noun(issue_count)} detected on this page. Specific fix requires issue-level validation."
             scored_rows.append((
                 _ISSUE_SEVERITY_RANK["info"], -score, _issue_noun(issue_count), path, fix_text, page_views, "other",
             ))
@@ -2324,6 +2350,26 @@ def _issue_noun(count: int) -> str:
     and appending the source (e.g. '(Semrush)') beside the count; the
     source is already named once in the slide header."""
     return f"{count:,} issue" if count == 1 else f"{count:,} issues"
+
+
+_COMBINED_PAGE_FIX_MAX_ITEMS = 3
+
+
+def _combined_page_fix(distinct_fix_texts: list[str], total_issue_count: int) -> str:
+    """One page-specific Fix sentence built from the ACTUAL distinct issues
+    detected on this URL (2026-09-20 spec sections 32-36) — every fix_text
+    here comes straight from _PAGE_ISSUE_FIXES, already in worst-severity-
+    first order, never a generic "review the individual failed checks"
+    placeholder. Capped to the 3 most severe distinct fixes (same row-
+    height discipline as the rest of this table, see _sop_recommended_
+    action's own 2026-09-18 fix) with the remainder named by count, not
+    silently dropped."""
+    shown = distinct_fix_texts[:_COMBINED_PAGE_FIX_MAX_ITEMS]
+    text = " ".join(shown)
+    remaining = total_issue_count - len(shown)
+    if remaining > 0:
+        text += f" ({remaining} more issue{'s' if remaining != 1 else ''} detected on this page.)"
+    return text
 
 
 def _page_wise_issue_count(row: tuple) -> int:
