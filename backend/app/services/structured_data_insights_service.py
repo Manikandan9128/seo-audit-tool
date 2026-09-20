@@ -7,7 +7,7 @@ cause, it never derives or invents a number itself."""
 import json
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 STRUCTURED_DATA_INSIGHTS_PROMPT = """You are an SEO consultant preparing a "Structured data & schema validator" \
 slide for a client audit report. Below are two tables already computed from a real crawl + validation pass — \
@@ -72,7 +72,18 @@ Return ONLY valid JSON, no markdown fences, no commentary:
 def generate_structured_data_insights(
     part1: list[dict], part2: list[dict], pageviews_by_page_type: dict[str, int], eligibility_notes: dict[str, str]
 ) -> dict:
-    """Returns {"insights": [str]} or {"error": str}."""
+    """Returns {"insights": [str]} or {"error": str}.
+
+    Tries every configured provider in order (2026-09-20 fix — confirmed
+    real on two consecutive reports, Lumber and BharatBenz: Groq, first in
+    the default order, returned syntactically valid JSON with an empty
+    `{"insights": []}` for a report whose schema data had obvious real
+    gaps, and generate_text()'s own cross-provider fallback only triggers
+    on a transport-level failure, never on "the provider answered but my
+    own parse of it came back empty" — so Gemini, which DOES handle this
+    prompt correctly, never even got tried). Now keeps trying the next
+    provider until one returns a non-empty insights list or a parseable-
+    but-still-empty result, or every provider is exhausted."""
     if not part1 and not part2:
         return {"error": "No schema data to analyze"}
 
@@ -82,17 +93,23 @@ def generate_structured_data_insights(
         pageviews=json.dumps(pageviews_by_page_type, indent=2) if pageviews_by_page_type else "(no analytics data)",
         eligibility_notes=json.dumps(eligibility_notes, indent=2) if eligibility_notes else "(all types fully eligible)",
     )
+    errors: list[str] = []
+    empty_from: list[str] = []
     try:
-        raw, _provider = generate_text(prompt, max_tokens=1024)
+        for raw, provider in iter_text_attempts(prompt, max_tokens=1024, errors=errors):
+            cleaned = raw.strip()
+            cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                errors.append(f"{provider} returned invalid JSON: {cleaned[:200]}")
+                continue
+            if data.get("insights"):
+                return data
+            empty_from.append(provider)
     except NoAIProviderConfigured as e:
         return {"error": str(e)}
 
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    if not data.get("insights"):
-        return {"error": "Model returned no insights"}
-    return data
+    if empty_from:
+        return {"error": f"Model returned no insights (tried: {', '.join(empty_from)})"}
+    return {"error": " | ".join(errors) if errors else "Model returned no insights"}

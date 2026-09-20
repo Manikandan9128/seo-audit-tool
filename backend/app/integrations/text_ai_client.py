@@ -297,6 +297,45 @@ _PROVIDER_ATTEMPTS = {"groq": _attempt_groq, "gemini": _attempt_gemini, "claude"
 _DEFAULT_PROVIDER_ORDER = ["groq", "gemini", "claude"]
 
 
+def _provider_order() -> list[str]:
+    preferred = getattr(_provider_preference, "value", None)
+    return [preferred] + [p for p in _DEFAULT_PROVIDER_ORDER if p != preferred] if preferred else _DEFAULT_PROVIDER_ORDER
+
+
+def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
+    """Same provider order/fallback as generate_text, but yields (text,
+    provider) for EVERY configured provider that returned a non-empty raw
+    response, instead of stopping at the first one (generate_text() calls
+    this and returns just the first yield, unchanged behavior for every
+    existing caller).
+
+    Exists for a caller whose OWN parse of that text can turn out
+    semantically empty even though the provider responded successfully —
+    confirmed real (2026-09-20, Lumber + BharatBenz reports both hit this
+    on the Structured Data & Schema Validator's Key Insights): Groq
+    (first in the default order) returned syntactically valid JSON with an
+    empty `{"insights": []}`, which generate_text() correctly counts as
+    success (non-empty raw text) — but that's an inadequate result for the
+    caller's actual need, and generate_text() has no way to know that,
+    since it doesn't parse the caller's business-logic JSON shape at all.
+    A caller who wants "try the next provider if MY parse of this came back
+    empty" iterates this generator instead of calling generate_text() once.
+
+    `errors` is appended to by the same _attempt_* functions generate_text()
+    uses — pass the same list in both to see every attempt's failure
+    reason if every yield turns out inadequate too. Raises
+    NoAIProviderConfigured (on first iteration) only when no provider key
+    is configured at all; yields nothing if every configured provider's
+    raw call itself failed or returned empty (same as generate_text()
+    raising NoAIProviderConfigured with `errors` joined)."""
+    if not settings.gemini_api_key and not settings.groq_api_key and not settings.claude_api_key:
+        raise NoAIProviderConfigured("No Gemini, Groq, or Claude API key configured — add one in Settings")
+    for provider in _provider_order():
+        text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
+        if text:
+            yield text, provider
+
+
 def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
     """Returns (text, provider_used) — 'gemini', 'groq', or 'claude'. Tries
     each configured provider in order, falling through to the next on any
