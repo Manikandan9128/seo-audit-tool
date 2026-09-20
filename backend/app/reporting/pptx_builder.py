@@ -2087,14 +2087,15 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
     """Structured Data & Schema Validator, 2026-09-10 user spec: straight
     into two tables (no summary metric cards) — Part 1 maps each page type
     to its recommended schema and why it applies; Part 2 reports Applicable/
-    Valid/Errors/Coverage % per schema type, denominator always the pages
-    that type applies to, baseline (WebSite/Organization) and BreadcrumbList
-    kept in their own rows rather than blended into content-type coverage.
-    Part 3 (Key Insights) is AI-written from these exact same numbers (see
-    build_schema_report_parts / page_wise_priority_service-style prompt in
-    structured_data_insights_service.py) — grouping by shared root cause,
-    calling out confirmed wins and correctly-excluded pages, never inventing
-    a schema type. Falls back to tables-only (no Part 3) when AI insights
+    Present/Valid/Invalid/Missing/Coverage % per schema type, denominator
+    always the pages that type applies to, baseline (WebSite/Organization)
+    reported as site-level Yes/No/Unknown facts and BreadcrumbList kept in
+    its own row rather than blended into content-type coverage.
+    Key Insights is AI-written from these exact same numbers (see
+    build_schema_report_parts, prompt in structured_data_insights_service.py)
+    — grouping by shared root cause, calling out confirmed wins and
+    correctly-excluded pages, never inventing a schema type. Falls back to
+    tables-only (no Key Insights) when AI insights
     aren't available, same discipline as every other AI section in this
     file."""
     total_pages = schema_validation.get("total_pages") or 0
@@ -2297,24 +2298,37 @@ def _tech_fixes_scored_rows(
             page_views = pageviews_by_path.get(key, 0)
             clicks = clicks_by_path.get(key, 0)
             score = _page_value_score(page_views, clicks)
-            # 2026-09-10 user request: don't repeat "Semrush's Site Audit" in
-            # every row's Fix cell — the slide already names that source
-            # once, in the header ("Source: Semrush Site Audit").
+            # 2026-09-20 spec: the Fix must be grounded in what's actually
+            # known for THIS url — an issue COUNT, nothing else (Semrush's
+            # per-page export carries no issue names/severity here) — never
+            # a page-type-guessed checklist ("audit meta tags on this blog
+            # post"). "Insufficient evidence for a specific recommendation"
+            # is the compliant action when only a count is available; this
+            # still points at a concrete next step (review THIS url's
+            # checks) rather than a generic "optimize the page" filler.
+            # Source is named once in the slide header, never repeated here.
             fix_text = (
-                "Full per-issue breakdown isn't available for this page in this export — "
-                "see SEO Issues for the site-wide breakdown by type."
+                f"{_issue_noun(issue_count)} detected on this page by the Site Audit crawl — "
+                "review the individual failed checks for this URL and prioritize by severity."
             )
             scored_rows.append((
-                _ISSUE_SEVERITY_RANK["info"], -score, f"{issue_count} issue(s) (Semrush)", path, fix_text, page_views, "other",
+                _ISSUE_SEVERITY_RANK["info"], -score, _issue_noun(issue_count), path, fix_text, page_views, "other",
             ))
 
     scored_rows.sort(key=lambda r: (r[0], r[1]))
     return scored_rows
 
 
+def _issue_noun(count: int) -> str:
+    """Clean 'N issue'/'N issues' — 2026-09-20 spec bans '(s)' formatting
+    and appending the source (e.g. '(Semrush)') beside the count; the
+    source is already named once in the slide header."""
+    return f"{count:,} issue" if count == 1 else f"{count:,} issues"
+
+
 def _page_wise_issue_count(row: tuple) -> int:
-    match = re.match(r"(\d+)", row[2])
-    return int(match.group(1)) if match else 0
+    match = re.match(r"([\d,]+)", row[2])
+    return int(match.group(1).replace(",", "")) if match else 0
 
 
 # /blog/* and /product/* + /integrations* are the two URL patterns this
@@ -2332,11 +2346,17 @@ def _is_product_integration_pattern(path: str) -> bool:
 
 
 def _page_wise_group_insights(other_rows: list[tuple]) -> list[str]:
-    """2026-09-11 user spec: group pages by shared root cause with EXACT
-    counts (never "over X") instead of an AI-written summary — a plain
-    len()/sum() over the same rows the table renders is exact by
-    construction, where an LLM asked for the same number can only
-    approximate it."""
+    """2026-09-20 spec: PATTERN -> EVIDENCE -> ACTION, stating only what the
+    data actually shows (a page count and a total issue count per group) —
+    never an inferred cause. The prior wording guessed a root cause from
+    the URL pattern alone ("likely thin/duplicate content ... missing
+    BlogPosting schema") and claimed unsupported outcomes ("suppress
+    rankings", "waste crawl budget") that this per-page count data cannot
+    support, and "BlogPosting schema" isn't even the central Schema
+    Validator's terminology for that type (see pptx_builder's
+    _PAGE_TYPE_SCHEMA_LABEL — "Article"). Exact counts (never "over X")
+    stay: plain len()/sum() over the same rows the table renders is exact
+    by construction."""
     blog_rows = [r for r in other_rows if _is_blog_pattern(r[3])]
     product_rows = [r for r in other_rows if _is_product_integration_pattern(r[3])]
 
@@ -2344,32 +2364,39 @@ def _page_wise_group_insights(other_rows: list[tuple]) -> list[str]:
     if blog_rows:
         total_issues = sum(_page_wise_issue_count(r) for r in blog_rows)
         insights.append(
-            f"{len(blog_rows)} blog page(s) (/blog/*) carry {total_issues} total issue(s) between them — "
-            "likely thin/duplicate content, duplicate meta tags, or missing BlogPosting schema, which can "
-            "suppress organic rankings and waste crawl budget."
+            f"{len(blog_rows)} blog page(s) (/blog/*) have {total_issues:,} combined Site Audit issues. "
+            "Review the recurring issue types and prioritize high-severity issues that can be addressed "
+            "through the blog template."
         )
     if product_rows:
         total_issues = sum(_page_wise_issue_count(r) for r in product_rows)
         insights.append(
-            f"{len(product_rows)} product/integration page(s) (/product/*, /integrations) carry {total_issues} "
-            "total issue(s) between them — likely missing Product/Integration schema or duplicate titles, which "
-            "can hurt SERP visibility and conversions."
+            f"{len(product_rows)} product/integration page(s) (/product/*, /integrations) have {total_issues:,} "
+            "combined Site Audit issues. Review the recurring issue types and prioritize high-severity issues "
+            "that can be addressed through the shared template."
         )
     if other_rows:
         top = max(other_rows, key=_page_wise_issue_count)
-        insights.append(f"\"{top[3]}\" has the most issues of any page here — {_page_wise_issue_count(top)} total.")
+        insights.append(
+            f"\"{top[3]}\" has the highest issue count among the selected pages with {_page_wise_issue_count(top):,} "
+            "detected issues. Prioritize remediation based on the severity and type of those issues."
+        )
     return insights
 
 
 def add_priority_issues_page_wise_slide(prs: Presentation, other_rows: list[tuple], ai_result: dict | None) -> object | None:
     """Page | Issues | Fix table for pages Semrush's full crawl flagged but
     our own ~20-page sample didn't reach (2026-09-10 user spec, grouped-
-    insights spec added 2026-09-11). Fix column is AI-inferred per page
-    from URL pattern + issue count (see page_wise_priority_service)
-    instead of the old generic "full breakdown isn't available" disclaimer
-    repeated on every row. Insights are computed here, not by the AI (see
-    _page_wise_group_insights) — the user's spec requires an exact count,
-    which code guarantees and an LLM only approximates.
+    insights spec added 2026-09-11). Fix column is the deterministic,
+    evidence-based text _tech_fixes_scored_rows already attaches to each
+    row (2026-09-20 spec: this export carries only an issue COUNT per url,
+    no issue names — a URL-pattern-guessed "audit meta tags on this post"
+    checklist, which the old AI-generated version produced, isn't
+    supportable from that data and is no longer used here; ai_result is
+    kept only for call-site compatibility and is otherwise unused).
+    Insights are computed here, not by an AI (see _page_wise_group_
+    insights) — the user's spec requires an exact count, which code
+    guarantees and an LLM only approximates.
 
     Row order/selection is _tech_fixes_scored_rows's own severity+traffic-
     value sort, untouched — a same-day issue-count sort was tried and
@@ -2380,14 +2407,19 @@ def add_priority_issues_page_wise_slide(prs: Presentation, other_rows: list[tupl
     if not other_rows:
         return None
     shown = other_rows[:9]
-    fixes = (ai_result or {}).get("fixes") or {}
     col_widths = [2.3, 1.8, 8.0]
     rows = [
-        (_truncate_cell(path, col_widths[0]), issue, fixes.get(path, "See SEO Issues for the site-wide breakdown by type."))
-        for _, _, issue, path, _fix_text, _pv, _cat in shown
+        (_truncate_cell(path, col_widths[0]), issue, fix_text)
+        for _, _, issue, path, fix_text, _pv, _cat in shown
     ]
     insights = _page_wise_group_insights(other_rows)[:4]
-    insights.append(f"{len(other_rows)} additional page(s) affected site-wide — showing the {len(shown)} highest-priority here.")
+    remaining = len(other_rows) - len(shown)
+    if remaining > 0:
+        page_word = "page" if remaining == 1 else "pages"
+        insights.append(
+            f"{remaining:,} additional {page_word} are affected site-wide. The table highlights the "
+            f"{len(shown)} highest-priority pages for remediation."
+        )
     return _table_slide(
         prs, "Priority Issues - Page Wise", ["Page", "Issues", "Fix"], rows,
         col_widths=col_widths, source="Semrush Site Audit", insights=insights[:5],

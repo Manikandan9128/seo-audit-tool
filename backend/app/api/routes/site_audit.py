@@ -30,7 +30,7 @@ from app.models.semrush_import import SemrushImport
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import (
-    build_report, classify_seo_issues, _canonical_page_totals, _tech_fixes_scored_rows,
+    build_report, classify_seo_issues, _canonical_page_totals,
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
     build_search_opportunity_pages, _country_label,
@@ -39,7 +39,6 @@ from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
 from app.services.seo_issues_insights_service import generate_seo_issues_insights
-from app.services.page_wise_priority_service import generate_page_wise_priority_content
 from app.services.structured_data_insights_service import generate_structured_data_insights
 from app.services.branded_search_insights_service import generate_branded_search_insights
 from app.services.geopulse_ai_service import generate_aeo_geo_content
@@ -1646,43 +1645,20 @@ def _gather_report_data(
             logger.warning("SEO Issues insights generation failed for client %s: %s", client.id, insights_candidate["error"])
             content_issues.append(f"SEO Issues insights: {insights_candidate['error']}")
 
-    # Priority Issues - Page Wise slide's AI content (2026-09-10 user spec):
-    # per-page Fix text inferred from URL pattern + issue count, plus
-    # insights that group pages by shared probable root cause. Computed
-    # from the SAME other_rows _tech_fixes_scored_rows produces for the
-    # slide itself, so the AI never reasons about a page the table doesn't
-    # also show.
+    # Priority Issues - Page Wise slide's Fix column is now fully
+    # deterministic (2026-09-20 spec) — _tech_fixes_scored_rows attaches an
+    # evidence-based fix directly to each row (issue count + "review this
+    # url's failed checks"), since Semrush's per-page export carries no
+    # issue names/severity to ground a more specific recommendation on. An
+    # AI call used to guess a fix from the URL's page-type pattern instead
+    # ("audit meta tags on this blog post") — banned by the new spec as an
+    # unsupported generic checklist, so no AI content is generated here
+    # anymore. page_wise_ai is kept (always None) only because build_report
+    # still takes the parameter.
     page_wise_ai = None
     # /careers excluded per 2026-09-11 user request — not a pattern-driven
     # exclusion, just this one specific page.
     page_wise_exclude_paths: set[str] = {"/careers"}
-    if page_audit_result and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
-        page_wise_scored_rows = [
-            r for r in _tech_fixes_scored_rows(page_audit_result, analytics, site_audit_pages_rows)
-            if r[6] == "other"
-        ]
-        if page_wise_exclude_paths:
-            excluded_norm = {p.rstrip("/") or "/" for p in page_wise_exclude_paths}
-            page_wise_scored_rows = [r for r in page_wise_scored_rows if (r[3].rstrip("/") or "/") not in excluded_norm]
-        # Reverted 2026-09-11: sorting this list by issue count surfaced
-        # multiple rows for the SAME page (one per issue category
-        # _tech_fixes_scored_rows tracks internally) clustered into the
-        # top 9, so the table showed one page repeated 5-6 times instead
-        # of 9 distinct pages. Back to _tech_fixes_scored_rows's own
-        # severity+traffic-value order, confirmed distinct-pages-only in
-        # report 56 (before the issue-count sort was added).
-        if page_wise_scored_rows:
-            def _row_to_dict(r):
-                match = re.match(r"(\d+)", r[2])
-                return {"page": r[3], "issue_count": int(match.group(1)) if match else 0}
-
-            shown_dicts = [_row_to_dict(r) for r in page_wise_scored_rows[:9]]
-            page_wise_candidate = generate_page_wise_priority_content(shown_dicts)
-            if "error" not in page_wise_candidate:
-                page_wise_ai = page_wise_candidate
-            else:
-                logger.warning("Priority Issues - Page Wise AI content failed for client %s: %s", client.id, page_wise_candidate["error"])
-                content_issues.append(f"Priority Issues - Page Wise: {page_wise_candidate['error']}")
 
     # Branded vs Non-Branded Search Performance (2026-09-10 user spec) —
     # Part 1 (comparison) and Parts 2/3 (high-potential pages/countries)
