@@ -5662,9 +5662,12 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
 
     ranked = sorted(clusters.items(), key=lambda kv: sum(_num(r.get("search_volume")) for r in kv[1]), reverse=True)
     items = []
+    low_demand_count = 0
+    too_few_subpages_count = 0
     for label, rows_for_cluster in ranked:
         cluster_volume = sum(_num(r.get("search_volume")) for r in rows_for_cluster)
         if cluster_volume < _PROGRAMMATIC_MIN_CLUSTER_VOLUME:
+            low_demand_count += 1
             continue  # demand eligibility: not enough real search volume behind this topic to template
 
         hub_slug = _slugify(label)
@@ -5720,6 +5723,7 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             if len(sub_slugs) == 4:
                 break
         if len(sub_slugs) < _PROGRAMMATIC_MIN_SUBPAGES:
+            too_few_subpages_count += 1
             continue  # not enough genuinely distinct sub-pages to call this a template pattern
 
         subpages = ", ".join(f"/{hub_slug}/{s}" for s in sub_slugs)
@@ -5733,7 +5737,23 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             item += " Data-quality note: " + " ".join(quality_flags)
         items.append(item)
     if not items:
-        return None
+        # Universal SEO Audit Engine spec (2026-09-20) section 27: "Not
+        # suitable for programmatic SEO" is an explicit, stated finding —
+        # every real cluster was actually evaluated against the demand/
+        # distinct-sub-intent eligibility gates above and failed, so this
+        # states why rather than silently dropping the slide (which reads
+        # identically to "programmatic SEO was never considered at all").
+        reasons = []
+        if low_demand_count:
+            reasons.append(f"{low_demand_count} cluster(s) fell short of the minimum combined search volume")
+        if too_few_subpages_count:
+            reasons.append(f"{too_few_subpages_count} cluster(s) didn't have enough genuinely distinct sub-intents (near-duplicates only)")
+        reason_text = "; ".join(reasons) if reasons else "no cluster had enough real search demand or distinct sub-intents"
+        return _next_steps_category_slide(
+            prs, "Programmatic SEO Opportunities",
+            "Not suitable for programmatic SEO with the current keyword data.",
+            [f"Evaluated {len(clusters)} keyword cluster(s) against hub+sub-page eligibility — {reason_text}."],
+        )
 
     intro = (
         "Only clusters that clear real eligibility for a template pattern — enough distinct search intent and "
