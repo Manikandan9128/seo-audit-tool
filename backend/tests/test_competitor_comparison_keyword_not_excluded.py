@@ -11,11 +11,14 @@ def test_comparison_keyword_mentioning_competitor_brand_reaches_ai_not_auto_excl
     # automatically irrelevant noise — must reach the AI relevance
     # judgment instead of being mechanically excluded as "brand".
     brand_tokens = {"mailchimp"}
-    ai_response = json.dumps({"classifications": {"mailchimp vs constant contact": "highly_relevant"}})
+    ai_response = json.dumps({"classifications": {
+        "mailchimp vs constant contact": {"status": "competitor_comparison_opportunity", "reason": "vs.-shaped query"},
+    }})
     with patch("app.services.keyword_relevance_service.generate_text", return_value=(ai_response, "gemini")) as mock_ai:
         result = classify_keywords("Constant Contact", "constantcontact.com", brand_tokens, ["mailchimp vs constant contact"])
     mock_ai.assert_called_once()
-    assert result["mailchimp vs constant contact"] == "highly_relevant"
+    assert result["mailchimp vs constant contact"]["label"] == "potentially_relevant"
+    assert result["mailchimp vs constant contact"]["status"] == "Competitor Comparison Opportunity"
 
 
 def test_plain_brand_mention_without_comparison_intent_still_excluded_by_rule():
@@ -25,13 +28,16 @@ def test_plain_brand_mention_without_comparison_intent_still_excluded_by_rule():
     with patch("app.services.keyword_relevance_service.generate_text") as mock_ai:
         result = classify_keywords("Constant Contact", "constantcontact.com", brand_tokens, ["mailchimp login"])
     mock_ai.assert_not_called()
-    assert result["mailchimp login"] == "exclude"
+    assert result["mailchimp login"]["label"] == "exclude"
+    assert result["mailchimp login"]["status"] == "Competitor Brand Search"
 
 
 def test_alternative_signal_word_also_bypasses_brand_exclude():
     brand_tokens = {"mailchimp"}
-    ai_response = json.dumps({"classifications": {"mailchimp alternative": "highly_relevant"}})
+    ai_response = json.dumps({"classifications": {
+        "mailchimp alternative": {"status": "competitor_comparison_opportunity", "reason": "alternative-shaped query"},
+    }})
     with patch("app.services.keyword_relevance_service.generate_text", return_value=(ai_response, "gemini")) as mock_ai:
         result = classify_keywords("Constant Contact", "constantcontact.com", brand_tokens, ["mailchimp alternative"])
     mock_ai.assert_called_once()
-    assert result["mailchimp alternative"] == "highly_relevant"
+    assert result["mailchimp alternative"]["label"] == "potentially_relevant"

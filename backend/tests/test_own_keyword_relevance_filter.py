@@ -39,7 +39,14 @@ def test_irrelevant_keywords_are_stripped(monkeypatch):
 
     def fake_classify(client_name, client_domain, brand_tokens, keywords, client_description=None):
         exclude = {"tata nexon", "tata motors share price", "jaguar land rover new"}
-        return {kw: ("exclude" if kw in exclude else "highly_relevant") for kw in keywords}
+        return {
+            kw: (
+                {"label": "exclude", "status": "Industry Mismatch", "reason": "different industry"}
+                if kw in exclude
+                else {"label": "highly_relevant", "status": "Core Relevant", "reason": "direct match"}
+            )
+            for kw in keywords
+        }
 
     monkeypatch.setattr(site_audit, "classify_keywords", fake_classify)
 
@@ -70,7 +77,7 @@ def test_keyword_outside_candidate_cap_is_left_untouched(monkeypatch):
     rows = high_volume_padding + [low_volume_row]
 
     def fake_classify(client_name, client_domain, brand_tokens, keywords, client_description=None):
-        return {kw: "highly_relevant" for kw in keywords}
+        return {kw: {"label": "highly_relevant", "status": "Core Relevant", "reason": "direct match"} for kw in keywords}
 
     monkeypatch.setattr(site_audit, "classify_keywords", fake_classify)
 

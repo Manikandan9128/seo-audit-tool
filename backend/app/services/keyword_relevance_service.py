@@ -27,7 +27,60 @@ from app.integrations.text_ai_client import NoAIProviderConfigured, generate_tex
 
 logger = logging.getLogger(__name__)
 
-_VALID_LABELS = {"highly_relevant", "potentially_relevant", "exclude"}
+# Universal SEO Audit Engine spec (2026-09-20) sections 4 + 22: the full
+# relevance-status vocabulary, keyed by the compact token the AI/rules
+# return internally, mapped to the exact display string the spec uses.
+# Sections 4 (general relevance) and 22 (competitor-keyword-specific
+# statuses) are merged into one vocabulary here rather than two separate
+# classifiers — a competitor-brand-mentioning keyword only ever needs ONE
+# status, and the 4 competitor-specific values below are simply the
+# competitor-flavored members of the same enum every other keyword is
+# judged against.
+_RELEVANCE_STATUSES = {
+    "core_relevant": "Core Relevant",
+    "relevant": "Relevant",
+    "adjacent_potential": "Adjacent / Potential",
+    "competitor_comparison_opportunity": "Competitor Comparison Opportunity",
+    "relevant_competitor_intent": "Relevant Competitor Intent",
+    "competitor_brand_search": "Competitor Brand Search",
+    "irrelevant_competitor_query": "Irrelevant Competitor Query",
+    "geographic_mismatch": "Geographic Mismatch",
+    "product_service_mismatch": "Product/Service Mismatch",
+    "audience_mismatch": "Audience Mismatch",
+    "industry_mismatch": "Industry Mismatch",
+    "unrelated": "Unrelated",
+    "unknown_needs_review": "Unknown / Needs Review",
+}
+
+# The 4 statuses that are specifically about a competitor-brand-mentioning
+# keyword (spec section 22) — used to populate a row's separate
+# `competitor_status` field (None/"Not Applicable" for every other status).
+_COMPETITOR_SPECIFIC_STATUSES = {
+    "competitor_comparison_opportunity", "relevant_competitor_intent",
+    "competitor_brand_search", "irrelevant_competitor_query",
+}
+
+# Coarse keep/exclude decision every existing caller (Target Keywords,
+# Competitor Keyword Gap, Search Queries filters) already runs on —
+# preserved as-is so this richer vocabulary is additive, not a behavior
+# change to what gets kept vs. dropped. "Unknown / Needs Review" fails open
+# (kept, flagged) rather than silently dropped — spec section 4's own
+# explicit fallback is a review flag, never a guess to exclude.
+_STATUS_TO_COARSE_LABEL = {
+    "core_relevant": "highly_relevant",
+    "relevant": "highly_relevant",
+    "adjacent_potential": "potentially_relevant",
+    "competitor_comparison_opportunity": "potentially_relevant",
+    "relevant_competitor_intent": "potentially_relevant",
+    "competitor_brand_search": "exclude",
+    "irrelevant_competitor_query": "exclude",
+    "geographic_mismatch": "exclude",
+    "product_service_mismatch": "exclude",
+    "audience_mismatch": "exclude",
+    "industry_mismatch": "exclude",
+    "unrelated": "exclude",
+    "unknown_needs_review": "potentially_relevant",
+}
 
 _NAV_LOGIN_WORDS = [
     "login", "log in", "sign in", "sign up", "signin", "signup", "portal", "dashboard",
@@ -162,13 +215,14 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
-def _rule_exclude(keyword: str, brand_tokens: set[str]) -> str | None:
-    """Mechanical exclude reasons that need no AI judgment. Returns a short
-    reason string, or None if nothing matched (the keyword should proceed
-    to AI classification)."""
+def _rule_exclude(keyword: str, brand_tokens: set[str]) -> tuple[str, str] | None:
+    """Mechanical exclude reasons that need no AI judgment. Returns
+    (status_key, reason) — status_key is a key into _RELEVANCE_STATUSES —
+    or None if nothing matched (the keyword should proceed to AI
+    classification)."""
     text = keyword.lower().strip()
     if not text:
-        return "empty"
+        return ("unrelated", "Empty keyword text.")
     for brand in brand_tokens:
         if brand and _is_branded_keyword(text, brand):
             # Universal SEO Audit Engine spec (2026-09-20) section 22:
@@ -183,37 +237,53 @@ def _rule_exclude(keyword: str, brand_tokens: set[str]) -> str | None:
             # them. Let a comparison-shaped brand mention through to that
             # AI judgment instead of mechanically dropping it here.
             if not any(re.search(rf"\b{re.escape(sig)}\b", text) for sig in _COMPARISON_KEYWORD_SIGNALS):
-                return "brand"
+                return ("competitor_brand_search", f'Contains competitor brand "{brand}", not a comparison/alternative-intent query.')
     if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _NAV_LOGIN_WORDS):
-        return "nav_login"
+        return ("unrelated", "Navigation/login query — not a search opportunity.")
     if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _CAREERS_WORDS):
-        return "careers"
+        return ("unrelated", "Careers/recruitment query — not a search opportunity.")
     words = text.split()
     if 0 < len(words) <= 3:
         first = words[0]
         if len(first) > 3:
             for brand in brand_tokens:
                 if brand and first != brand and len(brand) > 3 and _edit_distance(first, brand) <= 2:
-                    return "typo"
+                    return ("unrelated", f'Likely a typo/near-miss of brand "{brand}".')
     return None
 
 
 _CLASSIFY_PROMPT_TEMPLATE = """You are an SEO analyst filtering a raw competitor keyword export for {client_name} \
 ({client_domain}){business_context} before it goes into a client-facing report. Classify EACH of the \
-{keyword_count} keywords below into exactly one label:
+{keyword_count} keywords below into exactly one status, using ONLY the status keys listed:
 
-- "highly_relevant": a real prospect/topic search directly tied to {client_name}'s ACTUAL industry, products, or \
-services (per the business context above) — the kind of query an actual customer or prospect would type.
-- "potentially_relevant": tangentially related — an adjacent topic or broader category still within or near \
+- "core_relevant": a direct, high-confidence prospect/topic search tied to {client_name}'s ACTUAL industry, \
+products, or services (per the business context above) — the kind of query a real customer or prospect would type.
+- "relevant": clearly tied to {client_name}'s business but less central than core_relevant (a supporting topic, \
+not the main product/service itself).
+- "adjacent_potential": tangentially related — an adjacent topic or broader category still within or near \
 {client_name}'s own industry, that could support content strategy even though it isn't a direct product/service \
 match.
-- "exclude": belongs to a DIFFERENT industry or product category than {client_name}'s (even if a competitor \
-happens to rank for it because that competitor also serves other markets), an irrelevant informational query with \
-no strategic value to {client_name} specifically, or anything that reads as noise. A keyword a competitor ranks \
-for is not automatically relevant just because the competitor ranks for it — judge it against {client_name}'s own \
-business, not the competitor's. When in doubt about whether a keyword is truly outside {client_name}'s industry, \
-prefer "exclude" over "potentially_relevant". (Brand names, navigation/login queries, careers queries, and obvious \
-typos are already stripped before you see this list — focus on relevance judgment, not those mechanical cases.)
+- "competitor_comparison_opportunity": a vs./alternative/comparison-shaped query naming a competitor — a real \
+content opportunity (comparison/alternative page), not noise.
+- "relevant_competitor_intent": mentions a competitor but reflects a prospect researching the SAME kind of \
+product/service {client_name} offers (e.g. migration intent, competitor research) — real strategic value.
+- "competitor_brand_search": is really a search FOR the competitor's own brand/product with no comparison or \
+migration angle — {client_name} has no legitimate claim to this query.
+- "irrelevant_competitor_query": mentions a competitor but for something entirely outside {client_name}'s own \
+industry/business (the competitor serves other markets too) — no strategic value to {client_name}.
+- "geographic_mismatch": targets a location {client_name} does not serve.
+- "product_service_mismatch": names a specific product/service {client_name} does not offer.
+- "audience_mismatch": targets a buyer/user type {client_name} does not serve.
+- "industry_mismatch": belongs to a DIFFERENT industry or product category than {client_name}'s entirely.
+- "unrelated": no strategic value to {client_name} specifically, reads as noise, or an irrelevant informational \
+query with no connection to the business.
+- "unknown_needs_review": not enough evidence in the keyword text + business context to judge confidently either way.
+
+A keyword a competitor ranks for is not automatically relevant just because the competitor ranks for it — judge it \
+against {client_name}'s own business, not the competitor's. When genuinely unsure whether a keyword is inside or \
+outside {client_name}'s industry, prefer "unknown_needs_review" over guessing. (Brand names, navigation/login \
+queries, careers queries, and obvious typos are already stripped before you see this list — focus on relevance \
+judgment, not those mechanical cases.)
 
 Keywords:
 {keywords_json}
@@ -221,7 +291,7 @@ Keywords:
 Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
   "classifications": {{
-    "<keyword text, EXACTLY as given>": "highly_relevant" | "potentially_relevant" | "exclude"
+    "<keyword text, EXACTLY as given>": {{"status": "<one status key from the list above>", "reason": "<one short sentence of evidence-based justification>"}}
   }}
 }}
 Every keyword listed above must appear as a key, using its exact original text.
@@ -254,19 +324,22 @@ def classify_keywords(
     brand_tokens: set[str],
     keywords: list[str],
     client_description: str | None = None,
-) -> dict[str, str]:
-    """Returns {lowercased keyword: "highly_relevant" | "potentially_relevant" | "exclude"}
-    for every unique keyword in `keywords`. Rule-based excludes are free and
-    run first; whatever survives gets one AI classification call (with one
-    retry on a malformed/failed response). If the AI call fails outright,
-    every surviving keyword fails open as "potentially_relevant" — a failed
-    classification must never silently vanish keywords the rules didn't
-    already catch. client_description (the client's own 2-4 sentence
-    company-overview summary, when available) grounds the AI's industry-
-    relevance judgment in what the CLIENT actually does — without it, a
-    keyword a broad-market competitor ranks for (e.g. "cloud security
-    tips" from an HR platform that also does IT) has no signal to be
-    judged against and tends to survive as a false "potentially_relevant"."""
+) -> dict[str, dict]:
+    """Returns {lowercased keyword: {"label": "highly_relevant" | "potentially_relevant" | "exclude",
+    "status": <spec's relevance_status display string, sections 4+22>, "reason": <short evidence-based
+    sentence>}} for every unique keyword in `keywords`. "label" is the coarse keep/drop decision every
+    existing caller filters on (unchanged behavior); "status"/"reason" are the finer Universal SEO Audit
+    Engine spec fields (relevance_status/relevance_reason, and — for the 4 competitor-specific statuses —
+    competitor_status) callers can stamp onto rows for reporting.
+
+    Rule-based excludes are free and run first; whatever survives gets one AI classification call (with one
+    retry on a malformed/failed response). If the AI call fails outright, every surviving keyword fails open
+    as "potentially_relevant" / "Unknown / Needs Review" — a failed classification must never silently vanish
+    keywords the rules didn't already catch. client_description (the client's own 2-4 sentence
+    company-overview summary, when available) grounds the AI's industry-relevance judgment in what the CLIENT
+    actually does — without it, a keyword a broad-market competitor ranks for (e.g. "cloud security tips" from
+    an HR platform that also does IT) has no signal to be judged against and tends to survive as a false
+    "potentially_relevant"."""
     unique: dict[str, str] = {}  # lowercased -> original text (first seen)
     for kw in keywords:
         k = (kw or "").strip()
@@ -275,11 +348,20 @@ def classify_keywords(
     if not unique:
         return {}
 
-    result: dict[str, str] = {}
+    def _entry(status_key: str, reason: str) -> dict:
+        status_key = status_key if status_key in _RELEVANCE_STATUSES else "unknown_needs_review"
+        return {
+            "label": _STATUS_TO_COARSE_LABEL[status_key],
+            "status": _RELEVANCE_STATUSES[status_key],
+            "reason": reason,
+        }
+
+    result: dict[str, dict] = {}
     remaining: list[str] = []  # original-cased text, for the AI prompt
     for lower, original in unique.items():
-        if _rule_exclude(original, brand_tokens):
-            result[lower] = "exclude"
+        rule_hit = _rule_exclude(original, brand_tokens)
+        if rule_hit:
+            result[lower] = _entry(*rule_hit)
         else:
             remaining.append(original)
     if not remaining:
@@ -293,15 +375,25 @@ def classify_keywords(
         keyword_count=len(remaining),
         keywords_json=json.dumps(remaining, indent=2)[:12000],
     )
-    max_tokens = min(200 + 20 * len(remaining), 8000)
+    max_tokens = min(300 + 30 * len(remaining), 8000)
 
     def _apply(parsed: dict) -> bool:
-        labels = parsed.get("classifications") if isinstance(parsed, dict) else None
-        if not isinstance(labels, dict):
+        classifications = parsed.get("classifications") if isinstance(parsed, dict) else None
+        if not isinstance(classifications, dict):
             return False
         for original in remaining:
-            label = labels.get(original)
-            result[original.lower()] = label if label in _VALID_LABELS else "potentially_relevant"
+            entry = classifications.get(original)
+            if isinstance(entry, dict):
+                status_key = entry.get("status") or "unknown_needs_review"
+                reason = (entry.get("reason") or "").strip() or "AI classification, no reason given."
+            elif isinstance(entry, str):
+                # Tolerate a bare status-string response (older/looser model
+                # output) instead of failing the whole batch over one
+                # keyword's shape.
+                status_key, reason = entry, "AI classification, no reason given."
+            else:
+                status_key, reason = "unknown_needs_review", "AI returned no classification for this keyword."
+            result[original.lower()] = _entry(status_key, reason)
         return True
 
     parsed = _call_and_parse(prompt, max_tokens)
@@ -316,12 +408,72 @@ def classify_keywords(
 
     logger.warning(
         "Keyword relevance classification failed for %s (%d keywords) — failing open, "
-        "all rule-surviving keywords kept as potentially_relevant: %s",
+        "all rule-surviving keywords kept as potentially_relevant/Unknown-Needs-Review: %s",
         client_domain, len(remaining), retry_parsed.get("error") or parsed.get("error"),
     )
     for original in remaining:
-        result[original.lower()] = "potentially_relevant"
+        result[original.lower()] = _entry("unknown_needs_review", "AI classification unavailable — needs manual review.")
     return result
+
+
+# Geographic keyword evaluation (spec section 23) — deterministic, no AI:
+# flags a keyword only when it explicitly names a real country/major region
+# that conflicts with the client's own known target market. No gazetteer of
+# cities/states is used (that would risk false positives on ordinary product
+# words), and a client with no known target_country (Global, or extraction
+# never ran) gets no geographic_mismatch verdicts at all — spec's own
+# discipline: never invent geographic mismatch without real evidence of the
+# client's actual service area.
+_COUNTRY_NAMES = {
+    "usa", "united states", "america", "uk", "united kingdom", "britain", "canada", "australia",
+    "india", "germany", "france", "spain", "italy", "netherlands", "ireland", "new zealand",
+    "singapore", "japan", "china", "brazil", "mexico", "south africa", "uae", "dubai",
+    "saudi arabia", "philippines", "indonesia", "malaysia", "vietnam", "thailand", "pakistan",
+    "bangladesh", "nigeria", "kenya", "egypt", "russia", "poland", "sweden", "norway", "denmark",
+    "switzerland", "austria", "belgium", "portugal", "greece", "turkey", "israel", "south korea",
+    "argentina", "chile", "colombia", "peru",
+}
+# A target_country string like "Primary USA" needs to resolve to the same
+# canonical token a keyword's own text would use.
+_COUNTRY_ALIASES = {
+    "usa": {"usa", "united states", "america", "us"},
+    "uk": {"uk", "united kingdom", "britain"},
+}
+
+
+def _country_tokens_in(text: str) -> set[str]:
+    text_l = f" {text.lower()} "
+    found = set()
+    for name in _COUNTRY_NAMES:
+        if re.search(rf"\b{re.escape(name)}\b", text_l):
+            found.add(name)
+    return found
+
+
+def assign_geo_status(rows: list[dict], target_country: str | None, keyword_field: str = "keyword") -> None:
+    """Stamps `geo_status` onto every row in place. Only ever sets
+    "Geographic Mismatch" — spec section 4's vocabulary has no positive
+    "local match" status, and this function never invents one. Leaves
+    geo_status as None (not applicable / no geographic signal, or no known
+    target market to judge against) on every other row."""
+    target = (target_country or "").strip().lower()
+    if not target or target in ("global", "worldwide", "international"):
+        for r in rows:
+            r["geo_status"] = None
+        return
+
+    target_aliases = set()
+    for name in _COUNTRY_NAMES:
+        if name in target:
+            target_aliases.add(name)
+    for canonical, aliases in _COUNTRY_ALIASES.items():
+        if any(a in target for a in aliases):
+            target_aliases |= aliases
+
+    for r in rows:
+        mentioned = _country_tokens_in(r.get(keyword_field) or "")
+        foreign = mentioned - target_aliases if target_aliases else mentioned
+        r["geo_status"] = "Geographic Mismatch" if foreign else None
 
 
 # Page-type classification for target/competitor keywords — maps a

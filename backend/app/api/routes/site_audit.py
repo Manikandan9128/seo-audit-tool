@@ -50,7 +50,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, classify_keywords, is_branded_or_near_brand
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, assign_geo_status, classify_keywords, is_branded_or_near_brand
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -352,6 +352,15 @@ def _num_for_sort(v) -> float:
 # regardless of how large the raw export was.
 _CLASSIFY_CANDIDATE_CAP = 40
 
+# Universal SEO Audit Engine spec (2026-09-20) section 22 — the 4
+# relevance_status values that are specifically about a competitor-brand-
+# mentioning keyword; used to populate a row's separate competitor_status
+# field (None for every other status, i.e. "Not Applicable").
+_COMPETITOR_STATUS_LABELS = {
+    "Competitor Comparison Opportunity", "Relevant Competitor Intent",
+    "Competitor Brand Search", "Irrelevant Competitor Query",
+}
+
 
 def _company_overview_context(company_overview: dict | None) -> str | None:
     """Composes the extracted Company Overview's description with its
@@ -428,11 +437,20 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
     if not classifications:
         return
     keep = {"highly_relevant", "potentially_relevant"}
+    target_country = (data.get("company_overview") or {}).get("target_country")
+
+    def _entry_for(keyword: str) -> dict:
+        return classifications.get((keyword or "").lower()) or {"label": "potentially_relevant", "status": "Unknown / Needs Review", "reason": ""}
 
     for domain, candidates in candidates_by_domain.items():
-        competitor_positions[domain] = [
-            r for r in candidates if classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
-        ]
+        kept_rows = [r for r in candidates if _entry_for(r.get("keyword")).get("label", "potentially_relevant") in keep]
+        for r in kept_rows:
+            entry = _entry_for(r.get("keyword"))
+            r["relevance_status"] = entry.get("status")
+            r["relevance_reason"] = entry.get("reason")
+            r["competitor_status"] = entry.get("status") if entry.get("status") in _COMPETITOR_STATUS_LABELS else None
+        assign_geo_status(kept_rows, target_country)
+        competitor_positions[domain] = kept_rows
 
     if keyword_gap_rows:
         # The Competitor Keyword Gap Analysis slide + its full-list Sheet tab
@@ -455,12 +473,16 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
         for r in keyword_gap_rows:
             kwl = (r.get("keyword") or "").lower()
             if kwl in gap_candidate_keywords:
-                label = classifications.get(kwl, "potentially_relevant")
-                if label == "exclude":
+                entry = _entry_for(kwl)
+                if entry.get("label", "potentially_relevant") == "exclude":
                     off_topic_count += 1
                     continue
-                r["relevance"] = label
+                r["relevance"] = entry.get("label")
+                r["relevance_status"] = entry.get("status")
+                r["relevance_reason"] = entry.get("reason")
+                r["competitor_status"] = entry.get("status") if entry.get("status") in _COMPETITOR_STATUS_LABELS else None
             kept_gap_rows.append(r)
+        assign_geo_status(kept_gap_rows, target_country)
         competitor_analysis["keyword_gap_rows"] = kept_gap_rows
         competitor_analysis["keyword_gap_off_topic_count"] = off_topic_count
 
@@ -549,16 +571,35 @@ def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dic
     keep = {"highly_relevant", "potentially_relevant"}
     candidate_keyword_texts = {(r.get("keyword") or "").lower() for r in candidates}
 
+    # Universal SEO Audit Engine spec (2026-09-20) sections 4/22/43:
+    # relevance_status/relevance_reason/competitor_status per row, in the
+    # spec's own vocabulary — the classification was already being computed
+    # here, just discarded once keep/drop was decided. A row outside the
+    # classified candidate pool (never sent to the classifier at all) gets
+    # "Unknown / Needs Review", never a guessed status, per section 4's own
+    # explicit fallback value.
     # Only keywords actually sent to classification (top-volume candidate
     # pool) are ever dropped — same discipline as _filter_search_queries
     # below: a keyword outside that pool was never going to reach a slide's
     # own row cap anyway, so it's left as-is rather than judged without ever
     # being sent to the classifier.
-    return [
-        r for r in rows
-        if (r.get("keyword") or "").lower() not in candidate_keyword_texts
-        or classifications.get((r.get("keyword") or "").lower(), "potentially_relevant") in keep
-    ]
+    kept = []
+    for r in rows:
+        kwl = (r.get("keyword") or "").lower()
+        if kwl not in candidate_keyword_texts:
+            r["relevance_status"] = "Unknown / Needs Review"
+            r["relevance_reason"] = "Keyword outside the classified candidate pool."
+            r["competitor_status"] = None
+            kept.append(r)
+            continue
+        entry = classifications.get(kwl) or {"label": "potentially_relevant", "status": "Unknown / Needs Review", "reason": ""}
+        if entry.get("label", "potentially_relevant") in keep:
+            r["relevance_status"] = entry.get("status")
+            r["relevance_reason"] = entry.get("reason")
+            r["competitor_status"] = entry.get("status") if entry.get("status") in _COMPETITOR_STATUS_LABELS else None
+            kept.append(r)
+    assign_geo_status(kept, (company_overview or {}).get("target_country"))
+    return kept
 
 
 def _filter_search_queries(client: Client, data: dict) -> None:
@@ -604,11 +645,20 @@ def _filter_search_queries(client: Client, data: dict) -> None:
     # pool was never going to reach the slide's own top-14-by-clicks cap
     # anyway, so it's left as-is rather than silently judged without ever
     # being sent to the classifier.
-    analytics["search_queries"]["rows"] = [
-        r for r in queries
-        if (r.get("query") or "").lower() not in candidate_query_texts
-        or classifications.get((r.get("query") or "").lower(), "potentially_relevant") in keep
-    ]
+    kept_rows = []
+    for r in queries:
+        qkey = (r.get("query") or "").lower()
+        if qkey not in candidate_query_texts:
+            kept_rows.append(r)
+            continue
+        entry = classifications.get(qkey) or {"label": "potentially_relevant", "status": "Unknown / Needs Review", "reason": ""}
+        if entry.get("label", "potentially_relevant") in keep:
+            r["relevance_status"] = entry.get("status")
+            r["relevance_reason"] = entry.get("reason")
+            r["competitor_status"] = entry.get("status") if entry.get("status") in _COMPETITOR_STATUS_LABELS else None
+            kept_rows.append(r)
+    assign_geo_status(kept_rows, (data.get("company_overview") or {}).get("target_country"), keyword_field="query")
+    analytics["search_queries"]["rows"] = kept_rows
 
 
 def _generate_competitor_narratives(

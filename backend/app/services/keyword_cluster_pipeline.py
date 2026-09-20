@@ -103,6 +103,39 @@ _MODIFIER_WORDS = {
 }
 
 
+# Coarse attribute_type bucket per modifier word (spec section 43's
+# `attribute_type` field) — describes WHAT KIND of modifier the keyword
+# carries, not just that one exists. Purely descriptive of the word itself,
+# no AI, no invented category.
+_MODIFIER_TYPE = {
+    "pricing": "Commercial", "price": "Commercial", "cost": "Commercial", "plans": "Commercial", "plan": "Commercial",
+    "reviews": "Evaluative", "review": "Evaluative", "best": "Evaluative", "top": "Evaluative",
+    "types": "Evaluative", "type": "Evaluative", "options": "Evaluative", "option": "Evaluative",
+    "examples": "Evaluative", "example": "Evaluative",
+    "information": "Informational", "info": "Informational", "basics": "Informational", "basic": "Informational",
+    "fundamentals": "Informational", "fundamental": "Informational", "guide": "Informational", "guides": "Informational",
+    "how-to": "Informational", "howto": "Informational", "overview": "Informational",
+    "features": "Feature", "feature": "Feature", "benefits": "Feature", "benefit": "Feature",
+    "tools": "Format", "tool": "Format", "calculators": "Format", "calculator": "Format",
+    "templates": "Format", "template": "Format", "resources": "Format", "resource": "Format",
+    "software": "Format", "platforms": "Format", "platform": "Format",
+    "providers": "Provider", "provider": "Provider", "companies": "Provider", "company": "Provider",
+    "manufacturers": "Provider", "manufacturer": "Provider", "services": "Provider", "service": "Provider",
+    "solutions": "Provider", "solution": "Provider",
+}
+
+
+def _attribute_type(modifier_words: list[str]) -> str | None:
+    """Spec section 43's `attribute_type` — the dominant modifier category
+    for a row's `modifier` words (first one found, since a real keyword
+    rarely mixes categories; e.g. "product pricing guide" -> Commercial).
+    None when the keyword carries no modifier at all."""
+    for w in modifier_words:
+        if w in _MODIFIER_TYPE:
+            return _MODIFIER_TYPE[w]
+    return None
+
+
 def _strip_modifiers(keyword: str) -> tuple[str, list[str]]:
     """Splits a keyword into its core semantic-topic phrase and whichever
     modifier/attribute words it carries (spec sections 7-9) — pure
@@ -210,7 +243,17 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
         core_phrase, modifier_words = _strip_modifiers(keyword)
         r["semantic_topic"] = core_phrase.title() if core_phrase else keyword
         r["modifier"] = ", ".join(modifier_words) if modifier_words else ""
+        r["attribute_type"] = _attribute_type(modifier_words)
         theme = (r.get("business_theme") or UNCLASSIFIED_THEME).strip() or UNCLASSIFIED_THEME
+        # Spec section 43's `main_entity` — the dynamic business entity this
+        # keyword belongs to (spec section 2's entity model: brand/product/
+        # service/industry/etc.). business_theme is this pipeline's own real,
+        # evidence-based entity classification (Business Theme Discovery,
+        # already AI-classified from the client's actual site content) — the
+        # closest already-computed field to a true entity extraction, reused
+        # here rather than adding a second, redundant AI entity-extraction
+        # call for the same keyword universe.
+        r["main_entity"] = theme if theme != UNCLASSIFIED_THEME else None
         intent = (r.get("intent") or "").strip() or "Unknown Intent"
         category = (r.get("page_category") or "").strip() or "Unspecified Format"
         buckets.setdefault((theme, intent, category), []).append(r)
