@@ -55,14 +55,19 @@ def test_content_type_coverage_denominator_is_its_own_page_count_not_total():
     assert product_row["applicable"] == 55
 
 
-def test_baseline_schema_uses_total_pages_denominator():
+def test_baseline_schema_is_site_level_not_a_page_count():
+    # 2026-09-20 spec: WebSite/Organization are entity-level facts, never
+    # counted per crawled page.
     sv = aggregate_schema_validation(_pages())
     parts = build_schema_report_parts(sv)
-    total_pages = sv["total_pages"]
     website_row = next(r for r in parts["part2"] if r["schema_type"] == "WebSite")
-    assert website_row["applicable"] == total_pages
+    assert website_row["applicable"] == "Site-level"
+    assert website_row["present"] == "Yes"
+    assert website_row["missing"] == "—"
+    assert website_row["coverage_pct"] is None
     org_row = next(r for r in parts["part2"] if r["schema_type"] == "Organization")
-    assert org_row["applicable"] == total_pages
+    assert org_row["applicable"] == "Site-level"
+    assert org_row["present"] == "Yes"
 
 
 def test_breadcrumb_applicable_is_content_pages_only_not_other_pages():
@@ -80,7 +85,31 @@ def test_site_wide_part1_row_present():
     parts = build_schema_report_parts(sv)
     site_wide = next(r for r in parts["part1"] if r["page_type"] == "Site-wide")
     assert site_wide["recommended_schema"] == "WebSite, Organization"
-    assert site_wide["pages"] == sv["total_pages"]
+    # 2026-09-20 spec: site-level Pages reads "Site-level", never a page count.
+    assert site_wide["pages"] == "Site-level"
+
+
+def test_jobposting_never_appears():
+    sv = aggregate_schema_validation(_pages())
+    parts = build_schema_report_parts(sv)
+    assert not any("JobPosting" in str(v) for r in parts["part1"] for v in r.values())
+    assert not any("JobPosting" in str(v) for r in parts["part2"] for v in r.values())
+
+
+def test_content_type_reports_present_valid_invalid_missing_separately():
+    pages = [
+        {"url": "https://x.com/blog/a", "meta": {"schema_types_found": ["Article"], "schema_field_issues": []}},
+        {"url": "https://x.com/blog/b", "meta": {"schema_types_found": ["Article"], "schema_field_issues": ["Article schema missing required field: image"]}},
+        {"url": "https://x.com/blog/c", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+    ]
+    sv = aggregate_schema_validation(pages)
+    parts = build_schema_report_parts(sv)
+    article_row = next(r for r in parts["part2"] if r["schema_type"] == "Article")
+    assert article_row["applicable"] == 3
+    assert article_row["present"] == 2
+    assert article_row["valid"] == 1
+    assert article_row["invalid"] == 1
+    assert article_row["missing"] == 1
 
 
 def test_eligibility_notes_flag_retired_type_only():

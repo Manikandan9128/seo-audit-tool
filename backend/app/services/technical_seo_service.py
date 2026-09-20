@@ -82,7 +82,6 @@ _SCHEMA_FIELD_RULES: dict[str, dict[str, list[str]]] = {
     "Event": {"required": ["name", "startDate", "location"], "recommended": ["image", "description", "offers"]},
     "Recipe": {"required": ["name", "image", "author"], "recommended": ["recipeIngredient", "recipeInstructions", "aggregateRating"]},
     "VideoObject": {"required": ["name", "description", "thumbnailUrl", "uploadDate"], "recommended": []},
-    "JobPosting": {"required": ["title", "description", "datePosted", "hiringOrganization", "jobLocation"], "recommended": []},
     "HowTo": {"required": ["name", "step"], "recommended": ["image", "totalTime"]},
     "WebSite": {"required": ["name", "url"], "recommended": ["potentialAction"]},
 }
@@ -168,7 +167,6 @@ _SCHEMA_TYPE_SHAPE_RE: dict[str, re.Pattern] = {
     "Article-type": re.compile(r"/(?:blog|news|articles?|posts?)/", re.IGNORECASE),
     "Product": re.compile(r"/(?:products?|shop|store|items?)/", re.IGNORECASE),
     "LocalBusiness": re.compile(r"/(?:locations?|store-locator|near-me|branch(?:es)?)/", re.IGNORECASE),
-    "JobPosting": re.compile(r"/(?:careers?|jobs?)/", re.IGNORECASE),
     "Event": re.compile(r"/events?/", re.IGNORECASE),
     "FAQPage": re.compile(r"faq|frequently[\s-]asked[\s-]questions", re.IGNORECASE),
 }
@@ -182,9 +180,9 @@ _SITE_WIDE_SCHEMA_TYPES = ["Organization", "WebSite", "BreadcrumbList"]
 # 2026-09-16 user spec: prioritize schema fixes by traffic + business
 # importance, not traffic alone — Product/LocalBusiness/Event pages are
 # where a schema gap costs real conversions (rich-result eligibility on a
-# page someone's about to buy from or visit), unlike Article-type/FAQPage/
-# JobPosting, which matter for discovery/support/recruitment but aren't
-# where commercial intent converts.
+# page someone's about to buy from or visit), unlike Article-type/FAQPage,
+# which matter for discovery/support but aren't where commercial intent
+# converts.
 _COMMERCIAL_SCHEMA_PAGE_TYPES = {"Product", "LocalBusiness", "Event"}
 
 
@@ -201,7 +199,8 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     -> Applicable Schema Types -> Schema Count -> Validation -> Google
     Eligibility -> SEO Priority." Page type is the same URL-shape detection
     _site_wide_missing_types already used (Article/Product/LocalBusiness/
-    JobPosting/Event/FAQPage) — reused here instead of inventing a second
+    Event/FAQPage — JobPosting excluded site-wide per 2026-09-20 spec, this
+    tool never detects/validates/reports it) — reused here instead of inventing a second
     classifier, now applied to bucket EVERY crawled page (not just to ask
     "does at least one exist"), with pages matching no known shape grouped
     as "Other Pages" rather than dropped."""
@@ -301,8 +300,8 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
         key=lambda m: (m["severity"] != "required", -m["pages_missing"]),
     )
 
-    # URL-shape types (Article-type/Product/LocalBusiness/JobPosting/Event/
-    # FAQPage) are deliberately NOT listed here even when entirely missing
+    # URL-shape types (Article-type/Product/LocalBusiness/Event/FAQPage) are
+    # deliberately NOT listed here even when entirely missing
     # — they're exactly the same buckets by_page_type already reports below
     # with coverage_pct=0, plus real pages/valid_pct/pageviews detail this
     # list can't carry. Restating them here duplicated the same "0%
@@ -353,6 +352,12 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
             "page_type": page_type,
             "applicable_schema": _applicable_schema_label(page_type),
             "pages": b["pages"],
+            # Raw counts (2026-09-20 spec: Applicable/Present/Valid/Invalid/
+            # Missing table) — kept alongside the existing percentage fields
+            # below rather than re-deriving present/valid by multiplying a
+            # rounded percentage back out, which drifts on small buckets.
+            "present_pages": b["with_schema"],
+            "valid_pages": b["valid"],
             "coverage_pct": round(100 * b["with_schema"] / b["pages"]) if b["pages"] else 0,
             "valid_pct": round(100 * b["valid"] / b["pages"]) if b["pages"] else 0,
             "valid_pct_traffic_weighted": valid_pct_traffic_weighted,

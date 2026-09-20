@@ -1935,7 +1935,7 @@ def add_structured_data_slide(
 _SCHEMA_GOOGLE_ELIGIBILITY: dict[str, str | None] = {
     "Article": None, "BlogPosting": None, "NewsArticle": None, "Product": None,
     "Review": None, "LocalBusiness": None, "Event": None, "BreadcrumbList": None,
-    "JobPosting": None, "Recipe": None, "VideoObject": None,
+    "Recipe": None, "VideoObject": None,
     "Organization": None, "WebSite": None,
     "HowTo": "Google restricted HowTo rich results to a small set of approved sites in 2023 — no longer generally available.",
     "FAQPage": "Google retired the classic FAQ rich-result SERP dropdown in May 2026 — this is content/AI-citation value only, not a SERP visual.",
@@ -1953,17 +1953,16 @@ def _schema_eligibility_flag(schema_type: str) -> str | None:
 
 _PAGE_TYPE_LABELS = {
     "Article-type": "Blog / Article", "Product": "Product", "LocalBusiness": "Local / Location",
-    "JobPosting": "Job Listing", "Event": "Event", "FAQPage": "FAQ-style Pages", "Other Pages": "Other Pages",
+    "Event": "Event", "FAQPage": "FAQ-style Pages", "Other Pages": "Other Pages",
 }
 _PAGE_TYPE_SCHEMA_LABEL = {
     "Article-type": "Article", "Product": "Product", "LocalBusiness": "LocalBusiness",
-    "JobPosting": "JobPosting", "Event": "Event", "FAQPage": "FAQPage",
+    "Event": "Event", "FAQPage": "FAQPage",
 }
 _PAGE_TYPE_WHY_APPLIES = {
     "Article-type": "Content is dated, authored editorial — eligible for article rich results.",
     "Product": "Has price/availability data — eligible for product rich results.",
     "LocalBusiness": "Has location/contact details — eligible for map/business-info rich results.",
-    "JobPosting": "Contains job listing details — eligible for Google's job-search rich results.",
     "Event": "Contains event date/venue details — eligible for event rich results.",
     "FAQPage": "Contains genuine Q&A content — only pages with this content qualify.",
 }
@@ -1971,17 +1970,30 @@ _PAGE_TYPE_WHY_APPLIES = {
 
 def build_schema_report_parts(schema_validation: dict) -> dict:
     """Builds Part 1 (Page Type -> Recommended Schema -> Pages -> Why It
-    Applies) and Part 2 (Schema Type -> Applicable -> Valid -> Errors ->
-    Coverage %) rows for the Structured Data & Schema Validator slide
-    (2026-09-10 user spec), from aggregate_schema_validation's already-
-    computed by_page_type/type_coverage/missing_properties — no new
-    crawling, no invented numbers. Denominator for Part 2's Coverage % is
-    always the pages that schema type actually applies to, never total
-    site pages; baseline site-wide schema (WebSite/Organization) and
-    BreadcrumbList (applicable to real content pages, not utility "Other
-    Pages") get their own rows rather than being blended into any content
-    type's coverage. Shared by the slide's own rendering and the AI
-    insights prompt (site_audit.py) so both work off identical numbers."""
+    Applies) and Part 2 (Schema Type -> Applicable -> Present -> Valid ->
+    Invalid -> Missing -> Coverage %) rows for the Structured Data & Schema
+    Validator slide (2026-09-20 user spec), from aggregate_schema_
+    validation's already-computed by_page_type/type_coverage/missing_
+    properties — no new crawling, no invented numbers.
+
+    Present vs Valid are kept separate (a page can have the schema block
+    present but still fail a required-field check), and Missing (not
+    detected at all) is kept separate from Invalid (detected but failing
+    validation) — zero Invalid never gets read as "therefore Valid" the
+    way the old single "Errors" column allowed.
+
+    WebSite/Organization are SITE-LEVEL/ENTITY-LEVEL schema, not a per-page
+    requirement: their row reports Applicable="Site-level", Present/Valid
+    as Yes/No/Unknown, and Invalid/Missing/Coverage as "—" rather than a
+    page-count percentage — the crawled page total must never be used as
+    their applicable-page count. BreadcrumbList and content types (Article/
+    Product/LocalBusiness/Event/FAQPage) stay page-level, denominator is
+    always the pages that type actually applies to (BreadcrumbList: real
+    content pages, never blended with utility "Other Pages"; never the
+    full site total). JobPosting is excluded entirely, never evaluated.
+
+    Shared by the slide's own rendering and the AI insights prompt
+    (site_audit.py) so both work off identical numbers."""
     total_pages = schema_validation.get("total_pages") or 0
     by_page_type = schema_validation.get("by_page_type") or []
     type_coverage = {c["type"]: c["pages_with_it"] for c in (schema_validation.get("type_coverage") or [])}
@@ -2008,8 +2020,8 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
             "page_type": label, "recommended_schema": f"{schema_label}, BreadcrumbList", "pages": pages,
             "why_it_applies": _PAGE_TYPE_WHY_APPLIES.get(pt, ""),
         })
-        present = round(row["coverage_pct"] / 100 * pages)
-        valid = round(row["valid_pct"] / 100 * pages)
+        present = row.get("present_pages", 0)
+        valid = row.get("valid_pages", 0)
         # Traffic-weighted coverage (2026-09-16 spec: never a flat page-
         # count percentage) when this bucket has real GA4 pageview data to
         # weight by — falls back to the page-count basis only when there's
@@ -2018,25 +2030,29 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
         # validation), never silently presented as if it were weighted.
         traffic_weighted = row.get("valid_pct_traffic_weighted")
         part2.append({
-            "schema_type": schema_label, "applicable": pages, "valid": valid,
-            "errors": max(present - valid, 0),
+            "schema_type": schema_label, "applicable": pages, "present": present, "valid": valid,
+            "invalid": max(present - valid, 0), "missing": max(pages - present, 0),
             "coverage_pct": traffic_weighted if traffic_weighted is not None else row["valid_pct"],
-            "coverage_is_traffic_weighted": traffic_weighted is not None,
+            "coverage_is_traffic_weighted": traffic_weighted is not None, "site_level": False,
         })
 
     if total_pages:
         part1.append({
-            "page_type": "Site-wide", "recommended_schema": "WebSite, Organization", "pages": total_pages,
+            "page_type": "Site-wide", "recommended_schema": "WebSite, Organization", "pages": "Site-level",
             "why_it_applies": "Baseline identity schema, applies to every page.",
         })
         for t in ("WebSite", "Organization"):
-            present = type_coverage.get(t, 0)
-            invalid = missing_props_by_type.get(t, 0)
-            valid = max(present - invalid, 0)
+            present = type_coverage.get(t, 0) > 0
+            # Both types have required-field rules (technical_seo_service._
+            # SCHEMA_FIELD_RULES), so "present" always yields a definite
+            # Yes/No here — Validation Not Available never needed for these
+            # two, only reserved as a concept for a type with no field rules.
+            valid = missing_props_by_type.get(t, 0) == 0 if present else None
             part2.append({
-                "schema_type": t, "applicable": total_pages, "valid": valid,
-                "errors": max(present - valid, 0),
-                "coverage_pct": round(100 * valid / total_pages) if total_pages else 0,
+                "schema_type": t, "applicable": "Site-level", "present": "Yes" if present else "No",
+                "valid": "—" if valid is None else ("Yes" if valid else "No"),
+                "invalid": "—", "missing": "—", "coverage_pct": None,
+                "coverage_is_traffic_weighted": False, "site_level": True,
             })
 
     if content_pages_total:
@@ -2044,9 +2060,10 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
         invalid = missing_props_by_type.get("BreadcrumbList", 0)
         valid = max(present - invalid, 0)
         part2.append({
-            "schema_type": "BreadcrumbList", "applicable": content_pages_total, "valid": valid,
-            "errors": max(present - valid, 0),
+            "schema_type": "BreadcrumbList", "applicable": content_pages_total, "present": present, "valid": valid,
+            "invalid": max(present - valid, 0), "missing": max(content_pages_total - present, 0),
             "coverage_pct": round(100 * valid / content_pages_total) if content_pages_total else 0,
+            "coverage_is_traffic_weighted": False, "site_level": False,
         })
 
     return {"part1": part1, "part2": part2}
@@ -2118,7 +2135,10 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
     if part1:
         _textbox(slide, left, y, width, Inches(0.24), "Part 1 — Applicable Schema by Page Type", size=12.5, bold=True, color=_accent())
         y += Inches(0.28)
-        rows1 = [(r["page_type"], r["recommended_schema"], f"{r['pages']:,}", r["why_it_applies"]) for r in part1]
+        rows1 = [
+            (r["page_type"], r["recommended_schema"], r["pages"] if isinstance(r["pages"], str) else f"{r['pages']:,}", r["why_it_applies"])
+            for r in part1
+        ]
         y = _draw_table(
             slide, ["Page Type", "Recommended Schema", "Pages", "Why It Applies"], rows1, y,
             col_widths=[2.0, 2.3, 1.0, 6.8], left=left, width=width, row_cap=6, row_height=ROW_H, wrap_cols={3},
@@ -2127,13 +2147,21 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
     if part2:
         _textbox(slide, left, y, width, Inches(0.24), "Part 2 — Validation Results", size=12.5, bold=True, color=_accent())
         y += Inches(0.28)
+
+        def _cell(v) -> str:
+            return v if isinstance(v, str) else f"{v:,}"
+
         rows2 = [
-            (r["schema_type"], f"{r['applicable']:,}", f"{r['valid']:,}", f"{r['errors']:,}", f"{r['coverage_pct']}%")
+            (
+                r["schema_type"], _cell(r["applicable"]), _cell(r["present"]), _cell(r["valid"]),
+                _cell(r["invalid"]), _cell(r["missing"]),
+                "—" if r["coverage_pct"] is None else f"{r['coverage_pct']}%",
+            )
             for r in part2
         ]
         y = _draw_table(
-            slide, ["Schema Type", "Applicable Pages", "Valid", "Errors", "Coverage %"], rows2, y,
-            col_widths=[2.6, 2.4, 2.0, 2.0, 3.1], left=left, width=width, row_cap=6, row_height=ROW_H,
+            slide, ["Schema Type", "Applicable", "Present", "Valid", "Invalid", "Missing", "Coverage %"], rows2, y,
+            col_widths=[2.2, 1.6, 1.4, 1.4, 1.4, 1.4, 2.7], left=left, width=width, row_cap=6, row_height=ROW_H,
         ) + Inches(0.15)
         # Transparency note (2026-09-16 spec: never present a page-count %
         # as if it were traffic-weighted) — only shown when at least one row
