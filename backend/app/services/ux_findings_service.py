@@ -28,12 +28,17 @@ terminal punctuation — if you're about to run out of room, drop a less-importa
 truncate one mid-sentence.
 
 Also do an onboarding breakdown of the landing page: walk it the way a first-time visitor experiences it and \
-flag where recognized onboarding/conversion psychology biases (e.g. cognitive load / Hick's law, choice \
-overload, social proof, anchoring, loss aversion, scarcity/urgency, default bias, Zeigarnik effect / \
-incomplete-task tension, framing, primacy-recency) are either missing where they'd help or working against \
-the visitor. Only report biases you can actually ground in the notes above — do not invent generic advice \
-that isn't tied to something described. Return the top 5, ranked by likely impact on sign-up/purchase \
-completion.
+flag where a recognized UX, CRO, usability, trust, or brand-consistency principle or heuristic (e.g. cognitive \
+load / Hick's law, choice overload, social proof, anchoring, loss aversion, scarcity/urgency, default bias, \
+framing, primacy-recency, risk reversal, brand consistency) is either missing where it would help or working \
+against the visitor. Only report a principle you can actually ground in the notes above — do not invent \
+generic advice that isn't tied to something described. Return as many items as the notes actually support \
+(typically 3-5, never pad to a fixed count) — these are priority friction areas, not a measured \
+conversion-impact ranking (that would need analytics/experiment data this pass doesn't have).
+
+Suggestions must be directional ("may create friction", "could strengthen the CTA experience", "should be \
+tested"), never a guaranteed-outcome claim like "will increase conversions" or "will increase sign-ups" — the \
+notes alone can't prove a conversion outcome.
 
 Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
@@ -42,14 +47,14 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
   ],
   "conversion_opportunities": [string],
   "onboarding_breakdown": [
-    {{"bias": string, "where": string, "suggestion": string}}
+    {{"principle": string, "where": string, "suggestion": string}}
   ]
 }}
 
 Mark anything that blocks a purchase (broken checkout, dead call-to-action, broken form) as "Critical" \
 severity. conversion_opportunities should cover trust signals, reviews, bundling, and engagement content —
-3 to 6 items. onboarding_breakdown must have at most 5 items, each a real bias name (not a generic UX tip), \
-where it shows up on the page, and one directional (not prescriptive-pixel-level) suggestion.
+3 to 6 items. onboarding_breakdown: each item needs a real principle/heuristic name (not a generic UX tip or \
+content-format label like "Overview"), exactly where it shows up on the page, and one directional suggestion.
 """
 
 
@@ -88,34 +93,43 @@ audit report. Below is a real screenshot of {client_name}'s homepage ({website_u
 actually visible in it as ground truth, do not invent page elements, copy, or flows you cannot see.
 
 Do an onboarding breakdown of this landing page: walk it the way a first-time visitor experiences it and flag \
-where recognized onboarding/conversion psychology biases (e.g. cognitive load / Hick's law, choice overload, \
-social proof, anchoring, loss aversion, scarcity/urgency, default bias, Zeigarnik effect / incomplete-task \
-tension, framing, primacy-recency, risk reversal, brand consistency) are either missing where they'd help or \
-working against the visitor. Give risk reversal and brand consistency equal weight to the other biases — don't \
-skip them just because they're less classically "psychological":
+where a recognized UX, CRO, usability, trust, or brand-consistency principle or heuristic (e.g. cognitive load \
+/ Hick's law, choice overload, social proof, anchoring, loss aversion, scarcity/urgency, default bias, framing, \
+primacy-recency, risk reversal, brand consistency) is either missing where it would help or working against \
+the visitor. These are not all "psychological biases" — treat "Principle / Heuristic" as the broader category, \
+and give risk reversal and brand consistency equal weight to the others:
 - Risk reversal: does the page remove the visitor's perceived risk of acting — a money-back guarantee, free \
   trial or no-card-required signup, visible refund policy, security/payment trust badges near the conversion \
   point? Flag it if a real conversion point (signup, purchase, demo request) has none of these nearby.
 - Brand consistency: does the primary call-to-action look and read the same everywhere it repeats — same \
   color, shape, and copy in the header nav vs. the hero vs. anywhere else? Flag competing or inconsistently \
   styled CTAs, or a hero band whose visual treatment doesn't match the rest of the page's brand identity.
-Only report biases you can actually ground in something visible in the screenshot — do not invent generic \
-advice that isn't tied to a real element on the page. Return the top 5, ranked by likely impact on \
-sign-up/purchase completion.
+Only report a principle you can actually ground in something visible in the screenshot — do not invent generic \
+advice that isn't tied to a real element on the page, and do not force every page to exhibit every principle \
+listed above. Return as many items as the screenshot actually supports (typically 3-5, never pad to a fixed \
+count) — these are priority friction areas identified from a screenshot, not a measured conversion-impact \
+ranking (that needs analytics/experiment data this pass doesn't have).
+
+"Where It Shows Up" must name the exact UI element or region (e.g. "top utility bar", "primary 'Enquire Now' \
+CTA", "hero visual") — never a vague "on the homepage" or "throughout the page" when a more specific location \
+is visible. Suggestions must be directional ("may create friction", "could strengthen the CTA experience", \
+"should be tested"), never a guaranteed-outcome claim like "will increase conversions" or "will increase \
+sign-ups" — a screenshot alone can't prove a conversion outcome, only point to a UX pattern.
 
 Write in plain, confident agency language — this is client-facing content, not an AI-generated draft. Never \
 mention that you are an AI, a language model, or any tool by name. Every sentence must be complete, with \
-terminal punctuation.
+terminal punctuation. Keep each field short enough not to be truncated: "where" one concise phrase/sentence, \
+"suggestion" 1-2 concise sentences.
 
 Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
   "onboarding_breakdown": [
-    {{"bias": string, "where": string, "suggestion": string}}
+    {{"principle": string, "where": string, "suggestion": string}}
   ]
 }}
 
-At most 5 items, each a real bias name (not a generic UX tip), where it shows up on the page, and one \
-directional (not prescriptive-pixel-level) suggestion."""
+Each item needs a real principle/heuristic name (not a generic UX tip or a content-format label like \
+"Overview"/"Info"), exactly where it shows up on the page, and one directional suggestion."""
 
 
 def generate_onboarding_breakdown(client_name: str, website_url: str, screenshot_bytes: bytes, mime_type: str = "image/png") -> dict:

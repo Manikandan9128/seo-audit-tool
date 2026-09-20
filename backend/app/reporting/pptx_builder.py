@@ -5465,19 +5465,36 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
         _textbox(slide, Inches(0.9), Inches(1.4), Inches(11.4), Inches(1.4), ux_findings["note"], size=13)
         slides.append(slide)
 
-    # Onboarding-bias breakdown of the landing page — separate slide from
+    # Onboarding breakdown of the landing page — separate slide from
     # UI-Level Fixes (that one is broken/missing things; this one is "the
-    # page works but is fighting the visitor's psychology"), per the
-    # team-lead prompt: cover onboarding biases, top 5, directional
-    # suggestions. Sourced from a real homepage screenshot when the manual
-    # notes above didn't already supply one — see the module docstring.
+    # page works but is fighting the visitor's psychology"). 2026-09-20
+    # spec: "Principle / Heuristic" is the column name (not "Bias" — the
+    # analysis spans UX/CRO/usability/trust/brand-consistency principles,
+    # not only psychological biases), item count is whatever the evidence
+    # supports (never padded to a fixed 5), and the summary line must not
+    # claim a measured "ranked by conversion impact" finding — neither the
+    # manual-notes pass nor the screenshot vision pass has analytics/
+    # experiment data to back that. Source is reported accurately per
+    # which pass actually produced this list (see onboarding_breakdown_
+    # source, set only by the vision pass — its absence means the manual-
+    # notes pass supplied it instead).
     breakdown = ux_findings.get("onboarding_breakdown") or []
     if breakdown:
-        rows = [(b.get("bias", ""), b.get("where", ""), b.get("suggestion", "")) for b in breakdown[:5]]
+        rows = [
+            (b.get("principle") or b.get("bias") or "", b.get("where", ""), b.get("suggestion", ""))
+            for b in breakdown[:5]
+        ]
+        source = "Homepage screenshot analysis" if ux_findings.get("onboarding_breakdown_source") == "vision" else "Manual UX walkthrough"
+        principle_names = [r[0] for r in rows if r[0]]
+        if principle_names:
+            joined = principle_names[0] if len(principle_names) == 1 else ", ".join(principle_names[:-1]) + f", and {principle_names[-1]}"
+            summary = f"{joined} are the key friction areas identified on the landing page from {source.lower()}."
+        else:
+            summary = None
         slides.append(_table_slide(
-            prs, "Onboarding Breakdown — Landing Page", ["Bias", "Where It Shows Up", "Directional Suggestion"], rows,
-            col_widths=[2.6, 3.6, 5.9], source="Homepage screenshot analysis", row_height=0.6, wrap_cols={0, 1, 2},
-            insights=[f"Top {len(rows)} onboarding-psychology gap(s) on the landing page, ranked by likely impact on sign-up/purchase completion."],
+            prs, "Onboarding Breakdown — Landing Page", ["Principle / Heuristic", "Where It Shows Up", "Directional Suggestion"], rows,
+            col_widths=[2.6, 3.6, 5.9], source=source, row_height=0.6, wrap_cols={0, 1, 2},
+            insights=[summary] if summary else None,
         ))
 
     return slides

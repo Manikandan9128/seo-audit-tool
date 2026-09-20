@@ -1607,6 +1607,7 @@ def _gather_report_data(
             onboarding_result = generate_onboarding_breakdown(client.name, client.website_url, homepage_shot)
             if onboarding_result.get("onboarding_breakdown"):
                 ux_findings_result["onboarding_breakdown"] = onboarding_result["onboarding_breakdown"]
+                ux_findings_result["onboarding_breakdown_source"] = "vision"
             elif onboarding_result.get("error"):
                 logger.warning("Onboarding breakdown vision pass failed for %s: %s", client.website_url, onboarding_result["error"])
                 content_issues.append(f"Onboarding breakdown (vision pass): {onboarding_result['error']}")
