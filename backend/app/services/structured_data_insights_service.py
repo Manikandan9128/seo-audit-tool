@@ -60,7 +60,9 @@ there, or for FAQPage (Google retired that SERP dropdown) or a type with no elig
 
 Never invent traffic numbers or issue types — infer only from the numbers given. Write in plain, confident \
 agency language — this is client-facing content, not an AI-generated draft. Never mention that you are an AI, a \
-language model, or any tool by name. Never mention JobPosting — it is out of scope for this report.
+language model, or any tool by name. JobPosting only ever appears in the tables above when at least one crawled \
+URL is an actual individual job-detail page (not a careers index/listing page) — treat it exactly like any other \
+page-level schema type when it does appear.
 
 Return ONLY valid JSON, no markdown fences, no commentary:
 {{
@@ -84,8 +86,8 @@ def _deterministic_schema_insights(part2: list[dict], eligibility_notes: dict[st
     Mechanically derived straight from part2's own Missing/Invalid/Present/
     Valid/Coverage numbers — same ISSUE->EVIDENCE->ACTION shape and wording
     rules as the AI prompt above (no unsupported ranking/CTR claims, respects
-    eligibility_notes, JobPosting never appears since it's excluded from
-    part2 entirely upstream). Used only when every configured AI provider
+    eligibility_notes; JobPosting is treated like any other page-level type,
+    appearing only when part2 itself has a row for it). Used only when every configured AI provider
     failed or is unconfigured — real numbers only, nothing invented.
     Ordered gaps first (largest-affected first), then invalid-schema
     findings, confirmed wins last, capped to 4 per spec's own "2-4 concise

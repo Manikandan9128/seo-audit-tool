@@ -89,11 +89,34 @@ def test_site_wide_part1_row_present():
     assert site_wide["pages"] == "Site-level"
 
 
-def test_jobposting_never_appears():
+def test_jobposting_never_appears_with_no_job_detail_pages():
     sv = aggregate_schema_validation(_pages())
     parts = build_schema_report_parts(sv)
     assert not any("JobPosting" in str(v) for r in parts["part1"] for v in r.values())
     assert not any("JobPosting" in str(v) for r in parts["part2"] for v in r.values())
+
+
+def test_jobposting_never_appears_for_careers_index_page_alone():
+    # Universal SEO Audit Engine spec (2026-09-20) section 29: a careers
+    # index/listing page is NOT itself a JobPosting page.
+    pages = _pages() + [
+        {"url": "https://x.com/careers/", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+        {"url": "https://x.com/careers/openings", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+    ]
+    sv = aggregate_schema_validation(pages)
+    parts = build_schema_report_parts(sv)
+    assert not any("JobPosting" in str(v) for r in parts["part2"] for v in r.values())
+
+
+def test_jobposting_appears_for_real_job_detail_page():
+    pages = _pages() + [
+        {"url": "https://x.com/careers/senior-backend-engineer", "meta": {"schema_types_found": ["JobPosting"], "schema_field_issues": []}},
+    ]
+    sv = aggregate_schema_validation(pages)
+    parts = build_schema_report_parts(sv)
+    job_row = next(r for r in parts["part2"] if r["schema_type"] == "JobPosting")
+    assert job_row["applicable"] == 1
+    assert job_row["present"] == 1
 
 
 def test_content_type_reports_present_valid_invalid_missing_separately():

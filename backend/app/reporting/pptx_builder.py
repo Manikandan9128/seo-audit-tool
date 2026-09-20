@@ -1990,7 +1990,10 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
     Product/LocalBusiness/Event/FAQPage) stay page-level, denominator is
     always the pages that type actually applies to (BreadcrumbList: real
     content pages, never blended with utility "Other Pages"; never the
-    full site total). JobPosting is excluded entirely, never evaluated.
+    full site total). JobPosting is page-level too, but only ever appears
+    as a bucket when at least one crawled URL actually looks like an
+    individual job-detail page (spec section 29) — a careers index/listing
+    page alone never creates a JobPosting row.
 
     Shared by the slide's own rendering and the AI insights prompt
     (site_audit.py) so both work off identical numbers."""

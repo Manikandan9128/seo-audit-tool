@@ -169,6 +169,17 @@ _SCHEMA_TYPE_SHAPE_RE: dict[str, re.Pattern] = {
     "LocalBusiness": re.compile(r"/(?:locations?|store-locator|near-me|branch(?:es)?)/", re.IGNORECASE),
     "Event": re.compile(r"/events?/", re.IGNORECASE),
     "FAQPage": re.compile(r"faq|frequently[\s-]asked[\s-]questions", re.IGNORECASE),
+    # Universal SEO Audit Engine spec (2026-09-20) section 29: JobPosting
+    # must be scoped to individual job-DETAIL pages only — a careers INDEX
+    # page ("/careers/", "/jobs/openings") is not itself a JobPosting page.
+    # Requires an actual slug segment after /job(s)/ or /career(s)/ (a real
+    # posting's own URL), with a negative-lookahead excluding common
+    # listing/index slugs so the bare index/listing URL never matches.
+    "JobPosting": re.compile(
+        r"/(?:jobs?|careers?)/(?!apply\b|openings?\b|open-positions?\b|open-roles?\b|index\b|list\b|search\b|browse\b|all\b)"
+        r"[a-z0-9][a-z0-9-]{3,}/?(?:$|\?)",
+        re.IGNORECASE,
+    ),
 }
 # "Article-type" isn't a real @type on its own — Article/BlogPosting/
 # NewsArticle all satisfy the same blog-shaped-page finding, so they collapse
@@ -199,8 +210,9 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     -> Applicable Schema Types -> Schema Count -> Validation -> Google
     Eligibility -> SEO Priority." Page type is the same URL-shape detection
     _site_wide_missing_types already used (Article/Product/LocalBusiness/
-    Event/FAQPage — JobPosting excluded site-wide per 2026-09-20 spec, this
-    tool never detects/validates/reports it) — reused here instead of inventing a second
+    Event/FAQPage/JobPosting — JobPosting scoped to individual job-detail
+    page URLs only, per 2026-09-20 spec section 29; a careers index/listing
+    page is never bucketed as JobPosting) — reused here instead of inventing a second
     classifier, now applied to bucket EVERY crawled page (not just to ask
     "does at least one exist"), with pages matching no known shape grouped
     as "Other Pages" rather than dropped."""
