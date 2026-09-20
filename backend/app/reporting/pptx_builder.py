@@ -5039,14 +5039,25 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         insights = _keyword_insights(deduped) if deduped else []
         return [_table_slide(prs, "Target Keywords", headers, rows, col_widths=col_widths, source="Semrush export", insights=insights)]
 
-    # Rank clusters by combined search volume, keep the strongest ones —
-    # matches the reference deck's ~8-10 cluster slides rather than dumping
-    # every long-tail cluster into its own slide.
-    ranked = sorted(
-        clusters.items(),
-        key=lambda kv: sum(_num(r.get("search_volume")) for r in kv[1]),
-        reverse=True,
-    )
+    # Cluster order (2026-09-20 spec steps 19-21): lead with the client's
+    # strongest CORE commercial opportunity, never simply whichever cluster
+    # has the most combined search volume — keyword_cluster_pipeline's
+    # _assign_core_category_and_priority already scored this (commercial
+    # intent + real ranking signal, ahead of raw volume) and stamped
+    # cluster_priority (1 = highest) on every row. Falls back to the old
+    # volume-desc sort only when cluster_priority was never set at all
+    # (e.g. a raw Semrush-native Cluster column with no pipeline run, or
+    # existing tests/callers that don't set it) — every real pipeline run
+    # sets it on every clustered row, so this is a compatibility path, not
+    # the normal case.
+    def _cluster_sort_key(kv: tuple[str, list[dict]]) -> tuple:
+        _label, cluster_rows = kv
+        priorities = [r.get("cluster_priority") for r in cluster_rows if r.get("cluster_priority") is not None]
+        if priorities:
+            return (0, min(priorities))
+        return (1, -sum(_num(r.get("search_volume")) for r in cluster_rows))
+
+    ranked = sorted(clusters.items(), key=_cluster_sort_key)
     slides = []
     for label, rows_for_cluster in ranked[:max_clusters]:
         sorted_rows = sorted(rows_for_cluster, key=lambda r: _num(r.get("search_volume")), reverse=True)

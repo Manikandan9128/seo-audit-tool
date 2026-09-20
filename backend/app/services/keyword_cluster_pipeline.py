@@ -29,15 +29,61 @@ relationship, keyword patterns/modifiers). This makes "validation" and
 SERP overlap (spec's criterion F) is intentionally never used — this
 codebase has no SERP dataset for any client, and inventing SERP overlap
 signal would violate the spec's explicit "never invent SERP overlap" rule.
+
+2026-09-20 spec additions on top of the above: Cluster Name Validation
+(reject a catch-all/generic-only cluster name rather than render it —
+see _is_catchall_cluster_name) and Core Category Prioritization (the
+final cluster order must lead with the client's strongest core commercial
+opportunity, never simply the highest-combined-volume cluster — see
+_assign_core_category_and_priority). Semantic Topic/Entity and Keyword
+Modifier Classification (spec steps 7-8) are deliberately NOT implemented
+as a separate AI pass here — the existing Business Theme + candidate-
+clustering AI call already collapses same-topic modifier variants
+("Certified Payroll Basics/Fundamentals/Overview") into one cluster (see
+keyword_cluster_service.generate_batched_candidate_clusters' own
+instruction to that effect), and adding a dedicated third AI classification
+pass purely to store an internal-only field the PPT never renders (spec
+step 27 doesn't list semantic_topic in the rendered table) wasn't judged
+worth its added AI cost/latency risk (see this pipeline's own "one batched
+call, not one per bucket" incident above) — flagged here rather than
+silently claimed as done.
 """
 
 import logging
+import re
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
 from app.services.keyword_cluster_service import generate_batched_candidate_clusters
 from app.services.keyword_relevance_service import match_existing_page_for_cluster
 
 logger = logging.getLogger(__name__)
+
+# Cluster Name Validation (spec steps 15-17): a name that's ONLY a generic
+# content-format/catch-all label, never a real SEO topic. Checked against
+# the whole normalized label, never a substring — a real specific name
+# that happens to contain a generic word (e.g. "Daimler Companies") is
+# never caught here, per spec's explicit generic-word exception (step 16):
+# a generic word only disqualifies a name when it IS the whole name.
+_CATCHALL_CLUSTER_NAMES = {
+    "overview", "info", "information", "details", "miscellaneous", "general", "general topics",
+    "various", "various topics", "other", "other topics", "ungrouped", "ungrouped keywords",
+    "general information", "misc", "misc topics", "tech info", "platform info", "general info",
+}
+
+
+def _is_catchall_cluster_name(label: str) -> bool:
+    normalized = re.sub(r"\s+", " ", label or "").strip().lower()
+    if not normalized:
+        return True
+    if normalized in _CATCHALL_CLUSTER_NAMES:
+        return True
+    # "Miscellaneous Database Topics" style names — spec's own worked
+    # example: reject regardless of whatever anchor noun follows, since a
+    # label built around "miscellaneous"/"ungrouped" as its organizing word
+    # is a catch-all bucket by construction, not a real SEO topic.
+    if "miscellaneous" in normalized or "ungrouped" in normalized:
+        return True
+    return False
 
 # Same bound as the existing clustering/intent/page-matching AI calls
 # elsewhere in this pipeline (site_audit.py) — keeps every AI call in the
@@ -154,9 +200,17 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
 
         for r in bucket_rows:
             kw = r.get("keyword")
-            label = sub_label_map.get(kw) or default_label
-            if not label:
+            label = sub_label_map.get(kw)
+            if label and _is_catchall_cluster_name(label):
+                # Cluster Name Validation (spec steps 15-17): reject a
+                # catch-all/generic-only AI-returned name outright — fall
+                # back to the theme label (still real evidence) rather
+                # than rendering "Overview" or "Miscellaneous X Topics".
+                label = None
+            label = label or default_label
+            if not label or _is_catchall_cluster_name(label):
                 r["cluster"] = ""
+                r["cluster_status"] = "Unvalidated"
                 continue
             label_key = label
             if label_key in label_owner and label_owner[label_key] != bucket_key:
@@ -170,6 +224,7 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
                 label_key = f"{label} ({intent})"
             label_owner[label_key] = bucket_key
             r["cluster"] = label_key
+            r["cluster_status"] = "Validated"
 
 
 def _select_primary_secondary(rows: list[dict]) -> None:
@@ -259,6 +314,84 @@ def _apply_cannibalization_check(rows: list[dict]) -> None:
             r["cannibalization_status"] = None
 
 
+def _cluster_score(cluster_rows: list[dict]) -> tuple[float, int, float]:
+    """Composite priority signal for one cluster (spec steps 19-20):
+    (commercial-intent share, has-real-ranking-signal, total search
+    volume) — in that order, so search demand is only ever a tiebreaker,
+    never the primary sort key. Every input here is a real field an
+    earlier pipeline step already set; nothing is invented."""
+    if not cluster_rows:
+        return (0.0, 0, 0.0)
+    commercial = sum(
+        1 for r in cluster_rows
+        if (r.get("intent") or "").strip().lower() in ("commercial", "commercial investigation", "transactional")
+    )
+    commercial_share = commercial / len(cluster_rows)
+    has_ranking = any(r.get("current_position") not in (None, "") for r in cluster_rows)
+    total_volume = sum(_num(r.get("search_volume")) for r in cluster_rows)
+    return (commercial_share, 1 if has_ranking else 0, total_volume)
+
+
+def _assign_core_category_and_priority(rows: list[dict]) -> None:
+    """Spec steps 18-20 — Core Category Identification + Core Cluster
+    Prioritization. Deterministic, no new AI call: reuses business_theme,
+    search_intent, search_volume, and current_position, every one of them
+    already set by an earlier step.
+
+    Step 18 (core_category): the business theme whose clusters carry the
+    client's strongest aggregate commercial+ranking+demand signal — never
+    guessed, and left unset (core_category_status="Requires Validation")
+    when every theme is Unclassified (no real business-context evidence at
+    all, not just a low score).
+
+    Step 20 (cluster_priority, 1 = highest): clusters belonging to
+    core_category sort ahead of every other theme's clusters; within that,
+    and within every other theme, clusters rank by the same
+    commercial/ranking/demand composite from _cluster_score — never by raw
+    search volume alone (explicitly banned, step 20)."""
+    clusters: dict[str, list[dict]] = {}
+    for r in rows:
+        label = (r.get("cluster") or "").strip()
+        if label:
+            clusters.setdefault(label, []).append(r)
+
+    if not clusters:
+        for r in rows:
+            r["core_category"] = None
+            r["core_category_status"] = "Requires Validation"
+            r["cluster_priority"] = None
+        return
+
+    theme_score: dict[str, float] = {}
+    for cluster_rows in clusters.values():
+        theme = (cluster_rows[0].get("business_theme") or UNCLASSIFIED_THEME).strip() or UNCLASSIFIED_THEME
+        if theme == UNCLASSIFIED_THEME:
+            continue
+        commercial_share, has_ranking, total_volume = _cluster_score(cluster_rows)
+        # +1 on volume so a real but small (zero-volume-data) cluster with
+        # commercial intent/ranking signal still contributes something,
+        # rather than multiplying out to a flat zero.
+        theme_score[theme] = theme_score.get(theme, 0.0) + (commercial_share * 2 + has_ranking) * (total_volume + 1)
+
+    core_category = max(theme_score, key=theme_score.get) if theme_score else None
+
+    ranked_labels = sorted(
+        clusters.keys(),
+        key=lambda label: (
+            1 if (clusters[label][0].get("business_theme") or "").strip() == core_category else 0,
+            *_cluster_score(clusters[label]),
+        ),
+        reverse=True,
+    )
+    priority_by_label = {label: i + 1 for i, label in enumerate(ranked_labels)}
+
+    for r in rows:
+        label = (r.get("cluster") or "").strip()
+        r["core_category"] = core_category
+        r["core_category_status"] = None if core_category else "Requires Validation"
+        r["cluster_priority"] = priority_by_label.get(label) if label else None
+
+
 def build_final_keyword_clusters(
     rows: list[dict],
     client_name: str,
@@ -266,14 +399,15 @@ def build_final_keyword_clusters(
     site_audit_pages_rows: list[dict] | None,
 ) -> list[dict]:
     """Runs Business Theme -> Candidate Clustering -> Validation/Auto-Split
-    (structural, see module docstring) -> Primary/Secondary -> Existing
-    Page Matching -> Cannibalization Check, mutating and returning `rows`.
-    Caller must already have `intent` and `page_category` set on every row
-    (FINAL PIPELINE steps 3-4) before calling this — this function only
-    reads those fields, never sets them. Ranking enrichment
-    (current_position/current_url) may run before or after this call;
-    nothing here reads or overwrites it except to help pick a primary
-    keyword. Fails safe: if every AI call in here fails, every row simply
+    (structural, see module docstring) -> Core Category + Cluster
+    Prioritization -> Primary/Secondary -> Existing Page Matching ->
+    Cannibalization Check, mutating and returning `rows`. Caller must
+    already have `intent` and `page_category` set on every row (FINAL
+    PIPELINE steps 3-4) before calling this — this function only reads
+    those fields, never sets them. Ranking enrichment (current_position/
+    current_url) may run before or after this call; nothing here reads or
+    overwrites it except to help pick a primary keyword and score cluster
+    priority. Fails safe: if every AI call in here fails, every row simply
     keeps `cluster` = "" (unclustered) and the caller's existing flat-table
     fallback renders instead — no cluster is ever hallucinated."""
     if not rows:
@@ -281,6 +415,7 @@ def build_final_keyword_clusters(
 
     _assign_business_themes(rows, client_name, client_description)
     _build_candidate_clusters(rows)
+    _assign_core_category_and_priority(rows)
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)
     _apply_cannibalization_check(rows)

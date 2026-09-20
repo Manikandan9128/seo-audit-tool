@@ -130,6 +130,68 @@ def test_candidate_clustering_is_one_batched_call_not_one_per_bucket():
     assert sum(len(kws) for _label, kws in groups) == 6
 
 
+def test_catchall_cluster_name_is_rejected_and_left_unclustered():
+    # 2026-09-20 spec: a generic/catch-all AI-returned cluster name (e.g.
+    # "Overview") must never render — the row falls back to unclustered
+    # with cluster_status="Unvalidated" rather than a fake theme-only
+    # cluster too, since the AI DID return something (just an invalid
+    # name), so this exercises the reject-then-fall-back-to-theme path
+    # separately from "AI returned nothing at all."
+    rows = [
+        {"keyword": "certified payroll basics", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
+        {"keyword": "certified payroll fundamentals", "search_volume": 40, "intent": "Informational", "page_category": "Blog / Guide"},
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Certified Payroll" for r in rows}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={r["keyword"]: "Overview" for r in rows}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    # Rejected AI name falls back to the real theme label, not "Overview".
+    assert all(r["cluster"] == "Certified Payroll" for r in rows)
+    assert all(r["cluster_status"] == "Validated" for r in rows)
+
+
+def test_catchall_cluster_name_with_no_theme_fallback_stays_unclustered():
+    rows = [{"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"}]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+    assert rows[0]["cluster"] == ""
+    assert rows[0]["cluster_status"] == "Unvalidated"
+
+
+def test_core_category_prefers_commercial_and_ranking_over_raw_volume():
+    # 2026-09-20 spec steps 18-20: a smaller commercial+already-ranking
+    # cluster must outrank a bigger purely-informational one for both
+    # core_category and cluster_priority — never sorted by volume alone.
+    rows = [
+        {"keyword": "construction payroll guide", "search_volume": 9000, "intent": "Informational", "page_category": "Blog / Guide"},
+        {"keyword": "certified payroll services", "search_volume": 300, "intent": "Transactional", "page_category": "Landing Page", "current_position": 8},
+    ]
+    themes = {"construction payroll guide": "Construction Payroll Guides", "certified payroll services": "Certified Payroll"}
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    commercial_row = next(r for r in rows if r["cluster"] == "Certified Payroll")
+    volume_row = next(r for r in rows if r["cluster"] == "Construction Payroll Guides")
+    assert commercial_row["core_category"] == "Certified Payroll"
+    assert commercial_row["cluster_priority"] == 1
+    assert volume_row["cluster_priority"] == 2
+
+
+def test_core_category_requires_validation_when_every_theme_unclassified():
+    rows = [{"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"}]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+    assert rows[0]["core_category"] is None
+    assert rows[0]["core_category_status"] == "Requires Validation"
+
+
 def test_existing_business_theme_is_preserved_not_reclassified():
     # A real Semrush export can already carry its own theme/topic data —
     # generate_business_themes must not be called (and must not overwrite
