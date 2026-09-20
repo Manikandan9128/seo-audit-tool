@@ -4631,7 +4631,7 @@ def _prepare_keyword_gap_rows(rows: list[dict], max_kd: float = _KEYWORD_GAP_MAX
 
 
 def add_keyword_gap_slide(
-    prs: Presentation, competitor_analysis: dict, business_description: str | None = None,
+    prs: Presentation, competitor_analysis: dict, client_name: str | None = None,
     keyword_gap_sheet_link: str | None = None,
 ):
     """Competitor Keyword Gap Analysis (2026-09-18 spec, replaces the
@@ -4664,7 +4664,14 @@ def add_keyword_gap_slide(
         return ", ".join(f"{cp.get('competitor')} (#{cp.get('position')})" for cp in cps) or "none tracked"
 
     insights = []
-    topic_ref = business_description.strip() if business_description and business_description.strip() else "the client's business"
+    # Bug fixed 2026-09-20: this used to embed the client's full multi-
+    # sentence company-overview description straight into a one-line
+    # insight ("unrelated to Lumber provides an AI-powered construction
+    # workforce management platform that unifies..."), confirmed live on a
+    # real Lumber report — grammatically broken and far too long for a Key
+    # Insights bullet. A short "{client_name}'s business" reads correctly
+    # and needs no description text at all.
+    topic_ref = f"{client_name.strip()}'s business" if client_name and client_name.strip() else "the client's business"
     insights.append(
         f"{off_topic_count} off-topic excluded (unrelated to {topic_ref}), {len(kd_filtered)} relevant keyword(s), "
         f"split {shared_n} Shared / {missing_n} Missing / {untapped_n} Untapped."
@@ -6591,7 +6598,7 @@ def _build_report(
             # any of my report") — no longer rendered.
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
             add_keyword_gap_slide(
-                prs, competitor_analysis, business_description=(company_overview or {}).get("description"),
+                prs, competitor_analysis, client_name=client_name,
                 keyword_gap_sheet_link=keyword_sheet_link,
             )
 

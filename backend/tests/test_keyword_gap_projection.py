@@ -179,7 +179,7 @@ def test_all_categories_worst_case_fits_slide_no_overlap():
         ))
     analysis = {"keyword_gap_rows": rows, "keyword_gap_off_topic_count": 3}
     prs = _prs()
-    add_keyword_gap_slide(prs, analysis, business_description="a commercial vehicle manufacturer", keyword_gap_sheet_link="https://sheets.google.com/x")
+    add_keyword_gap_slide(prs, analysis, client_name="Acme Trucks", keyword_gap_sheet_link="https://sheets.google.com/x")
     assert _audit_slide_geometry(prs) == []
 
 
@@ -192,8 +192,9 @@ def test_off_topic_count_and_split_stated_in_insights():
         ],
         "keyword_gap_off_topic_count": 4,
     }
-    slide = add_keyword_gap_slide(_prs(), analysis, business_description="a payroll compliance SaaS platform")
+    slide = add_keyword_gap_slide(_prs(), analysis, client_name="Acme")
     text = _slide_text(slide)
     assert "4 off-topic excluded" in text
+    assert "unrelated to Acme's business" in text
     assert "3 relevant keyword" in text
     assert "1 Shared / 1 Missing / 1 Untapped" in text
