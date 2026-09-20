@@ -1051,6 +1051,21 @@ def _gather_report_data(
     analytics = None
     if include_analytics and (client.ga4_property_id or client.gsc_site_url):
         creds = _load_credentials(client_id, db)
+        if not creds:
+            # Confirmed real (2026-09-20, Lumber report): _load_credentials
+            # returns None silently on a missing/expired/undecryptable
+            # refresh token (same OAuth-expiry class of failure already
+            # fixed for Sheets, see the elif branch below in this same
+            # function) — before this note, that left the ENTIRE GA4+GSC
+            # section of the report silently absent with zero signal
+            # anywhere why, even though a GA4 property ID / GSC site URL
+            # IS configured for this client.
+            content_issues.append(
+                "Analytics & Search Console: this client's Google account isn't connected (it may have "
+                "disconnected on its own — a stored Google refresh token can expire or be revoked between "
+                "report runs) — reconnect it in this client's Settings to restore the GA4/GSC-based slides "
+                "(Traffic Overview, Search Opportunities, Branded vs Non-Branded, etc.)."
+            )
         if creds:
             progress("Pulling Analytics & Search Console data...", 45)
             from datetime import date, timedelta
