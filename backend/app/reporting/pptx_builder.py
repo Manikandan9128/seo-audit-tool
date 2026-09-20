@@ -5973,24 +5973,68 @@ def add_conversion_seo_next_steps_slide(
     return _next_steps_category_slide(prs, "Next Steps: Conversion SEO", intro, items)
 
 
-def add_aeo_slide(prs: Presentation, site_audit: dict | None, page_audit: dict | None):
+def add_aeo_slide(prs: Presentation, site_audit: dict | None, page_audit: dict | None, schema_validation: dict | None = None):
     """Answer Engine Optimization — schema/structured-data-eligibility
     recommendations for appearing in AI Overviews and answer boxes. Split
-    out from the old combined AEO & GEO slide into its own slide."""
+    out from the old combined AEO & GEO slide into its own slide.
+
+    Universal SEO Audit Engine spec (2026-09-20) section 28: "Do not
+    automatically recommend FAQs, FAQ schema, answer blocks... without
+    evidence" — when schema_validation is available (the same Part 2 data
+    the Structured Data & Schema Validator slide renders), the FAQPage/
+    Article findings here cite the real Applicable/Missing/Coverage
+    numbers for THIS site instead of a generic "add FAQ schema" bullet
+    that would render identically regardless of what's actually there.
+    Falls back to the old generic bullets only when schema_validation
+    wasn't computed (e.g. no crawl ran) — never claims a specific finding
+    without real data behind it, and never promises a rich-result/AI-
+    Overview outcome, only eligibility."""
+    faq_row = None
+    article_row = None
+    if schema_validation:
+        for row in build_schema_report_parts(schema_validation).get("part2") or []:
+            if row.get("site_level"):
+                continue
+            if row["schema_type"] == "FAQPage":
+                faq_row = row
+            elif row["schema_type"] == "Article":
+                article_row = row
+
+    items = []
+    if faq_row and faq_row.get("applicable"):
+        applicable, missing = faq_row["applicable"], faq_row.get("missing") or 0
+        if missing:
+            items.append(
+                f"FAQPage structured data is missing on {missing} of {applicable} applicable page(s) — "
+                "implementing it is a prerequisite for FAQ-style AI Overview/answer-box eligibility on those "
+                "pages, not a guarantee of inclusion."
+            )
+        else:
+            items.append(f"FAQPage structured data is already present on all {applicable} applicable page(s) — a real eligibility foundation already in place for those pages.")
+    else:
+        items.append("Add structured FAQ sections to key pages, answering the questions customers actually ask before buying.")
+
+    if article_row and article_row.get("applicable"):
+        applicable, missing = article_row["applicable"], article_row.get("missing") or 0
+        if missing:
+            items.append(f"Article structured data is missing on {missing} of {applicable} applicable blog/article page(s) — a prerequisite for article-style AI Overview eligibility on those pages.")
+
     schema_present = None
     if site_audit and site_audit.get("meta"):
         schema_present = bool(site_audit["meta"].get("structured_data_present"))
     missing_schema_pages = None
     if page_audit and page_audit.get("pages_with_issues"):
         missing_schema_pages = page_audit.get("pages_with_issues")
+    if not schema_validation:
+        # Older/weaker signal, only used when the real schema_validation
+        # pass above wasn't available at all.
+        if schema_present is False:
+            items.append("Homepage has no schema.org (JSON-LD) markup — add Organization, Product, and FAQ schema so AI Overviews and rich results can parse the page.")
+        elif missing_schema_pages:
+            items.append(f"{missing_schema_pages} crawled page(s) are missing schema markup that other pages already have — bring them in line.")
+        else:
+            items.append("Implement Organization, Product/Service, FAQ, and Breadcrumb schema site-wide for AI Overview eligibility.")
 
-    items = ["Add structured FAQ sections to every key page, answering the questions customers actually ask before buying."]
-    if schema_present is False:
-        items.append("Homepage has no schema.org (JSON-LD) markup — add Organization, Product, and FAQ schema so AI Overviews and rich results can parse the page.")
-    elif missing_schema_pages:
-        items.append(f"{missing_schema_pages} crawled page(s) are missing schema markup that other pages already have — bring them in line.")
-    else:
-        items.append("Implement Organization, Product/Service, FAQ, and Breadcrumb schema site-wide for AI Overview eligibility.")
     items += [
         "Write concise, extractable answer blocks (2-3 sentences) near the top of key pages — this is what LLMs quote directly.",
         "Build a dedicated FAQ hub covering the full buyer journey: eligibility, pricing, process, and comparisons.",
@@ -6539,7 +6583,7 @@ def _build_report(
     if geopulse_analysis and geopulse_analysis.get("aeo_items"):
         _next_steps_category_slide(prs, "Answer Engine Optimization (AEO)", None, geopulse_analysis["aeo_items"])
     else:
-        _next_steps_slide("aeo", add_aeo_slide, prs, site_audit, page_audit)
+        _next_steps_slide("aeo", add_aeo_slide, prs, site_audit, page_audit, schema_validation)
     if geopulse_analysis and geopulse_analysis.get("geo_items"):
         _next_steps_category_slide(prs, "Generative Engine Optimization (GEO)", None, geopulse_analysis["geo_items"])
     else:
