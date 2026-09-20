@@ -397,6 +397,21 @@ def test_final_acceptance_check_demotes_catchall_name_defensively():
     assert "catch-all" in rows[0]["cluster_status"]
 
 
+def test_priority_score_attached_to_every_row_without_replacing_cluster_priority():
+    rows = [
+        {"keyword": "widget insurance", "search_volume": 500, "intent": "Commercial", "page_category": "Landing Page"},
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"widget insurance": "Insurance"}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    row = rows[0]
+    assert 0 <= row["priority_score"] <= 100
+    assert "business_relevance" in row["priority_factors"]
+    assert "cluster_priority" in row  # existing field, untouched by the additive priority_score
+
+
 def test_final_acceptance_check_strips_disambiguation_suffix_before_judging_name():
     # "Pricing (Commercial)" is a disambiguated label from label_owner
     # collision handling, not itself a catch-all name — only its bare

@@ -28,6 +28,7 @@ from app.services.keyword_relevance_service import (
     filter_other_brand_keywords,
     is_branded_or_near_brand,
 )
+from app.services.priority_model import compute_priority_score
 
 SLIDE_W = Inches(13.333)
 SLIDE_H = Inches(7.5)
@@ -2375,11 +2376,31 @@ def build_structured_technical_recommendations(
     if not page_audit:
         return []
     scored_rows = [r for r in _tech_fixes_scored_rows(page_audit, analytics, site_audit_pages_rows) if r[6] == "other"]
+    _tech_severity_score = {0: 1.0, 1: 0.6, 2: 0.3}
     recommendations = []
     for i, (severity_rank, _neg_score, issue, path, fix_text, page_views, category) in enumerate(scored_rows):
         evidence = f"Detected on {path}"
         if page_views:
             evidence += f" ({page_views:,} pageviews in the analytics window)"
+        # Unified Priority Model (spec section 40) — additive alongside the
+        # existing `priority` rank (which stays this table's own actual sort
+        # key, unchanged). business_relevance/evidence_confidence are 1.0
+        # since this is always the client's own crawled page with real
+        # detected issues; ranking_opportunity/intent_strength/
+        # commercial_value have no real per-page signal here so stay
+        # neutral rather than guessed.
+        priority_model_result = compute_priority_score(
+            business_relevance=1.0,
+            search_demand=min(page_views / 1000.0, 1.0) if page_views else 0.0,
+            current_visibility=1.0 if page_views else 0.3,
+            ranking_opportunity=0.5,
+            intent_strength=0.3,
+            commercial_value=0.3,
+            conversion_potential=0.5,
+            technical_severity=_tech_severity_score.get(severity_rank, 0.3),
+            effort=0.3,
+            evidence_confidence=1.0,
+        )
         recommendations.append({
             "issue": issue,
             "evidence": evidence,
@@ -2387,6 +2408,8 @@ def build_structured_technical_recommendations(
             "impact": _TECH_IMPACT_BY_SEVERITY_RANK.get(severity_rank, "Low"),
             "action": fix_text,
             "priority": i + 1,
+            "priority_score": priority_model_result["score"],
+            "priority_factors": priority_model_result["factors"],
             "category": category,
         })
     return recommendations

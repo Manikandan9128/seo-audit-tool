@@ -58,6 +58,7 @@ import re
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
 from app.services.keyword_cluster_service import generate_batched_candidate_clusters
 from app.services.keyword_relevance_service import match_existing_page_for_cluster
+from app.services.priority_model import compute_priority_score, evidence_confidence_to_score
 
 logger = logging.getLogger(__name__)
 
@@ -597,6 +598,69 @@ def _assign_evidence_confidence(rows: list[dict]) -> None:
         r["evidence_confidence"] = "High" if signals >= 2 else ("Medium" if signals == 1 else "Low")
 
 
+_EFFORT_BY_EXISTING_PAGE_ACTION = {
+    "Optimize Existing Page": 0.2,
+    "Expand Existing Page": 0.4,
+    "Differentiate": 0.6,
+    "Create New Page": 0.8,
+}
+_INTENT_STRENGTH = {
+    "transactional": 1.0, "commercial": 1.0, "commercial investigation": 0.8,
+    "comparison": 0.7, "local": 0.6, "informational": 0.4, "navigational": 0.2,
+}
+
+
+def _assign_priority_score(rows: list[dict]) -> None:
+    """Spec section 40 — Unified Priority Model, using every earlier
+    field this pipeline already computed (never a new judgment call, never
+    volume alone). Additive: sets `priority_score`/`priority_factors`
+    alongside the existing `cluster_priority` rank, which stays the
+    slide's own actual sort key — see priority_model.py's module docstring
+    for why this doesn't replace it."""
+    for r in rows:
+        clustered = bool((r.get("cluster") or "").strip())
+        is_core = clustered and r.get("business_theme") and r.get("business_theme") == r.get("core_category")
+        business_relevance = 1.0 if is_core else (0.6 if clustered else 0.0)
+
+        volume = _num(r.get("search_volume"))
+        search_demand = min(volume / 1000.0, 1.0)
+
+        position = r.get("current_position")
+        try:
+            position_f = float(position) if position not in (None, "") else None
+        except (TypeError, ValueError):
+            position_f = None
+        current_visibility = 1.0 if (position_f is not None and position_f <= 10) else (0.5 if position_f is not None else 0.0)
+        if position_f is None:
+            ranking_opportunity = 0.6  # not ranking at all — real opportunity, lower certainty than a known quick-win zone
+        elif 4 <= position_f <= 20:
+            ranking_opportunity = 1.0  # page-1/2 quick-win zone
+        else:
+            ranking_opportunity = 0.2  # already top-3 (little headroom) or very deep (long climb)
+
+        intent_strength = _INTENT_STRENGTH.get((r.get("intent") or "").strip().lower(), 0.3)
+        cpc = _num(r.get("cpc"))
+        commercial_value = min(cpc / 10.0, 1.0) if cpc else intent_strength
+
+        effort = _EFFORT_BY_EXISTING_PAGE_ACTION.get(r.get("existing_page_action") or "", 0.5)
+        evidence_confidence = evidence_confidence_to_score(r.get("evidence_confidence"))
+
+        result = compute_priority_score(
+            business_relevance=business_relevance,
+            search_demand=search_demand,
+            current_visibility=current_visibility,
+            ranking_opportunity=ranking_opportunity,
+            intent_strength=intent_strength,
+            commercial_value=commercial_value,
+            conversion_potential=0.5,  # no per-keyword conversion/funnel data available — neutral, never guessed higher
+            technical_severity=0.0,  # not applicable to a keyword row
+            effort=effort,
+            evidence_confidence=evidence_confidence,
+        )
+        r["priority_score"] = result["score"]
+        r["priority_factors"] = result["factors"]
+
+
 def _final_cluster_acceptance_check(rows: list[dict]) -> None:
     """Spec section 44 — Final Cluster Acceptance Check, enforced as an
     actual gate rather than left implicit across the earlier steps that
@@ -656,7 +720,8 @@ def build_final_keyword_clusters(
     (structural, see module docstring) -> Core Category + Cluster
     Prioritization -> Primary/Secondary -> Existing Page Matching ->
     Cannibalization Check -> Final Cluster Acceptance Check -> Evidence
-    Confidence, mutating and returning `rows`. Caller must already have
+    Confidence -> Unified Priority Score (spec section 40, additive —
+    see priority_model.py), mutating and returning `rows`. Caller must already have
     `intent` and `page_category` set on every row (FINAL
     PIPELINE steps 3-4) before calling this — this function only reads
     those fields, never sets them. Ranking enrichment (current_position/
@@ -676,4 +741,5 @@ def build_final_keyword_clusters(
     _apply_cannibalization_check(rows)
     _final_cluster_acceptance_check(rows)
     _assign_evidence_confidence(rows)
+    _assign_priority_score(rows)
     return rows

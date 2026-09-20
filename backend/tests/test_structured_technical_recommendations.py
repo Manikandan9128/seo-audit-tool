@@ -19,8 +19,9 @@ def test_recommendation_has_all_required_fields():
     recs = build_structured_technical_recommendations(page_audit)
     assert len(recs) == 1
     rec = recs[0]
-    for field in ("issue", "evidence", "affected_urls", "impact", "action", "priority", "category"):
+    for field in ("issue", "evidence", "affected_urls", "impact", "action", "priority", "category", "priority_score", "priority_factors"):
         assert field in rec
+    assert 0 <= rec["priority_score"] <= 100
     assert rec["affected_urls"] == ["/trucks"]
     assert rec["priority"] == 1
     assert "Fix" not in rec["impact"]  # impact is a severity statement, not a fix instruction
