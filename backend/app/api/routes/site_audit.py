@@ -35,6 +35,7 @@ from app.reporting.pptx_builder import (
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
     build_search_opportunity_pages, build_structured_technical_recommendations,
 )
+from app.services.recommendation_registry import build_keyword_strategy_recommendations, deduplicate_recommendations
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
@@ -1953,10 +1954,23 @@ def _gather_report_data(
         page_audit_result, analytics, site_audit_pages_rows,
     )
 
+    # Universal SEO Audit Engine spec (2026-09-20) section 38: Global
+    # Recommendation Deduplication. Collects each module's own real
+    # recommendations (never re-judged here, see recommendation_registry's
+    # module docstring) under its module category, then merges any
+    # cross-module duplicate that shares the same URL and canonical action
+    # type — e.g. Technical and Keyword Strategy independently landing on
+    # "optimize the existing page" for the same URL.
+    global_recommendations = deduplicate_recommendations([
+        *[{**rec, "category": "Technical", "url": (rec.get("affected_urls") or [None])[0]} for rec in technical_recommendations],
+        *build_keyword_strategy_recommendations(keyword_rows_all),
+    ])
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
         "technical_recommendations": technical_recommendations or None,
+        "global_recommendations": global_recommendations or None,
         "schema_validation": schema_validation_result,
         "site_audit_issues": site_audit_issues_rows or None,
         "structured_data_rows": structured_data_rows or None,
@@ -2194,8 +2208,11 @@ def _build_pptx_for_client(
     data.pop("own_site_positions_rows", None)
     # Same discipline — technical_recommendations (spec section 31's
     # structured Issue/Evidence/Affected URLs/Impact/Action/Priority
-    # records) is API/export-only, build_report has no matching parameter.
+    # records) and global_recommendations (section 38's deduplicated
+    # cross-module registry) are API/export-only, build_report has no
+    # matching parameter for either.
     data.pop("technical_recommendations", None)
+    data.pop("global_recommendations", None)
 
     progress("Building presentation...", 96)
     try:
