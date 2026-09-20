@@ -257,19 +257,53 @@ def test_search_opportunity_pages_excludes_row_already_meeting_band():
     assert build_search_opportunity_pages(pages) == []
 
 
-def test_search_opportunity_pages_recommendation_uses_crawled_title_when_topic_missing():
+def test_search_opportunity_pages_recommendation_uses_driving_query_when_title_doesnt_cover_it():
+    # 2026-09-20 spec: the Recommended Action must cite a real GSC (page,
+    # query) row, never a keyword guessed from the URL slug.
     pages = [{"page": "https://x.com/hydraulic-lifts", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
     crawled = [{"url": "https://x.com/hydraulic-lifts", "meta": {"title": "Home - Acme Corp"}}]
-    flagged = build_search_opportunity_pages(pages, crawled)
+    page_query_rows = [
+        {"page": "https://x.com/hydraulic-lifts", "query": "hydraulic lifts", "impressions": 800, "clicks": 8, "ctr": 0.01, "position": 5.5},
+    ]
+    brand_tokens = {"acme"}
+    flagged = build_search_opportunity_pages(pages, crawled, page_query_rows=page_query_rows, brand_tokens=brand_tokens)
     action = flagged[0]["recommended_action"]
-    assert "Hydraulic Lifts" in action
+    assert "hydraulic lifts" in action
     assert "doesn't lead with" in action
+    assert flagged[0]["driving_query"] == "hydraulic lifts"
 
 
-def test_search_opportunity_pages_states_data_insufficient_for_numeric_slug():
+def test_search_opportunity_pages_states_insufficient_when_no_query_data():
     pages = [{"page": "https://x.com/12345", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
     flagged = build_search_opportunity_pages(pages)
-    assert "additional query-level or SERP data is required" in flagged[0]["recommended_action"]
+    assert "No qualifying non-brand query found" in flagged[0]["recommended_action"]
+    assert flagged[0]["driving_query"] is None
+
+
+def test_search_opportunity_pages_excludes_page_driven_only_by_branded_query():
+    # 2026-09-20 spec: a page whose real query breakdown shows the top
+    # query is BRANDED doesn't qualify as an incremental non-brand SEO
+    # opportunity, even though it clears the page-level CTR-gap gate.
+    pages = [{"page": "https://x.com/about", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    page_query_rows = [
+        {"page": "https://x.com/about", "query": "acme corp", "impressions": 900, "clicks": 9, "ctr": 0.01, "position": 5.0},
+    ]
+    brand_tokens = {"acme"}
+    flagged = build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens=brand_tokens)
+    assert flagged == []
+
+
+def test_search_opportunity_pages_keeps_page_with_mixed_brand_and_nonbrand_queries():
+    pages = [{"page": "https://x.com/about", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    page_query_rows = [
+        {"page": "https://x.com/about", "query": "acme corp", "impressions": 50, "clicks": 5, "ctr": 0.01, "position": 5.0},
+        {"page": "https://x.com/about", "query": "company overview", "impressions": 900, "clicks": 9, "ctr": 0.01, "position": 6.0},
+    ]
+    brand_tokens = {"acme"}
+    flagged = build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens=brand_tokens)
+    assert len(flagged) == 1
+    assert flagged[0]["driving_query"] == "company overview"
+    assert "acme corp" not in flagged[0]["recommended_action"]
 
 
 def test_search_opportunity_pages_sorted_by_estimated_opportunity_clicks():

@@ -118,6 +118,37 @@ def get_search_analytics_by_country(creds: Credentials, site_url: str, start_dat
     return {"rows": rows}
 
 
+def get_page_query_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 5000) -> dict:
+    """Same Search Analytics API, dimensioned by page AND query together —
+    the combined dimension none of the single-dimension calls above give.
+    2026-09-20 spec: Search Opportunities - Pages must detect opportunities
+    at the (page, query) level first (which query is actually driving a
+    page's visibility, and is it branded or non-brand) before rolling up
+    to the page-level table — a query rewritten from the URL slug or
+    invented isn't real GSC evidence, only this combined dimension is."""
+    webmasters = build("searchconsole", "v1", credentials=creds)
+    body = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "dimensions": ["page", "query"],
+        "rowLimit": row_limit,
+    }
+    response = webmasters.searchanalytics().query(siteUrl=site_url, body=body).execute()
+    rows = []
+    for row in response.get("rows", []):
+        rows.append(
+            {
+                "page": row["keys"][0],
+                "query": row["keys"][1],
+                "clicks": row["clicks"],
+                "impressions": row["impressions"],
+                "ctr": row["ctr"],
+                "position": row["position"],
+            }
+        )
+    return {"rows": rows}
+
+
 def get_page_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 1000) -> dict:
     """Same Search Analytics API as get_search_analytics, dimensioned by page
     instead of query — clicks/impressions per URL, for cross-referencing

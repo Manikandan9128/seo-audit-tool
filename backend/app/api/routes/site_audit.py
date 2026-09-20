@@ -33,7 +33,7 @@ from app.reporting.pptx_builder import (
     build_report, classify_seo_issues, _canonical_page_totals,
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
-    build_search_opportunity_pages, _country_label,
+    build_search_opportunity_pages,
 )
 from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
@@ -1131,6 +1131,12 @@ def _gather_report_data(
                     jobs["page_clicks"] = pool.submit(
                         gsc_service.get_page_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
                     )
+                    # (page, query) combined dimension (2026-09-20 spec) —
+                    # Search Opportunities - Pages needs the actual query
+                    # driving each page's visibility, not a URL-slug guess.
+                    jobs["page_query_clicks"] = pool.submit(
+                        gsc_service.get_page_query_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=5000
+                    )
                     jobs["search_by_country"] = pool.submit(
                         gsc_service.get_search_analytics_by_country, creds, client.gsc_site_url, gsc_start, gsc_end
                     )
@@ -1710,9 +1716,10 @@ def _gather_report_data(
         # already fetched above) plus the client's own top GSC countries
         # (used only as a place-name lookup for the URL slug, never as a
         # per-page traffic claim).
-        known_place_names = [_country_label(r.get("country", "")) for r in country_rows]
+        page_query_rows = (analytics.get("page_query_clicks") or {}).get("rows") or []
         search_opportunity_pages = build_search_opportunity_pages(
-            page_clicks_rows, (page_audit_result or {}).get("pages") or [], known_place_names,
+            page_clicks_rows, (page_audit_result or {}).get("pages") or [],
+            page_query_rows=page_query_rows, brand_tokens=brand_tokens,
         )
 
         if settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key:

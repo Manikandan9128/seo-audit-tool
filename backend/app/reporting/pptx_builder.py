@@ -3179,20 +3179,6 @@ def _sop_page_type(url: str) -> str | None:
     return None
 
 
-def _sop_slug_topic(url: str) -> str | None:
-    """Last URL path segment as a human-readable topic phrase — real text
-    taken from the page's own URL, not invented. Returns None for a
-    numeric/UUID-style slug, which carries no topic signal."""
-    path = (urlparse(url or "").path or "").strip("/")
-    if not path:
-        return None
-    segment = re.sub(r"\.(html?|php|aspx?)$", "", path.rsplit("/", 1)[-1], flags=re.IGNORECASE)
-    if not segment or re.fullmatch(r"[0-9-]+", segment) or re.fullmatch(r"[0-9a-f-]{8,}", segment, re.IGNORECASE):
-        return None
-    topic = re.sub(r"[-_]+", " ", segment).strip()
-    return topic.title() if topic else None
-
-
 def _sop_normalize_url(url: str) -> str:
     p = urlparse(url or "")
     return f"{p.netloc}{p.path.rstrip('/')}".lower()
@@ -3212,78 +3198,122 @@ def _sop_crawled_meta_index(crawled_pages: list[dict] | None) -> dict:
 
 
 _SOP_TOPIC_MAX_CHARS = 40  # keeps the whole sentence table-cell-sized (2026-09-18 fix — see below)
+_SOP_QUERY_MIN_IMPRESSIONS = 10  # a per-query floor, smaller than the page-level floor — one query is a slice of a page's total impressions, not the whole page's signal
+
+
+def _sop_query_type(query: str, brand_tokens) -> str:
+    if not brand_tokens:
+        return "unknown"
+    return "brand" if is_branded_or_near_brand(query, brand_tokens) else "non_brand"
+
+
+def _sop_page_query_index(page_query_rows: list[dict] | None, brand_tokens) -> dict[str, list[dict]]:
+    """normalized page url -> its real GSC (page, query) rows, each tagged
+    brand/non_brand/unknown (2026-09-20 spec) — the actual query driving a
+    page's visibility, never a keyword derived from the URL slug. Empty
+    when page_query_rows wasn't supplied (older caller, or the GSC (page,
+    query) pull failed) — callers must treat "no entry for this page" as
+    "no query-level data available," not "no queries exist"."""
+    index: dict[str, list[dict]] = {}
+    for r in page_query_rows or []:
+        query = (r.get("query") or "").strip()
+        url = r.get("page") or ""
+        key = _sop_normalize_url(url)
+        if not query or not key:
+            continue
+        index.setdefault(key, []).append({
+            "query": query,
+            "impressions": float(r.get("impressions", 0) or 0),
+            "clicks": float(r.get("clicks", 0) or 0),
+            "ctr": float(r.get("ctr", 0) or 0) * 100,
+            "position": float(r.get("position", 0) or 0),
+            "query_type": _sop_query_type(query, brand_tokens),
+        })
+    return index
+
+
+def _sop_driving_query(queries: list[dict]) -> dict | None:
+    """The strongest NON-BRAND opportunity-driving query for a page
+    (2026-09-20 spec, "Query Selection for Recommendations" + "Brand vs
+    Non-Brand Classification"): position generally 4-10 with meaningful
+    impressions. Branded queries are never used to justify an incremental
+    SEO recommendation — a branded query's low CTR often reflects
+    navigational intent, not a fixable SERP problem, even when it's the
+    page's biggest query by volume."""
+    candidates = [
+        q for q in queries
+        if q["query_type"] == "non_brand" and q["impressions"] >= _SOP_QUERY_MIN_IMPRESSIONS
+        and _SOP_POSITION_LO <= q["position"] <= _SOP_POSITION_HI
+    ]
+    return max(candidates, key=lambda q: q["impressions"]) if candidates else None
 
 
 def _sop_recommended_action(
     position: float, ctr_pct: float, band: tuple[float, float],
-    page_type: str | None, topic: str | None, meta: dict | None, known_place_names: list[str] | None,
+    page_type: str | None, meta: dict | None, driving_query: dict | None,
 ) -> str:
     """Builds a page-specific Recommended Action from only what this row's
     real data supports: its own position/CTR gap against the internal
-    benchmark, its own URL-derived topic/page-type, and (when the crawl
-    sample covers it) its own crawled title. Never invents a keyword,
-    benefit, spec, or claim the row's data doesn't carry — where the data
-    genuinely isn't enough for a specific fix, says so instead of
-    defaulting to a generic 'rewrite title/meta' line.
+    benchmark, and — when a real GSC (page, query) row identifies one — the
+    actual non-brand query driving this page's visibility (2026-09-20
+    spec). Never derives a keyword from the URL slug (that isn't real GSC
+    evidence): when no qualifying query is available, says so plainly
+    instead of guessing one.
 
     Kept deliberately to ONE short sentence (2026-09-18 fix — confirmed
-    live on the BharatBenz regen: the original 2-3 sentence version ran
-    300-360 chars, which _draw_table's row-height auto-shrink couldn't fit
-    at 9 rows and collapsed every row to a single truncated line, losing
-    the page-specific half of the sentence entirely — the exact opposite
-    of the ask). A long topic phrase is trimmed so one unusually long URL
-    slug can't blow the budget for every row's readability."""
+    live on the BharatBenz regen: a longer version didn't fit _draw_table's
+    row height at 9 rows and collapsed every row to one truncated line)."""
     gap = f"CTR {ctr_pct:.1f}% trails the internal {band[0]:.0f}-{band[1]:.0f}% benchmark for position {position:.0f}."
 
-    short_topic = None
-    if topic:
-        short_topic = topic if len(topic) <= _SOP_TOPIC_MAX_CHARS else topic[:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
+    if not driving_query:
+        return f"{gap} No qualifying non-brand query found — review SERP messaging in Search Console."
 
-    location_hit = None
-    if topic:
-        for place in known_place_names or []:
-            if place and len(place) > 3 and place.lower() in topic.lower():
-                location_hit = place
-                break
-
+    query_text = driving_query["query"]
+    short_query = query_text if len(query_text) <= _SOP_TOPIC_MAX_CHARS else query_text[:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
     title = (meta or {}).get("title")
-    if title:
-        has_topic = bool(topic) and topic.lower() in title.lower()
-        if topic and not has_topic:
-            action = f"Front-load \"{short_topic}\" in the title/H1 — current title doesn't lead with it."
-        elif topic:
-            angle = _SOP_TITLE_ANGLE_BY_PAGE_TYPE.get(page_type)
-            action = f"Title already covers \"{short_topic}\" — {angle}." if angle else (
-                "Title already covers the URL's topic — query-level or SERP data needed to find the click blocker."
-            )
-        else:
-            action = "No clear topic term to check the title against — query-level or SERP data required."
-    elif topic:
-        action = f"No crawled title in this sample — write title/meta around \"{short_topic}\"."
+    if title and short_query.lower() not in title.lower():
+        action = f"Front-load \"{short_query}\" in the title/H1 — current title doesn't lead with it."
+    elif title:
+        angle = _SOP_TITLE_ANGLE_BY_PAGE_TYPE.get(page_type)
+        action = (
+            f"Title already covers \"{short_query}\" — {angle}." if angle else
+            f"Title already covers \"{short_query}\" — review SERP messaging/snippet for this query."
+        )
     else:
-        action = "No topic term or crawled title available — additional query-level or SERP data is required."
-
-    if location_hit:
-        action += f" Surface \"{location_hit}\" explicitly in the title."
-
+        action = (
+            f"Improve page alignment and SERP messaging around \"{short_query}\" based on its "
+            f"{driving_query['impressions']:,.0f}-impression, position {driving_query['position']:.1f} "
+            "non-brand GSC visibility."
+        )
     return f"{gap} {action}"
 
 
 def build_search_opportunity_pages(
-    page_rows: list[dict], crawled_pages: list[dict] | None = None, known_place_names: list[str] | None = None,
+    page_rows: list[dict], crawled_pages: list[dict] | None = None,
+    page_query_rows: list[dict] | None = None, brand_tokens=None,
 ) -> list[dict]:
-    """Search Opportunities — Pages table (2026-09-18 user spec): existing,
-    already-indexed pages where an on-page fix (not a new page) can win
-    more clicks. Selection: real impressions signal (>= the same minimum-
-    signal floor used elsewhere), position 4-10 (page 1, CTR bands well-
-    behaved), and CTR noticeably under this position range's internal
-    benchmark. Priority = estimated extra monthly clicks if CTR reached
-    the benchmark floor (impressions x CTR gap) — a real, computed number,
-    not a subjective label — so "high impressions + strong ranking + low
-    CTR" naturally sorts first without a separate scoring system to
-    maintain. Recommended Action is built per-row in _sop_recommended_action
-    from that row's own URL/crawled-title data only."""
+    """Search Opportunities — Pages table (2026-09-20 spec rebuild):
+    existing, already-indexed pages where an on-page fix (not a new page)
+    can win more clicks. Page-level selection unchanged: real impressions
+    signal, position 4-10 (page 1, CTR bands well-behaved), and CTR
+    noticeably under this position range's internal benchmark.
+
+    NEW: opportunity detection also runs at the (page, query) level via
+    page_query_rows (real GSC (page, query) rows) — a page whose query
+    breakdown shows its top query is BRANDED is excluded here (branded
+    demand isn't a clear incremental non-brand SEO opportunity, 2026-09-20
+    spec section "Brand Query Handling"); a page with no query breakdown
+    at all (data gap, or an older caller not supplying page_query_rows)
+    still qualifies, just without a query-specific Recommended Action.
+    Recommended Action always cites the real driving non-brand query when
+    one was found, never a URL-slug guess (see _sop_recommended_action).
+
+    Priority = estimated extra monthly clicks if CTR reached the benchmark
+    floor (impressions x CTR gap) — a real, computed number, not a
+    subjective label, labeled "Estimated click opportunity" territory
+    (2026-09-20 spec) — never presented as a guaranteed gain."""
     meta_index = _sop_crawled_meta_index(crawled_pages)
+    query_index = _sop_page_query_index(page_query_rows, brand_tokens)
     scored = []
     for r in page_rows:
         impressions = float(r.get("impressions", 0) or 0)
@@ -3298,16 +3328,24 @@ def build_search_opportunity_pages(
             continue  # already clearing its band — nothing to fix here
 
         url = r.get("page") or ""
+        key = _sop_normalize_url(url)
+        page_queries = query_index.get(key)
+        driving_query = _sop_driving_query(page_queries) if page_queries else None
+        if page_queries and not driving_query:
+            top_query = max(page_queries, key=lambda q: q["impressions"])
+            if top_query["query_type"] == "brand":
+                continue  # primarily branded-driven — not a clear incremental non-brand SEO opportunity
+
         page_type = _sop_page_type(url)
-        topic = _sop_slug_topic(url)
-        meta = meta_index.get(_sop_normalize_url(url))
+        meta = meta_index.get(key)
         opportunity_clicks = impressions * (band[0] - ctr_pct) / 100
 
         scored.append({
             "page": url, "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1),
             "position": round(position, 1), "page_type": page_type,
-            "recommended_action": _sop_recommended_action(position, ctr_pct, band, page_type, topic, meta, known_place_names),
+            "recommended_action": _sop_recommended_action(position, ctr_pct, band, page_type, meta, driving_query),
             "opportunity_clicks": round(opportunity_clicks, 1),
+            "driving_query": driving_query["query"] if driving_query else None,
         })
 
     scored.sort(key=lambda r: r["opportunity_clicks"], reverse=True)
@@ -3554,7 +3592,11 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
 
     left, width = Inches(0.6), Inches(12.1)
     y = Inches(1.05)
-    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Landing Pages (Existing Pages, CTR Opportunity)", size=12.5, bold=True, color=_accent())
+    # 2026-09-20 spec: opportunities here may involve CTR, SERP messaging,
+    # or query/page alignment — not necessarily a proven CTR problem — so
+    # the section title must not narrow to "(Existing Pages, CTR
+    # Opportunity)".
+    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Pages — CTR & SERP Opportunities", size=12.5, bold=True, color=_accent())
     y += Inches(0.28)
     # 6, not the 9 other Search Opportunities/Traffic Sources tables use
     # (2026-09-18 fix): Recommended Action here runs ~2 lines even at its
@@ -3588,20 +3630,25 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
         run.font.underline = True
 
     # KEY INSIGHTS: name the single highest-opportunity row (its own
-    # computed opportunity_clicks number, not a guess), disclose how many
+    # computed estimated-click-opportunity number, not a guess — 2026-09-20
+    # spec: labeled "estimated click opportunity," never "recoverable
+    # clicks," never presented as a guaranteed gain), disclose how many
     # candidates exist beyond the table, and flag data-insufficient rows
-    # explicitly rather than letting them read like every other row.
+    # explicitly rather than letting them read like every other row. No
+    # individual query is named here — that detail stays in each row's own
+    # Recommended Action.
     insights = []
     top = opportunity_pages[0]
     insights.append(
         f"Highest-priority page: \"{top['page']}\" (position {top['position']:.1f}, {top['impressions']:,} "
-        f"impressions) — closing its CTR gap to the internal benchmark could add roughly "
-        f"{top['opportunity_clicks']:.0f} clicks/month, the largest single opportunity in this set."
+        f"impressions) — an estimated click opportunity of roughly {top['opportunity_clicks']:.0f} clicks/month "
+        "if its CTR gap to the internal benchmark closed, the largest single estimate in this set (not a "
+        "guaranteed gain)."
     )
-    insufficient = sum(1 for r in opportunity_pages if "additional query-level or SERP data is required" in r["recommended_action"])
+    insufficient = sum(1 for r in opportunity_pages if "No qualifying non-brand query found" in r["recommended_action"])
     if insufficient:
-        insights.append(f"{insufficient} of {len(opportunity_pages)} flagged pages need additional query-level or SERP data before a specific title/meta fix can be written — listed with position/CTR only, not a generic recommendation.")
-    insights.append(f"Showing top {len(shown)} of {len(opportunity_pages)} pages ranked by estimated recoverable clicks/month.")
+        insights.append(f"{insufficient} of {len(opportunity_pages)} flagged pages have no qualifying non-brand query in the GSC (page, query) data pulled — listed with position/CTR only, not a generic recommendation.")
+    insights.append(f"Showing top {len(shown)} of {len(opportunity_pages)} pages ranked by estimated click opportunity.")
     _insights_strip(slide, left, y, width, insights, max_y=SLIDE_H - Inches(0.4))
     return slide
 
