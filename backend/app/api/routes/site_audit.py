@@ -1106,13 +1106,36 @@ def _gather_report_data(
     # after every page — that alone was 6+ seconds of pure sleep for a
     # 20-page crawl, run synchronously on every single report generation.
     progress("Crawling site and checking tech stack...", 15)
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        site_audit_future = pool.submit(run_site_audit, client.website_url)
-        page_audit_future = pool.submit(asyncio.run, run_multi_page_audit_async(client.website_url, page_limit=20))
-        tech_stack_future = pool.submit(detect_tech_stack, client.website_url)
-        site_audit_result = site_audit_future.result()
-        page_audit_result = page_audit_future.result()
-        tech_stack_result = tech_stack_future.result()
+    # Hard outer deadline, same pattern (and same reasoning) as the PSI
+    # section's own fix below: run_site_audit calls summarize_company (an
+    # AI call that can itself take several minutes across its Groq/Gemini/
+    # Claude fallback chain plus rate-limit backoff sleeps), and neither it
+    # nor the crawler/tech-stack detector had any outer bound at all — a
+    # slow/unresponsive target site or a stuck AI provider call could block
+    # this whole report indefinitely with zero progress ticks, which is
+    # exactly what the 15-minute stale-job watchdog is built to catch, but
+    # can't catch a hang inside a single `.result()` call with no timeout.
+    crawl_deadline = 300.0
+    pool = ThreadPoolExecutor(max_workers=3)
+    site_audit_future = pool.submit(run_site_audit, client.website_url)
+    page_audit_future = pool.submit(asyncio.run, run_multi_page_audit_async(client.website_url, page_limit=20))
+    tech_stack_future = pool.submit(detect_tech_stack, client.website_url)
+    done, _not_done = wait([site_audit_future, page_audit_future, tech_stack_future], timeout=crawl_deadline)
+
+    def _future_result_or_none(future, label):
+        if future not in done:
+            logger.error("%s timed out (>%.0fs) for %s", label, crawl_deadline, client.website_url)
+            return None
+        try:
+            return future.result()
+        except Exception:
+            logger.exception("%s failed for %s", label, client.website_url)
+            return None
+
+    site_audit_result = _future_result_or_none(site_audit_future, "Site audit") or {}
+    page_audit_result = _future_result_or_none(page_audit_future, "Page audit") or {}
+    tech_stack_result = _future_result_or_none(tech_stack_future, "Tech stack detection") or {}
+    pool.shutdown(wait=False)  # not a `with` block — same reason as the PSI pool below: never block on a still-stuck thread
     if "error" in tech_stack_result:
         tech_stack_result = None
 
@@ -2175,6 +2198,18 @@ def _build_pptx_for_client(
     # the docstring above on why this never goes into the PPTX itself).
     data.pop("content_generation_issues", None)
 
+    # Progress tick (2026-09-21 fix): this 90%->96% stretch runs brand-
+    # citation/Wikipedia network lookups and (below) an uncapped Google
+    # Sheets write that can legitimately take a while for a client with
+    # many competitors/keywords — previously zero progress ticks fired
+    # here, so the 15-minute stale-job watchdog couldn't tell "still
+    # working, just slow" from "actually stuck," and a genuinely slow (but
+    # alive) job got killed with the generic stalled-job message. This
+    # doesn't change how long any of it takes, only makes updated_at (and
+    # progress_stage, for the next report that does get stuck) reflect
+    # what's actually running.
+    progress("Checking brand citations and Wikipedia presence...", 92)
+
     # Real citation lookup for the Brand Citation Opportunities slide — free,
     # keyless web/news search (DuckDuckGo HTML + Google News RSS) plus a
     # Wikipedia check. Wrapped defensively even though both service functions
@@ -2232,6 +2267,13 @@ def _build_pptx_for_client(
             "keyword list\" link on the Competitor Analysis and Keyword Gap Analysis slides again."
         )
     elif has_sheet_worthy_data and get_sheets_oauth_email(db):
+        # No row cap on this Sheet by design (see create_combined_keyword_
+        # sheet's docstring) — a client with several competitors each
+        # carrying thousands of ranking keywords means real, uncapped
+        # Sheets API writes here, which can take a while. Ticking progress
+        # right before it starts is what lets a genuinely slow (not stuck)
+        # job survive the 15-minute stale-job watchdog.
+        progress("Building keyword tracking spreadsheet...", 94)
         try:
             # Keyword Gap Analysis gets its own tab in this same combined
             # spreadsheet (2026-09-18 spec) — its full filtered list, same
