@@ -29,3 +29,18 @@ def test_issue_noun_singular_plural():
     assert _issue_noun(1) == "1 issue"
     assert _issue_noun(0) == "0 issues"
     assert _issue_noun(38) == "38 issues"
+
+
+def test_semrush_row_excludes_non_200_status_as_optimization_target():
+    # 2026-09-21 spec rule 6: never recommend optimizing a 404/redirected
+    # URL — it isn't a valid page to fix title/meta/content on.
+    page_audit = {"pages": []}
+    site_audit_pages_rows = [
+        {"page_url": "https://example.com/gone", "issues": 5, "http_status_code": "404"},
+        {"page_url": "https://example.com/moved", "issues": 5, "http_status_code": "301"},
+        {"page_url": "https://example.com/ok", "issues": 5, "http_status_code": "200"},
+        {"page_url": "https://example.com/unknown", "issues": 5},  # no status column — unknown, still allowed
+    ]
+    rows = _tech_fixes_scored_rows(page_audit, analytics=None, site_audit_pages_rows=site_audit_pages_rows)
+    paths = {r[3] for r in rows}
+    assert paths == {"/ok", "/unknown"}

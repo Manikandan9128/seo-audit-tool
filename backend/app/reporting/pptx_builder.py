@@ -2317,6 +2317,15 @@ def _tech_fixes_scored_rows(
                 continue
             if not _is_content_page_url(page_url):
                 continue
+            # 2026-09-21 spec rule 6: never surface a 404/redirected/broken
+            # URL from the full-crawl export as an on-page optimization
+            # target — a title/meta/content fix on a URL that doesn't
+            # actually resolve to 200 is meaningless. Missing/blank status
+            # (older exports, or a column the crawler didn't populate) is
+            # treated as unknown, not confirmed-broken, so it still qualifies.
+            status = str(r.get("http_status_code", "") or "").strip()
+            if status and status != "200":
+                continue
             path = urlparse(page_url).path or "/"
             key = path.rstrip("/") or "/"
             if key in covered_paths or key in seen_semrush_paths:
@@ -2411,6 +2420,13 @@ def build_structured_technical_recommendations(
             "priority_score": priority_model_result["score"],
             "priority_factors": priority_model_result["factors"],
             "category": category,
+            # 2026-09-21 spec section 10 output structure — page_type is a
+            # URL-structure label (metadata), never used to invent an
+            # issue; organic_visibility_signal is the real GA4/GSC pageview
+            # count when known, None (not 0/guessed) when analytics wasn't
+            # joined for this path at all.
+            "page_type": _sop_page_type(path),
+            "organic_visibility_signal": page_views if page_views else None,
         })
     return recommendations
 
@@ -3276,14 +3292,6 @@ _SOP_PAGE_TYPE_PATTERNS = [
     ("blog/informational", re.compile(r"/(blog|articles?|guides?|resources?|news|faq)(/|$)", re.I)),
 ]
 
-_SOP_TITLE_ANGLE_BY_PAGE_TYPE = {
-    "product/category": "add a clear CTA (e.g. \"Shop\", \"Compare\")",
-    "service/pricing": "add an outcome-led CTA",
-    "blog/informational": "lead with a direct answer, not a description",
-    "location": "make the location explicit in the title",
-}
-
-
 def _sop_page_type(url: str) -> str | None:
     """Page type inferred from URL structure only (real data, never
     guessed from content) — used to vary the Recommended Action instead
@@ -3364,31 +3372,27 @@ def _sop_driving_query(queries: list[dict]) -> dict | None:
     return max(candidates, key=lambda q: q["impressions"]) if candidates else None
 
 
-def _sop_recommended_action(
-    position: float, ctr_pct: float, band: tuple[float, float],
-    page_type: str | None, meta: dict | None, driving_query: dict | None,
-) -> str:
+def _sop_recommended_action(position: float, meta: dict | None, driving_query: dict | None) -> str:
     """Builds a page-specific Recommended Action from only what this row's
-    real data supports: its own position/CTR gap against the internal
-    benchmark, and — when a real GSC (page, query) row identifies one — the
-    actual non-brand query driving this page's visibility (2026-09-20
-    spec). Never derives a keyword from the URL slug (that isn't real GSC
-    evidence): when no qualifying query is available, says so plainly
-    instead of guessing one.
+    real data supports — impression volume, page-one position, and, when a
+    real GSC (page, query) row identifies one, the actual non-brand query
+    driving this page's visibility (2026-09-20 spec). Never derives a
+    keyword from the URL slug: when no qualifying query is available, says
+    so plainly instead of guessing one.
+
+    2026-09-21 spec (no universal CTR benchmark): CTR is an observed,
+    displayed metric, never a pass/fail threshold — this function does not
+    take a CTR value or a benchmark band as input at all, so it's
+    structurally impossible for the reason to read "CTR trails benchmark
+    X-Y%." The reason is impressions + position + query relevance only.
+    Any action beyond a real title/query mismatch (which the crawled title
+    data actually supports) would be asserting a SERP-messaging problem we
+    have no SERP data to back up — that case states the evidence gap
+    ("Query/SERP validation required...") instead of inventing a fix.
 
     Kept deliberately to ONE short sentence (2026-09-18 fix — confirmed
     live on the BharatBenz regen: a longer version didn't fit _draw_table's
-    row height at 9 rows and collapsed every row to one truncated line).
-
-    2026-09-21 spec (GSC Search Opportunities vs. Keyword Opportunity
-    Analysis separation): the reason must lead with WHY this page is an
-    opportunity — real impression volume + page-one visibility + query
-    relevance — never open with the raw CTR-vs-benchmark number and a
-    generic "improve messaging" instruction (that pattern was explicitly
-    called out as the wrong shape). CTR-vs-benchmark still appears, but as
-    supporting evidence for the reason, not as the reason itself. With no
-    qualifying non-brand query, this never invents one from the URL/title —
-    it states the fixed evidence-gap sentence verbatim."""
+    row height at 9 rows and collapsed every row to one truncated line)."""
     if not driving_query:
         return "Insufficient query-level GSC evidence."
 
@@ -3396,20 +3400,13 @@ def _sop_recommended_action(
     short_query = query_text if len(query_text) <= _SOP_TOPIC_MAX_CHARS else query_text[:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
     reason = (
         f"Strong impression volume ({driving_query['impressions']:,.0f}) with page-one visibility "
-        f"(position {position:.1f}) for \"{short_query}\" — CTR trails the internal "
-        f"{band[0]:.0f}-{band[1]:.0f}% benchmark for this range, signaling a SERP-alignment opportunity."
+        f"(position {position:.1f}) for \"{short_query}\" creates an observable search opportunity."
     )
     title = (meta or {}).get("title")
     if title and short_query.lower() not in title.lower():
         action = f"Front-load \"{short_query}\" in the title/H1 — current title doesn't lead with it."
-    elif title:
-        angle = _SOP_TITLE_ANGLE_BY_PAGE_TYPE.get(page_type)
-        action = (
-            f"Title already covers \"{short_query}\" — {angle}." if angle else
-            f"Title already covers \"{short_query}\" — review SERP messaging/snippet for this query."
-        )
     else:
-        action = f"Review page alignment and SERP messaging around \"{short_query}\"."
+        action = "Query/SERP validation required before making a CTR-focused recommendation."
     return f"{reason} {action}"
 
 
@@ -3417,26 +3414,23 @@ def build_search_opportunity_pages(
     page_rows: list[dict], crawled_pages: list[dict] | None = None,
     page_query_rows: list[dict] | None = None, brand_tokens=None,
 ) -> list[dict]:
-    """Search Opportunities — Pages table (2026-09-20 spec rebuild):
-    existing, already-indexed pages where an on-page fix (not a new page)
-    can win more clicks. Page-level selection unchanged: real impressions
-    signal, position 4-10 (page 1, CTR bands well-behaved), and CTR
-    noticeably under this position range's internal benchmark.
+    """Search Opportunities — Pages table (2026-09-21 spec: no universal CTR
+    benchmark). Selection is evidence-based, never CTR-vs-threshold: real
+    impression volume, page-one visibility (position 4-10 — page 1, but not
+    the noisy top-3 extreme), and a real non-brand GSC (page, query) row
+    establishing query relevance. CTR is collected and displayed (still a
+    table column) but is NOT evaluated against any hard-coded percentage —
+    it never gates which pages qualify and never drives the priority score.
+    A page whose query breakdown shows its top query is BRANDED is excluded
+    (branded demand isn't a clear incremental non-brand SEO opportunity); a
+    page with no query breakdown at all still qualifies, just with the
+    fixed "Insufficient query-level GSC evidence." action instead of a
+    guessed one.
 
-    NEW: opportunity detection also runs at the (page, query) level via
-    page_query_rows (real GSC (page, query) rows) — a page whose query
-    breakdown shows its top query is BRANDED is excluded here (branded
-    demand isn't a clear incremental non-brand SEO opportunity, 2026-09-20
-    spec section "Brand Query Handling"); a page with no query breakdown
-    at all (data gap, or an older caller not supplying page_query_rows)
-    still qualifies, just without a query-specific Recommended Action.
-    Recommended Action always cites the real driving non-brand query when
-    one was found, never a URL-slug guess (see _sop_recommended_action).
-
-    Priority = estimated extra monthly clicks if CTR reached the benchmark
-    floor (impressions x CTR gap) — a real, computed number, not a
-    subjective label, labeled "Estimated click opportunity" territory
-    (2026-09-20 spec) — never presented as a guaranteed gain."""
+    Priority is impressions-only (a real, observed signal, not a modeled
+    CTR-gap x impressions score — that formula was the exact "universal
+    benchmark by another name" this spec forbids): the highest-visibility
+    pages surface first, tiered into High/Medium/Low thirds."""
     meta_index = _sop_crawled_meta_index(crawled_pages)
     query_index = _sop_page_query_index(page_query_rows, brand_tokens)
     scored = []
@@ -3447,10 +3441,7 @@ def build_search_opportunity_pages(
         position = float(r.get("position", 0) or 0)
         if not (_SOP_POSITION_LO <= position <= _SOP_POSITION_HI):
             continue
-        ctr_pct = float(r.get("ctr", 0) or 0) * 100
-        band = _ctr_band_for_position(position)
-        if not (band and ctr_pct < band[0]):
-            continue  # already clearing its band — nothing to fix here
+        ctr_pct = float(r.get("ctr", 0) or 0) * 100  # observed/displayed only — never a selection gate
 
         url = r.get("page") or ""
         key = _sop_normalize_url(url)
@@ -3463,19 +3454,17 @@ def build_search_opportunity_pages(
 
         page_type = _sop_page_type(url)
         meta = meta_index.get(key)
-        opportunity_clicks = impressions * (band[0] - ctr_pct) / 100
 
         scored.append({
             "page": url, "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1),
             "position": round(position, 1), "page_type": page_type,
-            "recommended_action": _sop_recommended_action(position, ctr_pct, band, page_type, meta, driving_query),
-            "opportunity_clicks": round(opportunity_clicks, 1),
+            "recommended_action": _sop_recommended_action(position, meta, driving_query),
             "driving_query": driving_query["query"] if driving_query else None,
             "evidence_confidence": "high" if driving_query else "low",
             "data_source": "GSC",
         })
 
-    scored.sort(key=lambda r: r["opportunity_clicks"], reverse=True)
+    scored.sort(key=lambda r: r["impressions"], reverse=True)
     third = max(1, -(-len(scored) // 3))
     for i, r in enumerate(scored):
         r["priority"] = "High" if i < third else ("Medium" if i < 2 * third else "Low")
@@ -3756,26 +3745,24 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
         run.font.color.rgb = _accent()
         run.font.underline = True
 
-    # KEY INSIGHTS: name the single highest-opportunity row (its own
-    # computed estimated-click-opportunity number, not a guess — 2026-09-20
-    # spec: labeled "estimated click opportunity," never "recoverable
-    # clicks," never presented as a guaranteed gain), disclose how many
-    # candidates exist beyond the table, and flag data-insufficient rows
-    # explicitly rather than letting them read like every other row. No
-    # individual query is named here — that detail stays in each row's own
-    # Recommended Action.
+    # KEY INSIGHTS: name the single highest-visibility row (impressions —
+    # a real observed signal, never a modeled CTR-gap number, 2026-09-21
+    # spec: no universal CTR benchmark anywhere in this reasoning),
+    # disclose how many candidates exist beyond the table, and flag
+    # data-insufficient rows explicitly rather than letting them read like
+    # every other row. No individual query is named here — that detail
+    # stays in each row's own Recommended Action.
     insights = []
     top = opportunity_pages[0]
     insights.append(
-        f"Highest-priority page: \"{top['page']}\" (position {top['position']:.1f}, {top['impressions']:,} "
-        f"impressions) — an estimated click opportunity of roughly {top['opportunity_clicks']:.0f} clicks/month "
-        "if its CTR gap to the internal benchmark closed, the largest single estimate in this set (not a "
-        "guaranteed gain)."
+        f"Highest-visibility page: \"{top['page']}\" (position {top['position']:.1f}, {top['impressions']:,} "
+        "impressions) — the largest observed search visibility in this set; CTR is shown per-row as an observed "
+        "metric, not compared against a fixed benchmark."
     )
-    insufficient = sum(1 for r in opportunity_pages if "No qualifying non-brand query found" in r["recommended_action"])
+    insufficient = sum(1 for r in opportunity_pages if r["recommended_action"] == "Insufficient query-level GSC evidence.")
     if insufficient:
         insights.append(f"{insufficient} of {len(opportunity_pages)} flagged pages have no qualifying non-brand query in the GSC (page, query) data pulled — listed with position/CTR only, not a generic recommendation.")
-    insights.append(f"Showing top {len(shown)} of {len(opportunity_pages)} pages ranked by estimated click opportunity.")
+    insights.append(f"Showing top {len(shown)} of {len(opportunity_pages)} pages ranked by impression volume.")
     _insights_strip(slide, left, y, width, insights, max_y=SLIDE_H - Inches(0.4))
     return slide
 

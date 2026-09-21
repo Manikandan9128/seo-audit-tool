@@ -255,9 +255,14 @@ def test_search_opportunity_pages_flags_real_ctr_gap_in_band():
     assert flagged[0]["data_source"] == "GSC"
 
 
-def test_search_opportunity_pages_excludes_row_already_meeting_band():
+def test_search_opportunity_pages_not_gated_by_ctr_value():
+    # 2026-09-21 spec: no universal CTR benchmark — a page with a "good"
+    # CTR still qualifies as long as impressions + position criteria are
+    # met, since CTR is an observed metric here, never a pass/fail gate.
     pages = [{"page": "https://x.com/c", "impressions": 1000, "ctr": 0.08, "position": 6.0}]
-    assert build_search_opportunity_pages(pages) == []
+    flagged = build_search_opportunity_pages(pages)
+    assert len(flagged) == 1
+    assert flagged[0]["ctr_pct"] == 8.0
 
 
 def test_search_opportunity_pages_recommendation_uses_driving_query_when_title_doesnt_cover_it():
@@ -310,14 +315,18 @@ def test_search_opportunity_pages_keeps_page_with_mixed_brand_and_nonbrand_queri
     assert "acme corp" not in flagged[0]["recommended_action"]
 
 
-def test_search_opportunity_pages_sorted_by_estimated_opportunity_clicks():
+def test_search_opportunity_pages_sorted_by_impressions():
+    # 2026-09-21 spec: no CTR-gap-based score (that was a universal
+    # benchmark by another name) — priority is impressions, a real
+    # observed signal, full stop.
     pages = [
         {"page": "https://x.com/small", "impressions": 100, "ctr": 0.01, "position": 6.0},
         {"page": "https://x.com/big", "impressions": 5000, "ctr": 0.01, "position": 6.0},
     ]
     flagged = build_search_opportunity_pages(pages)
     assert flagged[0]["page"] == "https://x.com/big"
-    assert flagged[0]["opportunity_clicks"] > flagged[1]["opportunity_clicks"]
+    assert flagged[0]["impressions"] > flagged[1]["impressions"]
+    assert "opportunity_clicks" not in flagged[0]
 
 
 def test_search_opportunity_pages_slide_recommended_action_not_truncated_to_one_line():
