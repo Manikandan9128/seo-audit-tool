@@ -3902,10 +3902,23 @@ def add_search_opportunities_countries_slide(prs: Presentation, high_countries: 
         _textbox(slide, left, y, width, Inches(0.3), "No countries met the material-opportunity bar this period.", size=11.5, color=TEXT_MUTED)
         y += Inches(0.4)
 
-    if low_signal:
+    # 2026-09-21 fix — confirmed live on a real Lumber regen: the low-
+    # signal summary (a country list like "United Kingdom, Australia,
+    # Indonesia, Singapore: ...") was drawn in a FIXED Inches(0.5) box
+    # regardless of how many lines it actually wrapped to, and with no
+    # check against how far the material table above had already pushed
+    # `y` — a long country list or a tall material table put this text
+    # box right on top of the footer's own "{client} · {domain}" text.
+    # Sized to its real wrapped-line count and skipped outright if there's
+    # no room left before the footer, same "stay clear of the footer"
+    # floor _insights_strip and the Programmatic SEO slide already use.
+    max_y = SLIDE_H - Inches(0.5)
+    if low_signal and y < max_y - Inches(0.46):
         _textbox(slide, left, y, width, Inches(0.22), "Low-Signal, Monitor Only", size=10.5, bold=True, color=TEXT_MUTED)
         y += Inches(0.24)
-        _textbox(slide, left, y, width, Inches(0.5), low_signal["summary"], size=10, color=TEXT_MUTED)
+        lines = _wrap_lines(low_signal["summary"], width, size_pt=10)
+        line_h = Inches(0.2)
+        _textbox(slide, left, y, width, min(line_h * lines, max_y - y), low_signal["summary"], size=10, color=TEXT_MUTED)
 
     return slide
 

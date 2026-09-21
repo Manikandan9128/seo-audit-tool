@@ -5,7 +5,7 @@ from app.reporting.pptx_builder import (
     add_search_opportunities_pages_slide, add_search_opportunities_countries_slide,
     build_branded_dependency_narrative, build_branded_vs_nonbranded_comparison,
     build_high_potential_countries, build_high_potential_pages, build_search_opportunity_pages,
-    _audit_slide_geometry,
+    _audit_slide_geometry, _theme,
 )
 
 
@@ -393,3 +393,26 @@ def test_countries_slide_low_signal_line_never_a_table_row():
         if shape.has_table:
             table_text = "\n".join(c.text_frame.text for row in shape.table.rows for c in row.cells)
             assert "China" not in table_text  # never rendered as a table row
+
+
+def test_countries_slide_low_signal_never_overlaps_footer():
+    # 2026-09-21 regression: confirmed live on a real Lumber regen — a long
+    # low-signal country list ("United Kingdom, Australia, Indonesia,
+    # Singapore: ...") drawn in a fixed-height box, with a full 9-row
+    # material table pushing y down first, overlapped the page footer.
+    material_rows = [
+        {"country": f"c{i}", "clicks": 20 + i, "impressions": 1000, "ctr": 0.05, "position": 5.0}
+        for i in range(9)
+    ]
+    low_signal_rows = [
+        {"country": c, "clicks": 1, "impressions": 300, "ctr": 1 / 300, "position": 10.0}
+        for c in ("gbr", "aus", "idn", "sgp", "nzl", "can", "usa", "deu", "fra")
+    ]
+    high_countries = build_high_potential_countries(material_rows + low_signal_rows)
+    prs = _prs()
+    _theme["footer"] = "Lumber  ·  www.lumberfi.com"
+    try:
+        add_search_opportunities_countries_slide(prs, high_countries, "Google Search Console")
+        assert _audit_slide_geometry(prs) == []
+    finally:
+        _theme["footer"] = ""
