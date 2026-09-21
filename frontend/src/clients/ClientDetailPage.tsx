@@ -9,6 +9,7 @@ import AnalyticsReport from "../components/AnalyticsReport";
 import CompanyOverviewEditor from "../components/CompanyOverviewEditor";
 import type { CompanyOverview } from "../components/CompanyOverviewEditor";
 import SemrushImportCard from "../components/SemrushImportCard";
+import ManualKeywordClusterCard from "../components/ManualKeywordClusterCard";
 import GeoPulseImportCard from "../components/GeoPulseImportCard";
 import SemrushChecklist from "../components/SemrushChecklist";
 import DomainRatingEditor from "../components/DomainRatingEditor";
@@ -107,7 +108,7 @@ export default function ClientDetailPage() {
 
   const [uxNotes, setUxNotes] = useState("");
 
-  type TabKey = "overview" | "datasources" | "analytics";
+  type TabKey = "overview" | "datasources" | "analytics" | "keywordclusters";
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   function goToTab(tab: TabKey) {
     setActiveTab(tab);
@@ -732,6 +733,9 @@ export default function ClientDetailPage() {
           <button className={`tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
             Analytics
           </button>
+          <button className={`tab ${activeTab === "keywordclusters" ? "active" : ""}`} onClick={() => setActiveTab("keywordclusters")}>
+            Keyword Clusters
+          </button>
         </div>
       </div>
 
@@ -1146,6 +1150,10 @@ export default function ClientDetailPage() {
         />
         <GeoPulseImportCard clientId={clientId!} imports={imports} onChanged={loadImports} />
       </div>
+      </section>
+
+      <section className={`panel ${activeTab === "keywordclusters" ? "active" : ""}`} style={{ display: activeTab === "keywordclusters" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
+        <ManualKeywordClusterCard clientId={clientId!} imports={imports} onChanged={loadImports} />
       </section>
 
       <section className={`panel ${activeTab === "analytics" ? "active" : ""}`} style={{ display: activeTab === "analytics" ? "flex" : "none", flexDirection: "column", gap: 20 }}>

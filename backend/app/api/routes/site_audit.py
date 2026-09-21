@@ -1430,19 +1430,38 @@ def _gather_report_data(
             if category:
                 r["page_category"] = category
 
+        # Manual keyword clustering (user's explicit instruction, 2026-09-21):
+        # an SEO strategist's own hand-built clustering file
+        # (manual_keyword_cluster_parser.py, uploaded via the Keyword
+        # Clusters tab) is the FIRST preference — sorted ascending by
+        # created_at so a later re-upload's assignment for a keyword wins
+        # over an earlier one, never the reverse. Only when a client has NO
+        # such upload does the AI Phase 2/3 pipeline run at all.
+        manual_cluster_map: dict[str, dict] = {}
+        for imp in sorted(all_imports, key=lambda r: r.created_at):
+            if imp.import_type != "keyword_cluster_manual" or not imp.is_own_site:
+                continue
+            for r in imp.parsed_data.get("rows", []):
+                kw = (r.get("keyword") or "").strip().lower()
+                if kw and r.get("cluster"):
+                    manual_cluster_map[kw] = {"cluster": r["cluster"], "primary_or_secondary": r.get("primary_or_secondary")}
+
         # Business Theme -> Candidate Clustering -> Validation/Auto-Split ->
         # Primary/Secondary -> Existing Page Matching -> Cannibalization
         # Check, all in one pass — see keyword_cluster_pipeline.py's module
         # docstring for why validation/splitting is structural rather than a
         # separate pass. Only runs when no row already has a real cluster
-        # value (a real Semrush Cluster/Topic column), same guard as before.
-        if not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
+        # value (a real Semrush Cluster/Topic column) UNLESS a manual
+        # clustering file exists — manual always overrides even that guard,
+        # since it's the client's own authoritative source of truth.
+        if manual_cluster_map or not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
             try:
                 build_final_keyword_clusters(
                     keyword_rows_all,
                     client.name,
                     _company_overview_context(company_overview_result),
                     _all_rows("site_audit_pages", own_only=True),
+                    manual_cluster_map=manual_cluster_map or None,
                 )
             except Exception as e:
                 logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)

@@ -284,27 +284,12 @@ def _assign_business_themes(rows: list[dict], client_name: str, client_descripti
         r["business_theme"] = theme_map.get(r.get("keyword"), UNCLASSIFIED_THEME) or UNCLASSIFIED_THEME
 
 
-def _build_candidate_clusters(rows: list[dict], client_description: str | None = None) -> None:
-    """External lead's Phase 2/3 spec (2026-09-21): two SEPARATE sequential
-    LLM calls (keyword_semantic_cluster_service.py) — semantic candidate
-    grouping, then validate/split/merge/finalize — replacing the earlier
-    single-call bucket-sub-split design. Modifier stripping to a core
-    semantic_topic phrase (spec sections 7-9 — see _strip_modifiers) still
-    runs deterministically over every row first, same as before: real
-    evidence fields the clustering engine consumes, never left to the AI's
-    own judgment. business_theme/intent/page_category are passed through
-    as each keyword's `source_cluster` — the spec's own "prior evidence
-    only, never treat it as the answer" framing — advisory prompt context
-    for Phase 2, not a structural boundary the way the old bucket design
-    used it.
-
-    Sets `cluster`/`cluster_status`/`primary_or_secondary` on every row in
-    the capped candidate pool; a row outside that pool, or one Phase 2/3
-    together couldn't confidently place, is left with `cluster` = ""
-    (unclustered) — the spec's explicit fallback, never a forced group.
-    Fails safe end to end: if either phase's AI call fails outright, every
-    row in the pool simply stays unclustered rather than falling back to
-    the old bucket-only design or inventing a group."""
+def _annotate_semantic_fields(rows: list[dict]) -> dict[str, dict]:
+    """Modifier stripping to a core semantic_topic phrase (spec sections
+    7-9 — see _strip_modifiers) runs deterministically over every row,
+    independent of whether clustering itself ends up manual or AI-driven —
+    real evidence fields, never left to either judgment call. Returns
+    {keyword text: row} for the caller's own lookups."""
     keyword_rows_by_text: dict[str, dict] = {}
     for r in rows:
         keyword = (r.get("keyword") or "").strip()
@@ -325,7 +310,50 @@ def _build_candidate_clusters(rows: list[dict], client_description: str | None =
         # call for the same keyword universe.
         r["main_entity"] = theme if theme != UNCLASSIFIED_THEME else None
         keyword_rows_by_text[keyword] = r
+    return keyword_rows_by_text
 
+
+def _apply_manual_clusters(rows: list[dict], manual_cluster_map: dict[str, dict]) -> None:
+    """User's explicit instruction (2026-09-21): a client's own hand-built
+    keyword clustering file (manual_keyword_cluster_parser.py) is the FIRST
+    preference for Target Keywords clustering, with the AI Phase 2/3
+    pipeline as the fallback only when no manual file has been uploaded —
+    never a second opinion layered on top of a manual assignment that
+    exists. `manual_cluster_map` is {keyword.lower(): {"cluster",
+    "primary_or_secondary"}}. A keyword the manual file doesn't cover is
+    left cluster="" (unclustered) — the same explicit "never force a
+    group" fallback the AI pipeline itself uses, not silently guessed."""
+    for r in rows:
+        keyword = (r.get("keyword") or "").strip()
+        entry = manual_cluster_map.get(keyword.lower()) if keyword else None
+        if not entry or not entry.get("cluster"):
+            r.setdefault("cluster", "")
+            continue
+        r["cluster"] = entry["cluster"]
+        r["cluster_status"] = "Validated (Manual)"
+        if entry.get("primary_or_secondary"):
+            r["primary_or_secondary"] = entry["primary_or_secondary"]
+
+
+def _build_candidate_clusters(rows: list[dict], keyword_rows_by_text: dict[str, dict], client_description: str | None = None) -> None:
+    """External lead's Phase 2/3 spec (2026-09-21): two SEPARATE sequential
+    LLM calls (keyword_semantic_cluster_service.py) — semantic candidate
+    grouping, then validate/split/merge/finalize — replacing the earlier
+    single-call bucket-sub-split design. Only runs at all when the client
+    has no manual keyword-cluster upload (build_final_keyword_clusters's
+    own manual-first branch) — this is strictly the fallback path.
+    business_theme/intent/page_category are passed through as each
+    keyword's `source_cluster` — the spec's own "prior evidence only, never
+    treat it as the answer" framing — advisory prompt context for Phase 2,
+    not a structural boundary the way the old bucket design used it.
+
+    Sets `cluster`/`cluster_status`/`primary_or_secondary` on every row in
+    the capped candidate pool; a row outside that pool, or one Phase 2/3
+    together couldn't confidently place, is left with `cluster` = ""
+    (unclustered) — the spec's explicit fallback, never a forced group.
+    Fails safe end to end: if either phase's AI call fails outright, every
+    row in the pool simply stays unclustered rather than falling back to
+    the old bucket-only design or inventing a group."""
     candidates = _unique_keywords_by_volume(rows)[:_BUSINESS_THEME_CANDIDATE_CAP]
     if not candidates:
         return
@@ -763,29 +791,43 @@ def build_final_keyword_clusters(
     client_name: str,
     client_description: str | None,
     site_audit_pages_rows: list[dict] | None,
+    manual_cluster_map: dict[str, dict] | None = None,
 ) -> list[dict]:
-    """Runs Non-Clusterable Routing (AMBIGUOUS/competitor-flavored rows —
-    see `_route_non_clusterable_rows`) -> Business Theme -> Candidate
-    Clustering -> Validation/Auto-Split (structural, see module docstring)
-    -> Core Category + Cluster Prioritization -> Primary/Secondary ->
-    Existing Page Matching -> Cannibalization Check -> Final Cluster
-    Acceptance Check -> Evidence Confidence -> Unified Priority Score (spec
-    section 40, additive — see priority_model.py), mutating and returning
-    `rows`. Caller must already have
-    `intent` and `page_category` set on every row (FINAL
-    PIPELINE steps 3-4) before calling this — this function only reads
-    those fields, never sets them. Ranking enrichment (current_position/
-    current_url) may run before or after this call; nothing here reads or
-    overwrites it except to help pick a primary keyword and score cluster
-    priority. Fails safe: if every AI call in here fails, every row simply
-    keeps `cluster` = "" (unclustered) and the caller's existing flat-table
-    fallback renders instead — no cluster is ever hallucinated."""
+    """Runs (Manual Clustering, when `manual_cluster_map` is non-empty — see
+    `_apply_manual_clusters` — OR, as the fallback, Non-Clusterable Routing
+    [AMBIGUOUS/competitor-flavored rows, see `_route_non_clusterable_rows`]
+    -> Business Theme -> Candidate Clustering) -> Validation/Auto-Split
+    (structural, see module docstring) -> Core Category + Cluster
+    Prioritization -> Primary/Secondary -> Existing Page Matching ->
+    Cannibalization Check -> Final Cluster Acceptance Check -> Evidence
+    Confidence -> Unified Priority Score (spec section 40, additive — see
+    priority_model.py), mutating and returning `rows`.
+
+    `manual_cluster_map` (site_audit.py, built from a client's own
+    "keyword_cluster_manual" uploads) is the user's explicit first
+    preference (2026-09-21): when present, it's authoritative and the AI
+    Phase 2/3 pipeline never runs at all — not a second opinion layered on
+    top, strictly a fallback for when no manual file exists.
+
+    Caller must already have `intent` and `page_category` set on every row
+    (FINAL PIPELINE steps 3-4) before calling this — this function only
+    reads those fields, never sets them. Ranking enrichment
+    (current_position/current_url) may run before or after this call;
+    nothing here reads or overwrites it except to help pick a primary
+    keyword and score cluster priority. Fails safe: if every AI call in
+    here fails (AI-fallback mode only), every row simply keeps `cluster` =
+    "" (unclustered) and the caller's existing flat-table fallback renders
+    instead — no cluster is ever hallucinated."""
     if not rows:
         return rows
 
-    clusterable_rows = _route_non_clusterable_rows(rows)
-    _assign_business_themes(clusterable_rows, client_name, client_description)
-    _build_candidate_clusters(clusterable_rows, client_description)
+    keyword_rows_by_text = _annotate_semantic_fields(rows)
+    if manual_cluster_map:
+        _apply_manual_clusters(rows, manual_cluster_map)
+    else:
+        clusterable_rows = _route_non_clusterable_rows(rows)
+        _assign_business_themes(clusterable_rows, client_name, client_description)
+        _build_candidate_clusters(clusterable_rows, keyword_rows_by_text, client_description)
     _assign_core_category_and_priority(rows)
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)

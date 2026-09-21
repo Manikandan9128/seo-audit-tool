@@ -12,6 +12,7 @@ from app.services.semrush_analysis_service import analyze as analyze_semrush_dat
 from app.services.semrush_ai_summary_service import generate_ai_summary
 from app.services.semrush_parser import parse_semrush_file
 from app.services.geopulse_parser import parse_geopulse_file
+from app.services.manual_keyword_cluster_parser import parse_manual_keyword_cluster_file
 
 router = APIRouter(prefix="/clients", tags=["competitors"])
 
@@ -136,6 +137,51 @@ async def upload_geopulse_file(
         uploaded_by_user_id=current_user.id,
         original_filename=file.filename or "upload",
         import_type="geopulse",
+        is_own_site=True,
+        parsed_data=parsed_data,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {
+        "id": record.id,
+        "import_type": record.import_type,
+        "row_count": parsed_data["row_count"],
+        "original_filename": record.original_filename,
+    }
+
+
+@router.post("/{client_id}/keyword-cluster-upload")
+async def upload_manual_keyword_cluster_file(
+    client_id: uuid.UUID,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stores an SEO strategist's own hand-built keyword clustering
+    (CSV/XLSX with a Keyword column and a Cluster column) as a SemrushImport
+    row with import_type="keyword_cluster_manual" — same generic-import-table
+    reuse as geopulse-upload above. Whenever at least one of these exists for
+    a client, keyword_cluster_pipeline.build_final_keyword_clusters uses it
+    as the source of truth for Target Keywords clustering instead of running
+    the AI Phase 2/3 pipeline at all (site_audit.py wires this at report-
+    generation time) — the AI pipeline is the fallback for when no manual
+    file has been uploaded, never a second opinion layered on top of one
+    that has."""
+    _get_owned_client(client_id, db, current_user)
+    content = await file.read()
+    try:
+        parsed_data = parse_manual_keyword_cluster_file(file.filename or "upload.csv", content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    record = SemrushImport(
+        client_id=client_id,
+        uploaded_by_user_id=current_user.id,
+        original_filename=file.filename or "upload.csv",
+        import_type="keyword_cluster_manual",
         is_own_site=True,
         parsed_data=parsed_data,
     )

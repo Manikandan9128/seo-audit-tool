@@ -560,3 +560,42 @@ def test_geographic_mismatch_row_routes_to_out_of_market_cluster():
     by_kw = {r["keyword"]: r for r in rows}
     assert by_kw["heavy truck dealer usa"]["cluster"] == _GEO_ROUTE_CLUSTER_LABEL
     assert by_kw["heavy truck dealer near me"]["cluster"] != _GEO_ROUTE_CLUSTER_LABEL
+
+
+def test_manual_cluster_map_is_used_and_ai_pipeline_never_runs():
+    # User's explicit instruction (2026-09-21): manual clustering is first
+    # preference — when a manual_cluster_map is supplied, the AI Phase 2/3
+    # pipeline must never be called at all, not even as a second opinion.
+    rows = [
+        {"keyword": "6x4 truck", "search_volume": 900, "intent": "Commercial", "page_category": "Landing Page"},
+        {"keyword": "6x4 truck price", "search_volume": 400, "intent": "Commercial", "page_category": "Landing Page"},
+        {"keyword": "unlisted keyword", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
+    ]
+    manual_cluster_map = {
+        "6x4 truck": {"cluster": "6x4 Truck Configuration", "primary_or_secondary": "Primary"},
+        "6x4 truck price": {"cluster": "6x4 Truck Configuration", "primary_or_secondary": "Secondary"},
+    }
+    with patch(_PHASE2_PATH) as mock_p2, \
+         patch(_PHASE3_PATH) as mock_p3, \
+         patch("app.services.keyword_cluster_pipeline.generate_business_themes") as mock_theme, \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None, manual_cluster_map=manual_cluster_map)
+
+    mock_p2.assert_not_called()
+    mock_p3.assert_not_called()
+    mock_theme.assert_not_called()
+    by_kw = {r["keyword"]: r for r in rows}
+    assert by_kw["6x4 truck"]["cluster"] == "6x4 Truck Configuration"
+    assert by_kw["6x4 truck"]["primary_or_secondary"] == "Primary"
+    assert by_kw["6x4 truck price"]["primary_or_secondary"] == "Secondary"
+    assert by_kw["unlisted keyword"]["cluster"] == ""  # not covered by the manual file — left unclustered, never guessed
+
+
+def test_manual_cluster_map_respects_final_acceptance_check_like_any_other_cluster():
+    rows = [{"keyword": "6x4 truck", "cluster": "", "search_volume": 900}]
+    manual_cluster_map = {"6x4 truck": {"cluster": "6x4 Truck Configuration", "primary_or_secondary": "Primary"}}
+    with patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None, manual_cluster_map=manual_cluster_map)
+    assert rows[0]["cluster"] == "6x4 Truck Configuration"
+    assert rows[0]["cluster_status"] == "Validated (Manual)"
+    assert rows[0]["primary_or_secondary"] == "Primary"
