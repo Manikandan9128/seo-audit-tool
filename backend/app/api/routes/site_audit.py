@@ -47,6 +47,7 @@ from app.services.google_sheets_service import create_combined_keyword_sheet
 from app.services.app_settings_service import get_sheets_oauth_email
 from app.services.search_intent_service import generate_search_intents
 from app.services.keyword_cluster_pipeline import build_final_keyword_clusters
+from app.services.strategic_keyword_selection_service import select_strategic_clusters
 from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
@@ -1411,6 +1412,34 @@ def _gather_report_data(
     # every AI call in this block to keep prompts bounded; any keyword
     # beyond that just renders without a cluster label, same as when no
     # clustering happens at all.
+    # Manual keyword clustering (user's explicit instruction, 2026-09-21):
+    # an SEO strategist's own hand-built clustering file
+    # (manual_keyword_cluster_parser.py, uploaded via the Keyword Clusters
+    # tab) is the FIRST preference — sorted ascending by created_at so a
+    # later re-upload's assignment for a keyword wins over an earlier one,
+    # never the reverse. Computed unconditionally (not nested inside the
+    # `if keyword_rows_all:` block below) — strategic_keyword_clusters
+    # (SEO Cluster & Keyword Selection for Presentation, 2026-09-21 spec)
+    # must work from this manual sheet alone even for a client with no
+    # Semrush/GSC keyword export at all; only manual_cluster_map's own
+    # consumer (build_final_keyword_clusters, Target Keywords clustering)
+    # actually needs keyword_rows_all to exist.
+    manual_cluster_map: dict[str, dict] = {}
+    # Full rows (cluster + whatever of sub_category/search_volume/
+    # keyword_difficulty/intent the sheet provided), keyed the same way
+    # (later upload wins) — feeds strategic_keyword_selection_service
+    # below, which is the ONLY consumer of the metric fields manual_
+    # cluster_map itself doesn't carry.
+    manual_cluster_rows_full: dict[str, dict] = {}
+    for imp in sorted(all_imports, key=lambda r: r.created_at):
+        if imp.import_type != "keyword_cluster_manual" or not imp.is_own_site:
+            continue
+        for r in imp.parsed_data.get("rows", []):
+            kw = (r.get("keyword") or "").strip().lower()
+            if kw and r.get("cluster"):
+                manual_cluster_map[kw] = {"cluster": r["cluster"], "primary_or_secondary": r.get("primary_or_secondary")}
+                manual_cluster_rows_full[kw] = r
+
     if keyword_rows_all:
         def _kw_volume(r: dict) -> float:
             try:
@@ -1452,22 +1481,6 @@ def _gather_report_data(
             category = _classify_keyword_page_category(r.get("keyword") or "", r.get("intent"))
             if category:
                 r["page_category"] = category
-
-        # Manual keyword clustering (user's explicit instruction, 2026-09-21):
-        # an SEO strategist's own hand-built clustering file
-        # (manual_keyword_cluster_parser.py, uploaded via the Keyword
-        # Clusters tab) is the FIRST preference — sorted ascending by
-        # created_at so a later re-upload's assignment for a keyword wins
-        # over an earlier one, never the reverse. Only when a client has NO
-        # such upload does the AI Phase 2/3 pipeline run at all.
-        manual_cluster_map: dict[str, dict] = {}
-        for imp in sorted(all_imports, key=lambda r: r.created_at):
-            if imp.import_type != "keyword_cluster_manual" or not imp.is_own_site:
-                continue
-            for r in imp.parsed_data.get("rows", []):
-                kw = (r.get("keyword") or "").strip().lower()
-                if kw and r.get("cluster"):
-                    manual_cluster_map[kw] = {"cluster": r["cluster"], "primary_or_secondary": r.get("primary_or_secondary")}
 
         # Business Theme -> Candidate Clustering -> Validation/Auto-Split ->
         # Primary/Secondary -> Existing Page Matching -> Cannibalization
@@ -2039,6 +2052,13 @@ def _gather_report_data(
         *build_keyword_strategy_recommendations(keyword_rows_all),
     ])
 
+    # SEO Cluster & Keyword Selection for Presentation (2026-09-21 spec):
+    # runs ONLY on the client's own manually-uploaded cluster sheet (its
+    # own source of truth), independent of keyword_rows_all/the AI Phase
+    # 2/3 pipeline above — empty list (never rendered) when no such sheet
+    # was uploaded for this client.
+    strategic_keyword_clusters = select_strategic_clusters(list(manual_cluster_rows_full.values()))
+
     return {
         "site_audit": site_audit_result,
         "page_audit": page_audit_result,
@@ -2061,6 +2081,7 @@ def _gather_report_data(
         "branded_vs_nonbranded_ai_insights": branded_vs_nonbranded_ai_insights,
         "high_potential_pages": search_opportunity_pages,
         "high_potential_countries": high_potential_countries,
+        "strategic_keyword_clusters": strategic_keyword_clusters or None,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,

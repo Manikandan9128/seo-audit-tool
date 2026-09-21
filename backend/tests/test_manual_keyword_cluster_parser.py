@@ -59,3 +59,35 @@ def test_blank_keyword_or_cluster_rows_are_dropped():
     result = parse_manual_keyword_cluster_file("clusters.csv", content)
     assert result["row_count"] == 1
     assert result["rows"][0]["keyword"] == "real keyword"
+
+
+def test_reads_sub_category_search_volume_kd_and_intent_when_present():
+    content = _csv(
+        "Keyword,Cluster,Sub-Category,Search Volume,KD,Intent\n"
+        "6x4 truck,6x4 Truck Configuration,Configuration,1200,45,Commercial\n"
+    )
+    result = parse_manual_keyword_cluster_file("clusters.csv", content)
+    row = result["rows"][0]
+    assert row["sub_category"] == "Configuration"
+    assert row["search_volume"] == 1200
+    assert row["keyword_difficulty"] == 45
+    assert row["intent"] == "Commercial"
+
+
+def test_optional_metric_columns_absent_when_sheet_has_no_such_column():
+    content = _csv("Keyword,Cluster\n6x4 truck,6x4 Truck Configuration\n")
+    result = parse_manual_keyword_cluster_file("clusters.csv", content)
+    row = result["rows"][0]
+    for field in ("sub_category", "search_volume", "keyword_difficulty", "intent"):
+        assert field not in row
+
+
+def test_blank_metric_cell_is_dropped_not_defaulted_to_zero():
+    # 2026-09-21 spec section 5: never fabricate a value the sheet didn't
+    # actually provide for this specific row.
+    content = _csv("Keyword,Cluster,Search Volume,KD\nkw one,Cluster A,1000,40\nkw two,Cluster A,,\n")
+    result = parse_manual_keyword_cluster_file("clusters.csv", content)
+    by_kw = {r["keyword"]: r for r in result["rows"]}
+    assert by_kw["kw one"]["search_volume"] == 1000
+    assert "search_volume" not in by_kw["kw two"]
+    assert "keyword_difficulty" not in by_kw["kw two"]

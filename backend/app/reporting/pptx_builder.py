@@ -5153,6 +5153,64 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     return slide
 
 
+def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_clusters: list[dict] | None) -> list:
+    """SEO Cluster & Keyword Selection for Presentation (2026-09-21 spec):
+    one table slide per cluster the client's own manually-uploaded
+    keyword-cluster sheet supports, already pre-selected and ranked by
+    strategic_keyword_selection_service.select_strategic_clusters (business
+    relevance/demand/commercial value/SEO opportunity/intent diversity —
+    never volume or keyword count alone). Absent entirely when no manual
+    cluster file was uploaded or nothing in it clears the selection floor —
+    this is never a fallback for the AI-clustered Target Keywords slides
+    above, which keep running on the full keyword universe regardless.
+
+    Table layout is this deck's own established house style (matches
+    add_keyword_research_slide's Keyword/Search Volume/Keyword Difficulty
+    columns) pending the client's ClearTouch reference deck for a final
+    visual pass — the column set and per-cluster grouping already follow
+    the spec's structural ask (cluster name, sub-category where available,
+    keyword + real metrics, one section per cluster), so this renders a
+    real, usable slide today rather than a placeholder."""
+    if not strategic_keyword_clusters:
+        return []
+
+    any_sub_category = any(kw.get("sub_category") for c in strategic_keyword_clusters for kw in c["keywords"])
+    any_intent = any(kw.get("intent") for c in strategic_keyword_clusters for kw in c["keywords"])
+
+    headers = ["Keyword"]
+    col_widths = [4.6]
+    if any_sub_category:
+        headers.append("Sub-Category")
+        col_widths.append(2.6)
+    headers += ["Search Volume", "KD"]
+    col_widths += [2.4, 1.3]
+    if any_intent:
+        headers.append("Intent")
+        col_widths.append(1.2)
+    # Pad/trim so widths always sum to the same 12.1in every other table in
+    # this file uses, regardless of which optional columns are present.
+    scale = 12.1 / sum(col_widths)
+    col_widths = [round(w * scale, 2) for w in col_widths]
+
+    slides = []
+    for c in strategic_keyword_clusters:
+        rows = []
+        for kw in c["keywords"]:
+            row = [kw["keyword"]]
+            if any_sub_category:
+                row.append(kw.get("sub_category") or "—")
+            row.append(f"{int(kw['search_volume']):,}" if kw.get("search_volume") is not None else "—")
+            row.append(str(int(kw["keyword_difficulty"])) if kw.get("keyword_difficulty") is not None else "—")
+            if any_intent:
+                row.append(kw.get("intent") or "—")
+            rows.append(tuple(row))
+        slides.append(_table_slide(
+            prs, f"SEO Strategy: {c['cluster']}", headers, rows,
+            col_widths=col_widths, source="Client-provided keyword cluster sheet",
+        ))
+    return slides
+
+
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
     """One table slide per keyword cluster (Educational Toys, Development
     Skills, etc.), matching the reference deck's "Target Keywords" format —
@@ -6434,6 +6492,7 @@ def build_report(
     high_potential_countries: list[dict] | None = None,
     competitor_top_opportunities: list[str] | None = None,
     content_issues: list[str] | None = None,
+    strategic_keyword_clusters: list[dict] | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -6460,6 +6519,7 @@ def build_report(
             branded_vs_nonbranded_ai_insights, high_potential_pages, high_potential_countries,
             competitor_top_opportunities=competitor_top_opportunities,
             content_issues=content_issues,
+            strategic_keyword_clusters=strategic_keyword_clusters,
         )
     finally:
         _theme["footer"] = ""
@@ -6510,6 +6570,7 @@ def _build_report(
     high_potential_countries: list[dict] | None = None,
     competitor_top_opportunities: list[str] | None = None,
     content_issues: list[str] | None = None,
+    strategic_keyword_clusters: list[dict] | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -6720,6 +6781,7 @@ def _build_report(
         if keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
             add_keyword_opportunity_slide(prs, keyword_rows)
+        add_strategic_keyword_clusters_slide(prs, strategic_keyword_clusters)
         if competitor_rows:
             # 2026-09-20 user request: the "Open full keyword list" button
             # must appear only on Competitor Keyword Gap Analysis (see
