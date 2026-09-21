@@ -20,28 +20,72 @@ website. GeoPulse tracks how a brand shows up in AI answer engines (ChatGPT, Per
 Overviews, etc.) — citation frequency, sentiment, competitor mentions, and content gaps.
 
 Below is the raw export content. Read it and produce two short lists of specific, actionable \
-recommendations grounded ONLY in what this data actually shows — never invent a statistic, \
-competitor name, or finding that isn't in the text below.
+recommendations grounded ONLY in what this data actually shows — never invent a statistic, prompt, \
+competitor name, mention rate, citation count, or finding that isn't in the text below.
+
+CORE RULE: do not infer a causal relationship between an observed visibility gap and a specific \
+SEO/GEO tactic unless the data itself provides evidence for that relationship. Reason through each \
+recommendation internally as OBSERVATION (what the data shows) -> GAP (what topic/entity/use case/ \
+prompt type/citation opportunity is missing, based on that evidence) -> ACTION (what to create, \
+improve, structure, or strengthen) — but output only the final 1-2 sentence recommendation, not the \
+three labeled steps.
 
 GeoPulse's own export sometimes includes a data-quality warning of its own — e.g. "Automated \
 consistency check failed" or a line stating one number "doesn't match the dashboard's" \
 independently-computed value. Treat that as authoritative: NEVER cite the disputed/flagged number \
 as settled fact. When the export also states the dashboard's corrected value, use that corrected \
-value instead (and you may note briefly that the export's own headline figure didn't match it). \
-If no corrected value is given, drop that specific metric from your output rather than repeating \
-the disputed number.
+value instead, phrased exactly as: "Dashboard baseline: {{dashboard_value}}; exported report value: \
+{{disputed_value}} — consistency validation required." If no corrected value is given, drop that \
+specific metric from your output rather than repeating the disputed number.
 {disputed_metrics_note}
-- "aeo_items": Answer Engine Optimization — structured-data/schema and content-format \
-recommendations for appearing in AI Overviews and answer boxes.
-- "geo_items": Generative Engine Optimization — entity-building, brand-citation, and topical- \
-authority recommendations for being cited by generative AI engines.
+- "aeo_items": Answer Engine Optimization — answerable informational queries, prompt-level content \
+gaps, structured/clear answer formats where genuinely applicable, direct question coverage, and \
+entity/product explanations.
+- "geo_items": Generative Engine Optimization — entity visibility, unbranded discovery, topical \
+coverage, external sources/citations, brand/entity associations, and competitive presence in AI \
+responses.
 
-3-5 items per list, each 1-2 sentences, specific to what's in the data (cite real numbers/findings \
-from it where present) rather than generic advice.
+Do NOT put the same recommendation on both lists unless the underlying evidence is genuinely \
+different for each — AEO and GEO must stay meaningfully differentiated, not two phrasings of the \
+same finding.
 
-Never claim a schema addition or content change GUARANTEES an LLM citation, an AI Overview \
-appearance, or any other specific AI-search outcome — frame every recommendation as increasing \
-eligibility or visibility, not promising a result.
+3-5 items per list (fewer if the data doesn't support more — never pad to reach 3), each 1-2 \
+sentences, following the shape [ACTION] + [SPECIFIC TOPIC/ENTITY] + [EVIDENCE-BASED REASON]. Never a \
+generic "create more content" — name the actual missing topics/subjects/entities/prompts found in \
+the data. When a cluster shows low/zero visibility, inspect the actual prompts where the brand was \
+not mentioned and build the recommendation from the real subjects those prompts cover.
+
+Example — unbranded cluster with named missed-prompt subjects:
+GOOD: "Create practical fleet-operation resources covering tipper capacity, fuel efficiency, \
+servicing, telematics and vehicle selection to address the unbranded Workflow / How-To visibility \
+gap (0/10 mentioned)."
+BAD: "Create more content." / "Implement FAQ schema to increase AI answer-box visibility."
+
+Example — branded cluster with one missed prompt (high mention rate elsewhere):
+GOOD: "Expand authoritative Truckonnect content covering its purpose, features and use cases to \
+address the single missed branded query (\"What is Truckonnect and how does it work?\") in an \
+otherwise 9/10 mentioned cluster."
+Never describe the AI engine as having "failed", and never guess why that one prompt was missed.
+
+Example — citation/source data showing zero citations in this run:
+GOOD: "No web sources were cited for the client's domains in this report run; strengthen \
+authoritative third-party references and citations around key commercial-vehicle topics."
+BAD: "The brand has zero web citations on the internet." (the dataset only reflects this report run)
+
+SCHEMA CLAIMS: only recommend a specific schema type (FAQPage, HowTo, Product, Article, etc.) when \
+the data shows an actual page/content type it would apply to — never merely because a cluster shows \
+0% visibility. Never claim schema will increase AI answer-box eligibility, improve AI parsing, cause \
+generative visibility, or increase citations — "eligibility"/"prerequisite" framing only, never a \
+promised outcome.
+
+BANNED phrasing anywhere in either list (do not use, in any tense/wording): "will increase \
+[visibility/citations/ranking/discovery/answer-box eligibility]", "will improve AI parsing", "will \
+guarantee", "guarantees [a result]". Use instead: "to address...", "to strengthen coverage of...", \
+"to improve completeness around...", "to support clearer entity understanding...", "to address the \
+observed visibility gap...", "to strengthen external source coverage...".
+
+For unbranded clusters, do not simply recommend adding the brand name to pages — prioritize missing \
+topics/use cases/entities/comparisons/product coverage/informational content/citations instead.
 
 GeoPulse export content:
 {raw_text}
@@ -69,6 +113,36 @@ def _find_disputed_metrics(raw_text: str) -> list[tuple[str, str, str]]:
     GeoPulse "consistency check failed" banner, if present. Empty when the
     export has no such warning."""
     return [(label.strip(), disputed.strip(), corrected.strip()) for label, disputed, corrected in _DISPUTED_METRIC_RE.findall(raw_text or "")]
+
+
+# 2026-09-21 spec rule 8 — mechanical backstop, not just a prompt request:
+# an LLM can still slip into causal phrasing despite the prompt's explicit
+# ban, so every returned item is checked here too. Matches the exact
+# BAD-example shapes from the spec ("will increase/improve/boost/cause/
+# drive/generate/ensure [outcome]") case-insensitively; a bare "guarantee"
+# is only flagged when it's NOT part of an explicit disclaimer ("not a
+# guarantee", "no guarantee") — that phrasing is the compliant, required
+# framing (see add_aeo_slide's own "not a guarantee of inclusion"), not a
+# claim, and must never be stripped.
+_CAUSAL_CLAIM_RE = re.compile(
+    r"\bwill (?:definitely |certainly |likely )?(?:increase|improve|boost|cause|drive|generate|ensure)\b",
+    re.IGNORECASE,
+)
+_BARE_GUARANTEE_RE = re.compile(r"(?<!not a )(?<!not an )(?<!no )\bguarantees?\b", re.IGNORECASE)
+
+
+def _has_unsupported_causal_claim(item: str) -> bool:
+    return bool(_CAUSAL_CLAIM_RE.search(item) or _BARE_GUARANTEE_RE.search(item))
+
+
+def _drop_unsupported_claims(items: list[str], list_name: str) -> list[str]:
+    kept = []
+    for item in items:
+        if _has_unsupported_causal_claim(item):
+            logger.warning("GeoPulse %s item dropped for unsupported causal claim: %s", list_name, item[:200])
+            continue
+        kept.append(item)
+    return kept
 
 
 def generate_aeo_geo_content(raw_text: str) -> dict:
@@ -116,6 +190,8 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
 
     aeo_items = [str(x).strip() for x in (data.get("aeo_items") or []) if str(x).strip()]
     geo_items = [str(x).strip() for x in (data.get("geo_items") or []) if str(x).strip()]
+    aeo_items = _drop_unsupported_claims(aeo_items, "aeo_items")
+    geo_items = _drop_unsupported_claims(geo_items, "geo_items")
     if not aeo_items and not geo_items:
         return {}
     return {"aeo_items": aeo_items, "geo_items": geo_items}

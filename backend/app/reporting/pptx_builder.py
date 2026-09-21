@@ -5814,6 +5814,10 @@ def _slugify(text: str) -> str:
 # content work, already covered by the Content SEO Next Steps slide.
 _PROGRAMMATIC_MIN_SUBPAGES = 3
 _PROGRAMMATIC_MIN_CLUSTER_VOLUME = 300
+# 2026-09-21 spec section 11 — show only the strongest validated
+# opportunities, never every cluster that happens to clear the eligibility
+# floor. Never manufactured up to this count when fewer qualify.
+_PROGRAMMATIC_MAX_OPPORTUNITIES = 5
 # Two sub-keywords whose token sets overlap this much are the same search
 # intent wearing different phrasing (e.g. "certified payroll software" vs
 # "certified payroll software tool") — templating them as two separate
@@ -5842,7 +5846,16 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
     Built from the keyword clusters already identified for the Target
     Keywords slides, gated by real eligibility rules first: enough
     genuinely distinct sub-keywords to justify a template (not just 2 near-
-    duplicate phrasings), and real demand behind the cluster as a whole."""
+    duplicate phrasings), and real demand behind the cluster as a whole.
+
+    2026-09-21 spec rebuild: internal validation terminology
+    (NEAR_DUPLICATE_PAIR, SUBPAGE_DUPLICATES_HUB, etc.) drove the exclusion
+    logic below but must never reach the rendered PPT — this now returns a
+    concise Opportunity/Search Demand/Structure/Recommended Subpages table
+    plus a plain-language "why it qualifies" line per row, capped to the
+    _PROGRAMMATIC_MAX_OPPORTUNITIES strongest opportunities and ranked by
+    distinct validated sub-intents first, combined demand second — never
+    search volume alone."""
     if not keyword_rows:
         return None
     clusters: dict[str, list[dict]] = {}
@@ -5853,11 +5866,10 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
     if not clusters:
         return None
 
-    ranked = sorted(clusters.items(), key=lambda kv: sum(_num(r.get("search_volume")) for r in kv[1]), reverse=True)
-    items = []
+    candidates = []
     low_demand_count = 0
     too_few_subpages_count = 0
-    for label, rows_for_cluster in ranked:
+    for label, rows_for_cluster in clusters.items():
         cluster_volume = sum(_num(r.get("search_volume")) for r in rows_for_cluster)
         if cluster_volume < _PROGRAMMATIC_MIN_CLUSTER_VOLUME:
             low_demand_count += 1
@@ -5869,7 +5881,7 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
         sub_slugs: list[str] = []
         sub_keywords: list[str] = []
         sub_token_sets: list[set[str]] = []
-        quality_flags: list[str] = []
+        consolidated_any = False
         for r in top_keywords:
             keyword = r.get("keyword", "")
             slug = _slugify(keyword)
@@ -5885,21 +5897,21 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             # uniqueness signal — same distinctive word(s) means same
             # intent, different distinctive words means a different page.
             tokens = _keyword_tokens(keyword) - hub_tokens
-            # Step 1 (2026-09-16 user spec): a leftover token that's just a
-            # MISSPELLING of a hub-topic word (e.g. "certifed" vs
-            # "certified") isn't a distinct sub-intent — it's the hub topic
-            # with a typo. Fuzzy-match every leftover token against the hub
-            # tokens; if none survive as genuinely new, this is
-            # SUBPAGE_DUPLICATES_HUB, not a real sub-page.
+            # A leftover token that's just a MISSPELLING of a hub-topic word
+            # (e.g. "certifed" vs "certified") isn't a distinct sub-intent —
+            # it's the hub topic with a typo, so it gets folded in (one-page
+            # satisfaction), not turned into a second page.
             genuinely_new = {t for t in tokens if not _fuzzy_token_match(t, hub_tokens)}
             if not genuinely_new:
                 if tokens:
-                    quality_flags.append(f"SUBPAGE_DUPLICATES_HUB: \"{keyword}\" is a typo/near-identical variant of the hub topic itself, not a distinct sub-intent — excluded.")
+                    consolidated_any = True
                 continue  # nothing left but the cluster topic (or a misspelling of it) — same intent as the hub page
-            # Step 2: flag as NEAR_DUPLICATE_PAIR if this keyword's leftover
-            # tokens overlap an already-kept sub-page's either by exact
-            # jaccard overlap (word-order variants) or fuzzy per-token match
-            # (tense/spelling variants, e.g. "calculating" vs "calculate").
+            # A keyword whose leftover tokens overlap an already-kept
+            # sub-page's — either by exact jaccard overlap (word-order
+            # variants) or fuzzy per-token match (tense/spelling variants,
+            # e.g. "calculating" vs "calculate") — is the same underlying
+            # intent wearing different phrasing, consolidated into the page
+            # already kept rather than counted as a second sub-page.
             dup_of = None
             for seen_keyword, seen in zip(sub_keywords, sub_token_sets):
                 jaccard = len(tokens & seen) / max(1, min(len(tokens), len(seen)))
@@ -5908,7 +5920,7 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
                     dup_of = seen_keyword
                     break
             if dup_of:
-                quality_flags.append(f"NEAR_DUPLICATE_PAIR: \"{keyword}\" is not a distinct intent from \"{dup_of}\" already kept — excluded, not counted twice.")
+                consolidated_any = True
                 continue
             sub_slugs.append(slug)
             sub_keywords.append(keyword)
@@ -5919,23 +5931,23 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             too_few_subpages_count += 1
             continue  # not enough genuinely distinct sub-pages to call this a template pattern
 
-        subpages = ", ".join(f"/{hub_slug}/{s}" for s in sub_slugs)
-        item = (
-            f"{label} ({int(cluster_volume):,} combined monthly searches, {len(sub_slugs)} distinct sub-intents "
-            f"eligible): main hub page /{hub_slug}, with sub-pages {subpages}. Each sub-page needs genuinely "
-            "unique content per intent — canonical/noindex any page that ends up too similar to another rather "
-            "than publishing near-duplicates."
-        )
-        if quality_flags:
-            item += " Data-quality note: " + " ".join(quality_flags)
-        items.append(item)
-    if not items:
-        # Universal SEO Audit Engine spec (2026-09-20) section 27: "Not
-        # suitable for programmatic SEO" is an explicit, stated finding —
-        # every real cluster was actually evaluated against the demand/
-        # distinct-sub-intent eligibility gates above and failed, so this
-        # states why rather than silently dropping the slide (which reads
-        # identically to "programmatic SEO was never considered at all").
+        why = f"{len(sub_keywords)} distinct search intents with sufficient demand to support a scalable hub + subpage structure."
+        if consolidated_any:
+            why = f"{len(sub_keywords)} distinct search intents remain after consolidating near-duplicate variants."
+        candidates.append({
+            "label": label, "volume": cluster_volume,
+            "subpage_names": [kw.title() for kw in sub_keywords],
+            "why": why,
+        })
+
+    if not candidates:
+        # Universal SEO Audit Engine spec (2026-09-20) section 27, restated
+        # by the 2026-09-21 spec's own required wording: "Not suitable" is
+        # an explicit, stated finding — every real cluster was actually
+        # evaluated against the demand/distinct-sub-intent eligibility
+        # gates above and failed, so this states why rather than silently
+        # dropping the slide (which reads identically to "programmatic SEO
+        # was never considered at all").
         reasons = []
         if low_demand_count:
             reasons.append(f"{low_demand_count} cluster(s) fell short of the minimum combined search volume")
@@ -5944,15 +5956,34 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
         reason_text = "; ".join(reasons) if reasons else "no cluster had enough real search demand or distinct sub-intents"
         return _next_steps_category_slide(
             prs, "Programmatic SEO Opportunities",
-            "Not suitable for programmatic SEO with the current keyword data.",
+            "No validated programmatic SEO opportunity identified from the analyzed keyword set.",
             [f"Evaluated {len(clusters)} keyword cluster(s) against hub+sub-page eligibility — {reason_text}."],
         )
 
-    intro = (
-        "Only clusters that clear real eligibility for a template pattern — enough distinct search intent and "
-        "demand to justify hub+sub-page infrastructure, not a couple of near-duplicate phrasings."
+    # Ranked by distinct validated sub-intents first, combined demand
+    # second (2026-09-21 spec section 12 — never search volume alone), then
+    # capped to the strongest few (section 11) rather than showing every
+    # cluster that merely cleared the eligibility floor.
+    candidates.sort(key=lambda c: (-len(c["subpage_names"]), -c["volume"]))
+    top = candidates[:_PROGRAMMATIC_MAX_OPPORTUNITIES]
+
+    def _demand_label(volume: float) -> str:
+        return f"{volume / 1000:.1f}K/mo" if volume >= 1000 else f"{int(volume)}/mo"
+
+    rows = [
+        (
+            c["label"], _demand_label(c["volume"]), f"Hub + {len(c['subpage_names'])} subpages",
+            " · ".join(c["subpage_names"]),
+        )
+        for c in top
+    ]
+    insights = [c["why"] for c in top]
+    return _table_slide(
+        prs, "Programmatic SEO Opportunities",
+        ["Opportunity", "Search Demand", "Structure", "Recommended Subpages"], rows,
+        col_widths=[2.5, 1.6, 1.8, 6.2], source="Semrush keyword clustering (validated clusters only)",
+        insights=insights, wrap_cols={0, 3}, row_height=0.5,
     )
-    return _next_steps_category_slide(prs, "Programmatic SEO Opportunities", intro, items)
 
 
 def add_goals_slide(
@@ -6257,7 +6288,7 @@ def add_geo_slide(prs: Presentation):
         "Publish authoritative content that positions the brand as a specialist in its core category — the framing AI engines reuse when answering category questions.",
         "Check whether the brand appears on the sources LLMs actually cite for this category (industry directories, comparison sites, press) — competitors already do.",
         "Create comparison-friendly content (\"X vs Y\", \"how to choose\") that AI systems can reference directly when answering evaluation queries.",
-        "Interlink product pages, guides, and FAQs into topic clusters — stronger contextual relevance improves AI-driven discovery.",
+        "Interlink product pages, guides, and FAQs into topic clusters to strengthen the contextual/topical relevance signals AI-driven discovery relies on.",
     ]
     return _next_steps_category_slide(prs, "Generative Engine Optimization (GEO)", None, items)
 
