@@ -50,6 +50,7 @@ _RELEVANCE_STATUSES = {
     "industry_mismatch": "Industry Mismatch",
     "unrelated": "Unrelated",
     "unknown_needs_review": "Unknown / Needs Review",
+    "career_recruitment_query": "Career / Recruitment Query",
 }
 
 # The 4 statuses that are specifically about a competitor-brand-mentioning
@@ -80,6 +81,16 @@ _STATUS_TO_COARSE_LABEL = {
     "industry_mismatch": "exclude",
     "unrelated": "exclude",
     "unknown_needs_review": "potentially_relevant",
+    # External lead's Phase 1 routing spec (2026-09-21): a CAREER-status
+    # keyword is routed to its own dedicated cluster, never silently
+    # deleted — this coarse label alone still reads "exclude" (unchanged
+    # behavior for every caller that has no cluster concept to route into:
+    # Competitor Keyword Gap, GSC Search Queries), but _filter_keyword_rows
+    # (the one caller that feeds the Target Keywords clustering pipeline)
+    # special-cases this exact status key to keep it instead of dropping
+    # it, so keyword_cluster_pipeline's routing step has a real row to
+    # route into the Jobs/Careers cluster.
+    "career_recruitment_query": "exclude",
 }
 
 _NAV_LOGIN_WORDS = [
@@ -281,7 +292,7 @@ def _rule_exclude(keyword: str, brand_tokens: set[str]) -> tuple[str, str] | Non
     if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _NAV_LOGIN_WORDS):
         return ("unrelated", "Navigation/login query — not a search opportunity.")
     if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _CAREERS_WORDS):
-        return ("unrelated", "Careers/recruitment query — not a search opportunity.")
+        return ("career_recruitment_query", "Careers/recruitment query — not a target keyword, routed to its own cluster.")
     words = text.split()
     if 0 < len(words) <= 3:
         first = words[0]

@@ -648,7 +648,16 @@ def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dic
             kept.append(r)
             continue
         entry = classifications.get(kwl) or {"label": "potentially_relevant", "status": "Unknown / Needs Review", "reason": ""}
-        if entry.get("label", "potentially_relevant") in keep:
+        # Career/recruitment rows are the one status this caller keeps even
+        # though its coarse label is "exclude" (see
+        # keyword_relevance_service's _STATUS_TO_COARSE_LABEL comment) —
+        # this is the ONLY filter caller with a clustering pipeline to route
+        # them into (keyword_cluster_pipeline's _route_non_clusterable_rows
+        # sends them to a fixed Jobs/Careers cluster, spec's "never silently
+        # delete, route separately" rule), unlike Competitor Keyword Gap or
+        # GSC Search Queries, which have no such destination and keep
+        # dropping them as before.
+        if entry.get("label", "potentially_relevant") in keep or entry.get("status") == "Career / Recruitment Query":
             r["relevance_status"] = entry.get("status")
             r["relevance_reason"] = entry.get("reason")
             r["competitor_status"] = entry.get("status") if entry.get("status") in _COMPETITOR_STATUS_LABELS else None

@@ -164,19 +164,25 @@ _BUSINESS_THEME_CANDIDATE_CAP = 100
 
 # External lead's Phase 1 routing spec (2026-09-21): a row whose relevance
 # was genuinely judged AMBIGUOUS, or whose competitor_status marks it as a
-# real competitor mention, must be routed to its own fixed bucket and never
-# enter semantic (business-theme) clustering at all — not just excluded
-# from consideration, not blended into a normal-looking topic cluster
-# either. Confirmed exactly how the BharatBenz "Tata automotive overview"
-# bug happened: an AI-fail-open "Unknown / Needs Review" row got clustered
-# together with confident rows into a real-looking business-theme cluster
-# instead of being visibly isolated, because nothing stopped an ambiguous
-# row from competing for a normal cluster slot. Two fixed labels, never
-# AI-named, so they can never collide with (or hide inside) a real topic
-# cluster name.
+# real competitor mention, or whose relevance_status is a career/recruitment
+# query, must be routed to its own fixed bucket and never enter semantic
+# (business-theme) clustering at all — not just excluded from consideration,
+# not blended into a normal-looking topic cluster either. Confirmed exactly
+# how the BharatBenz "Tata automotive overview" bug happened: an AI-fail-open
+# "Unknown / Needs Review" row got clustered together with confident rows
+# into a real-looking business-theme cluster instead of being visibly
+# isolated, because nothing stopped an ambiguous row from competing for a
+# normal cluster slot. Three fixed labels, never AI-named, so they can never
+# collide with (or hide inside) a real topic cluster name.
 _NEEDS_REVIEW_CLUSTER_LABEL = "Needs Review — Relevance Unconfirmed"
 _COMPETITOR_ROUTE_CLUSTER_LABEL = "Competitor / Comparison Opportunities"
 _COMPETITOR_ROUTE_STATUSES = {"Competitor Comparison Opportunity", "Relevant Competitor Intent"}
+# Career/recruitment rows (spec's CAREER routing) — _filter_keyword_rows
+# (site_audit.py) is the only relevance-filter caller that keeps these
+# instead of dropping them outright, specifically so they have a real
+# destination here rather than vanishing silently.
+_CAREER_ROUTE_CLUSTER_LABEL = "Jobs / Careers"
+_CAREER_ROUTE_STATUS = "Career / Recruitment Query"
 # _filter_keyword_rows stamps this exact reason on a row that was simply
 # never sent to the AI classifier at all (outside its top-N-by-volume
 # candidate pool) — a deliberate "leave as-is, don't judge it" case, not a
@@ -203,6 +209,10 @@ def _route_non_clusterable_rows(rows: list[dict]) -> list[dict]:
         relevance = r.get("relevance_status")
         reason = r.get("relevance_reason")
         competitor_status = r.get("competitor_status")
+        if relevance == _CAREER_ROUTE_STATUS:
+            r["cluster"] = _CAREER_ROUTE_CLUSTER_LABEL
+            r["cluster_status"] = "Validated"
+            continue
         if relevance == "Unknown / Needs Review" and reason != _UNJUDGED_REASON:
             r["cluster"] = _NEEDS_REVIEW_CLUSTER_LABEL
             r["cluster_status"] = f"Needs Review: {reason}" if reason else "Needs Review"

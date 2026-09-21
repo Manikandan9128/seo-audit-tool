@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME
 from app.services.keyword_cluster_pipeline import (
+    _CAREER_ROUTE_CLUSTER_LABEL,
     _COMPETITOR_ROUTE_CLUSTER_LABEL,
     _NEEDS_REVIEW_CLUSTER_LABEL,
     _final_cluster_acceptance_check,
@@ -477,3 +478,21 @@ def test_row_outside_classified_candidate_pool_still_clusters_normally():
 
     assert rows[0]["cluster"] not in (_NEEDS_REVIEW_CLUSTER_LABEL, _COMPETITOR_ROUTE_CLUSTER_LABEL)
     assert rows[0]["cluster"] == "Commercial Trucks"
+
+
+def test_career_status_row_routes_to_jobs_careers_cluster():
+    rows = [
+        {"keyword": "heavy truck dealer near me", "search_volume": 900, "intent": "Commercial", "page_category": "Landing Page"},
+        {
+            "keyword": "bharatbenz careers", "search_volume": 150, "intent": "Navigational", "page_category": "Landing Page",
+            "relevance_status": "Career / Recruitment Query",
+        },
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Commercial Trucks" for r in rows}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "BharatBenz", "a commercial truck manufacturer", None)
+
+    by_kw = {r["keyword"]: r for r in rows}
+    assert by_kw["bharatbenz careers"]["cluster"] == _CAREER_ROUTE_CLUSTER_LABEL
+    assert by_kw["heavy truck dealer near me"]["cluster"] != _CAREER_ROUTE_CLUSTER_LABEL

@@ -89,3 +89,35 @@ def test_keyword_outside_candidate_cap_is_left_untouched(monkeypatch):
 
 def test_empty_rows_returns_immediately():
     assert site_audit._filter_keyword_rows(_client(), [], None) == []
+
+
+def test_career_status_kept_despite_exclude_coarse_label(monkeypatch):
+    # Lead's Phase 1 routing spec (2026-09-21): a career/recruitment query
+    # is coarsely labeled "exclude" (keyword_relevance_service's
+    # _STATUS_TO_COARSE_LABEL) so Competitor Keyword Gap / GSC Search
+    # Queries keep dropping it as before, but _filter_keyword_rows (the
+    # only caller feeding keyword_cluster_pipeline's Jobs/Careers routing)
+    # must keep it instead, so it has a real cluster to land in.
+    rows = [
+        {"keyword": "tanker truck", "search_volume": 5400},
+        {"keyword": "bharatbenz careers", "search_volume": 150},
+    ]
+
+    def fake_classify(client_name, client_domain, brand_tokens, keywords, client_description=None):
+        return {
+            kw: (
+                {"label": "exclude", "status": "Career / Recruitment Query", "reason": "careers query"}
+                if kw == "bharatbenz careers"
+                else {"label": "highly_relevant", "status": "Core Relevant", "reason": "direct match"}
+            )
+            for kw in keywords
+        }
+
+    monkeypatch.setattr(site_audit, "classify_keywords", fake_classify)
+
+    result = site_audit._filter_keyword_rows(_client(), rows, None)
+
+    kept = {r["keyword"] for r in result}
+    assert kept == {"tanker truck", "bharatbenz careers"}
+    careers_row = next(r for r in result if r["keyword"] == "bharatbenz careers")
+    assert careers_row["relevance_status"] == "Career / Recruitment Query"
