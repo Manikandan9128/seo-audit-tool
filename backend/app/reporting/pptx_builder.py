@@ -521,77 +521,176 @@ def _fmt_metric_value(metric_id: str, value: float) -> str:
     return f"{value / 1000:.1f}s" if value >= 1000 else f"{round(value)}ms"
 
 
-def add_pagespeed_score_breakdown_slide(prs: Presentation, mobile: dict | None, desktop: dict | None):
-    """The Lighthouse Scoring Calculator, reimplemented against our own PSI
-    data: which metric is actually costing the most Performance points, and
-    what the score would become if each (or the top few) were fixed to
-    Google's 'good' threshold. Mobile is the primary table — it's usually
-    the worse and higher-traffic surface — desktop only supplies the
-    mobile-vs-desktop callout already used on the score-ring slide."""
-    primary_label, primary = ("Mobile", mobile) if mobile and mobile.get("quick_wins") else ("Desktop", desktop)
-    if not primary or not primary.get("quick_wins"):
-        return None
+# 2026-09-21 spec section 5 — a fixed, per-metric explanation of what that
+# metric being weak actually indicates, never a guess at root cause beyond
+# what the metric itself supports. Only ever shown for a metric whose
+# status isn't "Good" (rule 5: "only generate a diagnosis when the
+# corresponding metric actually supports it").
+_DIAGNOSIS_BY_METRIC = {
+    "largest-contentful-paint": "LCP is a performance constraint here — investigate the specific LCP element and its loading/rendering delays.",
+    "cumulative-layout-shift": "CLS indicates layout instability — identify the elements responsible for the shifts.",
+    "total-blocking-time": "TBT indicates significant main-thread activity — investigate long-running JavaScript tasks.",
+    "first-contentful-paint": "FCP indicates delayed visual rendering — investigate the PSI diagnostics responsible for the delay.",
+    "speed-index": "Speed Index indicates delayed visual rendering — investigate the PSI diagnostics responsible for the delay.",
+}
 
-    headers = ["Metric", "Current", "Score", "Good Threshold", "If Fixed", "Score Impact"]
-    rows = []
-    for w in primary["quick_wins"]:
-        current = w.get("display_value") or _fmt_metric_value(w["id"], w["value"])
-        threshold = _fmt_metric_value(w["id"], w["p10"])
-        delta = w["score_delta"]
-        rows.append((
-            w["label"], current, str(w["score"]), threshold, str(w["score_if_fixed"]),
-            f"+{delta}" if delta > 0 else str(delta),
-        ))
 
-    current_score = primary["current_score"]
-    insights = [f"{primary_label} Performance score is {current_score} — breakdown ranked by which metric costs the most points."]
+def _cwv_status_line(field_data: dict | None) -> str:
+    """Rule 4/11: Core Web Vitals status only from real CrUX field data —
+    never inferred from the Lighthouse lab metrics in the table above, and
+    never claimed passed/failed when CrUX has nothing for this site."""
+    if not field_data:
+        return "Insufficient field data for Core Web Vitals assessment."
+    parts = []
+    for key, label in (("lcp", "LCP"), ("inp", "INP"), ("cls", "CLS")):
+        m = field_data.get(key)
+        if m and m.get("category"):
+            parts.append(f"{label}: {m['category']}")
+        else:
+            parts.append(f"{label}: no field data")
+    fallback_note = (
+        " (origin-level fallback — this exact URL doesn't have enough CrUX traffic on its own)"
+        if field_data.get("is_origin_fallback") else ""
+    )
+    overall = field_data.get("overall_category")
+    headline = f"Overall: {overall}. " if overall else ""
+    return f"{headline}{'; '.join(parts)}{fallback_note}"
 
-    # Top-2 by real improvement potential (value / good_threshold ratio,
-    # 2026-09-16 user spec Step 2/4) — same ranking _combined_projection
-    # used to pick its override metrics, recomputed here only to build the
-    # "Nx over threshold" sentence naming them.
-    ranked = sorted(
-        (w for w in primary["quick_wins"] if w["score_delta"] > 0),
-        key=lambda w: (w["value"] / w["p10"]) if w["p10"] else 0,
-        reverse=True,
-    )[:2]
-    if ranked:
-        parts = []
-        for w in ranked:
-            current_val = w.get("display_value") or _fmt_metric_value(w["id"], w["value"])
-            threshold_val = _fmt_metric_value(w["id"], w["p10"])
-            multiple = (w["value"] / w["p10"]) if w["p10"] else 0
-            parts.append(f"{w['label']} ({current_val}) is {multiple:.1f}x over the {threshold_val} threshold")
-        insights.append(" and ".join(parts) + " — these have the greatest combined potential impact.")
 
-    projection = primary.get("combined_projection")
-    if projection and projection["metrics"] and projection["score_after"] > projection["score_before"]:
-        metrics_str = " + ".join(projection["metrics"])
-        insights.append(f"Fixing {metrics_str} would move Performance to approximately {projection['score_after']}.")
-    elif ranked:
-        insights.append(
-            "Fixing these metrics has the greatest potential impact, but the exact resulting score requires "
-            "Lighthouse's real weighting formula, not a summed approximation — that figure isn't available yet."
+def add_pagespeed_score_breakdown_slide(prs: Presentation, mobile: dict | None, desktop: dict | None) -> list:
+    """2026-09-21 spec rebuild: shows what PSI actually measured, explains
+    what it means, and surfaces what PSI itself says should be
+    investigated — no reimplemented Lighthouse scoring curve, no "if this
+    metric were fixed the score would become Y" projection anywhere (that
+    entire mechanism no longer exists in pagespeed_client.py). Mobile stays
+    primary — usually the worse, higher-traffic surface; desktop only
+    supplies the mobile-vs-desktop callout. Returns a list of the slides
+    actually added (1 or 2), never a single implicit slide, since PSI
+    Opportunities/Diagnostics/LCP Breakdown get their own slide when data
+    for them exists."""
+    primary_label, primary = ("Mobile", mobile) if mobile and mobile.get("metric_table") else ("Desktop", desktop)
+    if not primary or not primary.get("metric_table"):
+        return []
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Website Performance — Score Breakdown")
+    _textbox(
+        slide, Inches(8.0), Inches(0.3), Inches(4.8), Inches(0.4),
+        "Source: Google PageSpeed Insights (Lighthouse lab data)", size=11, color=TEXT_MUTED,
+    )
+
+    left, width = Inches(0.6), Inches(12.1)
+    max_y = SLIDE_H - Inches(0.4)
+    y = Inches(1.0)
+
+    current_score = primary.get("current_score")
+    score_line = (
+        f"{primary_label} Performance score: {current_score}" if current_score is not None
+        else f"{primary_label} Performance score: not available"
+    )
+    _textbox(slide, left, y, width, Inches(0.3), score_line, size=15, bold=True, color=_accent())
+    y += Inches(0.42)
+
+    # Section 1 — Metric | Current | Good Threshold | Status (2026-09-21
+    # spec section 2). No Score/If Fixed/Score Impact columns: Status comes
+    # straight from PSI's own per-audit score (rule 3), Good Threshold from
+    # Google's published cutoffs, never a custom benchmark.
+    rows = [
+        (
+            m["label"], m.get("display_value") or _fmt_metric_value(m["id"], m["value"]),
+            f"≤{_fmt_metric_value(m['id'], m['good_threshold'])}", m.get("status") or "—",
         )
+        for m in primary["metric_table"]
+    ]
+    y = _draw_table(
+        slide, ["Metric", "Current", "Good Threshold", "Status"], rows, y,
+        col_widths=[3.4, 2.7, 2.9, 3.1], left=left, width=width, row_height=0.38,
+    )
+    y += Inches(0.18)
 
-    for w in primary.get("inconsistent_rows", []):
-        insights.append(
-            f"Data-quality flag: the {w['label']} row shows a current score of {w['score']} alongside an "
-            f"'if fixed' score of {w['score_if_fixed']} and a {w['score_delta']:+d} score impact — this is "
-            f"internally inconsistent and should be re-pulled before this row is trusted. It's excluded from "
-            f"the findings above."
-        )
+    # Section 2 — Core Web Vitals, field data only, shown only here (never
+    # repeated against the lab table above).
+    _textbox(slide, left, y, width, Inches(0.22), "CORE WEB VITALS (FIELD DATA)", size=9.5, bold=True, color=_accent())
+    y += Inches(0.24)
+    _textbox(slide, left, y, width, Inches(0.4), _cwv_status_line(primary.get("field_data")), size=11)
+    y += Inches(0.46)
 
-    if mobile and desktop and mobile.get("current_score") is not None and desktop.get("current_score") is not None:
+    # Section 3 — Performance Diagnosis: what the data indicates, never a
+    # repeat of the table's own numbers (rule 9).
+    diagnosis = [
+        _DIAGNOSIS_BY_METRIC[m["id"]] for m in primary["metric_table"]
+        if m.get("status") in ("Poor", "Needs Improvement") and m["id"] in _DIAGNOSIS_BY_METRIC
+    ]
+    if diagnosis and y < max_y - Inches(0.3):
+        y = _insights_strip(slide, left, y, width, diagnosis, title="Performance Diagnosis", max_y=max_y)
+
+    if (
+        mobile and desktop and mobile.get("current_score") is not None and desktop.get("current_score") is not None
+        and y < max_y - Inches(0.3)
+    ):
         gap = desktop["current_score"] - mobile["current_score"]
         if gap > 15:
-            insights.append(f"Desktop Performance ({desktop['current_score']}) outpaces Mobile ({mobile['current_score']}) by {gap} points.")
+            _textbox(
+                slide, left, y, width, Inches(0.3),
+                f"Desktop Performance ({desktop['current_score']}) outpaces Mobile ({mobile['current_score']}) by {gap} points.",
+                size=10.5, color=TEXT_MUTED,
+            )
 
-    return _table_slide(
-        prs, "Website Performance — Score Breakdown", headers, rows,
-        col_widths=[2.4, 1.7, 1.3, 2.2, 1.5, 1.8], source="Google PageSpeed Insights (Lighthouse scoring model)",
-        insights=insights,
+    slides = [slide]
+    opp_slide = _add_pagespeed_opportunities_slide(prs, primary_label, primary)
+    if opp_slide:
+        slides.append(opp_slide)
+    return slides
+
+
+def _add_pagespeed_opportunities_slide(prs: Presentation, primary_label: str, primary: dict) -> object | None:
+    """Website Performance — PSI Opportunities & Diagnostics (2026-09-21
+    spec sections 6-9): populated ONLY from PSI's own opportunity/
+    diagnostic audits for this run — no generic "compress images"/"remove
+    unused JS" filler when PSI didn't actually flag one with a real
+    number. Absent entirely when PSI returned none of the three."""
+    opportunities = primary.get("opportunities") or []
+    diagnostics = primary.get("diagnostics") or []
+    lcp_breakdown = primary.get("lcp_breakdown") or []
+    if not opportunities and not diagnostics and not lcp_breakdown:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Website Performance — PSI Opportunities & Diagnostics")
+    _textbox(
+        slide, Inches(7.6), Inches(0.3), Inches(5.2), Inches(0.4),
+        f"Source: Google PageSpeed Insights ({primary_label} Lighthouse run)", size=11, color=TEXT_MUTED,
     )
+
+    left, width = Inches(0.6), Inches(12.1)
+    max_y = SLIDE_H - Inches(0.4)
+    y = Inches(1.05)
+
+    if opportunities:
+        _textbox(slide, left, y, width, Inches(0.24), "TOP PSI OPPORTUNITIES", size=12.5, bold=True, color=_accent())
+        y += Inches(0.28)
+        rows = [(o["title"], o["savings"]) for o in opportunities[:8]]
+        y = _draw_table(
+            slide, ["Opportunity", "Estimated Savings"], rows, y,
+            col_widths=[8.6, 3.5], left=left, width=width, row_height=0.36, row_cap=8,
+        )
+        y += Inches(0.2)
+
+    if lcp_breakdown and y < max_y - Inches(1.2):
+        _textbox(slide, left, y, width, Inches(0.24), "LCP BREAKDOWN", size=12.5, bold=True, color=_accent())
+        y += Inches(0.28)
+        rows = [(r["phase"], _fmt_metric_value("largest-contentful-paint", r["timing_ms"])) for r in lcp_breakdown]
+        y = _draw_table(
+            slide, ["Phase", "Timing"], rows, y,
+            col_widths=[8.6, 3.5], left=left, width=width, row_height=0.35, row_cap=4,
+        )
+        y += Inches(0.2)
+
+    if diagnostics and y < max_y - Inches(0.3):
+        diag_lines = [f"{d['label']}: {d['value']}" for d in diagnostics]
+        _insights_strip(slide, left, y, width, diag_lines, title="Diagnostics", max_y=max_y)
+
+    return slide
 
 
 def _fmt_kb(num_bytes: int) -> str:
@@ -4611,9 +4710,14 @@ def _prepare_keyword_gap_rows(rows: list[dict], max_kd: float = _KEYWORD_GAP_MAX
     relevant_rows = [r for r in rows if r.get("relevance") != "potentially_relevant"]
 
     kd_unavailable_count = sum(1 for r in relevant_rows if r.get("keyword_difficulty") in (None, ""))
+    # 2026-09-21 spec rule 7: "highest volume" selection (and the table
+    # itself) must only ever draw from rows with real, valid search volume
+    # — a zero/missing-volume row has no volume signal to rank on and must
+    # never surface as a "highest-volume" pick by default-to-zero luck.
     kd_filtered = [
         r for r in relevant_rows
         if r.get("keyword_difficulty") not in (None, "") and _num(r.get("keyword_difficulty")) <= max_kd
+        and _num(r.get("search_volume")) > 0
     ]
     kd_filtered.sort(key=lambda r: -_num(r.get("search_volume")))
 
@@ -4670,9 +4774,13 @@ def add_keyword_gap_slide(
     # Insights bullet. A short "{client_name}'s business" reads correctly
     # and needs no description text at all.
     topic_ref = f"{client_name.strip()}'s business" if client_name and client_name.strip() else "the client's business"
+    # 2026-09-21 spec rule 5: the gap-scale bullet must explain what the
+    # split means, not just restate the counts — the "indicating..." clause
+    # is the only addition; every number is still the same real count.
     insights.append(
         f"{off_topic_count} off-topic excluded (unrelated to {topic_ref}), {len(kd_filtered)} relevant keyword(s), "
-        f"split {shared_n} Shared / {missing_n} Missing / {untapped_n} Untapped."
+        f"split {shared_n} Shared / {missing_n} Missing / {untapped_n} Untapped — indicating the scale of the "
+        "competitive keyword gap within this analyzed set."
     )
     missing_rows = [r for r in kd_filtered if (r.get("gap_category") or "Missing") == "Missing" and r.get("competitor_positions")]
     if missing_rows:
@@ -4681,19 +4789,28 @@ def add_keyword_gap_slide(
             f"Highest-volume Missing keyword: \"{top_m['keyword']}\" ({int(_num(top_m.get('search_volume'))):,}/mo) — "
             f"ranking competitors: {_row_competitors_text(top_m)}."
         )
-    untapped_rows = [r for r in kd_filtered if r.get("gap_category") == "Untapped"]
-    if untapped_rows:
-        top_u = untapped_rows[0]
-        insights.append(
-            f"Highest-volume Untapped keyword: \"{top_u['keyword']}\" ({int(_num(top_u.get('search_volume'))):,}/mo) — "
-            "no tracked domain ranks for it yet."
-        )
     shared_rows = [r for r in kd_filtered if r.get("gap_category") == "Shared"]
     if shared_rows:
         top_s = shared_rows[0]
         insights.append(
             f"Highest-volume Shared keyword: \"{top_s['keyword']}\" ({int(_num(top_s.get('search_volume'))):,}/mo) — "
             f"you and {_row_competitors_text(top_s)} both rank."
+        )
+    # Rule 5's fourth bullet ("Actionable implication") + rule 6 (never an
+    # unsupported strategic claim like "will generate X traffic") — only
+    # emitted when there's a real Missing row with a ranking competitor to
+    # point the validation step at.
+    if missing_rows:
+        insights.append(
+            "Prioritize validation of high-volume Missing keywords where competitors already have a relevant "
+            "ranking page before treating any of them as a confirmed SEO target."
+        )
+    untapped_rows = [r for r in kd_filtered if r.get("gap_category") == "Untapped"]
+    if untapped_rows:
+        top_u = untapped_rows[0]
+        insights.append(
+            f"Highest-volume Untapped keyword: \"{top_u['keyword']}\" ({int(_num(top_u.get('search_volume'))):,}/mo) — "
+            "no tracked domain ranks for it yet."
         )
     if ambiguous_rows:
         review_examples = ", ".join(f"\"{r.get('keyword')}\"" for r in ambiguous_rows[:3])
@@ -4710,9 +4827,9 @@ def add_keyword_gap_slide(
     # what each color means once, not per row.
     _GAP_CHIP = {"Missing": ("M", BAD), "Untapped": ("U", GOOD), "Shared": ("S", TEXT_MUTED)}
 
-    headers = ["", "Keyword", "Volume", "KD", "My Position"]
+    headers = ["Status", "Keyword", "Volume", "KD", "My Position"]
     headers += [domain for domain in competitor_columns]
-    col_widths = [0.35, 2.35, 0.65, 0.45, 2.0]
+    col_widths = [0.55, 2.15, 0.65, 0.45, 2.0]
     remaining = 12.1 - sum(col_widths)
     if competitor_columns:
         col_widths += [round(remaining / len(competitor_columns), 2)] * len(competitor_columns)
@@ -4790,7 +4907,7 @@ def add_keyword_gap_slide(
         para.font.color.rgb = WHITE
         para.font.bold = True
     if insights:
-        _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), insights[:5], max_y=insights_max_y)
+        _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), insights[:6], max_y=insights_max_y)
 
     if keyword_gap_sheet_link:
         _textbox(

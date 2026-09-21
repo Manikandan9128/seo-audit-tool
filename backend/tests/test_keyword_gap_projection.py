@@ -183,6 +183,48 @@ def test_all_categories_worst_case_fits_slide_no_overlap():
     assert _audit_slide_geometry(prs) == []
 
 
+def test_zero_or_missing_volume_rows_excluded():
+    # 2026-09-21 spec rule 7: "highest volume" selection must only ever
+    # draw from rows with real, valid search volume.
+    analysis = {"keyword_gap_rows": [
+        _gap_row("zero volume kw", 0, 30, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
+    ]}
+    assert add_keyword_gap_slide(_prs(), analysis) is None
+
+
+def test_status_column_header_is_labeled():
+    analysis = {"keyword_gap_rows": [
+        _gap_row("kw1", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
+    ]}
+    slide = add_keyword_gap_slide(_prs(), analysis)
+    table = next(s for s in slide.shapes if s.has_table).table
+    assert table.cell(0, 0).text_frame.text == "Status"
+
+
+def test_key_insights_include_actionable_implication_for_missing_keywords():
+    analysis = {"keyword_gap_rows": [
+        _gap_row("missing kw", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
+    ]}
+    slide = add_keyword_gap_slide(_prs(), analysis)
+    text = _slide_text(slide)
+    assert "Prioritize validation of high-volume Missing keywords" in text
+    # Rule 6: never an unsupported strategic claim.
+    for banned in ("will generate", "will increase conversions", "best opportunity", "create a page immediately"):
+        assert banned not in text.lower()
+
+
+def test_gap_scale_insight_adds_interpretation_not_just_counts():
+    analysis = {
+        "keyword_gap_rows": [
+            _gap_row("missing kw", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
+        ],
+        "keyword_gap_off_topic_count": 2,
+    }
+    slide = add_keyword_gap_slide(_prs(), analysis, client_name="Acme")
+    text = _slide_text(slide)
+    assert "indicating the scale of the competitive keyword gap" in text
+
+
 def test_off_topic_count_and_split_stated_in_insights():
     analysis = {
         "keyword_gap_rows": [

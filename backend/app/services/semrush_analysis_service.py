@@ -182,9 +182,14 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
         classified = []
         for r in matrix_rows:
             kw = r.get("keyword")
-            if not kw or kw in seen_keywords:
+            # 2026-09-21 spec: normalize casing before dedup — the raw export
+            # can repeat the same keyword under different casing (e.g. a
+            # branded vs. lowercase variant), which a case-sensitive `in`
+            # check let through as two separate rows.
+            kw_key = kw.strip().lower() if kw else ""
+            if not kw_key or kw_key in seen_keywords:
                 continue
-            seen_keywords.add(kw)
+            seen_keywords.add(kw_key)
             positions = r.get("domain_positions") or {}
             urls = r.get("domain_ranking_urls") or {}
             own_pos = _num(positions.get(own_col))
@@ -267,9 +272,10 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
         opportunities = []
         for r in keyword_gap_rows:
             kw = r.get("keyword")
-            if not kw or kw in seen_keywords or _num(r.get("search_volume")) <= 0:
+            kw_key = kw.strip().lower() if kw else ""
+            if not kw_key or kw_key in seen_keywords or _num(r.get("search_volume")) <= 0:
                 continue
-            seen_keywords.add(kw)
+            seen_keywords.add(kw_key)
             opportunities.append(r)
         total_volume = sum(_num(r.get("search_volume")) for r in opportunities)
         if opportunities:

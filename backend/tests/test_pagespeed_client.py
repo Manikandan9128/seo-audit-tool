@@ -1,143 +1,150 @@
 from app.integrations.pagespeed_client import (
-    _combined_projection,
-    _extract_issues,
-    _lighthouse_metric_score,
-    _overall_score,
-    _quick_wins,
-    _score_breakdown,
+    _cwv_field_data,
+    _extract_diagnostics,
+    _extract_lcp_breakdown,
+    _extract_opportunities,
+    _metric_status,
+    _metric_table,
+    _perf_audit_groups,
 )
 
 
-def test_extract_issues_includes_failing_opportunity():
+def test_metric_table_uses_numeric_value_and_real_psi_score():
     audits = {
-        "render-blocking-resources": {
-            "score": 0.2,
-            "scoreDisplayMode": "numeric",
-            "title": "Eliminate render-blocking resources",
-            "displayValue": "Potential savings of 1,200 ms",
-            "details": {"overallSavingsMs": 1200},
+        "largest-contentful-paint": {"numericValue": 4800, "displayValue": "4.8 s", "score": 0.3},
+        "total-blocking-time": {"numericValue": 720, "displayValue": "720 ms", "score": 0.2},
+        "cumulative-layout-shift": {"numericValue": 0.28, "displayValue": "0.28", "score": 0.4},
+        "first-contentful-paint": {"numericValue": 2600, "displayValue": "2.6 s", "score": 0.6},
+        "speed-index": {"numericValue": 6100, "displayValue": "6.1 s", "score": 0.1},
+    }
+    rows = _metric_table(audits)
+    assert {m["id"] for m in rows} == set(audits.keys())
+    lcp = next(m for m in rows if m["id"] == "largest-contentful-paint")
+    assert lcp["value"] == 4800
+    assert lcp["good_threshold"] == 2500
+    assert lcp["status"] == "Poor"
+    # No score/weight/if-fixed/score-impact fields anywhere on the row.
+    for forbidden in ("score", "weight", "score_if_fixed", "score_delta", "weighted_points"):
+        assert forbidden not in lcp
+
+
+def test_metric_table_skips_missing_metrics():
+    assert len(_metric_table({"largest-contentful-paint": {"numericValue": 4000, "score": 0.5}})) == 1
+    assert _metric_table({"largest-contentful-paint": {"score": 0.5}}) == []  # no numericValue at all
+
+
+def test_metric_status_bands_match_lighthouse_thresholds():
+    assert _metric_status(0.95) == "Good"
+    assert _metric_status(0.9) == "Good"
+    assert _metric_status(0.6) == "Needs Improvement"
+    assert _metric_status(0.2) == "Poor"
+    assert _metric_status(None) is None
+
+
+def test_cwv_field_data_none_when_no_field_data_present():
+    assert _cwv_field_data({}) is None
+    assert _cwv_field_data({"loadingExperience": {}}) is None
+
+
+def test_cwv_field_data_reads_real_crux_metrics():
+    response = {
+        "loadingExperience": {
+            "overall_category": "SLOW",
+            "metrics": {
+                "LARGEST_CONTENTFUL_PAINT_MS": {"percentile": 4200, "category": "SLOW"},
+                "CUMULATIVE_LAYOUT_SHIFT_SCORE": {"percentile": 8, "category": "AVERAGE"},
+                "INTERACTION_TO_NEXT_PAINT": {"percentile": 350, "category": "AVERAGE"},
+            },
         }
     }
-    issues = _extract_issues(audits)
-    assert len(issues) == 1
-    assert issues[0]["title"] == "Eliminate render-blocking resources"
-    assert issues[0]["savings_ms"] == 1200
+    field = _cwv_field_data(response)
+    assert field["overall_category"] == "SLOW"
+    assert field["lcp"]["category"] == "SLOW"
+    assert field["inp"]["category"] == "AVERAGE"
+    assert field["is_origin_fallback"] is False
 
 
-def test_extract_issues_excludes_passing_audit():
-    audits = {"uses-passive-event-listeners": {"score": 1.0, "scoreDisplayMode": "binary", "title": "Uses passive listeners"}}
-    assert _extract_issues(audits) == []
-
-
-def test_extract_issues_excludes_informative_audit_with_no_score():
-    audits = {"final-screenshot": {"score": None, "scoreDisplayMode": "informative", "title": "Final screenshot"}}
-    assert _extract_issues(audits) == []
-
-
-def test_extract_issues_excludes_core_web_vital_metrics():
-    # These are already surfaced separately as core_web_vitals — including
-    # them here would duplicate the same finding under a different name.
-    audits = {
-        "largest-contentful-paint": {"score": 0.3, "scoreDisplayMode": "numeric", "title": "LCP", "displayValue": "4.2 s"},
-        "cumulative-layout-shift": {"score": 0.4, "scoreDisplayMode": "numeric", "title": "CLS"},
+def test_cwv_field_data_falls_back_to_origin_and_flags_it():
+    response = {
+        "loadingExperience": {},
+        "originLoadingExperience": {
+            "overall_category": "AVERAGE",
+            "metrics": {"LARGEST_CONTENTFUL_PAINT_MS": {"percentile": 3000, "category": "AVERAGE"}},
+        },
     }
-    assert _extract_issues(audits) == []
+    field = _cwv_field_data(response)
+    assert field is not None
+    assert field["is_origin_fallback"] is True
 
 
-def test_extract_issues_sorted_by_savings_descending():
+def test_cwv_field_data_never_derives_inp_from_tbt():
+    # 2026-09-21 spec rule 4: INP must never be inferred from a lab TBT
+    # value — only real CrUX INTERACTION_TO_NEXT_PAINT/its experimental
+    # predecessor key counts.
+    response = {"loadingExperience": {"metrics": {"LARGEST_CONTENTFUL_PAINT_MS": {"percentile": 2000, "category": "FAST"}}}}
+    field = _cwv_field_data(response)
+    assert field["inp"] is None
+
+
+def test_perf_audit_groups_reads_real_auditrefs():
+    categories = {"performance": {"auditRefs": [{"id": "render-blocking-resources", "group": "load-opportunities"}, {"id": "bootup-time", "group": "diagnostics"}]}}
+    groups = _perf_audit_groups(categories)
+    assert groups["render-blocking-resources"] == "load-opportunities"
+    assert groups["bootup-time"] == "diagnostics"
+
+
+def test_extract_opportunities_only_real_savings_from_opportunity_group():
     audits = {
-        "small-savings": {"score": 0.5, "scoreDisplayMode": "numeric", "title": "Small", "details": {"overallSavingsMs": 100}},
-        "big-savings": {"score": 0.5, "scoreDisplayMode": "numeric", "title": "Big", "details": {"overallSavingsMs": 900}},
+        "render-blocking-resources": {
+            "score": 0.2, "title": "Eliminate render-blocking resources",
+            "details": {"overallSavingsMs": 1200},
+        },
+        "uses-passive-event-listeners": {"score": 0.1, "title": "No savings figure"},
     }
-    issues = _extract_issues(audits)
-    assert [i["title"] for i in issues] == ["Big", "Small"]
+    audit_groups = {"render-blocking-resources": "load-opportunities", "uses-passive-event-listeners": "diagnostics"}
+    opps = _extract_opportunities(audits, audit_groups)
+    assert len(opps) == 1
+    assert opps[0]["title"] == "Eliminate render-blocking resources"
+    assert "1.2s" in opps[0]["savings"]
 
 
-def test_extract_issues_respects_limit():
+def test_extract_opportunities_excludes_passing_audit():
+    audits = {"unused-css-rules": {"score": 0.95, "title": "Unused CSS", "details": {"overallSavingsMs": 500}}}
+    audit_groups = {"unused-css-rules": "load-opportunities"}
+    assert _extract_opportunities(audits, audit_groups) == []
+
+
+def test_extract_diagnostics_only_returns_real_values():
+    audits = {"bootup-time": {"displayValue": "2.1 s"}, "total-byte-weight": {"displayValue": "1,800 KiB"}}
+    assert {d["id"] for d in _extract_diagnostics(audits, {})} == {"bootup-time", "total-byte-weight"}
+
+
+def test_extract_diagnostics_skips_audit_already_shown_as_opportunity():
+    # Rule 9: never show the same audit in both sections.
+    audits = {"render-blocking-resources": {"displayValue": "Potential savings of 400 ms"}}
+    audit_groups = {"render-blocking-resources": "load-opportunities"}
+    assert _extract_diagnostics(audits, audit_groups) == []
+
+
+def test_extract_diagnostics_network_requests_uses_real_item_count():
+    audits = {"network-requests": {"details": {"items": [{}, {}, {}]}}}
+    diags = _extract_diagnostics(audits, {})
+    assert diags[0]["value"] == "3 requests"
+
+
+def test_extract_lcp_breakdown_matches_known_phase_labels():
     audits = {
-        f"issue-{i}": {"score": 0.1, "scoreDisplayMode": "binary", "title": f"Issue {i}"}
-        for i in range(10)
+        "largest-contentful-paint-element": {
+            "details": {"items": [
+                {"phase": "TTFB", "timing": 200},
+                {"phase": "Load Delay", "timing": 800},
+                {"phase": "unrecognized-shape", "timing": 100},
+            ]}
+        }
     }
-    assert len(_extract_issues(audits, limit=3)) == 3
+    rows = _extract_lcp_breakdown(audits)
+    assert {r["phase"] for r in rows} == {"TTFB", "Resource load delay"}
 
 
-def test_lighthouse_metric_score_at_p10_scores_90():
-    # By construction the p10 control point must land at score 90.
-    assert _lighthouse_metric_score(2500, median=4000, p10=2500) == 90
-
-
-def test_lighthouse_metric_score_at_median_scores_50():
-    assert _lighthouse_metric_score(4000, median=4000, p10=2500) == 50
-
-
-def test_lighthouse_metric_score_worse_than_median_scores_below_50():
-    assert _lighthouse_metric_score(6000, median=4000, p10=2500) < 50
-
-
-def test_lighthouse_metric_score_better_than_p10_scores_above_90():
-    assert _lighthouse_metric_score(1500, median=4000, p10=2500) > 90
-
-
-def test_score_breakdown_uses_numeric_value_not_display_value():
-    audits = {
-        "largest-contentful-paint": {"numericValue": 4800, "displayValue": "4.8 s"},
-        "total-blocking-time": {"numericValue": 720, "displayValue": "720 ms"},
-        "cumulative-layout-shift": {"numericValue": 0.28, "displayValue": "0.28"},
-        "first-contentful-paint": {"numericValue": 2600, "displayValue": "2.6 s"},
-        "speed-index": {"numericValue": 6100, "displayValue": "6.1 s"},
-    }
-    breakdown = _score_breakdown(audits)
-    assert {m["id"] for m in breakdown} == set(audits.keys())
-    lcp = next(m for m in breakdown if m["id"] == "largest-contentful-paint")
-    assert lcp["value"] == 4800
-    assert lcp["weight"] == 0.25
-
-
-def test_score_breakdown_skips_missing_metrics():
-    breakdown = _score_breakdown({"largest-contentful-paint": {"numericValue": 4000}})
-    assert len(breakdown) == 1
-
-
-def test_overall_score_matches_weighted_sum_of_perfect_metrics():
-    breakdown = [
-        {"id": "a", "score": 100, "weight": 0.6, "median": 4000, "p10": 2500},
-        {"id": "b", "score": 100, "weight": 0.4, "median": 600, "p10": 200},
-    ]
-    assert _overall_score(breakdown) == 100
-
-
-def test_overall_score_override_improves_total():
-    breakdown = [
-        {"id": "lcp", "score": 30, "weight": 0.5, "median": 4000, "p10": 2500},
-        {"id": "tbt", "score": 90, "weight": 0.5, "median": 600, "p10": 200},
-    ]
-    baseline = _overall_score(breakdown)
-    improved = _overall_score(breakdown, {"lcp": 2500})  # LCP fixed to its own p10 -> scores 90
-    assert improved > baseline
-
-
-def test_quick_wins_ranks_worst_metric_highest_delta():
-    breakdown = _score_breakdown({
-        "largest-contentful-paint": {"numericValue": 4800},
-        "total-blocking-time": {"numericValue": 720},
-        "cumulative-layout-shift": {"numericValue": 0.28},
-        "first-contentful-paint": {"numericValue": 2600},
-        "speed-index": {"numericValue": 6100},
-    })
-    current = _overall_score(breakdown)
-    wins = _quick_wins(breakdown, current)
-    assert all(wins[i]["score_delta"] >= wins[i + 1]["score_delta"] for i in range(len(wins) - 1))
-    assert all(w["score_delta"] >= 0 for w in wins)  # fixing to 'good' never makes the score worse
-
-
-def test_combined_projection_never_exceeds_100_and_beats_baseline():
-    breakdown = _score_breakdown({
-        "largest-contentful-paint": {"numericValue": 4800},
-        "total-blocking-time": {"numericValue": 720},
-        "cumulative-layout-shift": {"numericValue": 0.28},
-    })
-    current = _overall_score(breakdown)
-    wins = _quick_wins(breakdown, current)
-    projection = _combined_projection(breakdown, wins, current)
-    assert projection["score_after"] <= 100
-    assert projection["score_after"] >= projection["score_before"]
+def test_extract_lcp_breakdown_none_when_audit_absent():
+    assert _extract_lcp_breakdown({}) is None

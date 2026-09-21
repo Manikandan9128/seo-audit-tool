@@ -114,3 +114,14 @@ def test_keyword_gap_sorted_by_search_volume_descending():
     result = analyze([_record(rows)], own_domain="client.com")
     gap_rows = result["keyword_gap_rows"]
     assert [r["keyword"] for r in gap_rows] == ["high volume", "low volume"]
+
+
+def test_keyword_gap_dedupes_same_keyword_across_casing():
+    # 2026-09-21 spec rule 11: a raw export repeating the same keyword under
+    # different casing must collapse to one row, not two.
+    rows = [
+        {"keyword": "Dumper Lorry", "search_volume": 1000, "domain_positions": {"client.com": 0, "rival.com": 5}},
+        {"keyword": "dumper lorry", "search_volume": 1000, "domain_positions": {"client.com": 0, "rival.com": 5}},
+    ]
+    result = analyze([_record(rows)], own_domain="client.com")
+    assert len(result["keyword_gap_rows"]) == 1

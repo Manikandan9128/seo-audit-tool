@@ -1,4 +1,3 @@
-import math
 import re
 from urllib.parse import urlparse
 
@@ -16,153 +15,213 @@ PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 # card on the Website Performance slide.
 TIMEOUT = 150.0
 
-# Already surfaced separately as core_web_vitals — excluded from the generic
-# issue list below so a slow LCP/CLS doesn't also show up as a duplicate
-# "diagnostic" row with no extra information.
-_METRIC_AUDIT_IDS = {
-    "largest-contentful-paint", "cumulative-layout-shift", "interaction-to-next-paint",
-    "total-blocking-time", "first-contentful-paint", "speed-index",
+
+# 2026-09-21 spec: no custom/reimplemented Lighthouse scoring curve, and no
+# "if this metric were fixed, the overall score would become Y" projection
+# anywhere in this module — a per-metric improvement is never presented as
+# a guaranteed overall Performance score change. Good Threshold values below
+# are Google's own published "good" cutoffs (web.dev/articles/lcp,
+# web.dev/articles/cls, web.dev/articles/tbt, etc.) — the same numbers the
+# real PSI dashboard itself draws its green/orange/red bands at — not a
+# threshold this tool invented.
+_METRIC_GOOD_THRESHOLDS = {
+    "largest-contentful-paint": {"label": "LCP", "good_threshold": 2500},
+    "total-blocking-time": {"label": "TBT", "good_threshold": 200},
+    "cumulative-layout-shift": {"label": "CLS", "good_threshold": 0.1},
+    "first-contentful-paint": {"label": "FCP", "good_threshold": 1800},
+    "speed-index": {"label": "Speed Index", "good_threshold": 3387},
 }
 
 
-# Lighthouse's own performance-category weights + scoring-curve control
-# points (median -> score 50, p10 -> score 90), from Lighthouse's published
-# `metrics.json`/`audit.js` scoring model (v10+, same for mobile & desktop).
-# Google can revise these between Lighthouse versions; re-check against
-# `lighthouseResult.lighthouseVersion` in the PSI response if scores here
-# ever look off from PSI's own dashboard.
-_METRIC_CURVES = {
-    "largest-contentful-paint": {"label": "LCP", "weight": 0.25, "median": 4000, "p10": 2500},
-    "total-blocking-time": {"label": "TBT", "weight": 0.30, "median": 600, "p10": 200},
-    "cumulative-layout-shift": {"label": "CLS", "weight": 0.25, "median": 0.25, "p10": 0.1},
-    "first-contentful-paint": {"label": "FCP", "weight": 0.10, "median": 3000, "p10": 1800},
-    "speed-index": {"label": "Speed Index", "weight": 0.10, "median": 5800, "p10": 3387},
-}
-# Φ⁻¹(0.9) — the standard-normal quantile that pins the p10 control point to
-# score 90 in Lighthouse's log-normal curve.
-_P10_Z = 1.2816
+def _metric_status(score: float | None) -> str | None:
+    """Status from PSI's OWN per-audit score (score>=0.9 is Lighthouse's
+    real 'Good'/green band, >=0.5 'Needs Improvement'/orange, else 'Poor'/
+    red — the same bands the PSI dashboard itself colors these audits
+    with), never a custom classification."""
+    if score is None:
+        return None
+    pct = score * 100
+    if pct >= 90:
+        return "Good"
+    if pct >= 50:
+        return "Needs Improvement"
+    return "Poor"
 
 
-def _normal_cdf(x: float) -> float:
-    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-
-
-def _lighthouse_metric_score(value: float, median: float, p10: float) -> int:
-    """Reimplementation of Lighthouse's log-normal metric scoring curve
-    (core/lib/statistics.js getLogNormalScore) — the same math behind the
-    public Lighthouse Scoring Calculator. `value` at p10 scores ~90, at
-    median scores ~50."""
-    if value <= 0:
-        return 100
-    sigma = math.log(p10 / median) / -_P10_Z
-    standardized = (math.log(value) - math.log(median)) / sigma
-    return round(max(0.0, min(1.0, 1 - _normal_cdf(standardized))) * 100)
-
-
-def _score_breakdown(audits: dict) -> list[dict]:
-    """Per-metric current value, weight, and score — the ingredients behind
-    the single Performance score, broken out so a report can show which
-    metric is actually costing the most points."""
-    breakdown = []
-    for audit_id, curve in _METRIC_CURVES.items():
+def _metric_table(audits: dict) -> list[dict]:
+    """Metric | Current | Good Threshold | Status rows (2026-09-21 spec
+    section 2) — every value read straight from PSI's own Lighthouse audit
+    for that metric (numericValue, displayValue, score). No weighting, no
+    'if fixed' projection, no overall-score arithmetic."""
+    rows = []
+    for audit_id, meta in _METRIC_GOOD_THRESHOLDS.items():
         audit = audits.get(audit_id)
-        value = audit.get("numericValue") if audit else None
-        if value is None:
+        if audit is None or audit.get("numericValue") is None:
             continue
-        score = _lighthouse_metric_score(value, curve["median"], curve["p10"])
-        breakdown.append({
+        rows.append({
             "id": audit_id,
-            "label": curve["label"],
-            "value": value,
+            "label": meta["label"],
+            "value": audit["numericValue"],
             "display_value": audit.get("displayValue"),
-            "weight": curve["weight"],
-            "median": curve["median"],
-            "p10": curve["p10"],
-            "score": score,
-            "weighted_points": round(score * curve["weight"], 1),
+            "good_threshold": meta["good_threshold"],
+            "status": _metric_status(audit.get("score")),
         })
-    return breakdown
+    return rows
 
 
-def _overall_score(breakdown: list[dict], overrides: dict | None = None) -> int:
-    """Weighted-sum Performance score, optionally with one or more metrics'
-    values swapped out (e.g. to a 'good' p10 threshold) to project what the
-    score would become if just those metrics were fixed."""
-    overrides = overrides or {}
-    total = 0.0
-    for m in breakdown:
-        if m["id"] in overrides:
-            score = _lighthouse_metric_score(overrides[m["id"]], m["median"], m["p10"])
-        else:
-            score = m["score"]
-        total += score * m["weight"]
-    return round(total)
+def _field_metric(metrics: dict, *keys: str) -> dict | None:
+    for key in keys:
+        entry = metrics.get(key)
+        if entry:
+            return {"percentile": entry.get("percentile"), "category": entry.get("category")}
+    return None
 
 
-def _quick_wins(breakdown: list[dict], current_score: int) -> list[dict]:
-    """Per-metric 'what if this alone hit its good threshold' projection,
-    ranked by actual score impact — the Lighthouse Scoring Calculator's core
-    trick, applied metric-by-metric instead of by hand.
-
-    The delta is computed self-consistently in our own weighted-sum model
-    (own 'before' vs own 'after', same formula both sides) rather than
-    against `current_score` directly — `current_score` is Google's real API
-    score, which can differ slightly from our independently-rounded
-    reimplementation, and diffing across those two baselines can produce a
-    nonsensical negative delta for a genuine improvement. The delta is then
-    applied on top of the real `current_score` so the displayed projection
-    still anchors to the number the client sees on their own PSI dashboard."""
-    own_before = _overall_score(breakdown)
-    wins = []
-    for m in breakdown:
-        own_after = _overall_score(breakdown, {m["id"]: m["p10"]})
-        delta = own_after - own_before
-        wins.append({**m, "score_if_fixed": min(100, current_score + delta), "score_delta": delta})
-    wins.sort(key=lambda w: -w["score_delta"])
-    return wins
-
-
-def _flag_inconsistent_rows(quick_wins: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Data-quality guard (2026-09-16 user spec, Step 1): a metric already
-    at/near the max score (100) can't have a worse 'if fixed' projection,
-    and fixing a metric can never legitimately produce a negative score
-    delta (our own self-consistent before/after model guarantees this by
-    construction, so this should normally find nothing — it exists to
-    catch a future regression or corrupted upstream data rather than a
-    case expected to fire today). Flagged rows are excluded from every
-    downstream ranking/projection/insight, surfaced only via their own
-    explicit data-quality note."""
-    consistent, inconsistent = [], []
-    for w in quick_wins:
-        if (w["score"] >= 100 and w["score_if_fixed"] < w["score"]) or w["score_delta"] < 0:
-            inconsistent.append(w)
-        else:
-            consistent.append(w)
-    return consistent, inconsistent
-
-
-def _combined_projection(breakdown: list[dict], quick_wins: list[dict], current_score: int, top_n: int = 2) -> dict:
-    # Top metrics are the ones with the greatest REAL improvement
-    # potential — ranked by how far current value exceeds its good
-    # threshold (value/p10, as a ratio), not by score_delta (2026-09-16
-    # user spec, Step 2) — a metric can cost few points today yet still be
-    # wildly over its threshold, and that's the one worth naming first.
-    ranked = sorted(
-        (w for w in quick_wins if w["score_delta"] > 0),
-        key=lambda w: (w["value"] / w["p10"]) if w["p10"] else 0,
-        reverse=True,
-    )
-    top = ranked[:top_n]
-    overrides = {w["id"]: w["p10"] for w in top}
-    own_before = _overall_score(breakdown)
-    own_after = _overall_score(breakdown, overrides)
-    delta = own_after - own_before
+def _cwv_field_data(psi_response: dict) -> dict | None:
+    """Real CrUX field data (2026-09-21 spec sections 4/11) — actual
+    Chrome-User-Experience-Report traffic from real visitors, never a
+    Lighthouse lab-run number. `loadingExperience` is per-URL field data;
+    `originLoadingExperience` is CrUX's own site-wide fallback for when the
+    URL itself doesn't have enough real-user traffic to report alone.
+    Neither present (new/low-traffic site — CrUX genuinely has nothing) ->
+    None, and the caller must say so explicitly rather than claim Core Web
+    Vitals passed or failed."""
+    field = psi_response.get("loadingExperience") or {}
+    is_origin_fallback = False
+    if not field.get("metrics"):
+        field = psi_response.get("originLoadingExperience") or {}
+        is_origin_fallback = bool(field.get("metrics"))
+    metrics = field.get("metrics") or {}
+    if not metrics:
+        return None
     return {
-        "metrics": [w["label"] for w in top],
-        "metric_ids": [w["id"] for w in top],
-        "score_before": current_score,
-        "score_after": min(100, current_score + delta),
+        "is_origin_fallback": is_origin_fallback,
+        "overall_category": field.get("overall_category"),
+        "lcp": _field_metric(metrics, "LARGEST_CONTENTFUL_PAINT_MS"),
+        # INP replaced FID as the CWV responsiveness metric in March 2024;
+        # EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT covers CrUX responses that
+        # still use the pre-GA field name. Never derived from TBT (a lab
+        # metric) — if CrUX has neither key, this is None, full stop.
+        "inp": _field_metric(metrics, "INTERACTION_TO_NEXT_PAINT", "EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT"),
+        "cls": _field_metric(metrics, "CUMULATIVE_LAYOUT_SHIFT_SCORE"),
     }
+
+
+def _perf_audit_groups(categories: dict) -> dict[str, str]:
+    """audit_id -> group ('load-opportunities'/'diagnostics'/...), straight
+    from the Performance category's own auditRefs — PSI's real UI grouping,
+    not a classification this tool invented."""
+    refs = ((categories.get("performance") or {}).get("auditRefs")) or []
+    return {r["id"]: r.get("group") for r in refs if r.get("id")}
+
+
+def _format_savings(details: dict) -> str | None:
+    ms = details.get("overallSavingsMs")
+    kib = details.get("overallSavingsBytes")
+    parts = []
+    if ms:
+        parts.append(f"{ms / 1000:.1f}s" if ms >= 1000 else f"{round(ms)}ms")
+    if kib:
+        parts.append(f"{kib / 1024:.0f} KiB")
+    return " / ".join(parts) if parts else None
+
+
+def _extract_opportunities(audits: dict, audit_groups: dict, limit: int = 8) -> list[dict]:
+    """Real PSI 'Opportunities' only (2026-09-21 spec section 6) — audits
+    Lighthouse itself grouped under load-opportunities (its own PSI-UI
+    section), and only when PSI actually quantified a saving for this run.
+    Never a manufactured "compress images"/"remove unused JS" line for a
+    best-practice PSI didn't flag with a real number here."""
+    opps = []
+    for audit_id, group in audit_groups.items():
+        if group != "load-opportunities":
+            continue
+        audit = audits.get(audit_id)
+        if not audit:
+            continue
+        score = audit.get("score")
+        if score is not None and score >= 0.9:
+            continue
+        details = audit.get("details") or {}
+        savings = _format_savings(details)
+        if not savings:
+            continue
+        opps.append({
+            "title": _clean_lighthouse_text(audit.get("title", audit_id)),
+            "savings": savings,
+            "savings_ms": details.get("overallSavingsMs") or 0,
+        })
+    opps.sort(key=lambda o: -o["savings_ms"])
+    return opps[:limit]
+
+
+# Rule 8 — a small fixed set of well-known PSI diagnostic audits. Only ever
+# surfaced when PSI actually returned a real value for THIS run.
+_DIAGNOSTIC_AUDIT_IDS = {
+    "mainthread-work-breakdown": "Long main-thread tasks",
+    "bootup-time": "Total JavaScript execution time",
+    "total-byte-weight": "Total network payload",
+    "render-blocking-resources": "Render-blocking resources",
+    "unused-javascript": "Unused JavaScript",
+    "unused-css-rules": "Unused CSS",
+    "network-requests": "Request count",
+}
+
+
+def _extract_diagnostics(audits: dict, audit_groups: dict) -> list[dict]:
+    """network-requests carries no displayValue of its own — its real
+    diagnostic value here is the actual request count from its own
+    details.items, never a manufactured figure. Rule 9 (avoid repetition):
+    an audit PSI itself grouped under load-opportunities (render-blocking-
+    resources, unused-javascript, unused-css-rules commonly are, when they
+    carry a real saving) is skipped here — it already appears once, in
+    Top PSI Opportunities."""
+    out = []
+    for audit_id, label in _DIAGNOSTIC_AUDIT_IDS.items():
+        if audit_groups.get(audit_id) == "load-opportunities":
+            continue
+        audit = audits.get(audit_id)
+        if not audit:
+            continue
+        if audit_id == "network-requests":
+            items = ((audit.get("details") or {}).get("items")) or []
+            if not items:
+                continue
+            value = f"{len(items)} requests"
+        else:
+            value = audit.get("displayValue")
+            if not value:
+                continue
+        out.append({"id": audit_id, "label": label, "value": value})
+    return out
+
+
+_LCP_PHASE_LABELS = {
+    "ttfb": "TTFB", "loaddelay": "Resource load delay",
+    "loadtime": "Resource load duration", "renderdelay": "Element render delay",
+}
+
+
+def _extract_lcp_breakdown(audits: dict) -> list[dict] | None:
+    """Rule 7 — Lighthouse's own LCP phase table (largest-contentful-
+    paint-element audit's phase breakdown), only when PSI's response for
+    this run actually includes one in a shape this can positively match to
+    a known phase label. Different Lighthouse versions have varied this
+    audit's exact detail shape; this never guesses at an unrecognized one
+    — returns None (section omitted entirely) rather than invent a phase
+    split PSI didn't actually provide."""
+    audit = audits.get("largest-contentful-paint-element")
+    if not audit:
+        return None
+    rows = []
+    for item in ((audit.get("details") or {}).get("items")) or []:
+        phase_raw = str(item.get("phase") or item.get("label") or "").strip().lower().replace(" ", "").replace("_", "")
+        label = _LCP_PHASE_LABELS.get(phase_raw)
+        timing = item.get("timing")
+        if not label or timing is None:
+            continue
+        rows.append({"phase": label, "timing_ms": timing})
+    return rows or None
 
 
 def _domain(url: str) -> str:
@@ -238,32 +297,6 @@ def _clean_lighthouse_text(text: str) -> str:
     instead of prose. Strips both, keeping the link's visible label."""
     text = _MARKDOWN_LINK_RE.sub(r"\1", text)
     return _BACKTICK_RE.sub(r"\1", text)
-
-
-def _extract_issues(audits: dict, limit: int = 8) -> list[dict]:
-    """Real Lighthouse audits.<id> the PSI dashboard itself lists under
-    "Opportunities"/"Diagnostics" — failing (score < 0.9), scored
-    (scoreDisplayMode binary/numeric, not the purely-informative ones like
-    screenshots), non-metric audits. Sorted worst-impact first: real
-    millisecond savings when Lighthouse reports one, else by score."""
-    issues = []
-    for audit_id, audit in audits.items():
-        if audit_id in _METRIC_AUDIT_IDS:
-            continue
-        score = audit.get("score")
-        if score is None or score >= 0.9:
-            continue
-        if audit.get("scoreDisplayMode") not in ("binary", "numeric"):
-            continue
-        savings_ms = ((audit.get("details") or {}).get("overallSavingsMs")) or 0
-        issues.append({
-            "title": audit.get("title", audit_id),
-            "impact": audit.get("displayValue") or _clean_lighthouse_text(audit.get("description", "")),
-            "savings_ms": savings_ms,
-            "score": score,
-        })
-    issues.sort(key=lambda x: (-x["savings_ms"], x["score"]))
-    return issues[:limit]
 
 
 def _extract_treemap(audits: dict, limit: int = 40) -> list[dict]:
@@ -342,21 +375,7 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
         cat = categories.get(cat_key)
         return cat.get("score") if cat else None
 
-    def metric(audit_key: str) -> str | None:
-        audit = audits.get(audit_key)
-        return audit.get("displayValue") if audit else None
-
-    performance_score = score("performance")
-    breakdown = _score_breakdown(audits)
-    # Anchor "current" to the real score Google's own API returned (not our
-    # recomputed weighted sum, which is a faithful but independently-rounded
-    # reimplementation of their formula) — projections/deltas below are then
-    # relative to the number the client's actual PSI dashboard shows, so the
-    # report never contradicts what they can go verify themselves.
-    current_score = performance_score if performance_score is not None else _overall_score(breakdown)
-    quick_wins_all = _quick_wins(breakdown, current_score) if breakdown else []
-    quick_wins, inconsistent_rows = _flag_inconsistent_rows(quick_wins_all)
-    combined_projection = _combined_projection(breakdown, quick_wins, current_score) if quick_wins else None
+    audit_groups = _perf_audit_groups(categories)
 
     return {
         "strategy": strategy,
@@ -372,18 +391,15 @@ def run_pagespeed(url: str, strategy: str = "mobile", retries: int = 1, timeout:
             "accessibility": raw_score("accessibility"),
             "best_practices": raw_score("best-practices"),
         },
-        "current_score": current_score,
-        "score_breakdown": breakdown,
-        "quick_wins": quick_wins,
-        "inconsistent_rows": inconsistent_rows,
-        "combined_projection": combined_projection,
+        # 2026-09-21 spec: this is Google's own real Performance score,
+        # never a recomputed/projected one — no "if fixed" arithmetic
+        # anywhere in this module.
+        "current_score": score("performance"),
+        "metric_table": _metric_table(audits),
+        "field_data": _cwv_field_data(data),
+        "opportunities": _extract_opportunities(audits, audit_groups),
+        "diagnostics": _extract_diagnostics(audits, audit_groups),
+        "lcp_breakdown": _extract_lcp_breakdown(audits),
         "script_weight": _extract_script_weight(audits, url),
-        "core_web_vitals": {
-            "largest_contentful_paint": metric("largest-contentful-paint"),
-            "cumulative_layout_shift": metric("cumulative-layout-shift"),
-            "interaction_to_next_paint": metric("interaction-to-next-paint") or metric("total-blocking-time"),
-            "first_contentful_paint": metric("first-contentful-paint"),
-        },
-        "issues": _extract_issues(audits),
         "script_treemap": _extract_treemap(audits),
     }
