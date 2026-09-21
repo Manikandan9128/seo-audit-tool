@@ -162,6 +162,58 @@ def _strip_modifiers(keyword: str) -> tuple[str, list[str]]:
 # is load-bearing there, not just a nice-to-have.
 _BUSINESS_THEME_CANDIDATE_CAP = 100
 
+# External lead's Phase 1 routing spec (2026-09-21): a row whose relevance
+# was genuinely judged AMBIGUOUS, or whose competitor_status marks it as a
+# real competitor mention, must be routed to its own fixed bucket and never
+# enter semantic (business-theme) clustering at all — not just excluded
+# from consideration, not blended into a normal-looking topic cluster
+# either. Confirmed exactly how the BharatBenz "Tata automotive overview"
+# bug happened: an AI-fail-open "Unknown / Needs Review" row got clustered
+# together with confident rows into a real-looking business-theme cluster
+# instead of being visibly isolated, because nothing stopped an ambiguous
+# row from competing for a normal cluster slot. Two fixed labels, never
+# AI-named, so they can never collide with (or hide inside) a real topic
+# cluster name.
+_NEEDS_REVIEW_CLUSTER_LABEL = "Needs Review — Relevance Unconfirmed"
+_COMPETITOR_ROUTE_CLUSTER_LABEL = "Competitor / Comparison Opportunities"
+_COMPETITOR_ROUTE_STATUSES = {"Competitor Comparison Opportunity", "Relevant Competitor Intent"}
+# _filter_keyword_rows stamps this exact reason on a row that was simply
+# never sent to the AI classifier at all (outside its top-N-by-volume
+# candidate pool) — a deliberate "leave as-is, don't judge it" case, not a
+# real ambiguity verdict. Only a row the classifier (or its fail-open path)
+# actually rendered a verdict on for is real AMBIGUOUS evidence; routing
+# every uncapped low-volume row here too would silently stop them from
+# ever being clustered at all, a real regression the pasted spec never asked for.
+_UNJUDGED_REASON = "Keyword outside the classified candidate pool."
+
+
+def _route_non_clusterable_rows(rows: list[dict]) -> list[dict]:
+    """Splits `rows` into (routed rows, still-clusterable rows), stamping
+    `cluster`/`cluster_status` directly on every routed row so it's never
+    silently dropped — just permanently kept out of normal business-theme
+    clustering. Returns the still-clusterable subset for the caller to pass
+    into `_assign_business_themes`/`_build_candidate_clusters`; routed rows
+    are left out of both (no business_theme is ever computed for them) but
+    still flow through every later step in `build_final_keyword_clusters`
+    (primary/secondary, existing-page matching, priority scoring) since
+    those all key off `cluster` being non-empty and already tolerate an
+    unset business_theme."""
+    clusterable = []
+    for r in rows:
+        relevance = r.get("relevance_status")
+        reason = r.get("relevance_reason")
+        competitor_status = r.get("competitor_status")
+        if relevance == "Unknown / Needs Review" and reason != _UNJUDGED_REASON:
+            r["cluster"] = _NEEDS_REVIEW_CLUSTER_LABEL
+            r["cluster_status"] = f"Needs Review: {reason}" if reason else "Needs Review"
+            continue
+        if competitor_status in _COMPETITOR_ROUTE_STATUSES:
+            r["cluster"] = _COMPETITOR_ROUTE_CLUSTER_LABEL
+            r["cluster_status"] = "Validated"
+            continue
+        clusterable.append(r)
+    return clusterable
+
 
 def _num(value) -> float:
     try:
@@ -716,12 +768,14 @@ def build_final_keyword_clusters(
     client_description: str | None,
     site_audit_pages_rows: list[dict] | None,
 ) -> list[dict]:
-    """Runs Business Theme -> Candidate Clustering -> Validation/Auto-Split
-    (structural, see module docstring) -> Core Category + Cluster
-    Prioritization -> Primary/Secondary -> Existing Page Matching ->
-    Cannibalization Check -> Final Cluster Acceptance Check -> Evidence
-    Confidence -> Unified Priority Score (spec section 40, additive —
-    see priority_model.py), mutating and returning `rows`. Caller must already have
+    """Runs Non-Clusterable Routing (AMBIGUOUS/competitor-flavored rows —
+    see `_route_non_clusterable_rows`) -> Business Theme -> Candidate
+    Clustering -> Validation/Auto-Split (structural, see module docstring)
+    -> Core Category + Cluster Prioritization -> Primary/Secondary ->
+    Existing Page Matching -> Cannibalization Check -> Final Cluster
+    Acceptance Check -> Evidence Confidence -> Unified Priority Score (spec
+    section 40, additive — see priority_model.py), mutating and returning
+    `rows`. Caller must already have
     `intent` and `page_category` set on every row (FINAL
     PIPELINE steps 3-4) before calling this — this function only reads
     those fields, never sets them. Ranking enrichment (current_position/
@@ -733,8 +787,9 @@ def build_final_keyword_clusters(
     if not rows:
         return rows
 
-    _assign_business_themes(rows, client_name, client_description)
-    _build_candidate_clusters(rows)
+    clusterable_rows = _route_non_clusterable_rows(rows)
+    _assign_business_themes(clusterable_rows, client_name, client_description)
+    _build_candidate_clusters(clusterable_rows)
     _assign_core_category_and_priority(rows)
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)

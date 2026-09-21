@@ -1,7 +1,13 @@
 from unittest.mock import patch
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME
-from app.services.keyword_cluster_pipeline import _final_cluster_acceptance_check, _strip_modifiers, build_final_keyword_clusters
+from app.services.keyword_cluster_pipeline import (
+    _COMPETITOR_ROUTE_CLUSTER_LABEL,
+    _NEEDS_REVIEW_CLUSTER_LABEL,
+    _final_cluster_acceptance_check,
+    _strip_modifiers,
+    build_final_keyword_clusters,
+)
 
 
 def _rows():
@@ -419,3 +425,55 @@ def test_final_acceptance_check_strips_disambiguation_suffix_before_judging_name
     rows = [_valid_cluster_row(cluster="Pricing (Commercial)")]
     _final_cluster_acceptance_check(rows)
     assert rows[0]["cluster"] == "Pricing (Commercial)"
+
+
+def test_ambiguous_and_competitor_rows_never_blend_into_a_business_cluster():
+    # Reproduces the real BharatBenz bug: an AI-fail-open "Unknown / Needs
+    # Review" row (e.g. "jaguar land rover new") and a kept
+    # competitor-comparison row must each land in their own fixed bucket,
+    # never inside a normal-looking, AI-named business-theme cluster
+    # alongside genuinely confident rows.
+    rows = [
+        {"keyword": "heavy truck dealer near me", "search_volume": 900, "intent": "Commercial", "page_category": "Landing Page"},
+        {"keyword": "heavy truck financing options", "search_volume": 400, "intent": "Commercial", "page_category": "Landing Page"},
+        {
+            "keyword": "jaguar land rover new", "search_volume": 300, "intent": "Informational", "page_category": "Blog / Guide",
+            "relevance_status": "Unknown / Needs Review", "relevance_reason": "AI classification unavailable — needs manual review.",
+        },
+        {
+            "keyword": "tatamotors vs bharatbenz trucks", "search_volume": 200, "intent": "Commercial", "page_category": "Landing Page",
+            "competitor_status": "Competitor Comparison Opportunity",
+        },
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Commercial Trucks" for r in rows}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "BharatBenz", "a commercial truck manufacturer", None)
+
+    by_kw = {r["keyword"]: r for r in rows}
+    assert by_kw["jaguar land rover new"]["cluster"] == _NEEDS_REVIEW_CLUSTER_LABEL
+    assert by_kw["tatamotors vs bharatbenz trucks"]["cluster"] == _COMPETITOR_ROUTE_CLUSTER_LABEL
+    real_cluster = by_kw["heavy truck dealer near me"]["cluster"]
+    assert real_cluster not in (_NEEDS_REVIEW_CLUSTER_LABEL, _COMPETITOR_ROUTE_CLUSTER_LABEL)
+    assert by_kw["heavy truck financing options"]["cluster"] == real_cluster
+
+
+def test_row_outside_classified_candidate_pool_still_clusters_normally():
+    # "Unknown / Needs Review" with the pool-exclusion reason means the
+    # classifier never actually judged this row at all (it was simply
+    # outside the top-N-by-volume candidate cap) — a deliberate "leave as
+    # is" case, not real ambiguity evidence, so it must NOT be routed away
+    # from normal clustering.
+    rows = [
+        {
+            "keyword": "heavy truck dealer near me", "search_volume": 900, "intent": "Commercial", "page_category": "Landing Page",
+            "relevance_status": "Unknown / Needs Review", "relevance_reason": "Keyword outside the classified candidate pool.",
+        },
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"heavy truck dealer near me": "Commercial Trucks"}), \
+         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "BharatBenz", "a commercial truck manufacturer", None)
+
+    assert rows[0]["cluster"] not in (_NEEDS_REVIEW_CLUSTER_LABEL, _COMPETITOR_ROUTE_CLUSTER_LABEL)
+    assert rows[0]["cluster"] == "Commercial Trucks"
