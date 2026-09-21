@@ -51,7 +51,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, assign_geo_status, classify_keywords, is_branded_or_near_brand
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, assign_geo_status, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -1336,9 +1336,31 @@ def _gather_report_data(
         r for r in (analytics.get("search_queries") or {}).get("rows", [])
         if not is_branded_or_near_brand(r.get("query") or "", _kw_brand_tokens)
     ]
+    own_keyword_gap_rows = _all_rows("keyword_gap", own_only=True)
     keyword_rows_all = _merge_keyword_gap_and_positions(
-        _all_rows("keyword_gap", own_only=True), _all_rows("organic_positions", own_only=True), gsc_query_rows_for_merge,
+        own_keyword_gap_rows, _all_rows("organic_positions", own_only=True), gsc_query_rows_for_merge,
     )
+    # Deterministic, free, and runs BEFORE the AI relevance filter below —
+    # same "cheap rule-based excludes first" discipline as
+    # keyword_relevance_service's own module docstring. A real Keyword Gap
+    # export self-identifies every domain it compared the client against
+    # (parse_semrush_file's per-row "domain_positions" keys — the same
+    # source the upload-time same-site guard in competitors.py already
+    # trusts), which is the authoritative competitor set for THIS file —
+    # not competitor_rows_all below, which only reflects whichever domains
+    # happened to also get a separate Domain Overview upload and can be a
+    # strict subset. Confirmed live 2026-09-21 (BharatBenz): the pptx_builder
+    # brand filter alone missed rows because it only ever saw the narrower
+    # Domain Overview competitor set, not every domain this file actually
+    # compared against (e.g. mahindratruckandbus.com had a Keyword Gap
+    # column but no separate Domain Overview upload). Filtering here also
+    # means a stripped row never survives to get clustered under a
+    # competitor-brand-flavored topic label downstream.
+    _gap_domains = set()
+    for _r in own_keyword_gap_rows:
+        _gap_domains.update((_r.get("domain_positions") or {}).keys())
+    if _gap_domains:
+        keyword_rows_all = filter_other_brand_keywords(keyword_rows_all, _kw_client_domain, _gap_domains)
     # Relevance-filtered FIRST, before clustering/intent classification (or
     # anything else in this function) spends any AI budget on these rows —
     # see _filter_keyword_rows's docstring for why call ORDER, not just

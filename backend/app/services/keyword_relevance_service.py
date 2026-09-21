@@ -178,6 +178,27 @@ def is_branded_or_near_brand(keyword: str, brand_tokens) -> bool:
             for brand in brand_tokens:
                 if brand and first != brand and len(brand) > 3 and _edit_distance(first, brand) <= 2:
                     return True
+    # A registrable domain label with no corporate-suffix ending
+    # brand_token_variants can strip (e.g. "mahindratruckandbus.com" — no
+    # trailing Motors/Group/Corp/...) still squashes a real multi-word
+    # company name into one token with no separator at all. Real search
+    # queries always keep the word boundary ("mahindra dealer near me"),
+    # so a plain whole-word match against that raw compound token never
+    # fires. Confirmed live 2026-09-21 (BharatBenz): the client's own
+    # "Target Keywords" slide kept surfacing "mahindra dealer near me" /
+    # "mahindra dealers near me" untouched because "mahindra" never
+    # literally equals "mahindratruckandbus". A company's brand name is
+    # virtually always the LEADING word of a mashed-together registrable
+    # label (brand first, industry/descriptor words after), so treat a
+    # keyword's own leading word as a match when it's a genuine prefix of
+    # a longer raw brand token — length-gated on both sides so this can't
+    # fire on short, generic words.
+    if words:
+        first = words[0]
+        if len(first) >= 5:
+            for brand in brand_tokens:
+                if brand and len(brand) > len(first) and brand.startswith(first):
+                    return True
     return False
 
 
