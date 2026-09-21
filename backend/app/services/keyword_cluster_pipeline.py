@@ -56,8 +56,8 @@ import logging
 import re
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
-from app.services.keyword_cluster_service import generate_batched_candidate_clusters
 from app.services.keyword_relevance_service import match_existing_page_for_cluster
+from app.services.keyword_semantic_cluster_service import generate_phase2_candidate_clusters, generate_phase3_validated_clusters
 from app.services.priority_model import compute_priority_score, evidence_confidence_to_score
 
 logger = logging.getLogger(__name__)
@@ -183,6 +183,17 @@ _COMPETITOR_ROUTE_STATUSES = {"Competitor Comparison Opportunity", "Relevant Com
 # destination here rather than vanishing silently.
 _CAREER_ROUTE_CLUSTER_LABEL = "Jobs / Careers"
 _CAREER_ROUTE_STATUS = "Career / Recruitment Query"
+# Geo routing, per the user's explicit instruction (2026-09-21) to follow
+# the pasted spec as literally as possible — the spec's own pseudocode
+# computes geo_status in Phase 1 but only lists it as a hard clustering-
+# skip in this one requested extension, not in its base rule set (only
+# OFF_TOPIC/AMBIGUOUS/COMPETITOR/CAREER skip clustering there).
+# assign_geo_status (keyword_relevance_service.py) only ever sets
+# "Geographic Mismatch" or None — it never distinguishes IN_MARKET from
+# NO_GEO_SIGNAL, so both map to "stays clusterable" here; only a real,
+# positive mismatch routes away.
+_GEO_ROUTE_CLUSTER_LABEL = "Geographic Mismatch / Out of Market"
+_GEO_MISMATCH_STATUS = "Geographic Mismatch"
 # _filter_keyword_rows stamps this exact reason on a row that was simply
 # never sent to the AI classifier at all (outside its top-N-by-volume
 # candidate pool) — a deliberate "leave as-is, don't judge it" case, not a
@@ -219,6 +230,10 @@ def _route_non_clusterable_rows(rows: list[dict]) -> list[dict]:
             continue
         if competitor_status in _COMPETITOR_ROUTE_STATUSES:
             r["cluster"] = _COMPETITOR_ROUTE_CLUSTER_LABEL
+            r["cluster_status"] = "Validated"
+            continue
+        if r.get("geo_status") == _GEO_MISMATCH_STATUS:
+            r["cluster"] = _GEO_ROUTE_CLUSTER_LABEL
             r["cluster_status"] = "Validated"
             continue
         clusterable.append(r)
@@ -269,45 +284,28 @@ def _assign_business_themes(rows: list[dict], client_name: str, client_descripti
         r["business_theme"] = theme_map.get(r.get("keyword"), UNCLASSIFIED_THEME) or UNCLASSIFIED_THEME
 
 
-def _build_candidate_clusters(rows: list[dict]) -> None:
-    """Buckets every row by (business_theme, search_intent, page_category),
-    strips modifiers to a core semantic_topic phrase within each bucket
-    (spec sections 7-9 — see _strip_modifiers), then sub-splits each
-    bucket's distinct topic phrases via AI into real per-page clusters.
-    Sets `cluster` on every row with a non-empty keyword; a row is left
-    unclustered (`cluster` = "") only when there isn't enough evidence to
-    group it with anything — spec's explicit fallback, never a forced
-    group.
+def _build_candidate_clusters(rows: list[dict], client_description: str | None = None) -> None:
+    """External lead's Phase 2/3 spec (2026-09-21): two SEPARATE sequential
+    LLM calls (keyword_semantic_cluster_service.py) — semantic candidate
+    grouping, then validate/split/merge/finalize — replacing the earlier
+    single-call bucket-sub-split design. Modifier stripping to a core
+    semantic_topic phrase (spec sections 7-9 — see _strip_modifiers) still
+    runs deterministically over every row first, same as before: real
+    evidence fields the clustering engine consumes, never left to the AI's
+    own judgment. business_theme/intent/page_category are passed through
+    as each keyword's `source_cluster` — the spec's own "prior evidence
+    only, never treat it as the answer" framing — advisory prompt context
+    for Phase 2, not a structural boundary the way the old bucket design
+    used it.
 
-    Modifier stripping happens BEFORE the AI ever sees anything (spec
-    section 46's "CRITICAL ARCHITECTURE RULE" — semantic_topic/modifier
-    must be real fields the clustering engine CONSUMES, not something a
-    prompt asks the AI to figure out): "product", "product pricing",
-    "product features", "product benefits" all strip to the same core
-    phrase "product", so a bucket built entirely from modifier variants of
-    ONE topic never reaches the AI at all — it's labeled by that shared
-    core phrase directly, real evidence, not an AI guess. Only bucket
-    topic phrases that are GENUINELY DIFFERENT after stripping go to the
-    AI, which decides only real topic-level merges/splits (e.g. is "6x4
-    truck" its own opportunity distinct from "heavy truck"), never a
-    modifier-vs-topic judgment call the AI could get wrong.
-
-    Bucketing and modifier-stripping both run over every row (cheap, no
-    AI). The AI sub-split is still ONE batched call covering every
-    bucket's distinct topic phrases at once, not one call per bucket —
-    confirmed real (2026-09-19): a client with many distinct buckets
-    turned into that many sequential Groq calls, each also queued behind
-    Groq's shared per-minute token budget alongside this same report's
-    other AI calls, chaining past the 15-minute stale-job threshold and
-    killing the whole report. That single call's input is capped at the
-    same _BUSINESS_THEME_CANDIDATE_CAP keywords business theme
-    classification already used, for the same reason: bounded AI cost
-    regardless of how many thousand keyword rows a real export has. A
-    topic group whose representative keyword falls outside that cap still
-    gets its bucket's theme/topic-based default cluster (or stays
-    unclustered for an Unclassified bucket) — never silently dropped, just
-    not AI-sub-split."""
-    buckets: dict[tuple[str, str, str], list[dict]] = {}
+    Sets `cluster`/`cluster_status`/`primary_or_secondary` on every row in
+    the capped candidate pool; a row outside that pool, or one Phase 2/3
+    together couldn't confidently place, is left with `cluster` = ""
+    (unclustered) — the spec's explicit fallback, never a forced group.
+    Fails safe end to end: if either phase's AI call fails outright, every
+    row in the pool simply stays unclustered rather than falling back to
+    the old bucket-only design or inventing a group."""
+    keyword_rows_by_text: dict[str, dict] = {}
     for r in rows:
         keyword = (r.get("keyword") or "").strip()
         if not keyword:
@@ -326,106 +324,83 @@ def _build_candidate_clusters(rows: list[dict]) -> None:
         # here rather than adding a second, redundant AI entity-extraction
         # call for the same keyword universe.
         r["main_entity"] = theme if theme != UNCLASSIFIED_THEME else None
+        keyword_rows_by_text[keyword] = r
+
+    candidates = _unique_keywords_by_volume(rows)[:_BUSINESS_THEME_CANDIDATE_CAP]
+    if not candidates:
+        return
+
+    keyword_meta = []
+    for kw in candidates:
+        r = keyword_rows_by_text[kw]
+        theme = (r.get("business_theme") or UNCLASSIFIED_THEME).strip() or UNCLASSIFIED_THEME
         intent = (r.get("intent") or "").strip() or "Unknown Intent"
         category = (r.get("page_category") or "").strip() or "Unspecified Format"
-        buckets.setdefault((theme, intent, category), []).append(r)
+        source_cluster = None if theme == UNCLASSIFIED_THEME else f'business theme "{theme}", intent "{intent}", page format "{category}"'
+        keyword_meta.append({
+            "keyword": kw, "search_volume": r.get("search_volume"),
+            "keyword_difficulty": r.get("keyword_difficulty"), "source_cluster": source_cluster,
+        })
 
-    # Global cap keeps the one batched AI call bounded regardless of how
-    # many buckets or total rows exist — mirrors _assign_business_themes'
-    # own top-N-by-volume cap.
-    capped_keywords = set(_unique_keywords_by_volume(rows)[:_BUSINESS_THEME_CANDIDATE_CAP])
+    try:
+        candidate_clusters, _unmapped = generate_phase2_candidate_clusters(keyword_meta, client_description)
+    except Exception as e:
+        logger.warning("Phase 2 candidate clustering raised: %s", e)
+        candidate_clusters = {}
 
-    # Topic groups within each bucket: rows sharing the same modifier-
-    # stripped core phrase (case-insensitive) are structurally the SAME
-    # candidate topic — grouped here BEFORE the AI call even exists, so
-    # "product pricing" and "product features" are already one group by
-    # the time any AI involvement happens.
-    bucket_topic_groups: dict[tuple[str, str, str], dict[str, list[dict]]] = {}
-    for bucket_key, bucket_rows in buckets.items():
-        topic_groups: dict[str, list[dict]] = {}
-        for r in bucket_rows:
-            topic_groups.setdefault(r["semantic_topic"].lower(), []).append(r)
-        bucket_topic_groups[bucket_key] = topic_groups
+    if not candidate_clusters:
+        for kw in candidates:
+            keyword_rows_by_text[kw].setdefault("cluster", "")
+        return
 
-    def _representative(topic_rows: list[dict]) -> str:
-        return max(topic_rows, key=lambda r: _num(r.get("search_volume"))).get("keyword")
+    # Phase 3's own input shape wants each candidate cluster's keywords
+    # enriched with intent (Step 2's intent/page-type compatibility check),
+    # not just the bare keyword strings Phase 2 grouped.
+    enriched_candidates = {}
+    for cid, info in candidate_clusters.items():
+        kw_objs = []
+        for kw in info["keywords"]:
+            r = keyword_rows_by_text.get(kw)
+            kw_objs.append({
+                "keyword": kw, "search_volume": r.get("search_volume") if r else None,
+                "keyword_difficulty": r.get("keyword_difficulty") if r else None, "intent": r.get("intent") if r else None,
+            })
+        enriched_candidates[cid] = {**info, "keywords": kw_objs}
 
-    groups: list[tuple[str, list[str]]] = []
-    for bucket_key, topic_groups in bucket_topic_groups.items():
-        theme, intent, category = bucket_key
-        if len(topic_groups) <= 1:
-            continue  # whole bucket is one topic — no AI needed, see below
-        representatives = [kw for kw in (_representative(tr) for tr in topic_groups.values()) if kw in capped_keywords]
-        if len(representatives) <= 1:
-            continue
-        if theme != UNCLASSIFIED_THEME:
-            context_label = f'business theme "{theme}", search intent "{intent}", recommended page format "{category}"'
-        else:
-            context_label = f'search intent "{intent}", recommended page format "{category}" (business theme unknown)'
-        groups.append((context_label, representatives))
+    try:
+        final_clusters = generate_phase3_validated_clusters(enriched_candidates)
+    except Exception as e:
+        logger.warning("Phase 3 cluster validation raised: %s", e)
+        final_clusters = []
 
-    sub_label_map: dict[str, str] = {}
-    if groups:
-        try:
-            sub_label_map = generate_batched_candidate_clusters(groups)
-        except Exception as e:
-            logger.warning("Batched candidate clustering failed: %s", e)
-            sub_label_map = {}
-
-    label_owner: dict[str, tuple[str, str, str]] = {}
-
-    for bucket_key, topic_groups in bucket_topic_groups.items():
-        theme, intent, _category = bucket_key
-
-        # A known business theme is itself real evidence a page-level group
-        # exists, so a bucket the AI didn't (or couldn't) sub-split still
-        # gets ONE coherent cluster labeled by theme — every keyword in it
-        # already shares theme + intent + page format. An unknown
-        # ("Unclassified") theme carries no such evidence, so with no AI
-        # sub-split result those keywords stay unclustered rather than
-        # forcing them into a fake shared group.
-        theme_default_label = theme if theme != UNCLASSIFIED_THEME else None
-
-        for topic_key, topic_rows in topic_groups.items():
-            representative = _representative(topic_rows)
-
-            if len(topic_groups) == 1:
-                # Whole bucket already collapsed to one topic phrase —
-                # modifier-stripping alone proved every keyword here is the
-                # same candidate topic (spec section 46), so no AI call was
-                # even made for it. Naming still prefers the known business
-                # theme (same discipline as before this feature existed) —
-                # a real theme name is more business-meaningful than a
-                # literal keyword phrase, and an Unclassified theme still
-                # means "not enough evidence to name a cluster" rather than
-                # falling back to whatever text one keyword happens to be.
-                label = theme_default_label
-            else:
-                label = sub_label_map.get(representative)
-                if label and _is_catchall_cluster_name(label):
-                    # Cluster Name Validation (spec steps 15-17): reject a
-                    # catch-all/generic-only AI-returned name outright.
-                    label = None
-                label = label or theme_default_label
-
-            for r in topic_rows:
-                if not label or _is_catchall_cluster_name(label):
-                    r["cluster"] = ""
-                    r["cluster_status"] = "Unvalidated"
-                    continue
-                label_key = label
-                if label_key in label_owner and label_owner[label_key] != bucket_key:
-                    # Same short label text independently chosen for a
-                    # genuinely different (theme, intent, category) bucket —
-                    # disambiguate so it doesn't silently merge two different
-                    # page opportunities under one displayed cluster name.
-                    # This is the structural safety net that makes the
-                    # single shared AI call above safe even if it ignores
-                    # the "never combine different groups" instruction.
-                    label_key = f"{label} ({intent})"
-                label_owner[label_key] = bucket_key
-                r["cluster"] = label_key
-                r["cluster_status"] = "Validated"
+    seen_names: dict[str, int] = {}
+    for final in final_clusters:
+        name = final["cluster_name"]
+        status = final["cluster_status"]
+        if not name or _is_catchall_cluster_name(name):
+            # Cluster Name Validation (spec steps 15-17): reject a
+            # catch-all/generic-only AI-returned name outright.
+            name = ""
+            status = "Needs Review"
+        display_name = name
+        if name:
+            seen_names[name] = seen_names.get(name, 0) + 1
+            if seen_names[name] > 1:
+                # Two independently-finalized clusters landed on the exact
+                # same AI-chosen name by coincidence — disambiguate so they
+                # don't silently merge into one displayed cluster.
+                display_name = f"{name} ({seen_names[name]})"
+        for kw in final["member_keywords"]:
+            r = keyword_rows_by_text.get(kw)
+            if not r:
+                continue
+            if not display_name:
+                r["cluster"] = ""
+                r["cluster_status"] = "Needs Review"
+                continue
+            r["cluster"] = display_name
+            r["cluster_status"] = status
+            r["primary_or_secondary"] = "Primary" if kw == final["primary_keyword"] else "Secondary"
 
 
 def _select_primary_secondary(rows: list[dict]) -> None:
@@ -436,7 +411,16 @@ def _select_primary_secondary(rows: list[dict]) -> None:
     real, available differentiators are commercial intent, whether the
     client already has ranking signal (a realistic ranking opportunity),
     and search volume, in that priority order. Never just "highest
-    volume wins" on its own."""
+    volume wins" on its own.
+
+    Fallback only: Phase 3's own validation call (spec Step 5, 2026-09-21)
+    already makes this selection for a normally-clustered row (stamped by
+    keyword_cluster_pipeline._build_candidate_clusters) — never automatically
+    highest-volume, a strategist-level judgment call this heuristic can't
+    fully replicate. A cluster where every row already has a real
+    primary_or_secondary value is left untouched; this only fills the gap
+    for a cluster with none set at all (e.g. the fixed Needs-Review/
+    Competitor/Career routing buckets, which never go through Phase 3)."""
     clusters: dict[str, list[dict]] = {}
     for r in rows:
         label = (r.get("cluster") or "").strip()
@@ -450,6 +434,8 @@ def _select_primary_secondary(rows: list[dict]) -> None:
         return (commercial, has_ranking_signal, _num(r.get("search_volume")))
 
     for _label, cluster_rows in clusters.items():
+        if any((r.get("primary_or_secondary") or "").strip() for r in cluster_rows):
+            continue
         primary = max(cluster_rows, key=_score)
         for r in cluster_rows:
             r["primary_or_secondary"] = "Primary" if r is primary else "Secondary"
@@ -799,7 +785,7 @@ def build_final_keyword_clusters(
 
     clusterable_rows = _route_non_clusterable_rows(rows)
     _assign_business_themes(clusterable_rows, client_name, client_description)
-    _build_candidate_clusters(clusterable_rows)
+    _build_candidate_clusters(clusterable_rows, client_description)
     _assign_core_category_and_priority(rows)
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)

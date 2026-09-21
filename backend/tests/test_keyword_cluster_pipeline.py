@@ -4,11 +4,15 @@ from app.services.business_theme_service import UNCLASSIFIED_THEME
 from app.services.keyword_cluster_pipeline import (
     _CAREER_ROUTE_CLUSTER_LABEL,
     _COMPETITOR_ROUTE_CLUSTER_LABEL,
+    _GEO_ROUTE_CLUSTER_LABEL,
     _NEEDS_REVIEW_CLUSTER_LABEL,
     _final_cluster_acceptance_check,
     _strip_modifiers,
     build_final_keyword_clusters,
 )
+
+_PHASE2_PATH = "app.services.keyword_cluster_pipeline.generate_phase2_candidate_clusters"
+_PHASE3_PATH = "app.services.keyword_cluster_pipeline.generate_phase3_validated_clusters"
 
 
 def _rows():
@@ -20,57 +24,121 @@ def _rows():
     ]
 
 
+def _clustered(cluster_map: dict[str, list[str]], needs_review: set[str] | None = None):
+    """Builds matching (phase2_return_value, phase3_return_value) for a
+    desired {cluster_name: [keywords]} outcome — phase2 emits one candidate
+    cluster per name, phase3 echoes it straight back as Validated (or
+    Needs Review for names listed in `needs_review`)."""
+    needs_review = needs_review or set()
+    candidate_clusters = {
+        name: {"main_entity": None, "semantic_topic": name, "justification": "", "keywords": list(kws)}
+        for name, kws in cluster_map.items()
+    }
+    final_clusters = [
+        {
+            "cluster_name": name, "primary_keyword": kws[0], "member_keywords": list(kws),
+            "cluster_status": "Needs Review" if name in needs_review else "Validated",
+        }
+        for name, kws in cluster_map.items()
+    ]
+    return candidate_clusters, final_clusters
+
+
 def test_empty_rows_returns_as_is():
     assert build_final_keyword_clusters([], "Acme", None, None) == []
 
 
-def test_mixed_intent_and_page_category_never_share_a_cluster():
+def test_full_pipeline_assigns_cluster_and_primary_from_phase3_output():
     rows = _rows()
+    phase2_return = ({}, [])  # unused directly; only phase3's echo matters here
+    candidate_clusters, final_clusters = _clustered({
+        "Construction Payroll Landing": [r["keyword"] for r in rows if r["page_category"] == "Landing Page"],
+        "Construction Payroll Guide": [r["keyword"] for r in rows if r["page_category"] == "Blog / Guide"],
+    })
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Construction Payroll" for r in rows}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", "a construction payroll SaaS", None)
 
     landing = {r["cluster"] for r in rows if r["page_category"] == "Landing Page"}
     blog = {r["cluster"] for r in rows if r["page_category"] == "Blog / Guide"}
-    assert landing.isdisjoint(blog)
-    assert len(landing) == 1 and len(blog) == 1
+    assert landing == {"Construction Payroll Landing"}
+    assert blog == {"Construction Payroll Guide"}
+    primary = next(r for r in rows if r["keyword"] == "construction payroll")
+    assert primary["primary_or_secondary"] == "Primary"
 
 
-def test_single_keyword_bucket_gets_theme_labeled_cluster_without_ai_call():
-    rows = [{"keyword": "certified payroll compliance audit", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"}]
-    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"certified payroll compliance audit": "Payroll Compliance"}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters") as mock_candidate, \
+def test_phase2_and_phase3_each_called_exactly_once_for_the_whole_report():
+    # Regression guard (2026-09-19 live incident, still applies): clustering
+    # must never fire once per bucket/topic — now it's simpler still, since
+    # there's no bucket concept at all: exactly one Phase 2 call and one
+    # Phase 3 call for the entire candidate pool, regardless of how many
+    # distinct intents/page-categories/themes are present.
+    rows = [
+        {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
+        {"keyword": "certified payroll vs regular", "search_volume": 600, "intent": "Commercial", "page_category": "Comparison / Alternative"},
+        {"keyword": "how construction payroll works", "search_volume": 500, "intent": "Informational", "page_category": "Blog / Guide"},
+    ]
+    themes = {r["keyword"]: "Construction Payroll" for r in rows}
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
+         patch(_PHASE2_PATH, return_value=({}, [r["keyword"] for r in rows])) as mock_p2, \
+         patch(_PHASE3_PATH, return_value=[]) as mock_p3, \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
-    mock_candidate.assert_not_called()
-    assert rows[0]["cluster"] == "Payroll Compliance"
-    assert rows[0]["primary_or_secondary"] == "Primary"
+    assert mock_p2.call_count == 1
+    keyword_meta = mock_p2.call_args[0][0]
+    assert len(keyword_meta) == 3
+    mock_p3.assert_not_called()  # phase2 returned no candidate clusters, nothing to validate
 
 
-def test_unclassified_theme_without_ai_evidence_stays_unclustered():
+def test_phase2_failure_leaves_candidate_pool_unclustered_never_falls_back():
+    rows = [{"keyword": "certified payroll compliance audit", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"}]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"certified payroll compliance audit": "Payroll Compliance"}), \
+         patch(_PHASE2_PATH, return_value=({}, ["certified payroll compliance audit"])), \
+         patch(_PHASE3_PATH) as mock_p3, \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    mock_p3.assert_not_called()
+    assert rows[0]["cluster"] == ""
+
+
+def test_unclassified_theme_without_any_candidate_cluster_stays_unclustered():
     rows = [
         {"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
         {"keyword": "random two", "search_volume": 40, "intent": "Informational", "page_category": "Blog / Guide"},
     ]
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=({}, [r["keyword"] for r in rows])), \
+         patch(_PHASE3_PATH) as mock_p3, \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
+    mock_p3.assert_not_called()
     assert all(r["business_theme"] == UNCLASSIFIED_THEME for r in rows)
     assert all(r["cluster"] == "" for r in rows)
     assert all("primary_or_secondary" not in r for r in rows)
 
 
-def test_primary_selection_prefers_ranking_signal_over_raw_volume():
+def test_phase3_primary_keyword_selection_is_respected_not_recomputed():
+    # Phase 3 Step 5 explicitly says primary selection is NOT automatically
+    # highest volume — this pipeline must respect whatever Phase 3 chose,
+    # not silently recompute its own answer downstream.
     rows = [
         {"keyword": "construction payroll software", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
         {"keyword": "construction payroll provider", "search_volume": 300, "intent": "Transactional", "page_category": "Landing Page", "current_position": 8},
     ]
+    candidate_clusters, final_clusters = _clustered({
+        "Construction Payroll": ["construction payroll software", "construction payroll provider"],
+    })
+    # Force Phase 3's pick to the LOWER-volume keyword, deliberately
+    # contradicting what the old volume/ranking heuristic would choose.
+    final_clusters[0]["primary_keyword"] = "construction payroll provider"
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Construction Payroll" for r in rows}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
@@ -87,8 +155,10 @@ def test_existing_page_action_maps_from_match_strength():
     ]:
         rows = [{"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"}]
         match = None if strength is None else {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": strength}
+        candidate_clusters, final_clusters = _clustered({"Construction Payroll": ["construction payroll"]})
         with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
-             patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+             patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+             patch(_PHASE3_PATH, return_value=final_clusters), \
              patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=match):
             build_final_keyword_clusters(rows, "Acme", None, None)
         assert rows[0]["existing_page_action"] == expected_action, f"strength={strength}"
@@ -104,12 +174,16 @@ def test_cannibalization_overrides_action_with_primary_and_differentiate():
         {"keyword": "certified payroll", "search_volume": 200, "intent": "Transactional", "page_category": "Landing Page"},
     ]
     themes = {"construction payroll": "Construction Payroll", "certified payroll": "Certified Payroll"}
+    candidate_clusters, final_clusters = _clustered({
+        "Construction Payroll": ["construction payroll"], "Certified Payroll": ["certified payroll"],
+    })
 
     def fake_match(keywords, pages):
         return {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}
 
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", side_effect=fake_match):
         build_final_keyword_clusters(rows, "Acme", None, [{"page_url": "https://example.com/payroll", "page_title": "Payroll"}])
 
@@ -126,12 +200,16 @@ def test_cannibalization_flags_two_clusters_sharing_a_strong_existing_page_match
         {"keyword": "certified payroll", "search_volume": 500, "intent": "Transactional", "page_category": "Landing Page"},
     ]
     themes = {"construction payroll": "Construction Payroll", "certified payroll": "Certified Payroll"}
+    candidate_clusters, final_clusters = _clustered({
+        "Construction Payroll": ["construction payroll"], "Certified Payroll": ["certified payroll"],
+    })
 
     def fake_match(keywords, pages):
         return {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}
 
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", side_effect=fake_match):
         build_final_keyword_clusters(rows, "Acme", None, [{"page_url": "https://example.com/payroll", "page_title": "Payroll"}])
 
@@ -143,8 +221,10 @@ def test_no_cannibalization_when_only_one_cluster_matches_a_page():
     rows = [
         {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
     ]
+    candidate_clusters, final_clusters = _clustered({"Construction Payroll": ["construction payroll"]})
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value={"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}):
         build_final_keyword_clusters(rows, "Acme", None, [{"page_url": "https://example.com/payroll", "page_title": "Payroll"}])
 
@@ -152,73 +232,49 @@ def test_no_cannibalization_when_only_one_cluster_matches_a_page():
     assert rows[0]["existing_page_match_strength"] == "strong"
 
 
-def test_candidate_clustering_is_one_batched_call_not_one_per_bucket():
-    # Regression guard (2026-09-19 live incident): a client with many
-    # distinct (theme, intent, category) buckets used to fire one
-    # sequential AI call per bucket, chaining past Groq's shared rate
-    # limit and stalling report generation past the 15-minute timeout.
-    rows = [
-        # "construction payroll rates" (not "... services" — "services" is a
-        # modifier word, see _strip_modifiers, and would pre-merge with
-        # "construction payroll" before ever reaching the AI, which is
-        # exactly right but not what THIS test is guarding — this test is
-        # about the one-call-not-N-calls regression, so every pair here
-        # deliberately produces two genuinely distinct topic phrases).
-        {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
-        {"keyword": "construction payroll rates", "search_volume": 800, "intent": "Transactional", "page_category": "Landing Page"},
-        {"keyword": "certified payroll", "search_volume": 700, "intent": "Commercial", "page_category": "Comparison / Alternative"},
-        {"keyword": "certified payroll vs regular", "search_volume": 600, "intent": "Commercial", "page_category": "Comparison / Alternative"},
-        {"keyword": "how construction payroll works", "search_volume": 500, "intent": "Informational", "page_category": "Blog / Guide"},
-        {"keyword": "construction payroll process explained", "search_volume": 400, "intent": "Informational", "page_category": "Blog / Guide"},
-    ]
-    themes = {r["keyword"]: "Construction Payroll" for r in rows}
-    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}) as mock_candidate, \
-         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
-        build_final_keyword_clusters(rows, "Acme", None, None)
-
-    # Three distinct buckets (Landing/Transactional, Comparison/Commercial,
-    # Blog/Informational) — must still be exactly one call, not three.
-    assert mock_candidate.call_count == 1
-    groups = mock_candidate.call_args[0][0]
-    assert len(groups) == 3
-    assert sum(len(kws) for _label, kws in groups) == 6
-
-
 def test_catchall_cluster_name_is_rejected_and_left_unclustered():
-    # 2026-09-20 spec: a generic/catch-all AI-returned cluster name (e.g.
-    # "Overview") must never render — the row falls back to unclustered
-    # with cluster_status="Unvalidated" rather than a fake theme-only
-    # cluster too, since the AI DID return something (just an invalid
-    # name), so this exercises the reject-then-fall-back-to-theme path
-    # separately from "AI returned nothing at all."
+    # 2026-09-21 spec Phase 3 Step 3: a generic/catch-all name means "set
+    # cluster_status = Needs Review instead of forcing a name" — no theme
+    # fallback name exists in the literal spec, unlike the old engine's
+    # bucket-theme fallback.
     rows = [
-        # "compliance"/"audit trail" — deliberately NOT modifier words (see
-        # "basics"/"fundamentals" in _MODIFIER_WORDS), so these two keep
-        # distinct topic phrases and this test genuinely exercises the AI
-        # catch-all-name-rejection path rather than pre-merging before the
-        # AI is ever called.
         {"keyword": "certified payroll compliance", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
         {"keyword": "certified payroll audit trail", "search_volume": 40, "intent": "Informational", "page_category": "Blog / Guide"},
     ]
+    candidate_clusters, final_clusters = _clustered({
+        "Overview": ["certified payroll compliance", "certified payroll audit trail"],
+    })
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Certified Payroll" for r in rows}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={r["keyword"]: "Overview" for r in rows}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
-    # Rejected AI name falls back to the real theme label, not "Overview".
-    assert all(r["cluster"] == "Certified Payroll" for r in rows)
-    assert all(r["cluster_status"] == "Validated" for r in rows)
+    assert all(r["cluster"] == "" for r in rows)
+    assert all(r["cluster_status"] == "Needs Review" for r in rows)
 
 
-def test_catchall_cluster_name_with_no_theme_fallback_stays_unclustered():
-    rows = [{"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"}]
-    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+def test_duplicate_cluster_names_from_phase3_are_disambiguated():
+    rows = [
+        {"keyword": "widget pricing", "search_volume": 500, "intent": "Commercial", "page_category": "Landing Page"},
+        {"keyword": "gadget pricing", "search_volume": 400, "intent": "Commercial", "page_category": "Landing Page"},
+    ]
+    candidate_clusters, final_clusters = _clustered({
+        "duplicate-name-a": ["widget pricing"], "duplicate-name-b": ["gadget pricing"],
+    })
+    # Force both finalized clusters to the exact same name — a real
+    # coincidence Phase 3 could produce since it has no cross-cluster
+    # bucket boundary anymore.
+    for f in final_clusters:
+        f["cluster_name"] = "Pricing"
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Widgets" for r in rows}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
-    assert rows[0]["cluster"] == ""
-    assert rows[0]["cluster_status"] == "Unvalidated"
+
+    clusters = {r["cluster"] for r in rows}
+    assert clusters == {"Pricing", "Pricing (2)"}
 
 
 def test_core_category_prefers_commercial_and_ranking_over_raw_volume():
@@ -230,8 +286,12 @@ def test_core_category_prefers_commercial_and_ranking_over_raw_volume():
         {"keyword": "certified payroll services", "search_volume": 300, "intent": "Transactional", "page_category": "Landing Page", "current_position": 8},
     ]
     themes = {"construction payroll guide": "Construction Payroll Guides", "certified payroll services": "Certified Payroll"}
+    candidate_clusters, final_clusters = _clustered({
+        "Construction Payroll Guides": ["construction payroll guide"], "Certified Payroll": ["certified payroll services"],
+    })
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
@@ -245,7 +305,8 @@ def test_core_category_prefers_commercial_and_ranking_over_raw_volume():
 def test_core_category_requires_validation_when_every_theme_unclassified():
     rows = [{"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"}]
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=({}, ["random one"])), \
+         patch(_PHASE3_PATH, return_value=[]), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
     assert rows[0]["core_category"] is None
@@ -265,52 +326,19 @@ def test_strip_modifiers_falls_back_to_full_keyword_when_all_words_are_modifiers
     assert modifiers == ["pricing"]
 
 
-def test_modifier_variants_merge_into_one_cluster_without_an_ai_call():
-    # Universal SEO Audit Engine spec (2026-09-20), sections 8-11: "product
-    # pricing", "product features", "product benefits" must NOT become
-    # separate clusters — they're the same core topic ("Product") with
-    # different modifiers, and this must be provable WITHOUT the
-    # clustering AI even being invoked (section 46's architecture rule).
-    rows = [
-        {"keyword": "product", "search_volume": 500, "intent": "Commercial", "page_category": "Product"},
-        {"keyword": "product pricing", "search_volume": 400, "intent": "Commercial", "page_category": "Product"},
-        {"keyword": "product pricing plans", "search_volume": 300, "intent": "Commercial", "page_category": "Product"},
-        {"keyword": "product features", "search_volume": 200, "intent": "Commercial", "page_category": "Product"},
-        {"keyword": "product benefits", "search_volume": 100, "intent": "Commercial", "page_category": "Product"},
-    ]
-    themes = {r["keyword"]: "Widget Product" for r in rows}
-    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters") as mock_candidate, \
+def test_semantic_topic_and_modifier_fields_computed_before_any_ai_call():
+    # Universal SEO Audit Engine spec (2026-09-20) section 46's architecture
+    # rule: semantic_topic/modifier must be real fields the engine already
+    # has BEFORE any AI call runs, regardless of what Phase 2/3 do with them.
+    rows = [{"keyword": "product pricing plans", "search_volume": 300, "intent": "Commercial", "page_category": "Product"}]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"product pricing plans": "Widget Product"}), \
+         patch(_PHASE2_PATH, return_value=({}, ["product pricing plans"])), \
+         patch(_PHASE3_PATH, return_value=[]), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
-    mock_candidate.assert_not_called()  # all 5 collapsed to one topic group pre-AI
-    assert all(r["cluster"] == "Widget Product" for r in rows)
-    assert all(r["cluster_status"] == "Validated" for r in rows)
-    pricing_row = next(r for r in rows if r["keyword"] == "product pricing plans")
-    assert pricing_row["semantic_topic"] == "Product"
-    assert "pricing" in pricing_row["modifier"] and "plans" in pricing_row["modifier"]
-
-
-def test_genuinely_distinct_topics_still_split_even_with_shared_words():
-    # spec section 11's "6x4 truck" example — different core topics after
-    # stripping must NOT be forced together just because they share a word;
-    # this is a real AI decision (both distinct here since neither word is
-    # a modifier), unaffected by the modifier-stripping feature.
-    rows = [
-        {"keyword": "heavy truck", "search_volume": 500, "intent": "Commercial", "page_category": "Product"},
-        {"keyword": "6x4 truck specifications", "search_volume": 400, "intent": "Commercial", "page_category": "Product"},
-    ]
-    themes = {r["keyword"]: "Trucks" for r in rows}
-    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={
-             "heavy truck": "Heavy Trucks", "6x4 truck specifications": "6x4 Truck Specifications",
-         }), \
-         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
-        build_final_keyword_clusters(rows, "Acme", None, None)
-
-    clusters = {r["cluster"] for r in rows}
-    assert clusters == {"Heavy Trucks", "6x4 Truck Specifications"}
+    assert rows[0]["semantic_topic"] == "Product"
+    assert "pricing" in rows[0]["modifier"] and "plans" in rows[0]["modifier"]
 
 
 def test_evidence_confidence_low_for_unclustered_rows():
@@ -318,7 +346,8 @@ def test_evidence_confidence_low_for_unclustered_rows():
         {"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
     ]
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=({}, ["random one"])), \
+         patch(_PHASE3_PATH, return_value=[]), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
     assert rows[0]["cluster"] == ""
@@ -330,8 +359,10 @@ def test_evidence_confidence_high_with_theme_and_ranking_signal():
         {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional",
          "page_category": "Landing Page", "current_position": 5},
     ]
+    candidate_clusters, final_clusters = _clustered({"Construction Payroll": ["construction payroll"]})
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
     assert rows[0]["evidence_confidence"] == "High"
@@ -341,8 +372,10 @@ def test_evidence_confidence_medium_with_theme_only():
     rows = [
         {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional", "page_category": "Landing Page"},
     ]
+    candidate_clusters, final_clusters = _clustered({"Construction Payroll": ["construction payroll"]})
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
     assert rows[0]["evidence_confidence"] == "Medium"
@@ -353,8 +386,10 @@ def test_existing_business_theme_is_preserved_not_reclassified():
     # generate_business_themes must not be called (and must not overwrite
     # it) when at least one row already has one.
     rows = [{"keyword": "kw", "search_volume": 10, "intent": "Informational", "page_category": "Blog / Guide", "business_theme": "Already Set Theme"}]
+    candidate_clusters, final_clusters = _clustered({"Already Set Theme": ["kw"]})
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes") as mock_theme, \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
@@ -381,8 +416,8 @@ def test_final_acceptance_check_leaves_a_fully_valid_cluster_untouched():
 
 
 def test_final_acceptance_check_demotes_cluster_with_no_primary_keyword():
-    # Spec section 44 — a real pipeline defect (e.g. _select_primary_secondary
-    # never ran for this cluster) must never silently reach the renderer.
+    # Spec section 44 — a real pipeline defect (e.g. Phase 3 never assigned
+    # a primary for this cluster) must never silently reach the renderer.
     rows = [_valid_cluster_row(primary_or_secondary="Secondary")]
     _final_cluster_acceptance_check(rows)
     assert rows[0]["cluster"] == ""
@@ -408,8 +443,10 @@ def test_priority_score_attached_to_every_row_without_replacing_cluster_priority
     rows = [
         {"keyword": "widget insurance", "search_volume": 500, "intent": "Commercial", "page_category": "Landing Page"},
     ]
+    candidate_clusters, final_clusters = _clustered({"Insurance": ["widget insurance"]})
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"widget insurance": "Insurance"}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
@@ -420,12 +457,12 @@ def test_priority_score_attached_to_every_row_without_replacing_cluster_priority
 
 
 def test_final_acceptance_check_strips_disambiguation_suffix_before_judging_name():
-    # "Pricing (Commercial)" is a disambiguated label from label_owner
-    # collision handling, not itself a catch-all name — only its bare
-    # "Pricing" part (not a catch-all word) should be judged.
-    rows = [_valid_cluster_row(cluster="Pricing (Commercial)")]
+    # "Pricing (2)" is a disambiguation suffix from duplicate-name handling,
+    # not itself a catch-all name — only its bare "Pricing" part (not a
+    # catch-all word) should be judged.
+    rows = [_valid_cluster_row(cluster="Pricing (2)")]
     _final_cluster_acceptance_check(rows)
-    assert rows[0]["cluster"] == "Pricing (Commercial)"
+    assert rows[0]["cluster"] == "Pricing (2)"
 
 
 def test_ambiguous_and_competitor_rows_never_blend_into_a_business_cluster():
@@ -446,17 +483,20 @@ def test_ambiguous_and_competitor_rows_never_blend_into_a_business_cluster():
             "competitor_status": "Competitor Comparison Opportunity",
         },
     ]
+    candidate_clusters, final_clusters = _clustered({
+        "Commercial Trucks": ["heavy truck dealer near me", "heavy truck financing options"],
+    })
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Commercial Trucks" for r in rows}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "BharatBenz", "a commercial truck manufacturer", None)
 
     by_kw = {r["keyword"]: r for r in rows}
     assert by_kw["jaguar land rover new"]["cluster"] == _NEEDS_REVIEW_CLUSTER_LABEL
     assert by_kw["tatamotors vs bharatbenz trucks"]["cluster"] == _COMPETITOR_ROUTE_CLUSTER_LABEL
-    real_cluster = by_kw["heavy truck dealer near me"]["cluster"]
-    assert real_cluster not in (_NEEDS_REVIEW_CLUSTER_LABEL, _COMPETITOR_ROUTE_CLUSTER_LABEL)
-    assert by_kw["heavy truck financing options"]["cluster"] == real_cluster
+    assert by_kw["heavy truck dealer near me"]["cluster"] == "Commercial Trucks"
+    assert by_kw["heavy truck financing options"]["cluster"] == "Commercial Trucks"
 
 
 def test_row_outside_classified_candidate_pool_still_clusters_normally():
@@ -471,8 +511,10 @@ def test_row_outside_classified_candidate_pool_still_clusters_normally():
             "relevance_status": "Unknown / Needs Review", "relevance_reason": "Keyword outside the classified candidate pool.",
         },
     ]
+    candidate_clusters, final_clusters = _clustered({"Commercial Trucks": ["heavy truck dealer near me"]})
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"heavy truck dealer near me": "Commercial Trucks"}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "BharatBenz", "a commercial truck manufacturer", None)
 
@@ -488,11 +530,33 @@ def test_career_status_row_routes_to_jobs_careers_cluster():
             "relevance_status": "Career / Recruitment Query",
         },
     ]
+    candidate_clusters, final_clusters = _clustered({"Commercial Trucks": ["heavy truck dealer near me"]})
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Commercial Trucks" for r in rows}), \
-         patch("app.services.keyword_cluster_pipeline.generate_batched_candidate_clusters", return_value={}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "BharatBenz", "a commercial truck manufacturer", None)
 
     by_kw = {r["keyword"]: r for r in rows}
     assert by_kw["bharatbenz careers"]["cluster"] == _CAREER_ROUTE_CLUSTER_LABEL
     assert by_kw["heavy truck dealer near me"]["cluster"] != _CAREER_ROUTE_CLUSTER_LABEL
+
+
+def test_geographic_mismatch_row_routes_to_out_of_market_cluster():
+    rows = [
+        {"keyword": "heavy truck dealer near me", "search_volume": 900, "intent": "Commercial", "page_category": "Landing Page"},
+        {
+            "keyword": "heavy truck dealer usa", "search_volume": 150, "intent": "Commercial", "page_category": "Landing Page",
+            "geo_status": "Geographic Mismatch",
+        },
+    ]
+    candidate_clusters, final_clusters = _clustered({"Commercial Trucks": ["heavy truck dealer near me"]})
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={r["keyword"]: "Commercial Trucks" for r in rows}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "BharatBenz", "a commercial truck manufacturer", None)
+
+    by_kw = {r["keyword"]: r for r in rows}
+    assert by_kw["heavy truck dealer usa"]["cluster"] == _GEO_ROUTE_CLUSTER_LABEL
+    assert by_kw["heavy truck dealer near me"]["cluster"] != _GEO_ROUTE_CLUSTER_LABEL
