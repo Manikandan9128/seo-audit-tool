@@ -109,9 +109,22 @@ def google_callback(code: str, state: str, request: Request, db: Session = Depen
 
 
 def _google_error_message(e: HttpError) -> str:
+    # e._get_reason() is googleapiclient's own parsed message from the
+    # error body (e.g. "Analytics Admin API has not been used in project
+    # ... before or it is disabled", "User does not have sufficient
+    # permission for this property") — collapsing every 403 to one generic
+    # sentence hid exactly the distinction a user reconnecting over and
+    # over needs to see: API-not-enabled vs. no-access-to-this-property are
+    # different problems with different fixes, not the same "permission"
+    # issue.
+    try:
+        reason = e._get_reason().strip()
+    except Exception:
+        reason = ""
     if e.resp.status == 403:
-        return "Connected Google account doesn't have permission for this property/site."
-    return f"Google API error ({e.resp.status})"
+        base = "Connected Google account doesn't have permission for this property/site."
+        return f"{base} ({reason})" if reason else base
+    return f"Google API error ({e.resp.status}): {reason}" if reason else f"Google API error ({e.resp.status})"
 
 
 def _domain_from_url(url: str) -> str:
@@ -179,7 +192,19 @@ def _load_credentials(client_id: uuid.UUID, db: Session):
 def ga4_properties(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_owned_client(client_id, db, current_user)
     creds = _load_credentials(client_id, db)
-    props = ga4_service.list_properties(creds)
+    try:
+        props = ga4_service.list_properties(creds)
+    except HttpError as e:
+        # Previously unguarded — any Google API error here (Analytics Admin
+        # API not enabled on the connected account's project, no GA4
+        # properties visible to this Google account, quota, etc.) fell
+        # through as a bare 500 with no JSON body, so the frontend's
+        # `err.response.data.detail` read was always undefined and it
+        # showed the same generic "Failed to load Google properties" no
+        # matter what actually went wrong — confirmed the real cause on
+        # this account only ever surfaced here in the server logs, never
+        # to the user reconnecting.
+        raise HTTPException(status_code=e.resp.status, detail=_google_error_message(e)) from e
     return [GA4PropertyOut(name=p["name"], display_name=p["display_name"]) for p in props]
 
 
@@ -187,7 +212,10 @@ def ga4_properties(client_id: uuid.UUID, db: Session = Depends(get_db), current_
 def gsc_sites(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     _get_owned_client(client_id, db, current_user)
     creds = _load_credentials(client_id, db)
-    sites = gsc_service.list_sites(creds)
+    try:
+        sites = gsc_service.list_sites(creds)
+    except HttpError as e:
+        raise HTTPException(status_code=e.resp.status, detail=_google_error_message(e)) from e
     return [GSCSiteOut(site_url=s["site_url"], permission_level=s["permission_level"]) for s in sites]
 
 
