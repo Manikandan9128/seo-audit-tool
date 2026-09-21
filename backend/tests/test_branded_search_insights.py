@@ -248,8 +248,11 @@ def test_search_opportunity_pages_flags_real_ctr_gap_in_band():
     flagged = build_search_opportunity_pages(pages)
     assert len(flagged) == 1
     assert flagged[0]["position"] == 6.0
-    assert "internal" in flagged[0]["recommended_action"]  # labeled internal, never an external/industry standard
+    # 2026-09-21 spec: with no page_query_rows, there's no real GSC query
+    # evidence — the fixed evidence-gap sentence, never an invented query.
+    assert flagged[0]["recommended_action"] == "Insufficient query-level GSC evidence."
     assert flagged[0]["priority"] == "High"
+    assert flagged[0]["data_source"] == "GSC"
 
 
 def test_search_opportunity_pages_excludes_row_already_meeting_band():
@@ -276,8 +279,9 @@ def test_search_opportunity_pages_recommendation_uses_driving_query_when_title_d
 def test_search_opportunity_pages_states_insufficient_when_no_query_data():
     pages = [{"page": "https://x.com/12345", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
     flagged = build_search_opportunity_pages(pages)
-    assert "No qualifying non-brand query found" in flagged[0]["recommended_action"]
+    assert flagged[0]["recommended_action"] == "Insufficient query-level GSC evidence."
     assert flagged[0]["driving_query"] is None
+    assert flagged[0]["evidence_confidence"] == "low"
 
 
 def test_search_opportunity_pages_excludes_page_driven_only_by_branded_query():

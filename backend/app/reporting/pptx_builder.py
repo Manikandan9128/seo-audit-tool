@@ -3378,14 +3378,27 @@ def _sop_recommended_action(
 
     Kept deliberately to ONE short sentence (2026-09-18 fix — confirmed
     live on the BharatBenz regen: a longer version didn't fit _draw_table's
-    row height at 9 rows and collapsed every row to one truncated line)."""
-    gap = f"CTR {ctr_pct:.1f}% trails the internal {band[0]:.0f}-{band[1]:.0f}% benchmark for position {position:.0f}."
+    row height at 9 rows and collapsed every row to one truncated line).
 
+    2026-09-21 spec (GSC Search Opportunities vs. Keyword Opportunity
+    Analysis separation): the reason must lead with WHY this page is an
+    opportunity — real impression volume + page-one visibility + query
+    relevance — never open with the raw CTR-vs-benchmark number and a
+    generic "improve messaging" instruction (that pattern was explicitly
+    called out as the wrong shape). CTR-vs-benchmark still appears, but as
+    supporting evidence for the reason, not as the reason itself. With no
+    qualifying non-brand query, this never invents one from the URL/title —
+    it states the fixed evidence-gap sentence verbatim."""
     if not driving_query:
-        return f"{gap} No qualifying non-brand query found — review SERP messaging in Search Console."
+        return "Insufficient query-level GSC evidence."
 
     query_text = driving_query["query"]
     short_query = query_text if len(query_text) <= _SOP_TOPIC_MAX_CHARS else query_text[:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
+    reason = (
+        f"Strong impression volume ({driving_query['impressions']:,.0f}) with page-one visibility "
+        f"(position {position:.1f}) for \"{short_query}\" — CTR trails the internal "
+        f"{band[0]:.0f}-{band[1]:.0f}% benchmark for this range, signaling a SERP-alignment opportunity."
+    )
     title = (meta or {}).get("title")
     if title and short_query.lower() not in title.lower():
         action = f"Front-load \"{short_query}\" in the title/H1 — current title doesn't lead with it."
@@ -3396,12 +3409,8 @@ def _sop_recommended_action(
             f"Title already covers \"{short_query}\" — review SERP messaging/snippet for this query."
         )
     else:
-        action = (
-            f"Improve page alignment and SERP messaging around \"{short_query}\" based on its "
-            f"{driving_query['impressions']:,.0f}-impression, position {driving_query['position']:.1f} "
-            "non-brand GSC visibility."
-        )
-    return f"{gap} {action}"
+        action = f"Review page alignment and SERP messaging around \"{short_query}\"."
+    return f"{reason} {action}"
 
 
 def build_search_opportunity_pages(
@@ -3462,6 +3471,8 @@ def build_search_opportunity_pages(
             "recommended_action": _sop_recommended_action(position, ctr_pct, band, page_type, meta, driving_query),
             "opportunity_clicks": round(opportunity_clicks, 1),
             "driving_query": driving_query["query"] if driving_query else None,
+            "evidence_confidence": "high" if driving_query else "low",
+            "data_source": "GSC",
         })
 
     scored.sort(key=lambda r: r["opportunity_clicks"], reverse=True)
@@ -5280,6 +5291,7 @@ def add_keyword_opportunity_slide(prs: Presentation, keyword_rows: list[dict], m
             "position": pos_num if pos_num > 0 else None, "score": score,
             "recommendation": recommendation, "target_position": target_position,
             "expected_clicks": expected_clicks, "clicks_gain": clicks_gain, "growth_pct": growth_pct,
+            "data_source": "KEYWORD_MODEL",
         })
 
     if not candidates:
@@ -5320,9 +5332,9 @@ def add_keyword_opportunity_slide(prs: Presentation, keyword_rows: list[dict], m
     # matching every other table in this file.
     return _table_slide(
         prs, "Keyword Opportunity Analysis",
-        ["Keyword", "Current Position", "Priority", "Recommendation", "Target", "Est. Monthly Clicks", "Growth"],
+        ["Keyword", "Current Position", "Priority", "Recommendation", "Target", "Projected Monthly Clicks", "Projected Growth"],
         rows, col_widths=[3.1, 1.6, 1.2, 2.0, 1.0, 1.8, 1.4],
-        source="Semrush Keyword Gap + industry-benchmark CTR", insights=insights,
+        source="Semrush Keyword Gap + industry-benchmark CTR (modeled, not measured GSC traffic)", insights=insights,
     )
 
 
