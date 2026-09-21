@@ -92,6 +92,23 @@ _CAREERS_WORDS = [
     "salary", "salaries", "glassdoor", "indeed", "linkedin jobs", "internship", "internships",
     "recruitment", "work from home jobs",
 ]
+# Mechanical, non-AI exclude — must never depend on the AI classifier
+# succeeding, since a failed/quota-exhausted AI call fails OPEN (kept) by
+# design (see classify_keywords's docstring), and the AI prompt itself only
+# ever judges business relevance, never content safety. Confirmed real
+# 2026-09-21: a BharatBenz Semrush export (real SERP-overlap noise, not a
+# bad upload) contained "xnxx bus" — an 18,100/mo volume row that survived
+# every existing filter (not a competitor brand, not nav/login, not
+# careers) all the way to a "Target Keyword", a scored "Opportunity", and a
+# generated page-path recommendation. No client report may ever surface an
+# explicit/adult term as a keyword to target, regardless of its search
+# volume or how the AI call goes. Not an exhaustive adult-site blocklist —
+# just the highest-traffic, unambiguous ones — but zero tolerance beats the
+# previous zero coverage.
+_ADULT_CONTENT_WORDS = [
+    "xnxx", "xvideos", "xhamster", "pornhub", "redtube", "youporn", "porn", "porno",
+    "xxx video", "sex video", "sex videos", "nude video", "nude videos", "hentai", "onlyfans",
+]
 
 
 _MULTI_PART_TLDS = {
@@ -244,6 +261,8 @@ def _rule_exclude(keyword: str, brand_tokens: set[str]) -> tuple[str, str] | Non
     text = keyword.lower().strip()
     if not text:
         return ("unrelated", "Empty keyword text.")
+    if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _ADULT_CONTENT_WORDS):
+        return ("unrelated", "Adult/explicit content — never a legitimate target keyword.")
     for brand in brand_tokens:
         if brand and _is_branded_keyword(text, brand):
             # Universal SEO Audit Engine spec (2026-09-20) section 22:

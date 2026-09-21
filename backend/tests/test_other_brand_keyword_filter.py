@@ -7,6 +7,7 @@ the raw compound token never fired for real, space-separated search queries
 like "mahindra dealer near me"."""
 
 from app.services.keyword_relevance_service import (
+    _rule_exclude,
     filter_other_brand_keywords,
     is_branded_or_near_brand,
 )
@@ -61,3 +62,17 @@ def test_filter_other_brand_keywords_never_excludes_clients_own_brand():
     rows = [{"keyword": "bharatbenz truck dealer"}]
     kept = filter_other_brand_keywords(rows, "bharatbenz.com", BHARATBENZ_COMPETITOR_DOMAINS)
     assert len(kept) == 1
+
+
+def test_rule_exclude_drops_adult_content_keyword_mechanically():
+    # Real BharatBenz Semrush export row, 18,100/mo volume — must be
+    # excluded by the rule pass alone, with no AI call in the loop, since
+    # a failed/quota-exhausted AI call fails open (kept) by design.
+    hit = _rule_exclude("xnxx bus", set())
+    assert hit is not None
+    assert hit[0] == "unrelated"
+
+
+def test_rule_exclude_does_not_flag_ordinary_word_sex_or_size():
+    assert _rule_exclude("sex education courses", set()) is None
+    assert _rule_exclude("xxl truck tyres", set()) is None
