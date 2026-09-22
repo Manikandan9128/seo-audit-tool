@@ -92,9 +92,30 @@ def set_groq_api_key(db: Session, value: str) -> None:
     settings.groq_api_key = _set_key(db, GROQ_API_KEY, value)
 
 
+# Groq (OpenAI-compatible) returns these on every response, success or
+# not — real-time quota visibility with zero extra API calls, just reading
+# headers that were already there and previously discarded.
+def _groq_quota_note(response: httpx.Response) -> str:
+    h = response.headers
+    limit_t, remaining_t = h.get("x-ratelimit-limit-tokens"), h.get("x-ratelimit-remaining-tokens")
+    reset_t = h.get("x-ratelimit-reset-tokens")
+    if not (limit_t and remaining_t):
+        return ""
+    try:
+        used = int(limit_t) - int(remaining_t)
+        return f" Daily token quota: {used:,}/{int(limit_t):,} used, {int(remaining_t):,} remaining (resets in {reset_t})."
+    except (TypeError, ValueError):
+        return ""
+
+
 def test_groq_key() -> dict:
     """Makes one minimal real call to confirm the currently-configured key
-    actually works — not just that it was saved. Returns {ok, message}."""
+    actually works — not just that it was saved. Returns {ok, message}.
+    The message includes Groq's own real-time daily-quota headers
+    (x-ratelimit-*), present on every response regardless of outcome —
+    2026-09-22: this app has zero AI-call usage logging anywhere, and this
+    is the cheapest real way to answer "how much of today's Groq quota is
+    already used" without adding a logging system."""
     if not settings.groq_api_key:
         return {"ok": False, "message": "No Groq API key configured"}
     try:
@@ -114,17 +135,18 @@ def test_groq_key() -> dict:
             },
             timeout=30,
         )
+        quota_note = _groq_quota_note(response)
         if response.status_code == 401:
             return {"ok": False, "message": "Groq rejected this API key — check it was copied correctly and hasn't been revoked."}
         if response.status_code == 429:
-            return {"ok": False, "message": "Groq rate limit hit — wait a bit and try again."}
+            return {"ok": False, "message": f"Groq rate limit hit — wait a bit and try again.{quota_note}"}
         if response.status_code >= 400:
             # The body carries Groq's actual reason (bad model, malformed
             # request, etc.) — raise_for_status()'s default message is just
             # the URL + status code, not enough to diagnose a 4xx.
-            return {"ok": False, "message": f"Groq request failed: {response.status_code} {response.reason_phrase}: {response.text[:300]}"}
+            return {"ok": False, "message": f"Groq request failed: {response.status_code} {response.reason_phrase}: {response.text[:300]}{quota_note}"}
         text = (response.json()["choices"][0]["message"]["content"] or "").strip()
-        return {"ok": True, "message": f"Key works — model replied: {text[:80] or '(empty)'}"}
+        return {"ok": True, "message": f"Key works — model replied: {text[:80] or '(empty)'}{quota_note}"}
     except Exception as e:
         return {"ok": False, "message": f"Groq request failed: {str(e)[:300]}"}
 
