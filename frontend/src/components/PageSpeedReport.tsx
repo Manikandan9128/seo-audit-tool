@@ -21,12 +21,14 @@ interface PageSpeedResult {
     accessibility: number | null;
     best_practices: number | null;
   };
-  core_web_vitals: {
-    largest_contentful_paint: string | null;
-    cumulative_layout_shift: string | null;
-    interaction_to_next_paint: string | null;
-    first_contentful_paint: string | null;
-  };
+  metric_table?: {
+    id: string;
+    label: string;
+    value: number;
+    display_value: string | null;
+    good_threshold: number;
+    status: string | null;
+  }[];
   script_treemap?: TreemapNode[];
 }
 
@@ -73,25 +75,16 @@ export default function PageSpeedReport({
             </div>
             <table>
               <thead>
-                <tr><th>Core Web Vital</th><th>Value</th></tr>
+                <tr><th>Metric</th><th>Value</th><th>Status</th></tr>
               </thead>
               <tbody>
-                <tr>
-                  <td>Largest Contentful Paint (LCP)</td>
-                  <td className="mono">{result.core_web_vitals.largest_contentful_paint ?? "—"}</td>
-                </tr>
-                <tr>
-                  <td>Cumulative Layout Shift (CLS)</td>
-                  <td className="mono">{result.core_web_vitals.cumulative_layout_shift ?? "—"}</td>
-                </tr>
-                <tr>
-                  <td>Interaction to Next Paint (INP)</td>
-                  <td className="mono">{result.core_web_vitals.interaction_to_next_paint ?? "—"}</td>
-                </tr>
-                <tr>
-                  <td>First Contentful Paint (FCP)</td>
-                  <td className="mono">{result.core_web_vitals.first_contentful_paint ?? "—"}</td>
-                </tr>
+                {(result.metric_table ?? []).map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.label}</td>
+                    <td className="mono">{row.display_value ?? "—"}</td>
+                    <td>{row.status ?? "—"}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
             {result.script_treemap && result.script_treemap.length > 0 && (
