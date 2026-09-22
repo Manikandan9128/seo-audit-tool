@@ -19,6 +19,8 @@ GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_API_KEY = "groq_api_key"
 CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
+BROWSER_USE_API_KEY = "browser_use_api_key"
+BROWSER_USE_ACCOUNT_URL = "https://api.browser-use.com/api/v2/billing/account"
 GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN = "google_sheets_oauth_access_token"
 GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN = "google_sheets_oauth_refresh_token"
 GOOGLE_SHEETS_OAUTH_EMAIL = "google_sheets_oauth_email"
@@ -38,6 +40,9 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, CLAUDE_API_KEY)
     if row and row.value:
         settings.claude_api_key = row.value
+    row = db.get(AppSetting, BROWSER_USE_API_KEY)
+    if row and row.value:
+        settings.browser_use_api_key = row.value
     row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_CLIENT_ID)
     if row and row.value:
         settings.google_sheets_oauth_client_id = row.value
@@ -203,6 +208,40 @@ def test_claude_key() -> dict:
 
 def masked_claude_api_key() -> str | None:
     return _mask(settings.claude_api_key)
+
+
+def set_browser_use_api_key(db: Session, value: str) -> None:
+    settings.browser_use_api_key = _set_key(db, BROWSER_USE_API_KEY, value)
+
+
+def test_browser_use_key() -> dict:
+    """Makes one minimal real call to confirm the currently-configured
+    Browser Use Cloud key actually works — not just that it was saved.
+    Hits the billing/account endpoint (X-Browser-Use-API-Key header, no
+    Bearer prefix) since it's read-only and doesn't spin up a browser
+    session or task like most other endpoints would."""
+    if not settings.browser_use_api_key:
+        return {"ok": False, "message": "No Browser Use API key configured"}
+    try:
+        response = httpx.get(
+            BROWSER_USE_ACCOUNT_URL,
+            headers={"X-Browser-Use-API-Key": settings.browser_use_api_key},
+            timeout=30,
+        )
+        if response.status_code == 401:
+            return {"ok": False, "message": "Browser Use rejected this API key — check it was copied correctly and hasn't been revoked."}
+        if response.status_code >= 400:
+            return {"ok": False, "message": f"Browser Use request failed: {response.status_code} {response.reason_phrase}: {response.text[:300]}"}
+        data = response.json()
+        balance = data.get("balance") or data.get("creditBalance") or data.get("credit_balance")
+        note = f" Credit balance: {balance}." if balance is not None else ""
+        return {"ok": True, "message": f"Key works — account connected.{note}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Browser Use request failed: {str(e)[:300]}"}
+
+
+def masked_browser_use_api_key() -> str | None:
+    return _mask(settings.browser_use_api_key)
 
 
 def test_sheets_connection(db: Session) -> dict:

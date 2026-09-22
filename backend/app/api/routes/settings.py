@@ -9,14 +9,17 @@ from app.services.app_settings_service import (
     disconnect_sheets_oauth,
     get_sheets_oauth_client_id,
     get_sheets_oauth_email,
+    masked_browser_use_api_key,
     masked_claude_api_key,
     masked_gemini_api_key,
     masked_groq_api_key,
+    set_browser_use_api_key,
     set_claude_api_key,
     set_gemini_api_key,
     set_groq_api_key,
     set_sheets_oauth_client,
     set_sheets_oauth_tokens,
+    test_browser_use_key,
     test_claude_key,
     test_gemini_key,
     test_groq_key,
@@ -44,6 +47,10 @@ class ClaudeKeyIn(BaseModel):
     claude_api_key: str
 
 
+class BrowserUseKeyIn(BaseModel):
+    browser_use_api_key: str
+
+
 class GoogleSheetsOAuthClientIn(BaseModel):
     google_sheets_oauth_client_id: str
     google_sheets_oauth_client_secret: str
@@ -54,6 +61,7 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
     gemini_masked = masked_gemini_api_key()
     groq_masked = masked_groq_api_key()
     claude_masked = masked_claude_api_key()
+    browser_use_masked = masked_browser_use_api_key()
     return {
         "gemini_api_key_set": gemini_masked is not None,
         "gemini_api_key_masked": gemini_masked,
@@ -61,6 +69,8 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
         "groq_api_key_masked": groq_masked,
         "claude_api_key_set": claude_masked is not None,
         "claude_api_key_masked": claude_masked,
+        "browser_use_api_key_set": browser_use_masked is not None,
+        "browser_use_api_key_masked": browser_use_masked,
         "google_sheets_oauth_email": get_sheets_oauth_email(db),
         "google_sheets_oauth_client_id": get_sheets_oauth_client_id(),
     }
@@ -144,6 +154,32 @@ def update_claude_api_key(
 def test_claude_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_claude_key()
+    return {"test_ok": test["ok"], "test_message": test["message"]}
+
+
+@router.put("/browser-use-api-key")
+def update_browser_use_api_key(
+    payload: BrowserUseKeyIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Saves the key, then immediately checks the Browser Use Cloud billing
+    endpoint to confirm it actually works, same pattern as the other AI
+    provider keys above."""
+    set_browser_use_api_key(db, payload.browser_use_api_key)
+    test = test_browser_use_key()
+    return {
+        "browser_use_api_key_set": True,
+        "browser_use_api_key_masked": masked_browser_use_api_key(),
+        "test_ok": test["ok"],
+        "test_message": test["message"],
+    }
+
+
+@router.post("/browser-use-api-key/test")
+def test_browser_use_api_key(current_user: User = Depends(get_current_user)):
+    """Re-runs the connectivity test on demand, without changing the key."""
+    test = test_browser_use_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 

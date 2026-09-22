@@ -274,6 +274,8 @@ export default function SettingsPage() {
   const [groqMasked, setGroqMasked] = useState<string | null>(null);
   const [claudeSet, setClaudeSet] = useState(false);
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
+  const [browserUseSet, setBrowserUseSet] = useState(false);
+  const [browserUseMasked, setBrowserUseMasked] = useState<string | null>(null);
   const [sheetsOauthEmail, setSheetsOauthEmail] = useState<string | null>(null);
   const [sheetsOauthClientId, setSheetsOauthClientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -290,6 +292,8 @@ export default function SettingsPage() {
       setGroqMasked(res.data.groq_api_key_masked);
       setClaudeSet(res.data.claude_api_key_set);
       setClaudeMasked(res.data.claude_api_key_masked);
+      setBrowserUseSet(res.data.browser_use_api_key_set);
+      setBrowserUseMasked(res.data.browser_use_api_key_masked);
       setSheetsOauthEmail(res.data.google_sheets_oauth_email);
       setSheetsOauthClientId(res.data.google_sheets_oauth_client_id);
     } catch (err: any) {
@@ -384,6 +388,29 @@ export default function SettingsPage() {
           onSaved={(set, masked) => {
             setClaudeSet(set);
             setClaudeMasked(masked);
+          }}
+        />
+
+        <ApiKeyCard
+          title="Browser Use API Key"
+          description={
+            <>
+              Get a key at{" "}
+              <a href="https://cloud.browser-use.com/" target="_blank" rel="noreferrer">
+                cloud.browser-use.com
+              </a>
+              . Powers browser-automation agent tasks, separate from the text AI keys above.
+            </>
+          }
+          keySet={browserUseSet}
+          masked={browserUseMasked}
+          loading={loading}
+          saveUrl="/settings/browser-use-api-key"
+          testUrl="/settings/browser-use-api-key/test"
+          saveField="browser_use_api_key"
+          onSaved={(set, masked) => {
+            setBrowserUseSet(set);
+            setBrowserUseMasked(masked);
           }}
         />
 
