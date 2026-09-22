@@ -1344,11 +1344,24 @@ def _gather_report_data(
                 # traffic_overview/top_pages/etc that already succeeded.
                 try:
                     if analytics.get("traffic_overview"):
-                        spike = ga4_service.get_traffic_spike_breakdown(
-                            creds, client.ga4_property_id, analytics["traffic_overview"]["rows"]
+                        # Same hang risk and same fix as the analytics job
+                        # pool above — a lone, uncaught synchronous GA4 call
+                        # here can't be left unbounded either.
+                        spike_pool = ThreadPoolExecutor(max_workers=1)
+                        spike_future = spike_pool.submit(
+                            ga4_service.get_traffic_spike_breakdown,
+                            creds, client.ga4_property_id, analytics["traffic_overview"]["rows"],
                         )
-                        if spike:
-                            analytics["traffic_spike"] = spike
+                        spike_done, _ = wait([spike_future], timeout=analytics_deadline)
+                        if spike_future in spike_done:
+                            spike = spike_future.result()
+                            if spike:
+                                analytics["traffic_spike"] = spike
+                        else:
+                            logger.error(
+                                "Traffic spike breakdown timed out (>%.0fs) for client %s", analytics_deadline, client_id
+                            )
+                        spike_pool.shutdown(wait=False)
                 except HttpError as e:
                     logger.warning("Traffic spike breakdown failed for client %s: %s", client_id, e)
                 except RefreshError:
