@@ -4764,13 +4764,21 @@ def _short_path(url: str | None, max_chars: int = _URL_PATH_MAX_CHARS) -> str | 
     return path
 
 
-def _position_url_cell(position, url: str | None) -> str:
+def _gap_position_cell(position) -> str:
     """"Not ranking" is always exactly that string — never a variant with a
-    trailing dash or an empty URL slot (2026-09-18 spec hard rule)."""
-    if not position:
-        return "Not ranking"
+    trailing dash or an empty URL slot (2026-09-18 spec hard rule). Position
+    and URL render as two separate table columns (2026-09-22 — "#N · /path"
+    crammed into one line/cell read poorly once every ranking column had
+    its own URL, own+competitors both), so this only ever needs the number."""
+    return f"#{int(position)}" if position else "Not ranking"
+
+
+def _gap_url_cell(url: str | None) -> str:
+    """The URL column next to a position column — "—" when there's no
+    position at all (that column's own "Not ranking" already says so) or
+    no URL on record for an otherwise-real position."""
     path = _short_path(url)
-    return f"#{int(position)} · {path}" if path and path != "/" else f"#{int(position)}"
+    return path if path and path != "/" else "—"
 
 
 # Gap Category dropped as a text column (2026-09-18 redesign) — with up to
@@ -4844,30 +4852,46 @@ def _add_gap_sheet_link_button(slide, link: str) -> None:
 
 def _gap_table_row(r: dict, competitor_columns: list[str]) -> tuple[tuple, list]:
     """One table row's cell values, plus the parallel list of real
-    (untruncated) competitor ranking URLs for hyperlinking — index-aligned
-    with competitor_columns, None where that competitor doesn't rank on
-    this keyword or has no URL on record. Never invents/reconstructs a
-    URL (2026-09-22 spec rule 7) — only ever what's already on the row."""
+    (untruncated) ranking URLs for hyperlinking — index-aligned with the
+    row's URL columns (My URL, then each competitor's URL, in that
+    order), None where there's no position or no URL on record. Never
+    invents/reconstructs a URL (2026-09-22 spec rule 7) — only ever
+    what's already on the row.
+
+    Position and URL are two separate columns per ranking source (own +
+    each competitor) — 2026-09-22 layout change: "#N · /path" packed into
+    one cell/line was hard to scan once every column carried both; the
+    user asked for Position and URL split out explicitly, and confirmed
+    the resulting narrower per-competitor URL width (vs. the combined
+    cell) is an acceptable trade for readability. My Position's own URL
+    used to be omitted from hyperlinking entirely even when a real
+    your_url was on record — fixed in the same pass."""
     by_domain = {cp.get("competitor"): cp for cp in (r.get("competitor_positions") or [])}
     category = r.get("gap_category") or "Missing"
+    your_position = r.get("your_position")
     row = [
         _GAP_CHIP[category][0], r.get("keyword"),
         f"{int(_num(r.get('search_volume'))):,}", f"{int(_num(r.get('keyword_difficulty')))}",
-        _position_url_cell(r.get("your_position"), r.get("your_url")),
+        _gap_position_cell(your_position), _gap_url_cell(r.get("your_url")) if your_position else "—",
     ]
-    urls: list = []
+    urls: list = [r.get("your_url") if your_position else None]
     for domain in competitor_columns:
         cp = by_domain.get(domain)
-        row.append(_position_url_cell(cp.get("position"), cp.get("ranking_url")) if cp else "Not ranking")
-        urls.append(cp.get("ranking_url") if cp else None)
+        position = cp.get("position") if cp else None
+        url = cp.get("ranking_url") if cp else None
+        row.append(_gap_position_cell(position))
+        row.append(_gap_url_cell(url) if position else "—")
+        urls.append(url if position else None)
     return tuple(row), urls
 
 
 def _render_gap_table(slide, top, rows: list[dict], competitor_columns: list[str], headers: list[str], col_widths: list[float]):
     """Draws the table, colors each row's Status chip, and hyperlinks every
-    competitor ranking cell to its real source URL (2026-09-22 spec rule
-    7) — the visible text stays the short "#N · /path" display, the link
-    target is always the full URL from the source data. Returns
+    URL cell — My URL included, not just competitor columns — to its real
+    source URL (2026-09-22 spec rule 7). Position and URL are separate
+    columns per ranking source (My Position/My URL, then one Position/URL
+    pair per competitor), so the link target lands on the URL cell
+    specifically, never the position number next to it. Returns
     (bottom_y, table)."""
     table_rows, row_categories, row_urls = [], [], []
     for r in rows:
@@ -4887,7 +4911,12 @@ def _render_gap_table(slide, top, rows: list[dict], competitor_columns: list[str
         slide, headers, table_rows, top, col_widths=col_widths, wrap_cols=wrap_cols,
         row_cap=len(table_rows), row_height=0.32, return_table=True,
     )
-    first_competitor_col = len(headers) - len(competitor_columns)
+    # row_urls[j=0] is My URL, row_urls[j=1..] is each competitor's URL in
+    # competitor_columns order. Columns run Status, Keyword, Volume, KD,
+    # My Position, My URL, then a Position/URL pair per competitor — so
+    # the URL column for pair j always sits at a fixed offset of 2 from
+    # the previous one, starting at column 5 (My URL).
+    first_url_col = 5
     for i in range(1, len(table.rows)):
         _, color = _GAP_CHIP[row_categories[i - 1]]
         cell = table.cell(i, 0)
@@ -4900,7 +4929,7 @@ def _render_gap_table(slide, top, rows: list[dict], competitor_columns: list[str
         for j, url in enumerate(row_urls[i - 1]):
             if not url:
                 continue
-            runs = table.cell(i, first_competitor_col + j).text_frame.paragraphs[0].runs
+            runs = table.cell(i, first_url_col + 2 * j).text_frame.paragraphs[0].runs
             if not runs:
                 continue
             runs[0].hyperlink.address = url
@@ -5039,11 +5068,29 @@ def add_keyword_gap_slides(
     dedicated_categories = [c for c in ("Missing", "Shared", "Untapped") if counts[c] >= _GAP_DEDICATED_THRESHOLD]
     inline_categories = [c for c in ("Missing", "Shared", "Untapped") if 1 <= counts[c] < _GAP_DEDICATED_THRESHOLD]
 
-    headers = ["Status", "Keyword", "Volume", "KD", "My Position"] + list(competitor_columns)
-    col_widths = [0.55, 2.15, 0.65, 0.45, 2.0]
-    remaining = 12.1 - sum(col_widths)
-    if competitor_columns:
-        col_widths += [round(remaining / len(competitor_columns), 2)] * len(competitor_columns)
+    # Position and URL as separate columns per ranking source (2026-09-22,
+    # user request) — "#N · /path" packed into one cell read poorly once
+    # every ranking column (own + each competitor) carried both; a narrow
+    # fixed-width Position column plus its own URL column reads clearer,
+    # even though each URL column ends up narrower than the old combined
+    # cell (user confirmed that trade-off is fine).
+    headers = ["Status", "Keyword", "Volume", "KD", "My Position", "URL"]
+    for domain in competitor_columns:
+        headers += [domain, "URL"]
+    col_widths = [0.5, 1.85, 0.55, 0.4]
+    # 0.85in, not something narrower like 0.45 — "Not ranking" (11 chars)
+    # needs ~0.8in to fit on one line at 11pt (_wrap_lines-confirmed); any
+    # narrower and every Position cell wraps to 2 lines, doubling every
+    # row's height and starving the Key Insights strip below the table of
+    # room (confirmed live: it silently dropped ALL insight bullets on a
+    # worst-case dedicated slide once row height doubled).
+    position_col_width = 0.85
+    n_pairs = 1 + len(competitor_columns)
+    remaining = 12.1 - sum(col_widths) - position_col_width * n_pairs
+    url_col_width = round(remaining / n_pairs, 2)
+    col_widths += [position_col_width, url_col_width]  # My Position, My URL
+    for _ in competitor_columns:
+        col_widths += [position_col_width, url_col_width]
 
     slides = []
 

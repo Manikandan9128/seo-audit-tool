@@ -62,7 +62,9 @@ def test_not_ranking_is_exact_string_no_dash_no_blank_url():
     assert "Not ranking -" not in text
 
 
-def test_position_and_url_shown_together_when_ranking():
+def test_position_and_url_shown_in_separate_columns_when_ranking():
+    # 2026-09-22 layout change: Position and URL are two separate columns
+    # per ranking source, not one "#N · /path" cell.
     analysis = {"keyword_gap_rows": [
         _gap_row(
             "kw1", 1000, 40, your_position=None,
@@ -71,8 +73,10 @@ def test_position_and_url_shown_together_when_ranking():
         ),
     ]}
     slides = add_keyword_gap_slides(_prs(), analysis)
-    text = _slide_text(slides[0])
-    assert "#7 · /payroll-compliance" in text
+    table = next(s for s in slides[0].shapes if s.has_table).table
+    # Status, Keyword, Volume, KD, My Position, My URL, rival.com (Position), URL
+    assert table.cell(1, 6).text_frame.text == "#7"
+    assert table.cell(1, 7).text_frame.text == "/payroll-compliance"
 
 
 def test_competitor_ranking_cell_is_a_real_hyperlink_to_source_url():
@@ -87,7 +91,7 @@ def test_competitor_ranking_cell_is_a_real_hyperlink_to_source_url():
     ]}
     slides = add_keyword_gap_slides(_prs(), analysis)
     table = next(s for s in slides[0].shapes if s.has_table).table
-    cell = table.cell(1, 5)  # Status, Keyword, Volume, KD, My Position, <competitor col>
+    cell = table.cell(1, 7)  # Status, Keyword, Volume, KD, My Position, My URL, rival.com (Pos), URL
     run = cell.text_frame.paragraphs[0].runs[0]
     assert run.hyperlink.address == "https://rival.com/payroll-compliance"
 
@@ -100,10 +104,31 @@ def test_ranked_cell_with_no_recorded_url_has_no_hyperlink():
     ]}
     slides = add_keyword_gap_slides(_prs(), analysis)
     table = next(s for s in slides[0].shapes if s.has_table).table
-    cell = table.cell(1, 5)
-    assert cell.text_frame.text == "#7"
-    run = cell.text_frame.paragraphs[0].runs[0]
-    assert run.hyperlink.address is None
+    pos_cell = table.cell(1, 6)
+    url_cell = table.cell(1, 7)
+    assert pos_cell.text_frame.text == "#7"
+    assert url_cell.text_frame.text == "—"
+    runs = url_cell.text_frame.paragraphs[0].runs
+    assert not runs or runs[0].hyperlink.address is None
+
+
+def test_my_position_url_is_also_a_real_hyperlink():
+    # Regression: My Position's own URL used to be left out of the
+    # hyperlink list entirely, even with a real your_url on record.
+    analysis = {"keyword_gap_rows": [
+        _gap_row(
+            "kw1", 1000, 40, your_position=27, your_url="https://example.com/sql-server-dba-services",
+            competitors=[{"competitor": "rival.com", "position": 9, "ranking_url": None}], gap_category="Shared",
+        ),
+    ]}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    table = next(s for s in slides[0].shapes if s.has_table).table
+    pos_cell = table.cell(1, 4)
+    url_cell = table.cell(1, 5)
+    assert pos_cell.text_frame.text == "#27"
+    assert url_cell.text_frame.text == "/sql-server-dba-services"
+    run = url_cell.text_frame.paragraphs[0].runs[0]
+    assert run.hyperlink.address == "https://example.com/sql-server-dba-services"
 
 
 def test_not_ranking_cell_has_no_hyperlink():
