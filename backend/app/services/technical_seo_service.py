@@ -169,14 +169,21 @@ _SCHEMA_TYPE_SHAPE_RE: dict[str, re.Pattern] = {
     "LocalBusiness": re.compile(r"/(?:locations?|store-locator|near-me|branch(?:es)?)/", re.IGNORECASE),
     "Event": re.compile(r"/events?/", re.IGNORECASE),
     "FAQPage": re.compile(r"faq|frequently[\s-]asked[\s-]questions", re.IGNORECASE),
-    # Universal SEO Audit Engine spec (2026-09-20) section 29: JobPosting
-    # must be scoped to individual job-DETAIL pages only — a careers INDEX
-    # page ("/careers/", "/jobs/openings") is not itself a JobPosting page.
-    # Requires an actual slug segment after /job(s)/ or /career(s)/ (a real
-    # posting's own URL), with a negative-lookahead excluding common
-    # listing/index slugs so the bare index/listing URL never matches.
+    # Universal SEO Audit Engine spec (2026-09-20 section 29, tightened
+    # 2026-09-22): JobPosting must be scoped to individual job-DETAIL pages
+    # only. Excludes not just index/listing slugs but also the other
+    # careers-subpage shapes the 2026-09-22 spec explicitly bans from ever
+    # being read as an individual posting: department/team pages, general
+    # recruitment/employment-info pages, "why join us"/culture/benefits
+    # pages. The excluded word can appear as ANY hyphen-delimited token in
+    # the slug, not just the leading one — "engineering-department" and
+    # "join-our-team" must exclude just as "department" and "join-us" do
+    # alone; a real posting's own slug (e.g. "senior-backend-engineer")
+    # never happens to contain one of these tokens.
     "JobPosting": re.compile(
-        r"/(?:jobs?|careers?)/(?!apply\b|openings?\b|open-positions?\b|open-roles?\b|index\b|list\b|search\b|browse\b|all\b)"
+        r"/(?:jobs?|careers?)/(?!(?:[a-z0-9]+-)*(?:apply|openings?|open-positions?|open-roles?|index|list|search"
+        r"|browse|all|department|departments|team|teams|recruitment|hiring|employment|join-?us|join-?our-?team"
+        r"|culture|benefits|life-at|about|faq)(?:-[a-z0-9]+)*/?(?:$|\?))"
         r"[a-z0-9][a-z0-9-]{3,}/?(?:$|\?)",
         re.IGNORECASE,
     ),

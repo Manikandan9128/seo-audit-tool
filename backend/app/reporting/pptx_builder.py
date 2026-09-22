@@ -1825,7 +1825,21 @@ _ALL_SCHEMA_ITEM_FIELDS = [
 # safely rebuilt.
 _PRODUCT_SHAPE_RE = re.compile(r"/(?:products?|shop|store|items?)/", re.IGNORECASE)
 _BLOG_SHAPE_RE = re.compile(r"/(?:blog|news|articles?|posts?)/", re.IGNORECASE)
-_JOBS_SHAPE_RE = re.compile(r"/(?:careers?|jobs?)/", re.IGNORECASE)
+# 2026-09-22 spec: a careers/jobs INDEX/listing/department/recruitment page
+# must never be classified as an individual JobPosting page — same
+# discipline and exclusion list as technical_seo_service.py's crawl-based
+# JobPosting shape regex (kept in sync — the excluded word can appear as
+# ANY hyphen-delimited slug token, not just the leading one), since this
+# fallback path (used only when there's no real crawl, just a Semrush
+# structured_data export) can otherwise flag "Job Posting" as applicable
+# off nothing but a bare careers landing page.
+_JOBS_SHAPE_RE = re.compile(
+    r"/(?:jobs?|careers?)/(?!(?:[a-z0-9]+-)*(?:apply|openings?|open-positions?|open-roles?|index|list|search"
+    r"|browse|all|department|departments|team|teams|recruitment|hiring|employment|join-?us|join-?our-?team"
+    r"|culture|benefits|life-at|about|faq)(?:-[a-z0-9]+)*/?(?:$|\?))"
+    r"[a-z0-9][a-z0-9-]{3,}/?(?:$|\?)",
+    re.IGNORECASE,
+)
 _LOCAL_SHAPE_RE = re.compile(r"/(?:locations?|store-locator|near-me|branch(?:es)?)/", re.IGNORECASE)
 _EVENT_SHAPE_RE = re.compile(r"/events?/", re.IGNORECASE)
 _FAQ_SHAPE_RE = re.compile(r"faq|frequently[\s-]asked[\s-]questions", re.IGNORECASE)
@@ -2052,20 +2066,42 @@ def _schema_eligibility_flag(schema_type: str) -> str | None:
 
 
 _PAGE_TYPE_LABELS = {
-    "Article-type": "Blog / Article", "Product": "Product", "LocalBusiness": "Local / Location",
-    "Event": "Event", "FAQPage": "FAQ-style Pages", "Other Pages": "Other Pages",
+    "Article-type": "Blog / Article", "Product": "Product", "JobPosting": "Job Detail Pages",
+    "LocalBusiness": "Local / Location", "Event": "Event", "FAQPage": "FAQ-style Pages", "Other Pages": "Other Pages",
 }
 _PAGE_TYPE_SCHEMA_LABEL = {
-    "Article-type": "Article", "Product": "Product", "LocalBusiness": "LocalBusiness",
-    "Event": "Event", "FAQPage": "FAQPage",
+    "Article-type": "Article", "Product": "Product", "JobPosting": "JobPosting",
+    "LocalBusiness": "LocalBusiness", "Event": "Event", "FAQPage": "FAQPage",
 }
 _PAGE_TYPE_WHY_APPLIES = {
     "Article-type": "Content is dated, authored editorial — eligible for article rich results.",
     "Product": "Has price/availability data — eligible for product rich results.",
+    # Never "a Careers section exists" — this bucket only ever populates
+    # when at least one crawled URL matched the individual-job-detail-page
+    # shape (2026-09-22 spec rule 2), so its presence here already IS the
+    # evidence, never an inference from a careers/jobs index page alone.
+    "JobPosting": "Individual job-detail page URLs detected (not a careers index/listing page) — eligible for job-posting rich results.",
     "LocalBusiness": "Has location/contact details — eligible for map/business-info rich results.",
     "Event": "Contains event date/venue details — eligible for event rich results.",
     "FAQPage": "Contains genuine Q&A content — only pages with this content qualify.",
 }
+# 2026-09-22 spec rule 1's required table order: Blog/Article, Product,
+# JobPosting (only when the bucket exists at all), any other applicable
+# content type, then Site-wide, then Other Pages always last. Site-wide
+# and Other Pages are appended by build_schema_report_parts itself, in
+# that order, after this list is used to sort everything else — never
+# left to whatever order aggregate_schema_validation's own pageview/
+# priority sort (a different, legitimate concern for ITS OWN consumers)
+# happened to produce, which could put "Other Pages" first if it has the
+# most traffic.
+_PAGE_TYPE_DISPLAY_ORDER = ["Article-type", "Product", "JobPosting", "LocalBusiness", "Event", "FAQPage"]
+
+
+def _page_type_sort_key(page_type: str) -> int:
+    try:
+        return _PAGE_TYPE_DISPLAY_ORDER.index(page_type)
+    except ValueError:
+        return len(_PAGE_TYPE_DISPLAY_ORDER)  # an unlisted type still sorts before Other Pages, after the named ones
 
 
 def build_schema_report_parts(schema_validation: dict) -> dict:
@@ -2096,7 +2132,15 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
     page alone never creates a JobPosting row.
 
     Shared by the slide's own rendering and the AI insights prompt
-    (site_audit.py) so both work off identical numbers."""
+    (site_audit.py) so both work off identical numbers.
+
+    Row order (2026-09-22 spec rule 1) is enforced here, independent of
+    whatever order aggregate_schema_validation's own by_page_type arrives
+    in (that list is sorted by pageview/priority for ITS OWN other
+    consumers, which could otherwise put "Other Pages" first if it happens
+    to carry the most traffic): Blog/Article, Product, JobPosting (only
+    when that bucket exists), any other applicable content type, then
+    Site-wide, then Other Pages always last."""
     total_pages = schema_validation.get("total_pages") or 0
     by_page_type = schema_validation.get("by_page_type") or []
     type_coverage = {c["type"]: c["pages_with_it"] for c in (schema_validation.get("type_coverage") or [])}
@@ -2105,18 +2149,18 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
         if m["severity"] == "required":
             missing_props_by_type[m["type"]] = missing_props_by_type.get(m["type"], 0) + m["pages_missing"]
 
+    content_rows = sorted(
+        (r for r in by_page_type if r["page_type"] != "Other Pages"),
+        key=lambda r: _page_type_sort_key(r["page_type"]),
+    )
+    other_pages_rows = [r for r in by_page_type if r["page_type"] == "Other Pages"]
+
     part1, part2 = [], []
     content_pages_total = 0
-    for row in by_page_type:
+    for row in content_rows:
         pt = row["page_type"]
         pages = row["pages"]
         label = _PAGE_TYPE_LABELS.get(pt, pt)
-        if pt == "Other Pages":
-            part1.append({
-                "page_type": label, "recommended_schema": "N/A", "pages": pages,
-                "why_it_applies": "No content-specific schema type applies to this template.",
-            })
-            continue
         content_pages_total += pages
         schema_label = _PAGE_TYPE_SCHEMA_LABEL.get(pt, pt)
         part1.append({
@@ -2167,6 +2211,15 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
             "invalid": max(present - valid, 0), "missing": max(content_pages_total - present, 0),
             "coverage_pct": round(100 * valid / content_pages_total) if content_pages_total else 0,
             "coverage_is_traffic_weighted": False, "site_level": False,
+        })
+
+    # Other Pages always last (spec rule 1/11) — never a schema gap, never
+    # counted toward content_pages_total, no Part 2 row at all (it has no
+    # applicable schema to validate).
+    for row in other_pages_rows:
+        part1.append({
+            "page_type": _PAGE_TYPE_LABELS.get(row["page_type"], row["page_type"]), "recommended_schema": "N/A",
+            "pages": row["pages"], "why_it_applies": "No content-specific schema type applies to this template.",
         })
 
     return {"part1": part1, "part2": part2}

@@ -44,6 +44,59 @@ def test_other_pages_marked_na_not_a_content_schema_row():
     assert not any(r["schema_type"] == "Other Pages" for r in parts["part2"])
 
 
+def test_part1_order_is_fixed_regardless_of_upstream_pageview_sort():
+    # 2026-09-22 spec rule 1: Blog/Article, Product, JobPosting, other
+    # types, Site-wide, Other Pages always last — regardless of what order
+    # aggregate_schema_validation's own by_page_type arrives in (it's
+    # pageview/priority-sorted for its OTHER consumers, and here "Other
+    # Pages" is deliberately listed FIRST to simulate the exact case that
+    # sort could produce if Other Pages happened to have the most traffic).
+    schema_validation = {
+        "total_pages": 500,
+        "by_page_type": [
+            {"page_type": "Other Pages", "pages": 300, "present_pages": 0, "valid_pages": 0, "valid_pct": 0},
+            {"page_type": "LocalBusiness", "pages": 10, "present_pages": 0, "valid_pages": 0, "valid_pct": 0},
+            {"page_type": "JobPosting", "pages": 5, "present_pages": 0, "valid_pages": 0, "valid_pct": 0},
+            {"page_type": "Product", "pages": 80, "present_pages": 0, "valid_pages": 0, "valid_pct": 0},
+            {"page_type": "Article-type", "pages": 105, "present_pages": 0, "valid_pages": 0, "valid_pct": 0},
+        ],
+        "type_coverage": [], "missing_properties": [],
+    }
+    parts = build_schema_report_parts(schema_validation)
+    page_types = [r["page_type"] for r in parts["part1"]]
+    assert page_types == ["Blog / Article", "Product", "Job Detail Pages", "Local / Location", "Site-wide", "Other Pages"]
+
+
+def test_jobposting_bucket_excludes_careers_index_department_and_recruitment_pages():
+    # 2026-09-22 spec rule 2: only individual job-detail pages qualify —
+    # careers landing/index, department/team, and general recruitment
+    # pages must never be classified as JobPosting.
+    pages = [
+        {"url": "https://x.com/careers/", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+        {"url": "https://x.com/careers/openings", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+        {"url": "https://x.com/careers/engineering-department", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+        {"url": "https://x.com/careers/join-our-team", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+        {"url": "https://x.com/careers/recruitment-process", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+        {"url": "https://x.com/careers/senior-backend-engineer-4821", "meta": {"schema_types_found": [], "schema_field_issues": []}},
+    ]
+    sv = aggregate_schema_validation(pages)
+    job_rows = [r for r in sv["by_page_type"] if r["page_type"] == "JobPosting"]
+    assert len(job_rows) == 1
+    assert job_rows[0]["pages"] == 1  # only the real job-detail page
+
+
+def test_jobposting_why_it_applies_is_never_blank():
+    schema_validation = {
+        "total_pages": 10,
+        "by_page_type": [{"page_type": "JobPosting", "pages": 3, "present_pages": 0, "valid_pages": 0, "valid_pct": 0}],
+        "type_coverage": [], "missing_properties": [],
+    }
+    parts = build_schema_report_parts(schema_validation)
+    job_row = next(r for r in parts["part1"] if r["page_type"] == "Job Detail Pages")
+    assert job_row["why_it_applies"]
+    assert "careers index/listing page" in job_row["why_it_applies"]
+
+
 def test_content_type_coverage_denominator_is_its_own_page_count_not_total():
     # Part 2's Coverage % denominator must be the pages that type applies
     # to (310 blog pages), never the full site total (~1961 pages).
