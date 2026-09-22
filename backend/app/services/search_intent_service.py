@@ -17,7 +17,7 @@ import json
 import logging
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -52,21 +52,31 @@ def generate_search_intents(keywords: list[str]) -> dict[str, str]:
     if not keywords:
         return {}
     prompt = PROMPT_TEMPLATE.format(keyword_list="\n".join(f"- {k}" for k in keywords))
+    # Tries every configured provider in order, not just the first one to
+    # answer (2026-09-22, same fix as structured_data_insights_service,
+    # 2026-09-20; see core_problem_service.generate_core_problem's
+    # docstring for why): a bad response from one provider now falls
+    # through to the next instead of this call failing open to {} outright.
+    errors: list[str] = []
+    items = None
     try:
-        raw, _provider = generate_text(prompt)
+        for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
+            cleaned = raw.strip()
+            cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+            try:
+                parsed = json.loads(cleaned)
+            except json.JSONDecodeError:
+                logger.warning("Search intent classification: %s returned invalid JSON: %s", provider, cleaned[:300])
+                continue
+            if not isinstance(parsed, list):
+                logger.warning("Search intent classification: %s returned non-list JSON: %s", provider, cleaned[:300])
+                continue
+            items = parsed
+            break
     except NoAIProviderConfigured as e:
         logger.warning("Search intent classification AI call failed: %s", e)
         return {}
-
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        items = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Search intent classification returned invalid JSON: %s", raw[:300])
-        return {}
-    if not isinstance(items, list):
-        logger.warning("Search intent classification returned non-list JSON: %s", raw[:300])
+    if items is None:
         return {}
 
     keyword_set = set(keywords)

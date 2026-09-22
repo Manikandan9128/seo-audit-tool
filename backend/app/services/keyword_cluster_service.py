@@ -11,7 +11,7 @@ import json
 import logging
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +70,7 @@ def generate_batched_candidate_clusters(groups: list[tuple[str, list[str]]]) -> 
         "\n\nReturn ONLY valid JSON, no markdown fences, no commentary, matching this shape:\n"
         '[{"cluster": string, "keywords": [string]}]\n'
     )
-    try:
-        raw, _provider = generate_text(prompt)
-    except NoAIProviderConfigured as e:
-        logger.warning("Batched candidate clustering AI call failed: %s", e)
-        return {}
-    return _parse_cluster_response(raw, all_keywords)
+    return _generate_and_parse(prompt, all_keywords, "Batched candidate clustering")
 
 
 def generate_keyword_clusters(keywords: list[str]) -> dict[str, str]:
@@ -88,26 +83,40 @@ def generate_keyword_clusters(keywords: list[str]) -> dict[str, str]:
     if not keywords:
         return {}
     prompt = PROMPT_TEMPLATE.format(keyword_list="\n".join(f"- {k}" for k in keywords))
+    return _generate_and_parse(prompt, keywords, "Keyword clustering")
+
+
+def _generate_and_parse(prompt: str, keywords: list[str], label: str) -> dict[str, str]:
+    """Tries every configured provider in order, not just the first one to
+    answer (2026-09-22, same fix as structured_data_insights_service,
+    2026-09-20; see core_problem_service.generate_core_problem's docstring
+    for why)."""
+    errors: list[str] = []
     try:
-        raw, _provider = generate_text(prompt)
+        for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
+            clusters = _parse_cluster_response(raw, provider, label)
+            if clusters is not None:
+                return _map_clusters(clusters, keywords)
     except NoAIProviderConfigured as e:
-        logger.warning("Keyword clustering AI call failed: %s", e)
-        return {}
-    return _parse_cluster_response(raw, keywords)
+        logger.warning("%s AI call failed: %s", label, e)
+    return {}
 
 
-def _parse_cluster_response(raw: str, keywords: list[str]) -> dict[str, str]:
+def _parse_cluster_response(raw: str, provider: str, label: str) -> list | None:
     raw = raw.strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
         clusters = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("Keyword clustering returned invalid JSON: %s", raw[:300])
-        return {}
+        logger.warning("%s: %s returned invalid JSON: %s", label, provider, raw[:300])
+        return None
     if not isinstance(clusters, list):
-        logger.warning("Keyword clustering returned non-list JSON: %s", raw[:300])
-        return {}
+        logger.warning("%s: %s returned non-list JSON: %s", label, provider, raw[:300])
+        return None
+    return clusters
 
+
+def _map_clusters(clusters: list, keywords: list[str]) -> dict[str, str]:
     keyword_set = set(keywords)
     mapping: dict[str, str] = {}
     for group in clusters:

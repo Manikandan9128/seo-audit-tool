@@ -13,7 +13,7 @@ prompt."""
 import json
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 BRANDED_SEARCH_INSIGHTS_PROMPT = """You are an SEO consultant writing the Key Insights for a "Branded vs \
 Non-Branded Search Performance" slide, covering a single {date_range} Search Console snapshot — there is no \
@@ -92,17 +92,29 @@ def generate_branded_search_insights(
         top_branded_queries=json.dumps(top_branded_queries[:10], indent=2) if top_branded_queries else "(none)",
         top_nonbranded_queries=json.dumps(top_nonbranded_queries[:10], indent=2) if top_nonbranded_queries else "(none)",
     )
+    errors: list[str] = []
+    last_raw = ""
     try:
-        raw, _provider = generate_text(prompt, max_tokens=1024)
+        # Tries every configured provider in order, not just the first one
+        # to answer (2026-09-22 — same fix as structured_data_insights_service,
+        # 2026-09-20; see core_problem_service.generate_core_problem's
+        # docstring for why this matters with OpenRouter's auto-router in
+        # the mix): a syntactically-invalid or insight-less response from
+        # one provider now falls through to the next instead of failing
+        # the whole section outright.
+        for raw, provider in iter_text_attempts(prompt, max_tokens=1024, errors=errors):
+            last_raw = raw
+            cleaned = raw.strip()
+            cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                errors.append(f"{provider} did not return valid JSON")
+                continue
+            if isinstance(data, dict) and data.get("insights"):
+                return data
+            errors.append(f"{provider} returned no insights")
     except NoAIProviderConfigured as e:
         return {"error": str(e)}
 
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    if not data.get("insights"):
-        return {"error": "Model returned no insights"}
-    return data
+    return {"error": " | ".join(errors) if errors else "Model returned no insights", "raw": last_raw[:500]}

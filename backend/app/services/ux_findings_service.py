@@ -11,7 +11,9 @@ available even when no reviewer has done a manual walkthrough yet."""
 import json
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text, generate_text_with_image
+from app.integrations.text_ai_client import (
+    NoAIProviderConfigured, generate_text_with_image, iter_text_attempts,
+)
 
 PROMPT_TEMPLATE = """You are a conversion-rate/UX consultant writing part of a client-facing SEO/web audit \
 report. You are given manual QA notes a reviewer wrote while walking through {client_name}'s site \
@@ -72,20 +74,33 @@ def static_no_ux_pass() -> dict:
 
 
 def generate_ux_findings(client_name: str, website_url: str, ux_notes: str) -> dict:
-    """Returns {"ui_fixes": [...], "conversion_opportunities": [...]} or {"error": str}."""
+    """Returns {"ui_fixes": [...], "conversion_opportunities": [...]} or
+    {"error": str}.
+
+    Tries every configured provider in order, not just the first one to
+    answer (2026-09-22, same fix as structured_data_insights_service,
+    2026-09-20; see core_problem_service.generate_core_problem's docstring
+    for why)."""
     prompt = PROMPT_TEMPLATE.format(client_name=client_name, website_url=website_url, ux_notes=ux_notes[:6000])
+    errors: list[str] = []
+    last_raw = ""
     try:
-        raw, _provider = generate_text(prompt)
+        for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
+            last_raw = raw
+            cleaned = raw.strip()
+            cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                errors.append(f"{provider} did not return valid JSON")
+                continue
+            if isinstance(data, dict):
+                return data
+            errors.append(f"{provider} did not return a JSON object")
     except NoAIProviderConfigured as e:
         return {"error": str(e)}
 
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    return data
+    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}
 
 
 ONBOARDING_PROMPT_TEMPLATE = """You are a conversion-rate/UX consultant writing part of a client-facing SEO/web \

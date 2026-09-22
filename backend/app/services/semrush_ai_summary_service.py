@@ -8,7 +8,7 @@ import re
 import time
 
 from app.config import settings
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 PROMPT_TEMPLATE = """You are an SEO consultant writing a short narrative summary for a client report. \
 Base everything ONLY on the structured findings below — never invent numbers, competitors, or issues \
@@ -44,9 +44,14 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 
 
 def generate_ai_summary(client_name: str, website_url: str, analysis: dict) -> dict:
-    """Returns {"summary": str, "priorities": [str]} or {"error": str}."""
-    if not settings.gemini_api_key and not settings.claude_api_key:
-        return {"error": "No Gemini or Claude API key configured — add one in Settings"}
+    """Returns {"summary": str, "priorities": [str]} or {"error": str}.
+
+    Tries every configured provider in order (Groq, OpenRouter, Gemini,
+    Claude), not just the first one to answer (2026-09-22, same fix as
+    structured_data_insights_service, 2026-09-20; see
+    core_problem_service.generate_core_problem's docstring for why)."""
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.openrouter_api_key):
+        return {"error": "No Groq, OpenRouter, Gemini, or Claude API key configured — add one in Settings"}
 
     issues = analysis.get("issues") or []
     if not issues:
@@ -59,11 +64,23 @@ def generate_ai_summary(client_name: str, website_url: str, analysis: dict) -> d
         coverage_json=json.dumps(analysis.get("coverage") or {}, indent=2),
     )
 
-    raw = None
+    errors: list[str] = []
+    last_raw = None
     last_error = None
     for attempt in range(3):
         try:
-            raw, _provider = generate_text(prompt)
+            for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
+                last_raw = raw
+                cleaned = raw.strip()
+                cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+                try:
+                    data = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    errors.append(f"{provider} did not return valid JSON")
+                    continue
+                if isinstance(data, dict):
+                    return data
+                errors.append(f"{provider} did not return a JSON object")
             break
         except NoAIProviderConfigured as e:
             last_error = e
@@ -71,14 +88,7 @@ def generate_ai_summary(client_name: str, website_url: str, analysis: dict) -> d
                 time.sleep(2 * (attempt + 1))
                 continue
             return {"error": str(e)}
-    if raw is None:
+    if last_raw is None:
         return {"error": str(last_error) if last_error else "AI request failed after retries"}
 
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-
-    return data
+    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}

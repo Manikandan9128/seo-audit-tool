@@ -39,7 +39,7 @@ import json
 import re
 
 from app.config import settings
-from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, iter_text_attempts
 
 BATCH_PROMPT_TEMPLATE = """You are an SEO/growth consultant writing competitive-analysis sections for \
 {client_name} ({client_domain}), comparing them against {competitor_count} competitors. Write ONE independent \
@@ -138,13 +138,7 @@ domain listed above, using the EXACT domain string as the key:
 _NARRATIVE_KEYS = {"best_at", "headline", "unique_angle", "gap"}
 
 
-def _call_and_parse(prompt: str, max_tokens: int) -> dict:
-    """One generate+parse attempt. Returns the parsed dict or {"error": ...}."""
-    try:
-        raw, _provider = generate_text(prompt, max_tokens=max_tokens)
-    except NoAIProviderConfigured as e:
-        return {"error": str(e)}
-
+def _parse(raw: str) -> dict | None:
     raw = raw.strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
@@ -156,19 +150,43 @@ def _call_and_parse(prompt: str, max_tokens: int) -> dict:
         # catches ``` markers at the very start/end, not stray prose. Fall
         # back to grabbing the outermost {...} span before giving up.
         start, end = raw.find("{"), raw.rfind("}")
-        if start != -1 and end > start:
-            try:
-                parsed = json.loads(raw[start : end + 1])
-            except json.JSONDecodeError:
-                return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-        else:
-            return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+        if start == -1 or end <= start:
+            return None
+        try:
+            parsed = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
     # json.loads succeeds on any valid JSON value, not just objects — a
     # degenerate completion (e.g. the literal token "null") parses cleanly
-    # with no exception raised, and every caller below assumes a dict.
+    # with no exception raised, and every caller assumes a dict.
     if not isinstance(parsed, dict):
-        return {"error": "AI did not return a JSON object", "raw": raw[:500]}
+        return None
     return parsed
+
+
+def _call_and_parse(prompt: str, max_tokens: int) -> dict:
+    """One generate+parse pass — but "one" now means "try every configured
+    provider in order until one parses," not just the first to answer
+    (same fix as structured_data_insights_service, 2026-09-20; see
+    core_problem_service.generate_core_problem's docstring for why this
+    matters now that OpenRouter's auto-router is in the mix). Returns the
+    parsed dict or {"error": ...}. _generate_chunk below still wraps this
+    in its own one-more-pass retry on top, for the same transient-flakiness
+    reason it always has — this fix makes each of those two passes itself
+    exhaust every provider instead of just re-asking the first one."""
+    errors: list[str] = []
+    last_raw = ""
+    try:
+        for raw, provider in iter_text_attempts(prompt, max_tokens=max_tokens, errors=errors):
+            last_raw = raw
+            parsed = _parse(raw)
+            if parsed is not None:
+                return parsed
+            errors.append(f"{provider} did not return valid JSON")
+    except NoAIProviderConfigured as e:
+        return {"error": str(e)}
+
+    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}
 
 
 # Sizing a chunk against Groq's own TPM budget (not some independent

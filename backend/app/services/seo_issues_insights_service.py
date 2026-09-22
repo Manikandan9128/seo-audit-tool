@@ -10,7 +10,7 @@ could reason about numbers the reader never actually sees on the slide."""
 import json
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 SEO_ISSUES_INSIGHTS_PROMPT = """You are an SEO analyst writing insights for a client audit report. I will give \
 you a list of SEO errors and warnings with the number of affected pages, plus the total crawled pages and total \
@@ -48,26 +48,7 @@ Warnings:
 """
 
 
-def generate_seo_issues_insights(
-    errors: list[dict], warnings: list[dict], total_pages: int | None, pages_with_issues: int | None
-) -> dict:
-    """errors/warnings: [{"issue": str, "pages": int}, ...] — same shape
-    classify_seo_issues returns. Returns {"headline": str, "supporting":
-    [str], "takeaway": str} or {"error": str}."""
-    if not errors and not warnings:
-        return {"error": "No errors or warnings to analyze"}
-
-    prompt = SEO_ISSUES_INSIGHTS_PROMPT.format(
-        total_pages=total_pages if total_pages is not None else "unknown",
-        pages_with_issues=pages_with_issues if pages_with_issues is not None else "unknown",
-        errors=json.dumps(errors, indent=2) if errors else "(none)",
-        warnings=json.dumps(warnings, indent=2) if warnings else "(none)",
-    )
-    try:
-        raw, _provider = generate_text(prompt, max_tokens=768)
-    except NoAIProviderConfigured as e:
-        return {"error": str(e)}
-
+def _parse(raw: str) -> dict | None:
     raw = raw.strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
@@ -77,17 +58,51 @@ def generate_seo_issues_insights(
         # JSON object despite the "return ONLY valid JSON" instruction — see
         # the same fallback in competitor_narrative_service.py.
         start, end = raw.find("{"), raw.rfind("}")
-        if start != -1 and end > start:
-            try:
-                data = json.loads(raw[start : end + 1])
-            except json.JSONDecodeError:
-                return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-        else:
-            return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+        if start == -1 or end <= start:
+            return None
+        try:
+            data = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
     # json.loads succeeds on any valid JSON value, not just objects — a
     # degenerate completion (e.g. the literal token "null") parses cleanly
     # to None/a list/a string with no exception raised, and .get() below
-    # would then crash instead of falling through to the error path.
+    # would then crash instead of being treated as a bad response.
     if not isinstance(data, dict) or not data.get("headline"):
-        return {"error": "Model returned no headline"}
+        return None
     return data
+
+
+def generate_seo_issues_insights(
+    errors: list[dict], warnings: list[dict], total_pages: int | None, pages_with_issues: int | None
+) -> dict:
+    """errors/warnings: [{"issue": str, "pages": int}, ...] — same shape
+    classify_seo_issues returns. Returns {"headline": str, "supporting":
+    [str], "takeaway": str} or {"error": str}.
+
+    Tries every configured provider in order (same fix as
+    structured_data_insights_service, 2026-09-20), not just the first one
+    to answer — see core_problem_service.generate_core_problem's docstring
+    for why this matters now that OpenRouter's auto-router is in the mix."""
+    if not errors and not warnings:
+        return {"error": "No errors or warnings to analyze"}
+
+    prompt = SEO_ISSUES_INSIGHTS_PROMPT.format(
+        total_pages=total_pages if total_pages is not None else "unknown",
+        pages_with_issues=pages_with_issues if pages_with_issues is not None else "unknown",
+        errors=json.dumps(errors, indent=2) if errors else "(none)",
+        warnings=json.dumps(warnings, indent=2) if warnings else "(none)",
+    )
+    errors_seen: list[str] = []
+    last_raw = ""
+    try:
+        for raw, provider in iter_text_attempts(prompt, max_tokens=768, errors=errors_seen):
+            last_raw = raw
+            data = _parse(raw)
+            if data is not None:
+                return data
+            errors_seen.append(f"{provider} did not return valid JSON")
+    except NoAIProviderConfigured as e:
+        return {"error": str(e)}
+
+    return {"error": " | ".join(errors_seen) if errors_seen else "Model returned no headline", "raw": last_raw[:500]}

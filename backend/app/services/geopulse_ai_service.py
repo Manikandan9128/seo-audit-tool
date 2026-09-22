@@ -11,7 +11,7 @@ import json
 import logging
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -172,20 +172,29 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
     else:
         disputed_note = ""
     prompt = PROMPT_TEMPLATE.format(raw_text=raw_text, disputed_metrics_note=disputed_note)
+    # Tries every configured provider in order, not just the first one to
+    # answer (2026-09-22, same fix as structured_data_insights_service,
+    # 2026-09-20; see core_problem_service.generate_core_problem's
+    # docstring for why).
+    errors: list[str] = []
+    data = None
     try:
-        raw, _provider = generate_text(prompt)
+        for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
+            cleaned = raw.strip()
+            cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+            try:
+                parsed = json.loads(cleaned)
+            except json.JSONDecodeError:
+                logger.warning("GeoPulse AEO/GEO content: %s returned invalid JSON: %s", provider, cleaned[:300])
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            data = parsed
+            break
     except NoAIProviderConfigured as e:
         logger.warning("GeoPulse AEO/GEO content generation failed: %s", e)
         return {}
-
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("GeoPulse AEO/GEO content returned invalid JSON: %s", raw[:300])
-        return {}
-    if not isinstance(data, dict):
+    if data is None:
         return {}
 
     aeo_items = [str(x).strip() for x in (data.get("aeo_items") or []) if str(x).strip()]

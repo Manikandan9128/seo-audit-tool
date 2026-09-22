@@ -15,7 +15,7 @@ systemic failure."""
 import json
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 CATEGORY_TITLES = {
     "local_seo": "Next Steps: Local SEO",
@@ -98,28 +98,46 @@ as the slide's subtitle) — only needed when applicable.
 """
 
 
-def _call_and_parse(prompt: str) -> dict:
-    """One generate+parse attempt. Returns the parsed dict or {"error": ...}."""
-    try:
-        raw, _provider = generate_text(prompt, max_tokens=4096)
-    except NoAIProviderConfigured as e:
-        return {"error": str(e)}
-
+def _parse(raw: str) -> dict | None:
     raw = raw.strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except json.JSONDecodeError:
         # Some models prepend stray commentary before the JSON object despite
         # the "return ONLY valid JSON" instruction — same recovery as
         # competitor_narrative_service: grab the outermost {...} span.
         start, end = raw.find("{"), raw.rfind("}")
-        if start != -1 and end > start:
-            try:
-                return json.loads(raw[start : end + 1])
-            except json.JSONDecodeError:
-                pass
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+        if start == -1 or end <= start:
+            return None
+        try:
+            data = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def _call_and_parse(prompt: str) -> dict:
+    """One generate+parse pass — but "one" now means "try every configured
+    provider in order until one parses," not just the first to answer
+    (2026-09-22, same fix as structured_data_insights_service, 2026-09-20;
+    see core_problem_service.generate_core_problem's docstring for why).
+    Returns the parsed dict or {"error": ...}. The caller below still
+    wraps this in its own one-more-pass retry, for the same transient-
+    flakiness reason it always has."""
+    errors: list[str] = []
+    last_raw = ""
+    try:
+        for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
+            last_raw = raw
+            data = _parse(raw)
+            if data is not None:
+                return data
+            errors.append(f"{provider} did not return valid JSON")
+    except NoAIProviderConfigured as e:
+        return {"error": str(e)}
+
+    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}
 
 
 def generate_next_steps(client_name: str, client_domain: str, findings: dict) -> dict:

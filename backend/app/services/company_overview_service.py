@@ -11,7 +11,7 @@ import time
 import httpx
 
 from app.config import settings
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 from app.services.product_catalogue_service import crawl_product_catalogue
 
 USER_AGENT = (
@@ -179,10 +179,15 @@ def gather_site_text(website_url: str, max_chars: int = 45000) -> str:
 
 def extract_company_overview(website_url: str) -> dict:
     """Returns a structured overview dict, or a dict with an 'error' key if
-    extraction isn't available (no API key, no crawlable content, bad response).
-    Tries Gemini first, falls back to Claude — either key alone is enough."""
-    if not settings.gemini_api_key and not settings.claude_api_key:
-        return {"error": "No Gemini or Claude API key configured — add one in Settings"}
+    extraction isn't available (no API key, no crawlable content, bad
+    response). Tries every configured provider in order (Groq, OpenRouter,
+    Gemini, Claude — see text_ai_client.generate_text's docstring), not
+    just the first one to answer: a syntactically-invalid response from
+    one provider now falls through to the next instead of failing the
+    whole extraction outright (2026-09-22 — same fix as
+    structured_data_insights_service, 2026-09-20)."""
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.openrouter_api_key):
+        return {"error": "No Groq, OpenRouter, Gemini, or Claude API key configured — add one in Settings"}
 
     site_text = gather_site_text(website_url)
     if not site_text.strip():
@@ -190,11 +195,23 @@ def extract_company_overview(website_url: str) -> dict:
 
     prompt = EXTRACTION_PROMPT.replace("{content}", site_text)
 
-    raw = None
+    errors: list[str] = []
+    last_raw = None
     last_error = None
     for attempt in range(3):
         try:
-            raw, _provider = generate_text(prompt)
+            for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
+                last_raw = raw
+                cleaned = raw.strip()
+                cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+                try:
+                    data = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    errors.append(f"{provider} did not return valid JSON")
+                    continue
+                if isinstance(data, dict):
+                    return data
+                errors.append(f"{provider} did not return a JSON object")
             break
         except NoAIProviderConfigured as e:
             last_error = e
@@ -202,14 +219,7 @@ def extract_company_overview(website_url: str) -> dict:
                 time.sleep(2 * (attempt + 1))
                 continue
             return {"error": str(e)}
-    if raw is None:
+    if last_raw is None:
         return {"error": str(last_error) if last_error else "AI request failed after retries"}
 
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "Gemini did not return valid JSON", "raw": raw[:500]}
-
-    return data
+    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}

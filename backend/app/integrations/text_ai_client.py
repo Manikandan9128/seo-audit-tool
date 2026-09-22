@@ -518,32 +518,68 @@ def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens
     raise RuntimeError(f"no Groq vision model available on this account: {'; '.join(model_errors)}")
 
 
+# The auto-router (OPENROUTER_MODEL) picks a random currently-free model
+# and, per OpenRouter's own docs, filters for vision support when the
+# request includes an image — but "random" means it can land on a model
+# that returns an empty completion for a given prompt (confirmed real,
+# 2026-09-22: one empty response from the router on a live report). These
+# are named, currently-free, explicitly vision-capable models (verified
+# against OpenRouter's own free-models collection before wiring in) tried
+# in order if the router's own pick comes back empty — same
+# defense-in-depth idea as GROQ_VISION_MODELS above, just one layer
+# further out since the router itself is already meant to absorb most of
+# OpenRouter's free-model churn.
+OPENROUTER_VISION_FALLBACK_MODELS = (
+    "google/gemma-4-31b-it:free",
+    "meta-llama/llama-3.2-11b-vision-instruct:free",
+)
+
+
 def _try_openrouter_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens: int) -> str:
     b64_image = base64.b64encode(image_bytes).decode("ascii")
-    response = httpx.post(
-        OPENROUTER_API_URL,
-        headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
-        json={
-            "model": OPENROUTER_MODEL,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
-                ],
-            }],
-            "max_tokens": max_tokens,
-        },
-        timeout=OPENROUTER_TIMEOUT_SECONDS,
-    )
-    if response.status_code >= 400:
-        raise httpx.HTTPStatusError(
-            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
-            request=response.request,
-            response=response,
+
+    def _call(model: str) -> str:
+        response = httpx.post(
+            OPENROUTER_API_URL,
+            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+            json={
+                "model": model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
+                    ],
+                }],
+                "max_tokens": max_tokens,
+            },
+            timeout=OPENROUTER_TIMEOUT_SECONDS,
         )
-    data = response.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
+        if response.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+                request=response.request,
+                response=response,
+            )
+        data = response.json()
+        return (data["choices"][0]["message"]["content"] or "").strip()
+
+    text = _call(OPENROUTER_MODEL)
+    if text:
+        return text
+    model_errors = ["openrouter/free: returned an empty response"]
+    for model in OPENROUTER_VISION_FALLBACK_MODELS:
+        try:
+            text = _call(model)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                model_errors.append(f"{model}: {e.response.status_code} {e.response.text[:200]}")
+                continue
+            raise
+        if text:
+            return text
+        model_errors.append(f"{model}: returned an empty response")
+    raise RuntimeError(f"no OpenRouter vision model returned a usable response: {'; '.join(model_errors)}")
 
 
 def _try_gemini_vision(prompt: str, image_bytes: bytes, mime_type: str) -> str:

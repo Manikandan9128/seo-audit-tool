@@ -23,7 +23,7 @@ import json
 import logging
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -349,24 +349,39 @@ Every keyword listed above must appear as a key, using its exact original text.
 """
 
 
-def _call_and_parse(prompt: str, max_tokens: int) -> dict:
-    try:
-        raw, _provider = generate_text(prompt, max_tokens=max_tokens)
-    except NoAIProviderConfigured as e:
-        return {"error": str(e)}
-
+def _parse(raw: str) -> dict | None:
     raw = raw.strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except json.JSONDecodeError:
         start, end = raw.find("{"), raw.rfind("}")
-        if start != -1 and end > start:
-            try:
-                return json.loads(raw[start : end + 1])
-            except json.JSONDecodeError:
-                pass
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
+        if start == -1 or end <= start:
+            return None
+        try:
+            data = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def _call_and_parse(prompt: str, max_tokens: int) -> dict:
+    """Tries every configured provider in order until one parses (2026-09-22,
+    same fix as structured_data_insights_service, 2026-09-20; see
+    core_problem_service.generate_core_problem's docstring for why)."""
+    errors: list[str] = []
+    last_raw = ""
+    try:
+        for raw, provider in iter_text_attempts(prompt, max_tokens=max_tokens, errors=errors):
+            last_raw = raw
+            data = _parse(raw)
+            if data is not None:
+                return data
+            errors.append(f"{provider} did not return valid JSON")
+    except NoAIProviderConfigured as e:
+        return {"error": str(e)}
+
+    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}
 
 
 def classify_keywords(

@@ -7,6 +7,14 @@ from app.services.competitor_narrative_service import (
 )
 
 
+def _attempts(*items):
+    """items: list of (raw_text, provider) tuples to yield in order."""
+    def _gen(prompt, max_tokens, errors):
+        for raw, provider in items:
+            yield raw, provider
+    return _gen
+
+
 def test_narrative_keys_match_new_schema():
     # 2026-09-11 rewrite: single-differentiator schema, shared_advantage
     # is optional so it's deliberately not in the required-keys set.
@@ -35,14 +43,24 @@ def test_cross_competitor_opportunities_parses_ai_response():
             "  ",  # blank entries get dropped
         ]
     })
-    with patch("app.services.competitor_narrative_service.generate_text", return_value=(fake_response, "test")):
+    with patch(
+        "app.services.competitor_narrative_service.iter_text_attempts", side_effect=_attempts((fake_response, "test"))
+    ):
         result = generate_cross_competitor_opportunities("Client", "client.com", narratives)
     assert result == ["Build a self-serve pricing calculator to capture decision-stage buyers."]
 
 
 def test_cross_competitor_opportunities_fails_open_to_empty_list():
+    # _attempts(...) is a generator FUNCTION — each call (both the inner
+    # per-provider retry in _call_and_parse and the outer one-retry in
+    # generate_cross_competitor_opportunities call iter_text_attempts
+    # fresh) gets its own new generator instance, so the same side_effect
+    # is safely reusable across multiple calls here.
     narratives = {"rival.com": {"headline": "x", "gap": "y"}}
-    with patch("app.services.competitor_narrative_service.generate_text", return_value=("not json", "test")):
+    with patch(
+        "app.services.competitor_narrative_service.iter_text_attempts",
+        side_effect=_attempts(("not json", "test")),
+    ):
         result = generate_cross_competitor_opportunities("Client", "client.com", narratives)
     assert result == []
 
