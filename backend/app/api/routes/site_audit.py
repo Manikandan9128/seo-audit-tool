@@ -1239,81 +1239,101 @@ def _gather_report_data(
             # saves several seconds of pure Google API round-trip latency
             # that were previously just stacking up serially on every report.
             jobs = {}
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                if client.ga4_property_id:
-                    # Real ISO dates (ga4_start/ga4_end), not GA4's relative
-                    # "30daysAgo"/"today" keywords — those resolved "today"
-                    # literally, pulling in the still-processing incomplete
-                    # day (see ga4_end's own comment above) and, separately,
-                    # meant this job and traffic_channel_breakdown below were
-                    # silently NOT drawing from the same window as each
-                    # other despite both claiming "30 days." Every GA4 call
-                    # in this batch now shares one real window so Traffic
-                    # Overview can be the single source of truth the other
-                    # Traffic slides split/reconcile against (2026-09-11).
-                    jobs["traffic_overview"] = pool.submit(
-                        ga4_service.get_traffic_overview, creds, client.ga4_property_id, ga4_start, ga4_end
+            # Hard outer deadline, same pattern as the crawl and PSI
+            # sections above — confirmed real (2026-09-22, Geopits): a
+            # single hung GA4/GSC call (the flaky-OAuth-token class of
+            # failure noted below) blocks .result() forever with no
+            # exception ever raised, so neither the HttpError nor
+            # RefreshError handlers below ever fire. That stalled this
+            # whole report generation job indefinitely at "Pulling
+            # Analytics & Search Console data..." with zero further
+            # progress. Not a `with` block deliberately, same reason as
+            # the PSI pool: the context manager's __exit__ calls
+            # shutdown(wait=True), which would block on the very same
+            # stuck thread wait(timeout=...) below just gave up on.
+            analytics_deadline = 120.0
+            pool = ThreadPoolExecutor(max_workers=6)
+            if client.ga4_property_id:
+                # Real ISO dates (ga4_start/ga4_end), not GA4's relative
+                # "30daysAgo"/"today" keywords — those resolved "today"
+                # literally, pulling in the still-processing incomplete
+                # day (see ga4_end's own comment above) and, separately,
+                # meant this job and traffic_channel_breakdown below were
+                # silently NOT drawing from the same window as each
+                # other despite both claiming "30 days." Every GA4 call
+                # in this batch now shares one real window so Traffic
+                # Overview can be the single source of truth the other
+                # Traffic slides split/reconcile against (2026-09-11).
+                jobs["traffic_overview"] = pool.submit(
+                    ga4_service.get_traffic_overview, creds, client.ga4_property_id, ga4_start, ga4_end
+                )
+                jobs["top_pages"] = pool.submit(
+                    ga4_service.get_top_pages, creds, client.ga4_property_id, ga4_start, ga4_end, limit=15
+                )
+                jobs["traffic_sources"] = pool.submit(
+                    ga4_service.get_traffic_sources, creds, client.ga4_property_id, ga4_start, ga4_end
+                )
+                jobs["traffic_channel_breakdown"] = pool.submit(
+                    ga4_service.get_traffic_channel_breakdown, creds, client.ga4_property_id, channel_breakdown_start, ga4_end
+                )
+                jobs["page_performance"] = pool.submit(
+                    ga4_service.get_page_performance, creds, client.ga4_property_id, ga4_start, ga4_end
+                )
+            if client.gsc_site_url:
+                jobs["search_queries"] = pool.submit(
+                    # 20 was too thin once split into Branded/Non-Branded —
+                    # confirmed live: a site with strong brand search left
+                    # Non-Branded with only ~4 of the top 20 queries, since
+                    # the split happens AFTER this pull, not before it.
+                    # 150 gives both buckets enough of a pool to still hit
+                    # each slide's own 14-row cap.
+                    gsc_service.get_search_analytics, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=150
+                )
+                jobs["page_clicks"] = pool.submit(
+                    gsc_service.get_page_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
+                )
+                # (page, query) combined dimension (2026-09-20 spec) —
+                # Search Opportunities - Pages needs the actual query
+                # driving each page's visibility, not a URL-slug guess.
+                jobs["page_query_clicks"] = pool.submit(
+                    gsc_service.get_page_query_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=5000
+                )
+                jobs["search_by_country"] = pool.submit(
+                    gsc_service.get_search_analytics_by_country, creds, client.gsc_site_url, gsc_start, gsc_end
+                )
+            done, _not_done = wait(list(jobs.values()), timeout=analytics_deadline)
+            for key, future in jobs.items():
+                if future not in done:
+                    logger.error(
+                        "Analytics job '%s' timed out (>%.0fs) for client %s", key, analytics_deadline, client_id
                     )
-                    jobs["top_pages"] = pool.submit(
-                        ga4_service.get_top_pages, creds, client.ga4_property_id, ga4_start, ga4_end, limit=15
-                    )
-                    jobs["traffic_sources"] = pool.submit(
-                        ga4_service.get_traffic_sources, creds, client.ga4_property_id, ga4_start, ga4_end
-                    )
-                    jobs["traffic_channel_breakdown"] = pool.submit(
-                        ga4_service.get_traffic_channel_breakdown, creds, client.ga4_property_id, channel_breakdown_start, ga4_end
-                    )
-                    jobs["page_performance"] = pool.submit(
-                        ga4_service.get_page_performance, creds, client.ga4_property_id, ga4_start, ga4_end
-                    )
-                if client.gsc_site_url:
-                    jobs["search_queries"] = pool.submit(
-                        # 20 was too thin once split into Branded/Non-Branded —
-                        # confirmed live: a site with strong brand search left
-                        # Non-Branded with only ~4 of the top 20 queries, since
-                        # the split happens AFTER this pull, not before it.
-                        # 150 gives both buckets enough of a pool to still hit
-                        # each slide's own 14-row cap.
-                        gsc_service.get_search_analytics, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=150
-                    )
-                    jobs["page_clicks"] = pool.submit(
-                        gsc_service.get_page_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=1000
-                    )
-                    # (page, query) combined dimension (2026-09-20 spec) —
-                    # Search Opportunities - Pages needs the actual query
-                    # driving each page's visibility, not a URL-slug guess.
-                    jobs["page_query_clicks"] = pool.submit(
-                        gsc_service.get_page_query_clicks, creds, client.gsc_site_url, gsc_start, gsc_end, row_limit=5000
-                    )
-                    jobs["search_by_country"] = pool.submit(
-                        gsc_service.get_search_analytics_by_country, creds, client.gsc_site_url, gsc_start, gsc_end
-                    )
-                for key, future in jobs.items():
-                    try:
-                        analytics[key] = future.result()
-                    except HttpError as e:
-                        # Silently swallowed before — a wrong GA4 property
-                        # ID / malformed GSC site_url (needs to match Search
-                        # Console's own format exactly, e.g.
-                        # "sc-domain:example.com" or "https://example.com/")
-                        # produced a 400/403 here with zero trace anywhere,
-                        # so "Traffic & Search Performance" just silently
-                        # rendered empty with no way to tell why. Analytics
-                        # stays optional (report still generates), but now
-                        # at least logged so the cause is diagnosable.
-                        logger.warning("Analytics job '%s' failed for client %s: %s", key, client_id, e)
-                    except RefreshError:
-                        # Google's token refresh is lazy — it only runs on
-                        # the first API call that actually needs it, which
-                        # is exactly these futures, not the earlier
-                        # _load_credentials() call. A revoked/expired
-                        # refresh token previously crashed this whole
-                        # report-generation job here, uncaught — confirmed
-                        # live as the actual cause of a report stuck
-                        # un-downloadable with a Google account that needs
-                        # reconnecting. Analytics is optional; skip just
-                        # this section like the HttpError case above.
-                        logger.warning("Google token invalid/expired for client %s — skipping %s", client_id, key)
+                    continue
+                try:
+                    analytics[key] = future.result()
+                except HttpError as e:
+                    # Silently swallowed before — a wrong GA4 property
+                    # ID / malformed GSC site_url (needs to match Search
+                    # Console's own format exactly, e.g.
+                    # "sc-domain:example.com" or "https://example.com/")
+                    # produced a 400/403 here with zero trace anywhere,
+                    # so "Traffic & Search Performance" just silently
+                    # rendered empty with no way to tell why. Analytics
+                    # stays optional (report still generates), but now
+                    # at least logged so the cause is diagnosable.
+                    logger.warning("Analytics job '%s' failed for client %s: %s", key, client_id, e)
+                except RefreshError:
+                    # Google's token refresh is lazy — it only runs on
+                    # the first API call that actually needs it, which
+                    # is exactly these futures, not the earlier
+                    # _load_credentials() call. A revoked/expired
+                    # refresh token previously crashed this whole
+                    # report-generation job here, uncaught — confirmed
+                    # live as the actual cause of a report stuck
+                    # un-downloadable with a Google account that needs
+                    # reconnecting. Analytics is optional; skip just
+                    # this section like the HttpError case above.
+                    logger.warning("Google token invalid/expired for client %s — skipping %s", client_id, key)
+            pool.shutdown(wait=False)
 
             if client.ga4_property_id:
                 date_range["ga4_start"], date_range["ga4_end"] = ga4_start, ga4_end
