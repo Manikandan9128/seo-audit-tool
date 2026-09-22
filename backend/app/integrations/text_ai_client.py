@@ -274,7 +274,7 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
 # a stale preference into an unrelated later request.
 _provider_preference = threading.local()
 
-_VALID_PROVIDERS = {"groq", "gemini", "claude"}
+_VALID_PROVIDERS = {"groq", "gemini", "claude", "browser_use"}
 
 
 def set_preferred_provider(name: str | None) -> None:
@@ -379,9 +379,62 @@ def _attempt_claude(prompt: str, max_tokens: int, errors: list[str]) -> str | No
     return None
 
 
+BROWSER_USE_API_URL = "https://api.browser-use.com/api/v4/runs"
+BROWSER_USE_MODEL = "gpt-5.6-luna"
+BROWSER_USE_TIMEOUT_SECONDS = 120
+BROWSER_USE_POLL_INTERVAL_SECONDS = 3
+
+
+def _try_browser_use(prompt: str) -> str:
+    """Runs the prompt as a Browser Use Cloud agent run (no startUrl — a
+    plain reasoning task, not browsing a specific site) and polls until it
+    finishes. Much slower and pricier than a chat completion (a real
+    billed agent run, not a token-based call) — not in
+    _DEFAULT_PROVIDER_ORDER, only ever tried when explicitly preferred."""
+    headers = {"X-Browser-Use-API-Key": settings.browser_use_api_key}
+    response = httpx.post(
+        BROWSER_USE_API_URL,
+        headers=headers,
+        json={"task": prompt, "model": BROWSER_USE_MODEL},
+        timeout=30,
+    )
+    response.raise_for_status()
+    run_id = response.json()["id"]
+
+    deadline = time.monotonic() + BROWSER_USE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(BROWSER_USE_POLL_INTERVAL_SECONDS)
+        status_response = httpx.get(f"{BROWSER_USE_API_URL}/{run_id}", headers=headers, timeout=30)
+        status_response.raise_for_status()
+        data = status_response.json()
+        status = data.get("status")
+        if status == "completed":
+            return (data.get("result") or "").strip()
+        if status in ("failed", "cancelled"):
+            raise RuntimeError(f"Browser Use run {status}: {data.get('error') or 'no error detail'}")
+    raise TimeoutError(f"Browser Use run did not finish within {BROWSER_USE_TIMEOUT_SECONDS}s")
+
+
+def _attempt_browser_use(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.browser_use_api_key:
+        return None
+    try:
+        text = _try_browser_use(prompt)
+        if text:
+            return text
+        errors.append("Browser Use returned an empty response")
+    except Exception as e:
+        errors.append(f"Browser Use request failed: {str(e)[:300]}")
+    return None
+
+
 _PROVIDER_ATTEMPTS = {
     "groq": _attempt_groq, "gemini": _attempt_gemini, "claude": _attempt_claude,
+    "browser_use": _attempt_browser_use,
 }
+# browser_use deliberately excluded from the default order — real billed
+# agent run, seconds-to-minutes latency, not a fit to try on every report
+# by default. Only reached via set_preferred_provider("browser_use").
 _DEFAULT_PROVIDER_ORDER = ["groq", "gemini", "claude"]
 
 
@@ -416,8 +469,8 @@ def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
     is configured at all; yields nothing if every configured provider's
     raw call itself failed or returned empty (same as generate_text()
     raising NoAIProviderConfigured with `errors` joined)."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — add one in Settings")
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key):
+        raise NoAIProviderConfigured("No Groq, Gemini, Claude, or Browser Use API key configured — add one in Settings")
     for provider in _provider_order():
         text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
         if text:
@@ -435,8 +488,8 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
     includes each provider's error). max_tokens only affects the
     Groq/Claude paths — Gemini has no equivalent cap exposed here and just
     returns whatever it generates."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — add one in Settings")
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key):
+        raise NoAIProviderConfigured("No Groq, Gemini, Claude, or Browser Use API key configured — add one in Settings")
 
     preferred = getattr(_provider_preference, "value", None)
     order = _DEFAULT_PROVIDER_ORDER

@@ -2514,17 +2514,16 @@ def start_generate_report_job(
 ):
     """Kicks off a background PPTX build and returns a job id to poll —
     avoids blocking on a single long request that could outlast the hosting
-    gateway's timeout. preferred_provider ('groq'/'gemini'/'claude', or
-    None for the default Groq-first order) tries that AI provider first
-    for every AI call this job makes, still falling back to the others on
-    failure. 'browser_use' is also accepted here for the Settings
-    dropdown's sake, but Browser Use Cloud isn't a text-generation
-    provider (nothing in generate_text()'s fallback chain calls it) — it's
-    treated as no preference, same as omitting the field."""
+    gateway's timeout. preferred_provider ('groq'/'gemini'/'claude'/
+    'browser_use', or None for the default Groq-first order) tries that AI
+    provider first for every AI call this job makes, still falling back to
+    the others (Groq, Gemini, Claude — never Browser Use, see
+    _DEFAULT_PROVIDER_ORDER) on failure. 'browser_use' runs a real Browser
+    Use Cloud agent run per AI call this job makes — much slower per call
+    (a billed agent run, not a token completion) than the other three."""
     _get_owned_client(client_id, db, current_user)
     if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use"):
         raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', or omitted")
-    effective_preferred_provider = None if preferred_provider == "browser_use" else preferred_provider
     job = ReportGenerationJob(client_id=client_id, status="pending")
     db.add(job)
     db.commit()
@@ -2533,7 +2532,7 @@ def start_generate_report_job(
         target=_run_generate_report_job,
         args=(
             job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
-            company_overview_override, competitor_analysis_override, ux_notes, effective_preferred_provider,
+            company_overview_override, competitor_analysis_override, ux_notes, preferred_provider,
         ),
         daemon=True,
     ).start()
