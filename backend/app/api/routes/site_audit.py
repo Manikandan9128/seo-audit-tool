@@ -2517,10 +2517,14 @@ def start_generate_report_job(
     gateway's timeout. preferred_provider ('groq'/'gemini'/'claude', or
     None for the default Groq-first order) tries that AI provider first
     for every AI call this job makes, still falling back to the others on
-    failure."""
+    failure. 'browser_use' is also accepted here for the Settings
+    dropdown's sake, but Browser Use Cloud isn't a text-generation
+    provider (nothing in generate_text()'s fallback chain calls it) — it's
+    treated as no preference, same as omitting the field."""
     _get_owned_client(client_id, db, current_user)
-    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude"):
-        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', or omitted")
+    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use"):
+        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', or omitted")
+    effective_preferred_provider = None if preferred_provider == "browser_use" else preferred_provider
     job = ReportGenerationJob(client_id=client_id, status="pending")
     db.add(job)
     db.commit()
@@ -2529,7 +2533,7 @@ def start_generate_report_job(
         target=_run_generate_report_job,
         args=(
             job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
-            company_overview_override, competitor_analysis_override, ux_notes, preferred_provider,
+            company_overview_override, competitor_analysis_override, ux_notes, effective_preferred_provider,
         ),
         daemon=True,
     ).start()

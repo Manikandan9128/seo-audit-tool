@@ -182,6 +182,7 @@ export default function ClientDetailPage() {
       if (res.data.groq_api_key_set) opts.push({ value: "groq", label: "Groq" });
       if (res.data.gemini_api_key_set) opts.push({ value: "gemini", label: "Gemini" });
       if (res.data.claude_api_key_set) opts.push({ value: "claude", label: "Claude" });
+      if (res.data.browser_use_api_key_set) opts.push({ value: "browser_use", label: "Browser Use" });
       setAvailableProviders(opts);
     }).catch(() => {});
   }, []);
