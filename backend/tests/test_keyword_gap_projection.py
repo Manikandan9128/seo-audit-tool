@@ -1,6 +1,6 @@
 from pptx import Presentation
 
-from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _audit_slide_geometry, _ctr_decay_pct, add_keyword_gap_slide
+from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _audit_slide_geometry, _ctr_decay_pct, add_keyword_gap_slides
 
 
 def _prs():
@@ -54,8 +54,9 @@ def test_not_ranking_is_exact_string_no_dash_no_blank_url():
     analysis = {"keyword_gap_rows": [
         _gap_row("kw1", 1000, 40, your_position=None, gap_category="Untapped"),
     ]}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    text = _slide_text(slide)
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    assert len(slides) == 1  # only 1 Untapped keyword — stays inline on the summary, no dedicated slide
+    text = _slide_text(slides[0])
     assert "Not ranking" in text
     assert "Not ranking —" not in text
     assert "Not ranking -" not in text
@@ -69,9 +70,50 @@ def test_position_and_url_shown_together_when_ranking():
             gap_category="Missing",
         ),
     ]}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    text = _slide_text(slide)
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    text = _slide_text(slides[0])
     assert "#7 · /payroll-compliance" in text
+
+
+def test_competitor_ranking_cell_is_a_real_hyperlink_to_source_url():
+    # 2026-09-22 spec rule 7: never invented/reconstructed — the exact URL
+    # already present on the row.
+    analysis = {"keyword_gap_rows": [
+        _gap_row(
+            "kw1", 1000, 40,
+            competitors=[{"competitor": "rival.com", "position": 7, "ranking_url": "https://rival.com/payroll-compliance"}],
+            gap_category="Missing",
+        ),
+    ]}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    table = next(s for s in slides[0].shapes if s.has_table).table
+    cell = table.cell(1, 5)  # Status, Keyword, Volume, KD, My Position, <competitor col>
+    run = cell.text_frame.paragraphs[0].runs[0]
+    assert run.hyperlink.address == "https://rival.com/payroll-compliance"
+
+
+def test_ranked_cell_with_no_recorded_url_has_no_hyperlink():
+    # Ranked (has a position) but the source data carries no URL for it —
+    # must show the real position text, never invent a link target.
+    analysis = {"keyword_gap_rows": [
+        _gap_row("kw1", 1000, 40, competitors=[{"competitor": "rival.com", "position": 7, "ranking_url": None}], gap_category="Missing"),
+    ]}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    table = next(s for s in slides[0].shapes if s.has_table).table
+    cell = table.cell(1, 5)
+    assert cell.text_frame.text == "#7"
+    run = cell.text_frame.paragraphs[0].runs[0]
+    assert run.hyperlink.address is None
+
+
+def test_not_ranking_cell_has_no_hyperlink():
+    analysis = {"keyword_gap_rows": [
+        _gap_row("kw1", 1000, 40, competitors=[], gap_category="Missing"),
+    ]}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    table = next(s for s in slides[0].shapes if s.has_table).table
+    cell = table.cell(1, 4)  # My Position column — no competitor tracked at all here
+    assert cell.text_frame.text == "Not ranking"
 
 
 def test_same_competitor_column_mapping_across_rows():
@@ -90,8 +132,8 @@ def test_same_competitor_column_mapping_across_rows():
             gap_category="Missing",
         ),
     ]}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    table = next(s for s in slide.shapes if s.has_table).table
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    table = next(s for s in slides[0].shapes if s.has_table).table
     headers = [c.text_frame.text for c in table.rows[0].cells]
     rival_col = headers.index("rival.com")
     leader_col = headers.index("leader.com")
@@ -107,16 +149,14 @@ def test_kd_above_max_is_excluded():
     analysis = {"keyword_gap_rows": [
         _gap_row("too hard", 1000, 95, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
     ]}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    assert slide is None
+    assert add_keyword_gap_slides(_prs(), analysis) == []
 
 
 def test_kd_unavailable_flagged_separately():
     analysis = {"keyword_gap_rows": [
         _gap_row("no kd data", 1000, None, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
     ]}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    assert slide is None
+    assert add_keyword_gap_slides(_prs(), analysis) == []
 
 
 def test_ambiguous_relevance_excluded_from_table_with_review_note():
@@ -126,61 +166,12 @@ def test_ambiguous_relevance_excluded_from_table_with_review_note():
     ]
     rows[1]["relevance"] = "potentially_relevant"
     analysis = {"keyword_gap_rows": rows}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    text = _slide_text(slide)
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    text = _slide_text(slides[0])
     assert "clearly relevant" in text
     assert "unsure keyword" not in text.split("KEY INSIGHTS")[0]
     assert "manual relevance review" in text
     assert "unsure keyword" in text
-
-
-def test_all_three_categories_shown_even_when_missing_dominates_volume():
-    # Regression (2026-09-19 live report): a client ranking-weak against
-    # its competitors can have Missing keywords fill every high-volume
-    # slot, silently pushing every real Untapped/Shared example off the
-    # slide even though the legend advertises all three. 20 high-volume
-    # Missing rows plus one lower-volume row each of Untapped/Shared —
-    # both must still appear, not just Missing.
-    rows = [
-        _gap_row(f"missing {i}", 10000 - i, 30, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing")
-        for i in range(20)
-    ]
-    rows.append(_gap_row("untapped kw", 50, 20, competitors=[], gap_category="Untapped"))
-    rows.append(_gap_row("shared kw", 40, 20, your_position=6, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Shared"))
-    analysis = {"keyword_gap_rows": rows}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    text = _slide_text(slide)
-    assert "untapped kw" in text.split("KEY INSIGHTS")[0]
-    assert "shared kw" in text.split("KEY INSIGHTS")[0]
-
-
-def test_all_categories_worst_case_fits_slide_no_overlap():
-    # Standing no-overlap/fit-to-page rule — worst case for the new
-    # per-category row selection: the max row count (4 per category x 3),
-    # 3 competitor columns, long wrapping URLs, and the keyword-sheet-link
-    # button all present at once. Caught a real overflow during development
-    # at 5 rows/category (table ran 0.22in past the slide edge) — 4 is the
-    # safe cap.
-    competitors = [
-        {"competitor": "rivalonecompany.com", "position": 3, "ranking_url": "https://rivalonecompany.com/very-long-descriptive-category-slug/product-page"},
-        {"competitor": "competitortwo.com", "position": 5, "ranking_url": "https://competitortwo.com/another-long-slug/product"},
-        {"competitor": "thirdrivalbrand.com", "position": 8, "ranking_url": "https://thirdrivalbrand.com/yet-another-long-path/here"},
-    ]
-    rows = []
-    for i in range(4):
-        rows.append(_gap_row(f"missing keyword number {i} long tail phrase", 5000 - i, 30, competitors=competitors, gap_category="Missing"))
-    for i in range(4):
-        rows.append(_gap_row(f"untapped keyword number {i} long tail phrase", 4000 - i, 30, gap_category="Untapped"))
-    for i in range(4):
-        rows.append(_gap_row(
-            f"shared keyword number {i} long tail phrase", 3000 - i, 30,
-            your_position=6, your_url="https://example.com/very-long-descriptive-category-slug/product-page",
-            competitors=competitors, gap_category="Shared",
-        ))
-    analysis = {"keyword_gap_rows": rows, "keyword_gap_off_topic_count": 3}
-    prs = _prs()
-    add_keyword_gap_slide(prs, analysis, client_name="Acme Trucks", keyword_gap_sheet_link="https://sheets.google.com/x")
-    assert _audit_slide_geometry(prs) == []
 
 
 def test_zero_or_missing_volume_rows_excluded():
@@ -189,15 +180,15 @@ def test_zero_or_missing_volume_rows_excluded():
     analysis = {"keyword_gap_rows": [
         _gap_row("zero volume kw", 0, 30, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
     ]}
-    assert add_keyword_gap_slide(_prs(), analysis) is None
+    assert add_keyword_gap_slides(_prs(), analysis) == []
 
 
 def test_status_column_header_is_labeled():
     analysis = {"keyword_gap_rows": [
         _gap_row("kw1", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
     ]}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    table = next(s for s in slide.shapes if s.has_table).table
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    table = next(s for s in slides[0].shapes if s.has_table).table
     assert table.cell(0, 0).text_frame.text == "Status"
 
 
@@ -205,8 +196,8 @@ def test_key_insights_include_actionable_implication_for_missing_keywords():
     analysis = {"keyword_gap_rows": [
         _gap_row("missing kw", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
     ]}
-    slide = add_keyword_gap_slide(_prs(), analysis)
-    text = _slide_text(slide)
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    text = _slide_text(slides[0])
     assert "Prioritize validation of high-volume Missing keywords" in text
     # Rule 6: never an unsupported strategic claim.
     for banned in ("will generate", "will increase conversions", "best opportunity", "create a page immediately"):
@@ -220,8 +211,8 @@ def test_gap_scale_insight_adds_interpretation_not_just_counts():
         ],
         "keyword_gap_off_topic_count": 2,
     }
-    slide = add_keyword_gap_slide(_prs(), analysis, client_name="Acme")
-    text = _slide_text(slide)
+    slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
+    text = _slide_text(slides[0])
     assert "indicating the scale of the competitive keyword gap" in text
 
 
@@ -234,9 +225,158 @@ def test_off_topic_count_and_split_stated_in_insights():
         ],
         "keyword_gap_off_topic_count": 4,
     }
-    slide = add_keyword_gap_slide(_prs(), analysis, client_name="Acme")
-    text = _slide_text(slide)
+    slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
+    text = _slide_text(slides[0])
     assert "4 off-topic excluded" in text
     assert "unrelated to Acme's business" in text
     assert "3 relevant keyword" in text
     assert "1 Shared / 1 Missing / 1 Untapped" in text
+
+
+# ---- 2026-09-22 spec: dedicated per-status slide thresholds ----
+
+def _make_rows(category, count, start_volume=5000):
+    return [
+        _gap_row(f"{category.lower()} kw {i}", start_volume - i, 30, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category=category)
+        for i in range(count)
+    ]
+
+
+def test_zero_keywords_in_a_status_creates_no_slide_and_no_row():
+    # Spec example 1: Missing=440(ish, using a smaller stand-in count that
+    # still crosses the 6+ threshold), Shared=1, Untapped=0.
+    analysis = {"keyword_gap_rows": _make_rows("Missing", 10) + _make_rows("Shared", 1)}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    titles = [next(sh.text_frame.text for sh in s.shapes if sh.has_text_frame and sh.text_frame.text) for s in slides]
+    assert "Competitor Keyword Gap Analysis" in titles[0]
+    assert any("Competitor Keyword Gap — Missing" in t for t in titles)
+    assert not any("Untapped" in t for t in titles)  # 0 Untapped keywords — no slide at all
+    # Shared (1 keyword) must stay inline on the summary, never get its own slide.
+    assert not any(t == "Competitor Keyword Gap — Shared" for t in titles)
+    summary_text = _slide_text(slides[0])
+    assert "shared kw 0" in summary_text
+
+
+def test_one_to_five_keywords_never_gets_a_dedicated_slide():
+    analysis = {"keyword_gap_rows": _make_rows("Missing", 5)}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    assert len(slides) == 1  # summary only — 5 is still inline range
+    text = _slide_text(slides[0])
+    for i in range(5):
+        assert f"missing kw {i}" in text.split("KEY INSIGHTS")[0]
+
+
+def test_six_keywords_gets_its_own_dedicated_slide_not_in_summary_table():
+    analysis = {"keyword_gap_rows": _make_rows("Missing", 6)}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    assert len(slides) == 2
+    summary_table_text = "\n".join(
+        c.text_frame.text for sh in slides[0].shapes if sh.has_table for row in sh.table.rows for c in row.cells
+    )
+    assert "missing kw" not in summary_table_text  # moved entirely to the dedicated slide
+    dedicated_title = next(sh.text_frame.text for sh in slides[1].shapes if sh.has_text_frame and sh.text_frame.text)
+    assert dedicated_title == "Competitor Keyword Gap — Missing"
+    dedicated_text = _slide_text(slides[1])
+    assert "missing kw 0" in dedicated_text
+
+
+def test_spec_example_two_20_missing_12_shared_3_untapped():
+    analysis = {
+        "keyword_gap_rows": _make_rows("Missing", 20, start_volume=9000)
+        + _make_rows("Shared", 12, start_volume=5000)
+        + _make_rows("Untapped", 3, start_volume=1000)
+    }
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    titles = [next(sh.text_frame.text for sh in s.shapes if sh.has_text_frame and sh.text_frame.text) for s in slides]
+    assert titles == [
+        "Competitor Keyword Gap Analysis",
+        "Competitor Keyword Gap — Missing",
+        "Competitor Keyword Gap — Shared",
+    ]
+    # Untapped (3, inline) shows on the summary; Missing/Shared (both
+    # dedicated) do not appear as table rows there.
+    summary_table_text = "\n".join(
+        c.text_frame.text for sh in slides[0].shapes if sh.has_table for row in sh.table.rows for c in row.cells
+    )
+    assert "untapped kw 0" in summary_table_text
+    assert "missing kw" not in summary_table_text
+    assert "shared kw" not in summary_table_text
+
+
+def test_dedicated_slide_never_contains_a_row_from_another_status():
+    analysis = {"keyword_gap_rows": _make_rows("Missing", 8) + _make_rows("Shared", 8)}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    missing_slide = next(s for s in slides if any(
+        sh.has_text_frame and sh.text_frame.text == "Competitor Keyword Gap — Missing" for sh in s.shapes
+    ))
+    missing_table_text = "\n".join(
+        c.text_frame.text for sh in missing_slide.shapes if sh.has_table for row in sh.table.rows for c in row.cells
+    )
+    assert "shared kw" not in missing_table_text
+
+
+def test_dedicated_slide_insights_only_reference_its_own_status():
+    # 2026-09-22 spec rule 9.
+    analysis = {"keyword_gap_rows": _make_rows("Missing", 8) + _make_rows("Untapped", 8)}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    missing_slide = next(s for s in slides if any(
+        sh.has_text_frame and sh.text_frame.text == "Competitor Keyword Gap — Missing" for sh in s.shapes
+    ))
+    text = _slide_text(missing_slide)
+    assert "untapped kw" not in text
+    assert "Highest-volume Missing keyword" in text
+
+
+def test_dedicated_slide_discloses_truncation_beyond_row_cap():
+    analysis = {"keyword_gap_rows": _make_rows("Missing", 15)}
+    slides = add_keyword_gap_slides(_prs(), analysis, keyword_gap_sheet_link="https://sheets.google.com/x")
+    missing_slide = slides[1]
+    text = _slide_text(missing_slide)
+    assert "Showing top" in text
+    assert "15 Missing keyword" in text
+    assert "Open full keyword list" in text
+
+
+def test_all_categories_worst_case_fits_slide_no_overlap():
+    # Standing no-overlap/fit-to-page rule — worst case for the summary
+    # slide's inline-row rendering: 3 competitor columns, long wrapping
+    # URLs, and the keyword-sheet-link button all present at once, with
+    # each status still in the 1-5 inline range (no dedicated slides).
+    competitors = [
+        {"competitor": "rivalonecompany.com", "position": 3, "ranking_url": "https://rivalonecompany.com/very-long-descriptive-category-slug/product-page"},
+        {"competitor": "competitortwo.com", "position": 5, "ranking_url": "https://competitortwo.com/another-long-slug/product"},
+        {"competitor": "thirdrivalbrand.com", "position": 8, "ranking_url": "https://thirdrivalbrand.com/yet-another-long-path/here"},
+    ]
+    rows = []
+    for i in range(5):
+        rows.append(_gap_row(f"missing keyword number {i} long tail phrase", 5000 - i, 30, competitors=competitors, gap_category="Missing"))
+    for i in range(5):
+        rows.append(_gap_row(f"untapped keyword number {i} long tail phrase", 4000 - i, 30, gap_category="Untapped"))
+    for i in range(5):
+        rows.append(_gap_row(
+            f"shared keyword number {i} long tail phrase", 3000 - i, 30,
+            your_position=6, your_url="https://example.com/very-long-descriptive-category-slug/product-page",
+            competitors=competitors, gap_category="Shared",
+        ))
+    analysis = {"keyword_gap_rows": rows, "keyword_gap_off_topic_count": 3}
+    prs = _prs()
+    add_keyword_gap_slides(prs, analysis, client_name="Acme Trucks", keyword_gap_sheet_link="https://sheets.google.com/x")
+    assert _audit_slide_geometry(prs) == []
+
+
+def test_dedicated_slide_full_row_cap_fits_no_overlap():
+    # Worst case for a single dedicated slide: the full _GAP_DEDICATED_ROW_CAP
+    # (9) rows, 3 competitor columns, long wrapping URLs, sheet-link button.
+    competitors = [
+        {"competitor": "rivalonecompany.com", "position": 3, "ranking_url": "https://rivalonecompany.com/very-long-descriptive-category-slug/product-page"},
+        {"competitor": "competitortwo.com", "position": 5, "ranking_url": "https://competitortwo.com/another-long-slug/product"},
+        {"competitor": "thirdrivalbrand.com", "position": 8, "ranking_url": "https://thirdrivalbrand.com/yet-another-long-path/here"},
+    ]
+    rows = [
+        _gap_row(f"missing keyword number {i} long tail phrase", 5000 - i, 30, competitors=competitors, gap_category="Missing")
+        for i in range(12)
+    ]
+    analysis = {"keyword_gap_rows": rows, "keyword_gap_off_topic_count": 3}
+    prs = _prs()
+    add_keyword_gap_slides(prs, analysis, client_name="Acme Trucks", keyword_gap_sheet_link="https://sheets.google.com/x")
+    assert _audit_slide_geometry(prs) == []

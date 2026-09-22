@@ -4763,6 +4763,177 @@ def _position_url_cell(position, url: str | None) -> str:
     return f"#{int(position)} · {path}" if path and path != "/" else f"#{int(position)}"
 
 
+# Gap Category dropped as a text column (2026-09-18 redesign) — with up to
+# 3 competitor columns already competing for width, spelling out
+# "Missing"/"Untapped"/"Shared" in every row cost a full column for
+# information a color chip conveys at a glance. The chip column keeps only
+# a one-letter code (still readable if color rendering is ever lost, e.g.
+# printed greyscale); a legend under the header spells out what each color
+# means once, not per row. Module-level (2026-09-22) since both the
+# summary slide and every per-status dedicated slide draw the same legend
+# and chip colors now.
+_GAP_CHIP = {"Missing": ("M", BAD), "Untapped": ("U", GOOD), "Shared": ("S", TEXT_MUTED)}
+# 2026-09-22 spec: a status with 6+ relevant keywords gets its OWN
+# dedicated slide ("Competitor Keyword Gap — Missing/Shared/Untapped"),
+# never merged with another status. 1-5 stays inline on the summary slide
+# only; 0 gets no slide/table row for that status at all.
+_GAP_DEDICATED_THRESHOLD = 6
+# Same "top N by volume, rest via the full-list Sheet link" escape hatch
+# every other capped table in this file uses — a dedicated slide can still
+# have hundreds of keywords (e.g. 440 Missing), so this stays a cap, not a
+# promise every row is shown.
+_GAP_DEDICATED_ROW_CAP = 9
+_GAP_STATUS_SLIDE_TITLE = {
+    "Missing": "Competitor Keyword Gap — Missing",
+    "Shared": "Competitor Keyword Gap — Shared",
+    "Untapped": "Competitor Keyword Gap — Untapped",
+}
+
+
+def _gap_row_competitors_text(r: dict) -> str:
+    cps = r.get("competitor_positions") or []
+    return ", ".join(f"{cp.get('competitor')} (#{cp.get('position')})" for cp in cps) or "none tracked"
+
+
+def _draw_gap_legend(slide) -> None:
+    legend_x = Inches(0.6)
+    for label, (letter, color) in _GAP_CHIP.items():
+        sq = slide.shapes.add_shape(1, legend_x, Inches(0.98), Inches(0.13), Inches(0.13))
+        _fill(sq, color)
+        sq.shadow.inherit = False
+        _textbox(slide, legend_x + Inches(0.18), Inches(0.935), Inches(1.1), Inches(0.2), f"{letter} — {label}", size=9, color=TEXT_MUTED)
+        legend_x += Inches(1.25)
+
+
+def _add_gap_sheet_link_button(slide, link: str) -> None:
+    _textbox(slide, Inches(0.6), SLIDE_H - Inches(1.00), Inches(3.0), Inches(0.20), "KEYWORD LIST", size=9.5, bold=True, color=TEXT_MUTED)
+    btn = slide.shapes.add_shape(5, Inches(0.6), SLIDE_H - Inches(0.76), Inches(4.3), Inches(0.32))
+    try:
+        btn.adjustments[0] = 0.35
+    except (IndexError, AttributeError):
+        pass
+    btn.fill.solid()
+    btn.fill.fore_color.rgb = _accent()
+    btn.line.fill.background()
+    btn.shadow.inherit = False
+    tf = btn.text_frame
+    tf.word_wrap = False
+    tf.margin_left = Pt(10)
+    tf.margin_right = Pt(10)
+    tf.margin_top = Pt(2)
+    tf.margin_bottom = Pt(2)
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    run = p.add_run()
+    run.text = "Open full keyword list →"
+    run.font.size = Pt(11.5)
+    run.font.bold = True
+    run.font.color.rgb = WHITE
+    btn.click_action.hyperlink.address = link
+
+
+def _gap_table_row(r: dict, competitor_columns: list[str]) -> tuple[tuple, list]:
+    """One table row's cell values, plus the parallel list of real
+    (untruncated) competitor ranking URLs for hyperlinking — index-aligned
+    with competitor_columns, None where that competitor doesn't rank on
+    this keyword or has no URL on record. Never invents/reconstructs a
+    URL (2026-09-22 spec rule 7) — only ever what's already on the row."""
+    by_domain = {cp.get("competitor"): cp for cp in (r.get("competitor_positions") or [])}
+    category = r.get("gap_category") or "Missing"
+    row = [
+        _GAP_CHIP[category][0], r.get("keyword"),
+        f"{int(_num(r.get('search_volume'))):,}", f"{int(_num(r.get('keyword_difficulty')))}",
+        _position_url_cell(r.get("your_position"), r.get("your_url")),
+    ]
+    urls: list = []
+    for domain in competitor_columns:
+        cp = by_domain.get(domain)
+        row.append(_position_url_cell(cp.get("position"), cp.get("ranking_url")) if cp else "Not ranking")
+        urls.append(cp.get("ranking_url") if cp else None)
+    return tuple(row), urls
+
+
+def _render_gap_table(slide, top, rows: list[dict], competitor_columns: list[str], headers: list[str], col_widths: list[float]):
+    """Draws the table, colors each row's Status chip, and hyperlinks every
+    competitor ranking cell to its real source URL (2026-09-22 spec rule
+    7) — the visible text stays the short "#N · /path" display, the link
+    target is always the full URL from the source data. Returns
+    (bottom_y, table)."""
+    table_rows, row_categories, row_urls = [], [], []
+    for r in rows:
+        row, urls = _gap_table_row(r, competitor_columns)
+        table_rows.append(row)
+        row_categories.append(r.get("gap_category") or "Missing")
+        row_urls.append(urls)
+
+    wrap_cols = set(range(1, len(headers)))  # keyword + every Position/URL cell can wrap, not the chip column
+    # Smaller than _draw_table's 0.4in default (2026-09-22) — the summary
+    # slide can now carry up to 15 inline rows (5 keywords x 3 statuses,
+    # each still under the dedicated-slide threshold) instead of the old
+    # single-table's 12-row max, and a dedicated slide's own row cap is
+    # taller too; empirically confirmed via _audit_slide_geometry that
+    # 0.4in overflows the slide by ~0.22in at 15 wrapped rows, 0.32 does not.
+    bottom, table = _draw_table(
+        slide, headers, table_rows, top, col_widths=col_widths, wrap_cols=wrap_cols,
+        row_cap=len(table_rows), row_height=0.32, return_table=True,
+    )
+    first_competitor_col = len(headers) - len(competitor_columns)
+    for i in range(1, len(table.rows)):
+        _, color = _GAP_CHIP[row_categories[i - 1]]
+        cell = table.cell(i, 0)
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = color
+        para = cell.text_frame.paragraphs[0]
+        para.alignment = PP_ALIGN.CENTER
+        para.font.color.rgb = WHITE
+        para.font.bold = True
+        for j, url in enumerate(row_urls[i - 1]):
+            if not url:
+                continue
+            runs = table.cell(i, first_competitor_col + j).text_frame.paragraphs[0].runs
+            if not runs:
+                continue
+            runs[0].hyperlink.address = url
+            runs[0].font.color.rgb = _accent()
+            runs[0].font.underline = True
+    return bottom, table
+
+
+def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int, off_topic_count: int, client_name: str | None) -> list[str]:
+    """Key Insights for a dedicated status slide — built ONLY from that
+    status's own keywords and data (2026-09-22 spec rule 9), never
+    referencing another status."""
+    topic_ref = f"{client_name.strip()}'s business" if client_name and client_name.strip() else "the client's business"
+    total = len(status_rows)
+    insights = [
+        f"{total:,} {status} keyword(s) identified in the relevant, KD-filtered set "
+        f"({off_topic_count} off-topic keyword(s) excluded as unrelated to {topic_ref})."
+    ]
+    top = status_rows[0]
+    if status == "Missing":
+        insights.append(
+            f"Highest-volume Missing keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
+            f"ranking competitors: {_gap_row_competitors_text(top)}."
+        )
+        insights.append(
+            "Prioritize validation of high-volume Missing keywords where competitors already have a relevant "
+            "ranking page before treating any of them as a confirmed SEO target."
+        )
+    elif status == "Shared":
+        insights.append(
+            f"Highest-volume Shared keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
+            f"you and {_gap_row_competitors_text(top)} both rank."
+        )
+    elif status == "Untapped":
+        insights.append(
+            f"Highest-volume Untapped keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
+            "no tracked domain ranks for it yet."
+        )
+    if shown_count < total:
+        insights.append(f"Showing top {shown_count:,} of {total:,} {status} keyword(s), ranked by volume.")
+    return insights
+
+
 _KEYWORD_GAP_MAX_COMPETITOR_COLS = 3
 
 
@@ -4816,38 +4987,69 @@ def _prepare_keyword_gap_rows(rows: list[dict], max_kd: float = _KEYWORD_GAP_MAX
     return kd_filtered, ambiguous_rows, kd_unavailable_count, competitor_columns
 
 
-def add_keyword_gap_slide(
+def add_keyword_gap_slides(
     prs: Presentation, competitor_analysis: dict, client_name: str | None = None,
     keyword_gap_sheet_link: str | None = None,
-):
-    """Competitor Keyword Gap Analysis (2026-09-18 spec, replaces the
-    single-best-competitor + CTR-projected-clicks version): every tracked
+) -> list:
+    """Competitor Keyword Gap Analysis (2026-09-18 spec base design, split
+    into a summary + per-status slides 2026-09-22): every tracked
     competitor's position/URL shown side by side with the client's own,
     using the SAME competitor-to-column mapping on every row (never "show
-    whichever competitor ranks best for this particular keyword"). Gap
-    category (Shared/Missing/Untapped) leads the table as its own column,
-    and separately drives the KEY INSIGHTS grouping. Only the top rows by
-    volume that fit the slide are rendered; the full filtered list (same
-    relevance/KD filters,
-    same competitor columns) is linked out via keyword_gap_sheet_link — a
-    "KEYWORD LIST — Open full keyword list →" button, same pattern as
-    add_competitor_table_slide, so nothing is silently truncated."""
+    whichever competitor ranks best for this particular keyword").
+
+    2026-09-22 spec: a status (Missing/Shared/Untapped) with 6+ relevant
+    keywords gets its OWN dedicated slide ("Competitor Keyword Gap —
+    Missing"/"— Shared"/"— Untapped"), never merged with another status on
+    the same slide. A status with 1-5 keywords stays inline on the summary
+    slide only (no dedicated slide of its own); a status with 0 gets no
+    slide and no table row at all. Classification itself (gap_category,
+    computed upstream in semrush_analysis_service.py) is untouched — this
+    only changes how the already-classified rows are laid out across
+    slides. Every competitor ranking cell is hyperlinked to its real
+    source URL (rule 7) on every table this function draws. Returns the
+    list of slides added, summary first (always, if there's any data at
+    all), then dedicated slides in Missing -> Shared -> Untapped order for
+    whichever crossed the threshold."""
     off_topic_count = competitor_analysis.get("keyword_gap_off_topic_count") or 0
     rows = competitor_analysis.get("keyword_gap_rows") or []
     if not rows:
-        return None
+        return []
 
     kd_filtered, ambiguous_rows, kd_unavailable_count, competitor_columns = _prepare_keyword_gap_rows(rows)
     if not kd_filtered:
-        return None
+        return []
 
-    shared_n = sum(1 for r in kd_filtered if r.get("gap_category") == "Shared")
-    missing_n = sum(1 for r in kd_filtered if (r.get("gap_category") or "Missing") == "Missing")
-    untapped_n = sum(1 for r in kd_filtered if r.get("gap_category") == "Untapped")
+    by_category: dict[str, list[dict]] = {"Missing": [], "Shared": [], "Untapped": []}
+    for r in kd_filtered:
+        by_category.setdefault(r.get("gap_category") or "Missing", []).append(r)
+    # kd_filtered already volume-sorted by _prepare_keyword_gap_rows, so
+    # each by_category bucket inherits that same order.
 
-    def _row_competitors_text(r: dict) -> str:
-        cps = r.get("competitor_positions") or []
-        return ", ".join(f"{cp.get('competitor')} (#{cp.get('position')})" for cp in cps) or "none tracked"
+    counts = {cat: len(by_category[cat]) for cat in ("Missing", "Shared", "Untapped")}
+    dedicated_categories = [c for c in ("Missing", "Shared", "Untapped") if counts[c] >= _GAP_DEDICATED_THRESHOLD]
+    inline_categories = [c for c in ("Missing", "Shared", "Untapped") if 1 <= counts[c] < _GAP_DEDICATED_THRESHOLD]
+
+    headers = ["Status", "Keyword", "Volume", "KD", "My Position"] + list(competitor_columns)
+    col_widths = [0.55, 2.15, 0.65, 0.45, 2.0]
+    remaining = 12.1 - sum(col_widths)
+    if competitor_columns:
+        col_widths += [round(remaining / len(competitor_columns), 2)] * len(competitor_columns)
+
+    slides = []
+
+    # ---- Summary slide: overall distribution + whichever statuses have
+    # 1-5 keywords shown inline. A status that got its own dedicated slide
+    # contributes no table rows here, only to the distribution count. ----
+    summary_slide = _blank_slide(prs)
+    _content_header(summary_slide, "Competitor Keyword Gap Analysis")
+    _textbox(summary_slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
+    _draw_gap_legend(summary_slide)
+
+    top_y = Inches(1.32)
+    inline_rows = [r for cat in inline_categories for r in by_category[cat]]
+    if inline_rows:
+        top_y, _table = _render_gap_table(summary_slide, top_y, inline_rows, competitor_columns, headers, col_widths)
+        top_y += Inches(0.15)
 
     insights = []
     # Bug fixed 2026-09-20: this used to embed the client's full multi-
@@ -4863,22 +5065,21 @@ def add_keyword_gap_slide(
     # is the only addition; every number is still the same real count.
     insights.append(
         f"{off_topic_count} off-topic excluded (unrelated to {topic_ref}), {len(kd_filtered)} relevant keyword(s), "
-        f"split {shared_n} Shared / {missing_n} Missing / {untapped_n} Untapped — indicating the scale of the "
-        "competitive keyword gap within this analyzed set."
+        f"split {counts['Shared']} Shared / {counts['Missing']} Missing / {counts['Untapped']} Untapped — "
+        "indicating the scale of the competitive keyword gap within this analyzed set."
     )
-    missing_rows = [r for r in kd_filtered if (r.get("gap_category") or "Missing") == "Missing" and r.get("competitor_positions")]
+    missing_rows = [r for r in by_category["Missing"] if r.get("competitor_positions")]
     if missing_rows:
         top_m = missing_rows[0]
         insights.append(
             f"Highest-volume Missing keyword: \"{top_m['keyword']}\" ({int(_num(top_m.get('search_volume'))):,}/mo) — "
-            f"ranking competitors: {_row_competitors_text(top_m)}."
+            f"ranking competitors: {_gap_row_competitors_text(top_m)}."
         )
-    shared_rows = [r for r in kd_filtered if r.get("gap_category") == "Shared"]
-    if shared_rows:
-        top_s = shared_rows[0]
+    if by_category["Shared"]:
+        top_s = by_category["Shared"][0]
         insights.append(
             f"Highest-volume Shared keyword: \"{top_s['keyword']}\" ({int(_num(top_s.get('search_volume'))):,}/mo) — "
-            f"you and {_row_competitors_text(top_s)} both rank."
+            f"you and {_gap_row_competitors_text(top_s)} both rank."
         )
     # Rule 5's fourth bullet ("Actionable implication") + rule 6 (never an
     # unsupported strategic claim like "will generate X traffic") — only
@@ -4889,9 +5090,8 @@ def add_keyword_gap_slide(
             "Prioritize validation of high-volume Missing keywords where competitors already have a relevant "
             "ranking page before treating any of them as a confirmed SEO target."
         )
-    untapped_rows = [r for r in kd_filtered if r.get("gap_category") == "Untapped"]
-    if untapped_rows:
-        top_u = untapped_rows[0]
+    if by_category["Untapped"]:
+        top_u = by_category["Untapped"][0]
         insights.append(
             f"Highest-volume Untapped keyword: \"{top_u['keyword']}\" ({int(_num(top_u.get('search_volume'))):,}/mo) — "
             "no tracked domain ranks for it yet."
@@ -4901,127 +5101,44 @@ def add_keyword_gap_slide(
         insights.append(f"Needs manual relevance review: {review_examples} — could not confidently judge against the client's business.")
     if kd_unavailable_count:
         insights.append(f"{kd_unavailable_count} keyword(s) excluded — KD_UNAVAILABLE (keyword difficulty missing in the source export).")
-
-    # Gap Category dropped as a text column (2026-09-18 redesign) — with up
-    # to 3 competitor columns already competing for width, spelling out
-    # "Missing"/"Untapped"/"Shared" in every row cost a full column for
-    # information a color chip conveys at a glance. The chip column keeps
-    # only a one-letter code (still readable if color rendering is ever
-    # lost, e.g. printed greyscale); a legend under the header spells out
-    # what each color means once, not per row.
-    _GAP_CHIP = {"Missing": ("M", BAD), "Untapped": ("U", GOOD), "Shared": ("S", TEXT_MUTED)}
-
-    headers = ["Status", "Keyword", "Volume", "KD", "My Position"]
-    headers += [domain for domain in competitor_columns]
-    col_widths = [0.55, 2.15, 0.65, 0.45, 2.0]
-    remaining = 12.1 - sum(col_widths)
-    if competitor_columns:
-        col_widths += [round(remaining / len(competitor_columns), 2)] * len(competitor_columns)
-
-    # Show all three gap categories, not just whichever has the most
-    # high-volume keywords — kd_filtered is volume-sorted across ALL
-    # categories combined, and for a client that's ranking-weak against
-    # its competitors, Missing keywords alone can fill every slot up to
-    # the row cap, silently pushing every real Untapped/Shared example
-    # off the slide even though the legend advertises all three (confirmed
-    # live 2026-09-19: a real report's Gap Analysis table rendered 14/14
-    # "M" rows). Top _GAP_CATEGORY_ROW_CAP per category, in legend order,
-    # guarantees each represented category that HAS real rows gets shown —
-    # a category with fewer than the cap (or none at all) just contributes
-    # fewer rows, never a forced/invented one.
-    _GAP_CATEGORY_ROW_CAP = 4
-    by_category: dict[str, list[dict]] = {"Missing": [], "Untapped": [], "Shared": []}
-    for r in kd_filtered:
-        by_category.setdefault(r.get("gap_category") or "Missing", []).append(r)
-    selected_rows = [
-        r
-        for category in ("Missing", "Untapped", "Shared")
-        for r in by_category.get(category, [])[:_GAP_CATEGORY_ROW_CAP]
-    ]
-
-    table_rows = []
-    row_categories = []
-    for r in selected_rows:
-        by_domain = {cp.get("competitor"): cp for cp in (r.get("competitor_positions") or [])}
-        category = r.get("gap_category") or "Missing"
-        row_categories.append(category)
-        row = [
-            _GAP_CHIP[category][0], r.get("keyword"),
-            f"{int(_num(r.get('search_volume'))):,}", f"{int(_num(r.get('keyword_difficulty')))}",
-            _position_url_cell(r.get("your_position"), r.get("your_url")),
-        ]
-        for domain in competitor_columns:
-            cp = by_domain.get(domain)
-            row.append(_position_url_cell(cp.get("position"), cp.get("ranking_url")) if cp else "Not ranking")
-        table_rows.append(tuple(row))
-
-    slide = _blank_slide(prs)
-    _content_header(slide, "Competitor Keyword Gap Analysis")
-    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
-
-    legend_x = Inches(0.6)
-    for label, (letter, color) in _GAP_CHIP.items():
-        sq = slide.shapes.add_shape(1, legend_x, Inches(0.98), Inches(0.13), Inches(0.13))
-        _fill(sq, color)
-        sq.shadow.inherit = False
-        _textbox(slide, legend_x + Inches(0.18), Inches(0.935), Inches(1.1), Inches(0.2), f"{letter} — {label}", size=9, color=TEXT_MUTED)
-        legend_x += Inches(1.25)
+    if dedicated_categories:
+        insights.append(
+            f"{', '.join(dedicated_categories)} shown on its own dedicated slide (6+ keywords) — see the slide(s) "
+            "immediately following this one."
+        )
 
     # Same reserved-footer-zone discipline as add_competitor_table_slide's
     # own keyword_sheet_link button — confirmed live there that skipping
     # this cap lets a long insights list grow straight over the button/
     # footer instead of stopping short of it.
     insights_max_y = (SLIDE_H - Inches(1.10)) if keyword_gap_sheet_link else None
-    wrap_cols = set(range(1, len(headers)))  # keyword + every Position/URL cell can wrap, not the chip column
-    bottom, table = _draw_table(
-        slide, headers, table_rows, Inches(1.32), col_widths=col_widths, wrap_cols=wrap_cols,
-        row_cap=len(table_rows), return_table=True,
-    )
-    # Color each row's chip cell by gap category — _draw_table has no notion
-    # of per-cell color, only uniform header/row-band fill, so this repaints
-    # just the chip column after the fact. Capped to however many data rows
-    # _draw_table actually rendered (len(table.rows) includes the header).
-    for i in range(1, len(table.rows)):
-        _, color = _GAP_CHIP[row_categories[i - 1]]
-        cell = table.cell(i, 0)
-        cell.fill.solid()
-        cell.fill.fore_color.rgb = color
-        para = cell.text_frame.paragraphs[0]
-        para.alignment = PP_ALIGN.CENTER
-        para.font.color.rgb = WHITE
-        para.font.bold = True
     if insights:
-        _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), insights[:6], max_y=insights_max_y)
-
+        _insights_strip(summary_slide, Inches(0.6), top_y, Inches(12.1), insights[:6], max_y=insights_max_y)
     if keyword_gap_sheet_link:
-        _textbox(
-            slide, Inches(0.6), SLIDE_H - Inches(1.00), Inches(3.0), Inches(0.20),
-            "KEYWORD LIST", size=9.5, bold=True, color=TEXT_MUTED,
-        )
-        btn = slide.shapes.add_shape(5, Inches(0.6), SLIDE_H - Inches(0.76), Inches(4.3), Inches(0.32))
-        try:
-            btn.adjustments[0] = 0.35
-        except (IndexError, AttributeError):
-            pass
-        btn.fill.solid()
-        btn.fill.fore_color.rgb = _accent()
-        btn.line.fill.background()
-        btn.shadow.inherit = False
-        tf = btn.text_frame
-        tf.word_wrap = False
-        tf.margin_left = Pt(10)
-        tf.margin_right = Pt(10)
-        tf.margin_top = Pt(2)
-        tf.margin_bottom = Pt(2)
-        p = tf.paragraphs[0]
-        p.alignment = PP_ALIGN.CENTER
-        run = p.add_run()
-        run.text = "Open full keyword list →"
-        run.font.size = Pt(11.5)
-        run.font.bold = True
-        run.font.color.rgb = WHITE
-        btn.click_action.hyperlink.address = keyword_gap_sheet_link
-    return slide
+        _add_gap_sheet_link_button(summary_slide, keyword_gap_sheet_link)
+    slides.append(summary_slide)
+
+    # ---- One dedicated slide per status with 6+ keywords, never merged. ----
+    for category in ("Missing", "Shared", "Untapped"):
+        if category not in dedicated_categories:
+            continue
+        status_rows = by_category[category]
+        shown = status_rows[:_GAP_DEDICATED_ROW_CAP]
+
+        slide = _blank_slide(prs)
+        _content_header(slide, _GAP_STATUS_SLIDE_TITLE[category])
+        _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
+        _draw_gap_legend(slide)
+
+        bottom, _table = _render_gap_table(slide, Inches(1.32), shown, competitor_columns, headers, col_widths)
+        status_insights = _gap_status_insights(category, status_rows, len(shown), off_topic_count, client_name)
+        insights_max_y2 = (SLIDE_H - Inches(1.10)) if keyword_gap_sheet_link else None
+        _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), status_insights[:6], max_y=insights_max_y2)
+        if keyword_gap_sheet_link:
+            _add_gap_sheet_link_button(slide, keyword_gap_sheet_link)
+        slides.append(slide)
+
+    return slides
 
 
 # best_at bullets are written to cite "(homepage_url)" per the AI prompt's
@@ -6890,7 +7007,7 @@ def _build_report(
             # 2026-09-20 user request ("remove ... from here onward from
             # any of my report") — no longer rendered.
         if competitor_analysis and competitor_analysis.get("keyword_gap_rows"):
-            add_keyword_gap_slide(
+            add_keyword_gap_slides(
                 prs, competitor_analysis, client_name=client_name,
                 keyword_gap_sheet_link=keyword_sheet_link,
             )
