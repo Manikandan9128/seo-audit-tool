@@ -37,14 +37,15 @@ def test_priority_follows_scored_rows_order_never_re_derived():
     }
     recs = build_structured_technical_recommendations(page_audit)
     assert recs[0]["priority"] == 1
-    assert recs[0]["issue"] == "1 issue"
+    assert recs[0]["issue"] == "Page not reachable"
     assert "/b" in recs[0]["affected_urls"][0]
     assert recs[1]["priority"] == 2
 
 
-def test_semrush_count_only_row_gets_low_impact_and_validation_action():
+def test_semrush_count_only_export_never_produces_a_recommendation():
+    # 2026-09-22 spec rule 4: a bare Semrush issue count (no issue names)
+    # is never sufficient evidence for a page-specific recommendation —
+    # site_audit_pages_rows is accepted but no longer read at all.
     site_audit_pages_rows = [{"page_url": "https://example.com/careers", "issues": 12}]
     recs = build_structured_technical_recommendations({"pages": []}, site_audit_pages_rows=site_audit_pages_rows)
-    assert len(recs) == 1
-    assert recs[0]["impact"].startswith("Low")
-    assert "issue-level validation" in recs[0]["action"]
+    assert recs == []

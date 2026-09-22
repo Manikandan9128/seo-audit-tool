@@ -2311,9 +2311,16 @@ _PAGE_ISSUE_FIXES = {
     # is also the single most common real finding across most crawls,
     # so leaving it out was the main reason Technical Issues so often
     # came up empty next to a populated SEO Issues slide.
+    # This dict's own text is never actually shown for this one issue key —
+    # _page_level_issue_records overrides it with _structured_data_fix_text's
+    # real, page-type-specific schema name (2026-09-22 spec rule 6 bans the
+    # generic "(Article, Product, FAQ, etc)" list below). Kept here only so
+    # this issue still participates in every OTHER piece of shared plumbing
+    # (severity/category lookup) the same way every other issue key does.
     "Missing structured data (JSON-LD)": ("Add JSON-LD structured data matching the page's content type (Article, Product, FAQ, etc).", "warn", "technical"),
 }
 _ISSUE_SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
+_STRUCTURED_DATA_ISSUE_NAME = "Missing structured data (JSON-LD)"
 
 
 _NON_CONTENT_URL_EXTENSIONS = (".xml", ".txt", ".json", ".pdf")
@@ -2334,138 +2341,145 @@ def _is_content_page_url(url: str) -> bool:
     return True
 
 
-def _tech_fixes_scored_rows(
-    page_audit: dict, analytics: dict | None, site_audit_pages_rows: list[dict] | None = None
-) -> list[tuple]:
-    # Same GA4+GSC join and page-value formula as Priority Issues (see
-    # _traffic_by_path/_page_value_score) — previously this only weighed
-    # GA4 pageviews and silently ignored GSC clicks, so a fix on a page
-    # with real search clicks but few GA4 pageviews under-ranked here even
-    # though Priority Issues would score it higher.
-    pageviews_by_path, clicks_by_path = _traffic_by_path(analytics)
+_SOP_PAGE_TYPE_TO_SCHEMA = {
+    "product/category": "Product",
+    "location": "LocalBusiness",
+    "blog/informational": "Article",
+}
 
-    scored_rows = []
-    covered_paths: set[str] = set()
-    # Per-page combined evidence (2026-09-20 spec sections 32-36): Priority
-    # Issues - Page Wise must show a page-specific Fix built from the
-    # ACTUAL detected issues for that URL, not a generic "review the
-    # individual failed checks" line — that generic phrasing is explicitly
-    # banned by the new spec (section 32's own example list). This tool's
-    # own ~20-page crawl sample DOES carry real per-issue names/fixes (see
-    # _PAGE_ISSUE_FIXES below); collected here per page (not per single
-    # issue, unlike the "technical"/"seo" rows this same loop still emits
-    # below for _tech_fixes_next_steps_items) so a page with 4 detected
-    # issues gets ONE combined, evidence-based Fix sentence instead of not
-    # appearing on this table at all (previously only Semrush's count-only
-    # export fed this table — the least-evidence source, backwards from
-    # what the new spec wants).
-    page_issues_by_path: dict[str, dict] = {}
+
+def _structured_data_fix_text(url: str) -> str:
+    """Real schema type from the page's own URL-structure classification
+    (_sop_page_type — the same signal Content SEO's Next Steps already
+    trusts), never a generic "(Article, Product, FAQ, etc)" list (2026-09-22
+    spec rule 6: "Only recommend a schema type when the audit data supports
+    that it applies to the page"). BreadcrumbList is always the fallback,
+    never a guess at content type — it applies to every real content page
+    regardless of type, matching the Structured Data & Schema Validator
+    slide's own Part 1 convention (_PAGE_TYPE_SCHEMA_LABEL's
+    "{schema}, BreadcrumbList" pairing)."""
+    schema = _SOP_PAGE_TYPE_TO_SCHEMA.get(_sop_page_type(url))
+    if schema:
+        return f"Add {schema} and BreadcrumbList structured data (JSON-LD) matching this page's content type."
+    return "Add BreadcrumbList structured data (JSON-LD) — this page's specific content-type schema could not be determined from its URL structure."
+
+
+def _page_level_issue_records(page_audit: dict | None, analytics: dict | None) -> dict[str, dict]:
+    """Groups every CONFIRMED, named SEO issue (i.e. one _PAGE_ISSUE_FIXES
+    recognizes) by page path — the single shared building block for both
+    the technical/seo rows that feed Next Steps (_tech_fixes_scored_rows)
+    and Priority Issues - Page Wise's own priority rows
+    (_page_wise_priority_rows). 2026-09-22 spec rule 1 ("must be derived
+    from CONFIRMED PAGE-LEVEL SEO ISSUES... not behave as a generic
+    top-pages-with-most-issues report") and rule 4 ("never treat a bare
+    issue count as sufficient evidence"): only ever reads this tool's own
+    crawl sample (page_audit["pages"]), which carries real per-issue names.
+    Semrush's full-site site_audit_pages export is deliberately never read
+    here — it only ever gives a bare issue COUNT per URL with no issue
+    name, which can never satisfy "traceable to a detected issue"; that
+    count-only signal belongs only to the separate SEO Issues/site-audit
+    rollup, never to a page-specific recommendation."""
+    if not page_audit:
+        return {}
+    pageviews_by_path, clicks_by_path = _traffic_by_path(analytics)
+    by_path: dict[str, dict] = {}
     for page in page_audit.get("pages", []):
-        if not _is_content_page_url(page.get("url", "")):
+        url = page.get("url", "")
+        if not _is_content_page_url(url):
             continue
-        path = urlparse(page.get("url", "")).path or "/"
+        path = urlparse(url).path or "/"
         key = path.rstrip("/") or "/"
-        covered_paths.add(key)
         page_views = pageviews_by_path.get(key, 0)
         clicks = clicks_by_path.get(key, 0)
-        score = _page_value_score(page_views, clicks)
+        entry = by_path.setdefault(key, {
+            "path": path, "page_views": page_views, "score": _page_value_score(page_views, clicks), "items": [],
+        })
         for issue in page.get("issues", []):
             fix = _PAGE_ISSUE_FIXES.get(issue)
             if not fix:
                 continue
             fix_text, severity, category = fix
-            scored_rows.append((_ISSUE_SEVERITY_RANK[severity], -score, issue, path, fix_text, page_views, category))
-            entry = page_issues_by_path.setdefault(key, {"path": path, "page_views": page_views, "clicks": clicks, "items": []})
-            entry["items"].append((_ISSUE_SEVERITY_RANK[severity], fix_text))
+            if issue == _STRUCTURED_DATA_ISSUE_NAME:
+                fix_text = _structured_data_fix_text(url)
+            entry["items"].append({
+                "severity_rank": _ISSUE_SEVERITY_RANK[severity], "issue": issue,
+                "fix_text": fix_text, "category": category,
+            })
+    return by_path
 
-    for entry in page_issues_by_path.values():
-        items = sorted(entry["items"], key=lambda it: it[0])  # worst severity first
-        seen_fix_texts: list[str] = []
-        for _rank, fix_text in items:
-            if fix_text not in seen_fix_texts:
-                seen_fix_texts.append(fix_text)
-        score = _page_value_score(entry["page_views"], entry["clicks"])
-        scored_rows.append((
-            items[0][0], -score, _issue_noun(len(items)), entry["path"],
-            _combined_page_fix(seen_fix_texts, len(items)), entry["page_views"], "other",
-        ))
 
-    # Semrush's Crawled Pages export (site_audit_pages_rows) covers the
-    # site's real full crawl (e.g. 1,340 pages) vs. this tool's own ~20-page
-    # sample above — before this, Tech Fixes only ever scored that ~20-page
-    # sample, silently ignoring every other page even though Site
-    # Structure/SEO Issues/Site Health all use the full export (Gaps.pdf,
-    # "Understanding Current Scenario": Tech Fixes should match the same
-    # crawled-pages scope). Semrush's per-page export only gives an ISSUE
-    # COUNT, not issue names, so these rows can't get a real named Fix —
-    # they're added honestly as "N issue(s) reported by Semrush" instead of
-    # fabricating a specific fix, ranked below real named findings (info
-    # severity) and bucketed into their own "other" category rather than
-    # guessing technical vs. seo.
-    if site_audit_pages_rows:
-        domain_counts = Counter(urlparse(r.get("page_url") or "").netloc for r in site_audit_pages_rows)
-        domain_counts.pop("", None)
-        own_domain = domain_counts.most_common(1)[0][0] if domain_counts else None
-        seen_semrush_paths: set[str] = set()
-        for r in site_audit_pages_rows:
-            page_url = r.get("page_url")
-            issues = r.get("issues")
-            if not (page_url and issues):
+def _tech_fixes_scored_rows(page_audit: dict, analytics: dict | None = None, site_audit_pages_rows=None) -> list[tuple]:
+    """Technical/SEO-category per-issue rows feeding Next Steps: Technical
+    SEO — unchanged shape/consumer contract (_tech_fixes_next_steps_items).
+    site_audit_pages_rows is accepted-but-unused (kept only for call-site
+    compatibility) — 2026-09-22: Priority Issues - Page Wise no longer
+    shares this function's output at all; see _page_wise_priority_rows,
+    which never reads Semrush's count-only export either, per spec rule 4."""
+    if not page_audit:
+        return []
+    by_path = _page_level_issue_records(page_audit, analytics)
+    scored_rows = []
+    for entry in by_path.values():
+        for item in entry["items"]:
+            if item["category"] not in ("technical", "seo"):
                 continue
-            if own_domain and urlparse(page_url).netloc not in ("", own_domain):
-                continue
-            if not _is_content_page_url(page_url):
-                continue
-            # 2026-09-21 spec rule 6: never surface a 404/redirected/broken
-            # URL from the full-crawl export as an on-page optimization
-            # target — a title/meta/content fix on a URL that doesn't
-            # actually resolve to 200 is meaningless. Missing/blank status
-            # (older exports, or a column the crawler didn't populate) is
-            # treated as unknown, not confirmed-broken, so it still qualifies.
-            status = str(r.get("http_status_code", "") or "").strip()
-            if status and status != "200":
-                continue
-            path = urlparse(page_url).path or "/"
-            key = path.rstrip("/") or "/"
-            if key in covered_paths or key in seen_semrush_paths:
-                continue
-            try:
-                issue_count = int(float(issues))
-            except (TypeError, ValueError):
-                continue
-            if issue_count <= 0:
-                continue
-            seen_semrush_paths.add(key)
-            page_views = pageviews_by_path.get(key, 0)
-            clicks = clicks_by_path.get(key, 0)
-            score = _page_value_score(page_views, clicks)
-            # 2026-09-20 spec section 34: the Fix must be grounded in what's
-            # actually known for THIS url — an issue COUNT, nothing else
-            # (Semrush's per-page export carries no issue names/severity
-            # here) — never a page-type-guessed checklist. Section 32
-            # explicitly bans "Review the individual failed checks" as
-            # unacceptable generic text; section 34's own preferred wording
-            # for this exact case ("issue-level evidence is insufficient")
-            # is used verbatim instead. Source is named once in the slide
-            # header, never repeated here.
-            fix_text = f"{_issue_noun(issue_count)} detected on this page. Specific fix requires issue-level validation."
             scored_rows.append((
-                _ISSUE_SEVERITY_RANK["info"], -score, _issue_noun(issue_count), path, fix_text, page_views, "other",
+                item["severity_rank"], -entry["score"], item["issue"], entry["path"], item["fix_text"],
+                entry["page_views"], item["category"],
             ))
-
     scored_rows.sort(key=lambda r: (r[0], r[1]))
     return scored_rows
+
+
+def _page_wise_priority_rows(
+    page_audit: dict | None, analytics: dict | None = None, exclude_paths: set[str] | None = None,
+) -> list[dict]:
+    """Priority Issues - Page Wise's dedicated row builder (2026-09-22
+    spec). Every row is a page with at least one CONFIRMED, named SEO
+    issue — a bare Semrush issue count can never produce a row here (see
+    _page_level_issue_records). Priority order is severity first, then
+    page traffic-value (GA4 pageviews + GSC clicks), then confirmed-issue-
+    count only as a tertiary tiebreaker — issue count alone never decides
+    priority (spec rule 2: "a page with 97 low-value/count-only issues
+    must not automatically outrank a page with fewer but more important
+    confirmed SEO issues"). Since this only ever draws from the tool's own
+    bounded ~20-page crawl sample (never Semrush's full-site export), the
+    near-duplicate-URL flooding spec rule 8 warns against is structurally
+    ruled out — there's no large enough candidate pool left for it to
+    happen; _page_wise_group_insights' blog/product rollups still surface
+    the recurring-template pattern as an insight."""
+    by_path = _page_level_issue_records(page_audit, analytics)
+    exclude_norm = {p.rstrip("/") or "/" for p in (exclude_paths or set())}
+
+    rows = []
+    for key, entry in by_path.items():
+        if not entry["items"] or key in exclude_norm:
+            continue
+        items = sorted(entry["items"], key=lambda it: it["severity_rank"])  # worst severity first
+        seen_issue_names: list[str] = []
+        seen_fix_texts: list[str] = []
+        for it in items:
+            if it["issue"] not in seen_issue_names:
+                seen_issue_names.append(it["issue"])
+                seen_fix_texts.append(it["fix_text"])
+        rows.append({
+            "path": entry["path"], "page_views": entry["page_views"], "score": entry["score"],
+            "severity_rank": items[0]["severity_rank"], "issue_names": seen_issue_names,
+            "fix_text": _combined_page_fix(seen_fix_texts, len(items)), "confirmed_issue_count": len(items),
+        })
+    rows.sort(key=lambda r: (r["severity_rank"], -r["score"], -r["confirmed_issue_count"]))
+    return rows
 
 
 _TECH_IMPACT_BY_SEVERITY_RANK = {
     0: "High — error-level issue, likely blocking indexing/rankings or breaking the user experience.",
     1: "Medium — warning-level issue, weakens on-page SEO signal quality.",
-    2: "Low — informational issue or issue-count-only evidence (no per-issue detail available).",
+    2: "Low — informational issue.",
 }
 
 
 def build_structured_technical_recommendations(
-    page_audit: dict | None, analytics: dict | None = None, site_audit_pages_rows: list[dict] | None = None,
+    page_audit: dict | None, analytics: dict | None = None, site_audit_pages_rows=None,
 ) -> list[dict]:
     """Universal SEO Audit Engine spec (2026-09-20) section 31: every
     technical recommendation as its own record carrying Issue, Evidence,
@@ -2474,20 +2488,21 @@ def build_structured_technical_recommendations(
     (that table's own compact free-text cell is a presentation choice, per
     section 47's "renderer is presentation-only" — the underlying decision
     data itself must exist as real fields, which is what this returns).
-    Reuses _tech_fixes_scored_rows' exact same evidence and ordering — never
-    a second, independently-derived judgment of severity or priority.
-    Filtered to category "other" — the one combined per-page row
-    _tech_fixes_scored_rows already builds from every individual issue
-    detected on that URL (see its page_issues_by_path grouping) — so each
-    real page gets exactly ONE recommendation record here, not one row per
-    individual issue PLUS a duplicate combined row for the same page."""
+    Reuses _page_wise_priority_rows' exact same evidence and ordering (one
+    record per confirmed-issue page, 2026-09-22) — never a second,
+    independently-derived judgment of severity or priority, and never a
+    Semrush count-only page (site_audit_pages_rows is accepted-but-unused,
+    kept only for call-site compatibility — see _page_level_issue_records'
+    docstring for why that source can never produce a recommendation
+    here)."""
     if not page_audit:
         return []
-    scored_rows = [r for r in _tech_fixes_scored_rows(page_audit, analytics, site_audit_pages_rows) if r[6] == "other"]
+    rows = _page_wise_priority_rows(page_audit, analytics)
     _tech_severity_score = {0: 1.0, 1: 0.6, 2: 0.3}
     recommendations = []
-    for i, (severity_rank, _neg_score, issue, path, fix_text, page_views, category) in enumerate(scored_rows):
-        evidence = f"Detected on {path}"
+    for i, row in enumerate(rows):
+        page_views = row["page_views"]
+        evidence = f"Detected on {row['path']}"
         if page_views:
             evidence += f" ({page_views:,} pageviews in the analytics window)"
         # Unified Priority Model (spec section 40) — additive alongside the
@@ -2505,26 +2520,26 @@ def build_structured_technical_recommendations(
             intent_strength=0.3,
             commercial_value=0.3,
             conversion_potential=0.5,
-            technical_severity=_tech_severity_score.get(severity_rank, 0.3),
+            technical_severity=_tech_severity_score.get(row["severity_rank"], 0.3),
             effort=0.3,
             evidence_confidence=1.0,
         )
         recommendations.append({
-            "issue": issue,
+            "issue": "; ".join(row["issue_names"]),
             "evidence": evidence,
-            "affected_urls": [path],
-            "impact": _TECH_IMPACT_BY_SEVERITY_RANK.get(severity_rank, "Low"),
-            "action": fix_text,
+            "affected_urls": [row["path"]],
+            "impact": _TECH_IMPACT_BY_SEVERITY_RANK.get(row["severity_rank"], "Low"),
+            "action": row["fix_text"],
             "priority": i + 1,
             "priority_score": priority_model_result["score"],
             "priority_factors": priority_model_result["factors"],
-            "category": category,
+            "category": "other",
             # 2026-09-21 spec section 10 output structure — page_type is a
             # URL-structure label (metadata), never used to invent an
             # issue; organic_visibility_signal is the real GA4/GSC pageview
             # count when known, None (not 0/guessed) when analytics wasn't
             # joined for this path at all.
-            "page_type": _sop_page_type(path),
+            "page_type": _sop_page_type(row["path"]),
             "organic_visibility_signal": page_views if page_views else None,
         })
     return recommendations
@@ -2557,11 +2572,6 @@ def _combined_page_fix(distinct_fix_texts: list[str], total_issue_count: int) ->
     return text
 
 
-def _page_wise_issue_count(row: tuple) -> int:
-    match = re.match(r"([\d,]+)", row[2])
-    return int(match.group(1).replace(",", "")) if match else 0
-
-
 # /blog/* and /product/* + /integrations* are the two URL patterns this
 # slide's data has actually shown pages clustering under in real reports —
 # matches the user's own spec examples. Broadened to "integration" (not
@@ -2576,84 +2586,118 @@ def _is_product_integration_pattern(path: str) -> bool:
     return "/product/" in lowered or lowered.rstrip("/").endswith("/product") or "integration" in lowered
 
 
-def _page_wise_group_insights(other_rows: list[tuple]) -> list[str]:
+_PAGE_WISE_SEVERITY_LABEL = {0: "Error", 1: "Warning", 2: "Info"}
+_PAGE_WISE_ISSUE_NAMES_MAX = 3
+
+
+def _page_wise_issue_names_text(issue_names: list[str]) -> str:
+    shown = issue_names[:_PAGE_WISE_ISSUE_NAMES_MAX]
+    text = "; ".join(shown)
+    remaining = len(issue_names) - len(shown)
+    if remaining > 0:
+        text += f" (+{remaining} more)"
+    return text
+
+
+def _page_wise_evidence_text(row: dict) -> str:
+    """"Why Prioritized" cell (2026-09-22 spec rule 10) — severity first,
+    then real page-value signal when one exists, confirmed-issue count only
+    as a trailing, clearly-secondary fact. Never invents a commercial-
+    importance or traffic claim the data doesn't actually support."""
+    severity_label = _PAGE_WISE_SEVERITY_LABEL.get(row["severity_rank"], "Info")
+    count = row["confirmed_issue_count"]
+    parts = [f"{severity_label}-level issue{'s' if count != 1 else ''} confirmed"]
+    if row["page_views"]:
+        parts.append(f"{row['page_views']:,} pageviews in the analytics window")
+    parts.append(f"{count:,} confirmed issue{'s' if count != 1 else ''} on this page")
+    return " — ".join(parts)
+
+
+def _page_wise_group_insights(rows: list[dict]) -> list[str]:
     """2026-09-20 spec: PATTERN -> EVIDENCE -> ACTION, stating only what the
-    data actually shows (a page count and a total issue count per group) —
-    never an inferred cause. The prior wording guessed a root cause from
-    the URL pattern alone ("likely thin/duplicate content ... missing
-    BlogPosting schema") and claimed unsupported outcomes ("suppress
-    rankings", "waste crawl budget") that this per-page count data cannot
+    data actually shows (a page count and a total confirmed-issue count per
+    group) — never an inferred cause. The prior wording guessed a root
+    cause from the URL pattern alone ("likely thin/duplicate content ...
+    missing BlogPosting schema") and claimed unsupported outcomes
+    ("suppress rankings", "waste crawl budget") that this data cannot
     support, and "BlogPosting schema" isn't even the central Schema
     Validator's terminology for that type (see pptx_builder's
     _PAGE_TYPE_SCHEMA_LABEL — "Article"). Exact counts (never "over X")
-    stay: plain len()/sum() over the same rows the table renders is exact
-    by construction."""
-    blog_rows = [r for r in other_rows if _is_blog_pattern(r[3])]
-    product_rows = [r for r in other_rows if _is_product_integration_pattern(r[3])]
+    stay: plain len()/sum() over the same rows is exact by construction.
+
+    2026-09-22 spec rule 11 ("any page called out here must exist in the
+    actual Priority Issues table"): the caller passes only the rows
+    actually rendered in the visible table (the top-9 slice), never the
+    full candidate pool — a page trimmed from the table by the priority
+    sort can never be named in an insight here."""
+    blog_rows = [r for r in rows if _is_blog_pattern(r["path"])]
+    product_rows = [r for r in rows if _is_product_integration_pattern(r["path"])]
 
     insights = []
     if blog_rows:
-        total_issues = sum(_page_wise_issue_count(r) for r in blog_rows)
+        total_issues = sum(r["confirmed_issue_count"] for r in blog_rows)
         insights.append(
-            f"{len(blog_rows)} blog page(s) (/blog/*) have {total_issues:,} combined Site Audit issues. "
+            f"{len(blog_rows)} blog page(s) (/blog/*) have {total_issues:,} combined confirmed SEO issues. "
             "Review the recurring issue types and prioritize high-severity issues that can be addressed "
             "through the blog template."
         )
     if product_rows:
-        total_issues = sum(_page_wise_issue_count(r) for r in product_rows)
+        total_issues = sum(r["confirmed_issue_count"] for r in product_rows)
         insights.append(
             f"{len(product_rows)} product/integration page(s) (/product/*, /integrations) have {total_issues:,} "
-            "combined Site Audit issues. Review the recurring issue types and prioritize high-severity issues "
+            "combined confirmed SEO issues. Review the recurring issue types and prioritize high-severity issues "
             "that can be addressed through the shared template."
         )
-    if other_rows:
-        top = max(other_rows, key=_page_wise_issue_count)
+    if rows:
+        top = max(rows, key=lambda r: r["confirmed_issue_count"])
         insights.append(
-            f"\"{top[3]}\" has the highest issue count among the selected pages with {_page_wise_issue_count(top):,} "
-            "detected issues. Prioritize remediation based on the severity and type of those issues."
+            f"\"{top['path']}\" has the highest confirmed issue count among the selected pages with "
+            f"{top['confirmed_issue_count']:,} detected issues. Prioritize remediation based on the severity "
+            "and type of those issues."
         )
     return insights
 
 
-def add_priority_issues_page_wise_slide(prs: Presentation, other_rows: list[tuple], ai_result: dict | None) -> object | None:
-    """Page | Issues | Fix table for pages Semrush's full crawl flagged but
-    our own ~20-page sample didn't reach (2026-09-10 user spec, grouped-
-    insights spec added 2026-09-11). Fix column is the deterministic,
-    evidence-based text _tech_fixes_scored_rows already attaches to each
-    row (2026-09-20 spec: this export carries only an issue COUNT per url,
-    no issue names — a URL-pattern-guessed "audit meta tags on this post"
-    checklist, which the old AI-generated version produced, isn't
-    supportable from that data and is no longer used here; ai_result is
-    kept only for call-site compatibility and is otherwise unused).
-    Insights are computed here, not by an AI (see _page_wise_group_
-    insights) — the user's spec requires an exact count, which code
-    guarantees and an LLM only approximates.
+def add_priority_issues_page_wise_slide(prs: Presentation, rows: list[dict]) -> object | None:
+    """Priority Page | Confirmed SEO Issue(s) | Evidence / Why Prioritized |
+    Recommended Fix (2026-09-22 spec). Every row comes straight from
+    _page_wise_priority_rows — a page with at least one CONFIRMED, named
+    SEO issue; a bare Semrush issue count can never reach this table (see
+    _page_level_issue_records' docstring). Insights are computed here, not
+    by an AI (see _page_wise_group_insights) — the spec requires an exact
+    count, which code guarantees and an LLM only approximates.
 
-    Row order/selection is _tech_fixes_scored_rows's own severity+traffic-
-    value sort, untouched — a same-day issue-count sort was tried and
-    reverted (2026-09-11) because it clustered multiple rows for the SAME
-    page (one per issue category _tech_fixes_scored_rows tracks
-    internally) into the top 9, showing one page repeated 5-6 times
-    instead of 9 distinct pages."""
-    if not other_rows:
+    Row order is _page_wise_priority_rows' own severity -> traffic-value ->
+    confirmed-issue-count sort, untouched here — issue count is only ever
+    the tertiary tiebreaker, never the primary ranking signal (spec rule
+    2)."""
+    if not rows:
         return None
-    shown = other_rows[:9]
-    col_widths = [2.3, 1.8, 8.0]
-    rows = [
-        (_truncate_cell(path, col_widths[0]), issue, fix_text)
-        for _, _, issue, path, fix_text, _pv, _cat in shown
+    shown = rows[:9]
+    col_widths = [2.1, 3.0, 3.0, 4.0]
+    table_rows = [
+        (
+            _truncate_cell(r["path"], col_widths[0]),
+            _page_wise_issue_names_text(r["issue_names"]),
+            _page_wise_evidence_text(r),
+            r["fix_text"],
+        )
+        for r in shown
     ]
-    insights = _page_wise_group_insights(other_rows)[:4]
-    remaining = len(other_rows) - len(shown)
+    # Rule 11: insights are scoped to the visible table (shown), never the
+    # full candidate pool, so nothing named here can be absent from it.
+    insights = _page_wise_group_insights(shown)[:4]
+    remaining = len(rows) - len(shown)
     if remaining > 0:
         page_word = "page" if remaining == 1 else "pages"
         insights.append(
-            f"{remaining:,} additional {page_word} are affected site-wide. The table highlights the "
-            f"{len(shown)} highest-priority pages for remediation."
+            f"{remaining:,} additional {page_word} with confirmed SEO issues are affected site-wide. The table "
+            f"highlights the {len(shown)} highest-priority pages for remediation."
         )
     return _table_slide(
-        prs, "Priority Issues - Page Wise", ["Page", "Issues", "Fix"], rows,
-        col_widths=col_widths, source="Semrush Site Audit", insights=insights[:5],
+        prs, "Priority Issues - Page Wise",
+        ["Priority Page", "Confirmed SEO Issue(s)", "Evidence / Why Prioritized", "Recommended Fix"], table_rows,
+        col_widths=col_widths, source="Site Audit crawl (confirmed page-level issues)", insights=insights[:5],
     )
 
 
@@ -2661,7 +2705,7 @@ def add_tech_fixes_slide(
     prs: Presentation,
     page_audit: dict | None,
     analytics: dict | None = None,
-    site_audit_pages_rows: list[dict] | None = None,
+    site_audit_pages_rows=None,
     page_wise_ai: dict | None = None,
     page_wise_exclude_paths: set[str] | None = None,
 ) -> list:
@@ -2673,19 +2717,17 @@ def add_tech_fixes_slide(
     and its wiring in build_report). "Tech Fixes — SEO Issues" removed
     2026-09-09 per user request — redundant with the main SEO Issues
     slide's Errors/Warnings, which already covers SEO-category issues
-    site-wide."""
+    site-wide. site_audit_pages_rows and page_wise_ai are accepted-but-
+    unused (kept only for call-site compatibility, per build_report's own
+    established pattern — see page_wise_ai's own history in site_audit.py)
+    — 2026-09-22: Priority Issues - Page Wise is now built exclusively from
+    confirmed page-level issues (_page_wise_priority_rows), never from
+    Semrush's count-only export or an AI guess."""
     if not page_audit:
         return []
 
-    scored_rows = _tech_fixes_scored_rows(page_audit, analytics, site_audit_pages_rows)
-    if not scored_rows:
-        return []
-
-    other_rows = [r for r in scored_rows if r[6] == "other"]
-    if page_wise_exclude_paths:
-        excluded_norm = {p.rstrip("/") or "/" for p in page_wise_exclude_paths}
-        other_rows = [r for r in other_rows if (r[3].rstrip("/") or "/") not in excluded_norm]
-    slide = add_priority_issues_page_wise_slide(prs, other_rows, page_wise_ai)
+    rows = _page_wise_priority_rows(page_audit, analytics, page_wise_exclude_paths)
+    slide = add_priority_issues_page_wise_slide(prs, rows)
     return [slide] if slide else []
 
 
