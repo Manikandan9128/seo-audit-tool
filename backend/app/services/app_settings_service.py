@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.integrations.gemini_errors import friendly_gemini_error
-from app.integrations.text_ai_client import GROQ_API_URL, GROQ_MODEL
+from app.integrations.text_ai_client import GROQ_API_URL, GROQ_MODEL, _reserve_gemini_slot
 from app.models.app_setting import AppSetting
 
 GEMINI_API_KEY = "gemini_api_key"
@@ -72,9 +72,17 @@ def set_gemini_api_key(db: Session, value: str) -> None:
 
 def test_gemini_key() -> dict:
     """Makes one minimal real call to confirm the currently-configured key
-    actually works — not just that it was saved. Returns {ok, message}."""
+    actually works — not just that it was saved. Returns {ok, message}.
+    Goes through the same _reserve_gemini_slot pacer report generation
+    uses (2026-09-22) — a manual test click is still a real request
+    against the same daily count, so it must be counted, not just paced
+    reactively after the fact; if the pacer already thinks today's budget
+    is spent, this says so up front instead of burning a real call to find
+    out the same thing."""
     if not settings.gemini_api_key:
         return {"ok": False, "message": "No Gemini API key configured"}
+    if not _reserve_gemini_slot():
+        return {"ok": False, "message": "Self-paced daily request-count budget looks spent for today (not necessarily Google's real count) — try again after the daily reset, or check aistudio.google.com/rate-limit for your actual usage."}
     try:
         client = genai.Client(api_key=settings.gemini_api_key)
         response = client.models.generate_content(model=GEMINI_MODEL, contents="Reply with just: OK")

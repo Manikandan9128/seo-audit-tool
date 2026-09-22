@@ -108,6 +108,67 @@ def _reserve_groq_budget(needed_tokens: int) -> None:
         time.sleep(max(wait_seconds, 0.5))
 
 
+# Gemini's free tier is request-count-limited (RPM + RPD), not token-
+# limited like Groq's — its 250,000 TPM is never the binding constraint,
+# but 10 RPM / 250 RPD (per gemini-3.x Flash's published free-tier table;
+# Google's own docs refuse to state a static number, "check your account's
+# AI Studio dashboard") absolutely is. This app tracked zero request-count
+# pacing for Gemini before 2026-09-22 — confirmed real: a report's ~17
+# sequential AI calls all fall through to Gemini within seconds once Groq
+# is already dead for the day (Groq fails fast, a plain 429, not a slow
+# timeout), which blows straight through 10 RPM before the existing
+# one-retry-after-20s discipline in _attempt_gemini can absorb it, wasting
+# real Gemini calls on rejections this process could have predicted and
+# paced around instead. Same rolling-window shape as _reserve_groq_budget
+# above, just counting requests in two windows (minute + day) instead of
+# summing tokens in one.
+_gemini_pacing_lock = threading.Lock()
+_gemini_minute_window: list[float] = []
+_gemini_day_window: list[float] = []
+_GEMINI_MINUTE_WINDOW_SECONDS = 60.0
+_GEMINI_DAY_WINDOW_SECONDS = 24 * 60 * 60.0
+# Capped below the real 10 RPM / 250 RPD to leave headroom for clock/
+# measurement slop between this process and Google's own window — same
+# margin-below-observed-cap discipline GROQ_TPM_BUDGET already uses.
+_GEMINI_RPM_BUDGET = 8
+_GEMINI_RPD_BUDGET = 230
+
+
+def _reserve_gemini_slot() -> bool:
+    """True once a Gemini call may proceed (and reserves its slot, blocking
+    with a sleep-and-recheck loop if the per-minute window is momentarily
+    full — same pacing-not-failing discipline as _reserve_groq_budget).
+    False means today's own request-count budget looks spent — the caller
+    should skip Gemini entirely rather than wait, since a spent daily
+    budget doesn't free up the way a per-minute one does.
+
+    In-memory only, resets on process restart — same accepted limitation
+    as Groq's own _groq_usage_window (this codebase's existing pattern for
+    self-imposed pacing), not a hard guarantee synced with Google's actual
+    account-side counters, just enough to stop this process's own bursts
+    from wasting a real Gemini call on a rejection that was predictable."""
+    while True:
+        with _gemini_pacing_lock:
+            now = time.monotonic()
+            minute_cutoff = now - _GEMINI_MINUTE_WINDOW_SECONDS
+            while _gemini_minute_window and _gemini_minute_window[0] < minute_cutoff:
+                _gemini_minute_window.pop(0)
+            day_cutoff = now - _GEMINI_DAY_WINDOW_SECONDS
+            while _gemini_day_window and _gemini_day_window[0] < day_cutoff:
+                _gemini_day_window.pop(0)
+
+            if len(_gemini_day_window) >= _GEMINI_RPD_BUDGET:
+                return False
+
+            if len(_gemini_minute_window) < _GEMINI_RPM_BUDGET:
+                _gemini_minute_window.append(now)
+                _gemini_day_window.append(now)
+                return True
+
+            wait_seconds = _gemini_minute_window[0] + _GEMINI_MINUTE_WINDOW_SECONDS - now
+        time.sleep(max(wait_seconds, 0.5))
+
+
 class NoAIProviderConfigured(Exception):
     pass
 
@@ -263,6 +324,15 @@ def _attempt_groq(prompt: str, max_tokens: int, errors: list[str]) -> str | None
 def _attempt_gemini(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
     if not settings.gemini_api_key:
         return None
+    # Self-paced request-count budget (2026-09-22) — checked BEFORE the
+    # call, not just reacted to after: skip outright if today's own
+    # request-count budget already looks spent (no point burning a real
+    # call on a rejection this process can already predict), otherwise
+    # block briefly if the per-minute window is momentarily full instead
+    # of firing straight into a 429. See _reserve_gemini_slot's docstring.
+    if not _reserve_gemini_slot():
+        errors.append("Gemini skipped — this process's own daily request-count budget looks spent (self-paced, not necessarily Google's real count)")
+        return None
     try:
         text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
         if text:
@@ -275,8 +345,15 @@ def _attempt_gemini(prompt: str, max_tokens: int, errors: list[str]) -> str | No
         # Gemini's per-minute cap in the same instant — one short wait and
         # retry is often enough since the window is per-minute, not daily.
         # A daily-quota exhaustion won't clear in 20s, so don't bother.
+        # _reserve_gemini_slot above already absorbs most of this before it
+        # happens; this stays as a second line of defense for whatever it
+        # doesn't catch (e.g. Google's real count already includes calls
+        # from outside this process).
         if not is_daily_quota and ("RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
             time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+            if not _reserve_gemini_slot():
+                errors.append("Gemini skipped retry — daily request-count budget looks spent")
+                return None
             try:
                 text = _call_with_timeout(_try_gemini, GEMINI_TIMEOUT_SECONDS, prompt)
                 if text:
@@ -523,30 +600,39 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
         except Exception as e:
             errors.append(f"Groq vision request failed: {str(e)[:300]}")
     if settings.gemini_api_key:
-        try:
-            text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
-            if text:
-                return text, "gemini"
-            errors.append("Gemini returned an empty response")
-        except Exception as e:
-            # Same retry _attempt_gemini already does for text calls — a
-            # transient "servers are temporarily unavailable" or a
-            # per-minute RESOURCE_EXHAUSTED both recover inside a short
-            # wait; a daily-quota exhaustion won't, so don't bother there.
-            error_text = str(e)
-            is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
-            is_transient = "UNAVAILABLE" in error_text or "temporarily unavailable" in error_text.lower()
-            if not is_daily_quota and (is_transient or "RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
-                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-                try:
-                    text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
-                    if text:
-                        return text, "gemini"
-                    errors.append("Gemini returned an empty response")
-                except Exception as e2:
-                    errors.append(friendly_gemini_error(e2))
-            else:
-                errors.append(friendly_gemini_error(e))
+        # Vision calls share the SAME Gemini project/account as text calls
+        # — same 10 RPM / 250 RPD budget, same _reserve_gemini_slot counters,
+        # not a separate pool (see _attempt_gemini's own use of this).
+        if not _reserve_gemini_slot():
+            errors.append("Gemini vision skipped — this process's own daily request-count budget looks spent")
+        else:
+            try:
+                text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
+                if text:
+                    return text, "gemini"
+                errors.append("Gemini returned an empty response")
+            except Exception as e:
+                # Same retry _attempt_gemini already does for text calls — a
+                # transient "servers are temporarily unavailable" or a
+                # per-minute RESOURCE_EXHAUSTED both recover inside a short
+                # wait; a daily-quota exhaustion won't, so don't bother there.
+                error_text = str(e)
+                is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
+                is_transient = "UNAVAILABLE" in error_text or "temporarily unavailable" in error_text.lower()
+                if not is_daily_quota and (is_transient or "RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
+                    time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                    if not _reserve_gemini_slot():
+                        errors.append("Gemini vision skipped retry — daily request-count budget looks spent")
+                    else:
+                        try:
+                            text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
+                            if text:
+                                return text, "gemini"
+                            errors.append("Gemini returned an empty response")
+                        except Exception as e2:
+                            errors.append(friendly_gemini_error(e2))
+                else:
+                    errors.append(friendly_gemini_error(e))
     if settings.claude_api_key:
         try:
             text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
