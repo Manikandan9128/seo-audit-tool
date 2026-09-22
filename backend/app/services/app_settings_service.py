@@ -1,8 +1,8 @@
-"""Runtime-editable settings (Gemini + Groq + Claude API keys) backed by the
-app_settings table, so the user can change them from the UI without editing
-.env or restarting the server. Any one key alone is enough — see
-app.integrations.text_ai_client for the fallback logic that picks whichever
-is configured."""
+"""Runtime-editable settings (Gemini + Groq + Claude + OpenRouter API keys)
+backed by the app_settings table, so the user can change them from the UI
+without editing .env or restarting the server. Any one key alone is
+enough — see app.integrations.text_ai_client for the fallback logic that
+picks whichever is configured."""
 
 import httpx
 from anthropic import Anthropic
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.integrations.gemini_errors import friendly_gemini_error
-from app.integrations.text_ai_client import GROQ_API_URL, GROQ_MODEL
+from app.integrations.text_ai_client import GROQ_API_URL, GROQ_MODEL, OPENROUTER_API_URL, OPENROUTER_MODEL
 from app.models.app_setting import AppSetting
 
 GEMINI_API_KEY = "gemini_api_key"
@@ -19,6 +19,7 @@ GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_API_KEY = "groq_api_key"
 CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
+OPENROUTER_API_KEY = "openrouter_api_key"
 GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN = "google_sheets_oauth_access_token"
 GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN = "google_sheets_oauth_refresh_token"
 GOOGLE_SHEETS_OAUTH_EMAIL = "google_sheets_oauth_email"
@@ -38,6 +39,9 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, CLAUDE_API_KEY)
     if row and row.value:
         settings.claude_api_key = row.value
+    row = db.get(AppSetting, OPENROUTER_API_KEY)
+    if row and row.value:
+        settings.openrouter_api_key = row.value
     row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_CLIENT_ID)
     if row and row.value:
         settings.google_sheets_oauth_client_id = row.value
@@ -160,6 +164,42 @@ def test_claude_key() -> dict:
 
 def masked_claude_api_key() -> str | None:
     return _mask(settings.claude_api_key)
+
+
+def set_openrouter_api_key(db: Session, value: str) -> None:
+    settings.openrouter_api_key = _set_key(db, OPENROUTER_API_KEY, value)
+
+
+def test_openrouter_key() -> dict:
+    """Makes one minimal real call to confirm the currently-configured key
+    actually works — not just that it was saved. Returns {ok, message}."""
+    if not settings.openrouter_api_key:
+        return {"ok": False, "message": "No OpenRouter API key configured"}
+    try:
+        response = httpx.post(
+            OPENROUTER_API_URL,
+            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+            json={
+                "model": OPENROUTER_MODEL,
+                "messages": [{"role": "user", "content": "Reply with just: OK"}],
+                "max_tokens": 20,
+            },
+            timeout=30,
+        )
+        if response.status_code == 401:
+            return {"ok": False, "message": "OpenRouter rejected this API key — check it was copied correctly and hasn't been revoked."}
+        if response.status_code == 429:
+            return {"ok": False, "message": "OpenRouter's free-tier daily request cap is already hit — wait and try again."}
+        if response.status_code >= 400:
+            return {"ok": False, "message": f"OpenRouter request failed: {response.status_code} {response.reason_phrase}: {response.text[:300]}"}
+        text = (response.json()["choices"][0]["message"]["content"] or "").strip()
+        return {"ok": True, "message": f"Key works — model replied: {text[:80] or '(empty)'}"}
+    except Exception as e:
+        return {"ok": False, "message": f"OpenRouter request failed: {str(e)[:300]}"}
+
+
+def masked_openrouter_api_key() -> str | None:
+    return _mask(settings.openrouter_api_key)
 
 
 def test_sheets_connection(db: Session) -> dict:

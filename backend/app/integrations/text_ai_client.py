@@ -1,8 +1,9 @@
 """Unified text-generation call that tries whichever AI provider has a
-configured key — Groq first, then Gemini, then Claude as a last, paid
-fallback — so callers (company overview extraction, AI summary,
-competitor narrative, core problem, keyword clustering) work as long as
-*any* key is set, without provider-specific branching at each call site.
+configured key — Groq first, then OpenRouter, then Gemini, then Claude as
+a last, paid fallback — so callers (company overview extraction, AI
+summary, competitor narrative, core problem, keyword clustering) work as
+long as *any* key is set, without provider-specific branching at each
+call site.
 
 Groq goes first deliberately (confirmed real-world tradeoff, not the
 original default): Gemini's free-tier quota resets once every 24 hours, so
@@ -11,7 +12,15 @@ sits useless in reserve while Groq alone (with its own, faster-recovering
 per-minute/hourly limits) idles unused until Gemini fails. Trying Groq
 first spends the fast-recovering resource first and keeps Gemini's scarce
 daily allowance in reserve for when Groq is genuinely, if temporarily,
-tapped out."""
+tapped out.
+
+OpenRouter sits second, between Groq and Gemini (2026-09-22): free
+(:free-suffixed models, $0 per token, no card required), but its own
+quota pool is entirely separate from both Groq's and Gemini's — so on a
+day both of those are exhausted (confirmed real: Groq's 200k/day TPD cap
+and Gemini's free-tier daily quota both hit at once), OpenRouter is a
+third independent budget before falling back to Gemini's already-scarce
+reserve or Claude's paid tier."""
 
 import threading
 import time
@@ -35,9 +44,18 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 CLAUDE_MODEL = "claude-sonnet-5"
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+# qwen3.6-plus:free is natively multimodal (text, image, video in) and
+# $0-priced regardless of account credit balance — verified against
+# OpenRouter's own model page before wiring this in. Used for both plain
+# text calls and (paired with the vision fallback list below) vision
+# calls, so one model covers both this module's and _try_groq_vision's
+# job on a completely separate quota pool from Groq/Gemini.
+OPENROUTER_MODEL = "qwen/qwen3.6-plus:free"
 
 GEMINI_TIMEOUT_SECONDS = 45
 CLAUDE_TIMEOUT_SECONDS = 60
+OPENROUTER_TIMEOUT_SECONDS = 60
 
 
 def _call_with_timeout(fn, timeout_seconds: float, *args, **kwargs):
@@ -192,6 +210,27 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
     return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
+def _try_openrouter(prompt: str, max_tokens: int) -> str:
+    response = httpx.post(
+        OPENROUTER_API_URL,
+        headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+        json={
+            "model": OPENROUTER_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        },
+        timeout=OPENROUTER_TIMEOUT_SECONDS,
+    )
+    if response.status_code >= 400:
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+            request=response.request,
+            response=response,
+        )
+    data = response.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
 # Lets a caller pin one provider first for the lifetime of a single job's
 # thread (e.g. "run this report with Claude") without threading a
 # preferred_provider parameter through the ~10 call sites between the
@@ -204,7 +243,7 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
 # a stale preference into an unrelated later request.
 _provider_preference = threading.local()
 
-_VALID_PROVIDERS = {"groq", "gemini", "claude"}
+_VALID_PROVIDERS = {"groq", "openrouter", "gemini", "claude"}
 
 
 def set_preferred_provider(name: str | None) -> None:
@@ -251,6 +290,28 @@ def _attempt_groq(prompt: str, max_tokens: int, errors: list[str]) -> str | None
     return None
 
 
+def _attempt_openrouter(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.openrouter_api_key:
+        return None
+    try:
+        text = _call_with_timeout(_try_openrouter, OPENROUTER_TIMEOUT_SECONDS, prompt, max_tokens)
+        if text:
+            return text
+        errors.append("OpenRouter returned an empty response")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            # Free (:free) models cap at 50 requests/day with no credits
+            # purchased — a 429 here almost always means that daily cap,
+            # not a short per-minute limit, so don't burn a retry sleep on
+            # it the way Groq's per-minute 429 earns one.
+            errors.append(f"OpenRouter rate-limited (likely today's free-tier request cap): {str(e)[:300]}")
+        else:
+            errors.append(f"OpenRouter request failed: {str(e)[:300]}")
+    except Exception as e:
+        errors.append(f"OpenRouter request failed: {str(e)[:300]}")
+    return None
+
+
 def _attempt_gemini(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
     if not settings.gemini_api_key:
         return None
@@ -293,8 +354,10 @@ def _attempt_claude(prompt: str, max_tokens: int, errors: list[str]) -> str | No
     return None
 
 
-_PROVIDER_ATTEMPTS = {"groq": _attempt_groq, "gemini": _attempt_gemini, "claude": _attempt_claude}
-_DEFAULT_PROVIDER_ORDER = ["groq", "gemini", "claude"]
+_PROVIDER_ATTEMPTS = {
+    "groq": _attempt_groq, "openrouter": _attempt_openrouter, "gemini": _attempt_gemini, "claude": _attempt_claude,
+}
+_DEFAULT_PROVIDER_ORDER = ["groq", "openrouter", "gemini", "claude"]
 
 
 def _provider_order() -> list[str]:
@@ -328,8 +391,8 @@ def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
     is configured at all; yields nothing if every configured provider's
     raw call itself failed or returned empty (same as generate_text()
     raising NoAIProviderConfigured with `errors` joined)."""
-    if not settings.gemini_api_key and not settings.groq_api_key and not settings.claude_api_key:
-        raise NoAIProviderConfigured("No Gemini, Groq, or Claude API key configured — add one in Settings")
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.openrouter_api_key):
+        raise NoAIProviderConfigured("No Groq, OpenRouter, Gemini, or Claude API key configured — add one in Settings")
     for provider in _provider_order():
         text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
         if text:
@@ -337,18 +400,19 @@ def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
 
 
 def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
-    """Returns (text, provider_used) — 'gemini', 'groq', or 'claude'. Tries
-    each configured provider in order, falling through to the next on any
-    failure (not configured, empty response, request error). Default order
-    is Groq, Gemini, Claude — see set_preferred_provider() to move one
-    provider to the front of that order for the current thread (e.g. one
-    report-generation job). Raises NoAIProviderConfigured if no key is set
-    at all, or if every configured provider's call failed (message
-    includes each provider's error). max_tokens only affects the
-    Groq/Claude paths — Gemini has no equivalent cap exposed here and just
-    returns whatever it generates."""
-    if not settings.gemini_api_key and not settings.groq_api_key and not settings.claude_api_key:
-        raise NoAIProviderConfigured("No Gemini, Groq, or Claude API key configured — add one in Settings")
+    """Returns (text, provider_used) — 'groq', 'openrouter', 'gemini', or
+    'claude'. Tries each configured provider in order, falling through to
+    the next on any failure (not configured, empty response, request
+    error). Default order is Groq, OpenRouter, Gemini, Claude — see
+    set_preferred_provider() to move one provider to the front of that
+    order for the current thread (e.g. one report-generation job). Raises
+    NoAIProviderConfigured if no key is set at all, or if every configured
+    provider's call failed (message includes each provider's error).
+    max_tokens only affects the Groq/OpenRouter/Claude paths — Gemini has
+    no equivalent cap exposed here and just returns whatever it
+    generates."""
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.openrouter_api_key):
+        raise NoAIProviderConfigured("No Groq, OpenRouter, Gemini, or Claude API key configured — add one in Settings")
 
     preferred = getattr(_provider_preference, "value", None)
     order = _DEFAULT_PROVIDER_ORDER
@@ -448,6 +512,34 @@ def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens
     raise RuntimeError(f"no Groq vision model available on this account: {'; '.join(model_errors)}")
 
 
+def _try_openrouter_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens: int) -> str:
+    b64_image = base64.b64encode(image_bytes).decode("ascii")
+    response = httpx.post(
+        OPENROUTER_API_URL,
+        headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+        json={
+            "model": OPENROUTER_MODEL,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
+                ],
+            }],
+            "max_tokens": max_tokens,
+        },
+        timeout=OPENROUTER_TIMEOUT_SECONDS,
+    )
+    if response.status_code >= 400:
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+            request=response.request,
+            response=response,
+        )
+    data = response.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
 def _try_gemini_vision(prompt: str, image_bytes: bytes, mime_type: str) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
     image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
@@ -477,10 +569,12 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
     alone. GROQ_MODEL itself is text-only, but the same free Groq key also
     reaches Groq's vision models (see GROQ_VISION_MODELS/_try_groq_vision
     above), tried first for the same fast-recovery-budget reason generate_text()
-    tries Groq first — Gemini then Claude follow as before. Raises
-    NoAIProviderConfigured if no key is set or every call fails."""
-    if not settings.groq_api_key and not settings.gemini_api_key and not settings.claude_api_key:
-        raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
+    tries Groq first — OpenRouter (a separate free quota pool, see
+    generate_text()'s docstring), then Gemini, then Claude follow as
+    before. Raises NoAIProviderConfigured if no key is set or every call
+    fails."""
+    if not (settings.groq_api_key or settings.openrouter_api_key or settings.gemini_api_key or settings.claude_api_key):
+        raise NoAIProviderConfigured("No Groq, OpenRouter, Gemini, or Claude API key configured — vision calls need one of these")
 
     errors: list[str] = []
     if settings.groq_api_key:
@@ -511,6 +605,21 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
                 errors.append(f"Groq vision request failed: {str(e)[:300]}")
         except Exception as e:
             errors.append(f"Groq vision request failed: {str(e)[:300]}")
+    if settings.openrouter_api_key:
+        try:
+            text = _call_with_timeout(
+                _try_openrouter_vision, OPENROUTER_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens
+            )
+            if text:
+                return text, "openrouter"
+            errors.append("OpenRouter returned an empty response")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                errors.append(f"OpenRouter vision rate-limited (likely today's free-tier request cap): {str(e)[:300]}")
+            else:
+                errors.append(f"OpenRouter vision request failed: {str(e)[:300]}")
+        except Exception as e:
+            errors.append(f"OpenRouter vision request failed: {str(e)[:300]}")
     if settings.gemini_api_key:
         try:
             text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
