@@ -2751,6 +2751,16 @@ def add_priority_issues_page_wise_slide(prs: Presentation, rows: list[dict]) -> 
         prs, "Priority Issues - Page Wise",
         ["Priority Page", "Confirmed SEO Issue(s)", "Evidence / Why Prioritized", "Recommended Fix"], table_rows,
         col_widths=col_widths, source="Site Audit crawl (confirmed page-level issues)", insights=insights[:5],
+        # 2026-09-22: only the Priority Page column was ever truncated; the
+        # other three (up to 198 chars of joined issue names/evidence/fix
+        # text) rendered with word_wrap off, so PowerPoint didn't clip them
+        # to the cell — it spilled the overflow across the neighboring
+        # columns (confirmed live on a Geopits regen: "alignment and
+        # overwrite issues" on this exact slide). wrap_cols makes _draw_table
+        # both word-wrap these columns AND size each row to its real
+        # wrapped-line count, the same fix already applied to every other
+        # long-text table in this file.
+        wrap_cols={1, 2, 3},
     )
 
 
