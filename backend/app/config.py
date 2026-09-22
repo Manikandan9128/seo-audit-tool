@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
     claude_api_key: str = ""
-    openrouter_api_key: str = ""
     # A separate, dedicated Web-application OAuth client for the Sheets
     # connection above — deliberately NOT reusing google_client_id/secret
     # (the per-client GA4/GSC OAuth client). That client's actual

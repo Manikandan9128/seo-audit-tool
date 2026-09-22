@@ -274,8 +274,6 @@ export default function SettingsPage() {
   const [groqMasked, setGroqMasked] = useState<string | null>(null);
   const [claudeSet, setClaudeSet] = useState(false);
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
-  const [openrouterSet, setOpenrouterSet] = useState(false);
-  const [openrouterMasked, setOpenrouterMasked] = useState<string | null>(null);
   const [sheetsOauthEmail, setSheetsOauthEmail] = useState<string | null>(null);
   const [sheetsOauthClientId, setSheetsOauthClientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -292,8 +290,6 @@ export default function SettingsPage() {
       setGroqMasked(res.data.groq_api_key_masked);
       setClaudeSet(res.data.claude_api_key_set);
       setClaudeMasked(res.data.claude_api_key_masked);
-      setOpenrouterSet(res.data.openrouter_api_key_set);
-      setOpenrouterMasked(res.data.openrouter_api_key_masked);
       setSheetsOauthEmail(res.data.google_sheets_oauth_email);
       setSheetsOauthClientId(res.data.google_sheets_oauth_client_id);
     } catch (err: any) {
@@ -307,16 +303,15 @@ export default function SettingsPage() {
     load();
   }, []);
 
-  const eitherKeySet = geminiSet || groqSet || claudeSet || openrouterSet;
+  const eitherKeySet = geminiSet || groqSet || claudeSet;
 
   return (
     <div style={{ maxWidth: 600, margin: "0 auto" }}>
       <h2 style={{ marginBottom: 8 }}>Settings</h2>
       <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 20 }}>
         Company Overview extraction and the Competitor Analysis AI summary need at least one of these keys — not
-        all four. Groq is tried first (fast-recovering per-minute limit), then OpenRouter (a separate free quota
-        pool — still available if Groq's daily cap is hit), then Gemini (its free-tier quota resets only once a
-        day, so it's kept in reserve), then Claude last as a paid fallback. Any one key alone is enough.{" "}
+        all three. Groq is tried first (fast-recovering per-minute limit), then Gemini (its free-tier quota resets
+        only once a day, so it's kept in reserve), then Claude last as a paid fallback. Any one key alone is enough.{" "}
         {!loading && (eitherKeySet ? <span style={{ color: "var(--success)" }}>✓ AI features are active.</span> : <span style={{ color: "#991b1b" }}>No key set yet — AI features are disabled.</span>)}
       </p>
 
@@ -366,30 +361,6 @@ export default function SettingsPage() {
           onSaved={(set, masked) => {
             setGroqSet(set);
             setGroqMasked(masked);
-          }}
-        />
-
-        <ApiKeyCard
-          title="OpenRouter API Key"
-          description={
-            <>
-              Get a key at{" "}
-              <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">
-                openrouter.ai/keys
-              </a>
-              . Free (:free models, $0/token, no card required) — a separate quota pool from Groq and Gemini, tried
-              between them.
-            </>
-          }
-          keySet={openrouterSet}
-          masked={openrouterMasked}
-          loading={loading}
-          saveUrl="/settings/openrouter-api-key"
-          testUrl="/settings/openrouter-api-key/test"
-          saveField="openrouter_api_key"
-          onSaved={(set, masked) => {
-            setOpenrouterSet(set);
-            setOpenrouterMasked(masked);
           }}
         />
 

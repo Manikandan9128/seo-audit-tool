@@ -46,12 +46,12 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 def generate_ai_summary(client_name: str, website_url: str, analysis: dict) -> dict:
     """Returns {"summary": str, "priorities": [str]} or {"error": str}.
 
-    Tries every configured provider in order (Groq, OpenRouter, Gemini,
-    Claude), not just the first one to answer (2026-09-22, same fix as
+    Tries every configured provider in order (Groq, Gemini, Claude), not
+    just the first one to answer (2026-09-22, same fix as
     structured_data_insights_service, 2026-09-20; see
     core_problem_service.generate_core_problem's docstring for why)."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.openrouter_api_key):
-        return {"error": "No Groq, OpenRouter, Gemini, or Claude API key configured — add one in Settings"}
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
+        return {"error": "No Groq, Gemini, or Claude API key configured — add one in Settings"}
 
     issues = analysis.get("issues") or []
     if not issues:

@@ -64,7 +64,7 @@ def health():
     # behavior past the new code's own hard-coded timeout, which
     # concurrent.futures.wait() cannot do if the new code were actually
     # running. Remove this field once that's confirmed either way.
-    return {"status": "ok", "build": "diag-20260922-3-openrouter"}
+    return {"status": "ok", "build": "diag-20260922-4-openrouter-removed"}
 
 
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"

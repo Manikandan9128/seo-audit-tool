@@ -180,14 +180,14 @@ def gather_site_text(website_url: str, max_chars: int = 45000) -> str:
 def extract_company_overview(website_url: str) -> dict:
     """Returns a structured overview dict, or a dict with an 'error' key if
     extraction isn't available (no API key, no crawlable content, bad
-    response). Tries every configured provider in order (Groq, OpenRouter,
-    Gemini, Claude — see text_ai_client.generate_text's docstring), not
-    just the first one to answer: a syntactically-invalid response from
-    one provider now falls through to the next instead of failing the
-    whole extraction outright (2026-09-22 — same fix as
+    response). Tries every configured provider in order (Groq, Gemini,
+    Claude — see text_ai_client.generate_text's docstring), not just the
+    first one to answer: a syntactically-invalid response from one
+    provider now falls through to the next instead of failing the whole
+    extraction outright (2026-09-22 — same fix as
     structured_data_insights_service, 2026-09-20)."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.openrouter_api_key):
-        return {"error": "No Groq, OpenRouter, Gemini, or Claude API key configured — add one in Settings"}
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
+        return {"error": "No Groq, Gemini, or Claude API key configured — add one in Settings"}
 
     site_text = gather_site_text(website_url)
     if not site_text.strip():

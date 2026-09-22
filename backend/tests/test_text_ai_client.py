@@ -34,7 +34,6 @@ def test_both_providers_failing_are_clearly_separated_not_run_together():
         mock_settings.groq_api_key = "gsk_test"
         mock_settings.gemini_api_key = "test"
         mock_settings.claude_api_key = None
-        mock_settings.openrouter_api_key = None
         with patch("app.integrations.text_ai_client._try_groq", side_effect=_groq_429(1550)), \
              patch("app.integrations.text_ai_client._try_gemini", side_effect=Exception("503 UNAVAILABLE: servers are overloaded")):
             with pytest.raises(NoAIProviderConfigured) as exc_info:
@@ -56,7 +55,6 @@ def test_no_key_configured_raises_immediately():
         mock_settings.groq_api_key = None
         mock_settings.gemini_api_key = None
         mock_settings.claude_api_key = None
-        mock_settings.openrouter_api_key = None
         with pytest.raises(NoAIProviderConfigured):
             generate_text("some prompt")
 
@@ -66,34 +64,10 @@ def test_first_successful_provider_short_circuits_the_rest():
         mock_settings.groq_api_key = "gsk_test"
         mock_settings.gemini_api_key = "test"
         mock_settings.claude_api_key = "sk-ant-test"
-        mock_settings.openrouter_api_key = "sk-or-test"
         with patch("app.integrations.text_ai_client._try_groq", return_value="groq answer") as mock_groq, \
-             patch("app.integrations.text_ai_client._try_openrouter") as mock_openrouter, \
              patch("app.integrations.text_ai_client._try_gemini") as mock_gemini:
             text, provider = generate_text("some prompt")
     assert text == "groq answer"
     assert provider == "groq"
     mock_groq.assert_called_once()
-    mock_openrouter.assert_not_called()
-    mock_gemini.assert_not_called()
-
-
-def test_openrouter_tried_between_groq_and_gemini():
-    # 2026-09-22: OpenRouter sits between Groq and Gemini in the default
-    # order — a separate free quota pool from both, so it's the fallback
-    # that actually matters on a day Groq's daily cap AND Gemini's daily
-    # quota are both exhausted at once (confirmed real that same day).
-    with patch("app.integrations.text_ai_client.settings") as mock_settings:
-        mock_settings.groq_api_key = "gsk_test"
-        mock_settings.gemini_api_key = "test"
-        mock_settings.claude_api_key = None
-        mock_settings.openrouter_api_key = "sk-or-test"
-        with patch("app.integrations.text_ai_client._try_groq", return_value=None) as mock_groq, \
-             patch("app.integrations.text_ai_client._try_openrouter", return_value="openrouter answer") as mock_openrouter, \
-             patch("app.integrations.text_ai_client._try_gemini") as mock_gemini:
-            text, provider = generate_text("some prompt")
-    assert text == "openrouter answer"
-    assert provider == "openrouter"
-    mock_groq.assert_called_once()
-    mock_openrouter.assert_called_once()
     mock_gemini.assert_not_called()
