@@ -11,7 +11,6 @@ import type { CompanyOverview } from "../components/CompanyOverviewEditor";
 import SemrushImportCard from "../components/SemrushImportCard";
 import ManualKeywordClusterCard from "../components/ManualKeywordClusterCard";
 import GeoPulseImportCard from "../components/GeoPulseImportCard";
-import SemrushChecklist from "../components/SemrushChecklist";
 import DomainRatingEditor from "../components/DomainRatingEditor";
 import SemrushAnalysis from "../components/SemrushAnalysis";
 import { useToast } from "../components/ToastProvider";
@@ -1284,7 +1283,9 @@ export default function ClientDetailPage() {
       {/* Semrush uploads — one for our domain, one for competitors */}
       <div id="semrush-section" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <DomainRatingEditor clientId={clientId!} ownDomain={client.website_url} onChanged={loadDomainRatingsForKpi} />
-        <SemrushChecklist imports={imports} />
+        {/* Upload checklist matrix cut 2026-09-22 per user request — "will
+            share better idea for this later." Component kept in
+            ../components/SemrushChecklist.tsx for fast re-enable. */}
         <SemrushImportCard
           clientId={clientId!}
           title="Our Website Data"
