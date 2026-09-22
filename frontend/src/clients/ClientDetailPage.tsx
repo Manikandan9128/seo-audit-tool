@@ -20,6 +20,27 @@ import ReportPreviewModal from "../components/ReportPreviewModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
 
+// Redesign v3 stage 2 — decorative section-row icon anchors, purely for
+// scannability (never repeated as a data-encoding color elsewhere).
+// Keyed by SectionKey string literal; module-level since it's static.
+const SECTION_ICONS: Record<string, ReactNode> = {
+  overview: (
+    <svg viewBox="0 0 24 24" fill="none"><path d="M3 21h18M6 21V7l6-4 6 4v14M10 21v-6h4v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+  ),
+  site_audit: (
+    <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+  ),
+  pagespeed: (
+    <svg viewBox="0 0 24 24" fill="none"><path d="M12 20a8 8 0 100-16 8 8 0 000 16z" stroke="currentColor" strokeWidth="2" /><path d="M12 12l3-3M8 12a4 4 0 118 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+  ),
+  tech_stack: (
+    <svg viewBox="0 0 24 24" fill="none"><rect x="2" y="3" width="20" height="8" rx="2" stroke="currentColor" strokeWidth="2" /><rect x="2" y="13" width="20" height="8" rx="2" stroke="currentColor" strokeWidth="2" /><circle cx="6" cy="7" r="1" fill="currentColor" /><circle cx="6" cy="17" r="1" fill="currentColor" /></svg>
+  ),
+  all_pages: (
+    <svg viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" /><path d="M14 2v6h6M9 13h6M9 17h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+  ),
+};
+
 interface Client {
   id: string;
   name: string;
@@ -554,6 +575,9 @@ export default function ClientDetailPage() {
             >
               ▾
             </span>
+            {SECTION_ICONS[sectionKey] && (
+              <span className={`section-icon${hasData ? " ready" : ""}`}>{SECTION_ICONS[sectionKey]}</span>
+            )}
             <h3 style={{ margin: 0, fontSize: 17 }}>{title}</h3>
           </div>
           <span className={`badge ${status.cls}`}>{status.label}</span>
@@ -803,9 +827,16 @@ export default function ClientDetailPage() {
         const doneCount = steps.filter((s) => s.done).length;
         return (
           <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <p className="eyebrow" style={{ margin: 0 }}>Getting started</p>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>
+            <div className="card-title-row" style={{ alignItems: "center", justifyContent: "space-between", marginBottom: 0 }}>
+              <div className="card-title-row" style={{ marginBottom: 0 }}>
+                <span className="card-icon">
+                  <svg viewBox="0 0 24 24" fill="none"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 00-2.91-.09z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M12 15l-3-3a22 22 0 0110-10c2 2 2 5 0 8a22 22 0 01-7 5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </span>
+                <span className="card-title-text" style={{ paddingTop: 5 }}>
+                  <span className="card-title">Getting started</span>
+                </span>
+              </div>
+              <span className={doneCount === steps.length ? "badge-ready" : "badge-pending"}>
                 {doneCount} of {steps.length} done
               </span>
             </div>
@@ -941,19 +972,28 @@ export default function ClientDetailPage() {
       )}
 
       <div className="card">
-        <h3 style={{ margin: 0, fontSize: 17 }}>Manual UX / QA Notes</h3>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "4px 0 10px" }}>
-          Optional — paste notes from a manual walkthrough (broken checkout, dead CTAs, missing trust signals,
-          etc.). Included in Preview/Download as UI-Level Fixes and Conversion Opportunities. Left blank, the
-          report states plainly that a manual UX pass hasn't been done yet.
-        </p>
-        <textarea
-          value={uxNotes}
-          onChange={(e) => setUxNotes(e.target.value)}
-          placeholder="e.g. Checkout page's 'Apply Coupon' button does nothing on click. No customer reviews shown on product pages. ..."
-          rows={4}
-          style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
-        />
+        <div className="card-title-row">
+          <div className="card-icon violet">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </div>
+          <div className="card-title-text">
+            <p className="card-title">Manual UX / QA Notes</p>
+            <p className="card-desc">
+              Optional — paste notes from a manual walkthrough (broken checkout, dead CTAs, missing trust signals,
+              etc.). Included in Preview/Download as UI-Level Fixes and Conversion Opportunities. Left blank, the
+              report states plainly that a manual UX pass hasn't been done yet.
+            </p>
+          </div>
+        </div>
+        <div className="card-body">
+          <textarea
+            value={uxNotes}
+            onChange={(e) => setUxNotes(e.target.value)}
+            placeholder="e.g. Checkout page's 'Apply Coupon' button does nothing on click. No customer reviews shown on product pages. ..."
+            rows={4}
+            style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
+          />
+        </div>
       </div>
 
       {(selectedSections.includes("overview") ||

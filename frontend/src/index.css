@@ -18,6 +18,13 @@
   --color-success-subtle: #F0FDF4;
   --color-warning: #D97706;
   --color-warning-subtle: #FFFBEB;
+  /* Decorative icon-anchor tints only (redesign v3 stage 2) — never used
+     to encode status or data; success/warning/danger above already carry
+     every meaningful state in this UI. */
+  --accent-teal: #0D9488;
+  --accent-teal-subtle: #F0FDFA;
+  --accent-violet: #7C3AED;
+  --accent-violet-subtle: #F5F3FF;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
@@ -614,6 +621,87 @@ td.mono {
 .btn-icon svg {
   width: 15px;
   height: 15px;
+}
+
+/* =====================================================================
+   Redesign v3 — Stage 2: card/section icon anchors (point 2).
+   Purely additive scanning aid — decorative tint only, never repeated as
+   a data-encoding color elsewhere on the page. Default tint is indigo
+   (--color-primary-subtle); .teal/.violet/.success are the alternates.
+   ===================================================================== */
+
+.card-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-1);
+}
+.card-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+.card-icon svg {
+  width: 17px;
+  height: 17px;
+}
+.card-icon.teal {
+  background: var(--accent-teal-subtle);
+  color: var(--accent-teal);
+}
+.card-icon.violet {
+  background: var(--accent-violet-subtle);
+  color: var(--accent-violet);
+}
+.card-icon.success {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+.card-title-text {
+  padding-top: 3px;
+  min-width: 0;
+}
+.card-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.card-desc {
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  margin: 6px 0 0 0;
+  line-height: 1.6;
+  max-width: 640px;
+}
+.card-body {
+  margin-top: var(--sp-5);
+}
+
+.section-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--color-secondary-bg);
+  color: var(--color-text-secondary);
+}
+.section-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.section-icon.ready {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
 }
 
 /* ---- Sidebar logout — compact, not a full CTA-sized button ---- */
