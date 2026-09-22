@@ -45,13 +45,19 @@ CLAUDE_MODEL = "claude-sonnet-5"
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-# qwen3.6-plus:free is natively multimodal (text, image, video in) and
-# $0-priced regardless of account credit balance — verified against
-# OpenRouter's own model page before wiring this in. Used for both plain
-# text calls and (paired with the vision fallback list below) vision
-# calls, so one model covers both this module's and _try_groq_vision's
-# job on a completely separate quota pool from Groq/Gemini.
-OPENROUTER_MODEL = "qwen/qwen3.6-plus:free"
+# "openrouter/free" is OpenRouter's own auto-router, not a specific model
+# — it picks whichever currently-free model is actually live, and (per
+# OpenRouter's own docs) "smartly filters for models that support features
+# needed for your request such as image understanding," so the same alias
+# covers both plain text calls here and the vision calls below. Using a
+# named model instead (qwen/qwen3.6-plus:free, this constant's original
+# value) broke within hours: OpenRouter deprecated it and started 404ing
+# with "Transition to qwen/qwen3.6-plus for continued paid access" —
+# confirmed real (2026-09-22) and unsurprising given how fast that
+# provider's free-model roster churns (deprecated/added most days). The
+# router alias is OpenRouter's own answer to that churn — nothing here
+# should ever need to chase a specific free model id again.
+OPENROUTER_MODEL = "openrouter/free"
 
 GEMINI_TIMEOUT_SECONDS = 45
 CLAUDE_TIMEOUT_SECONDS = 60
