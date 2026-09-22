@@ -6028,7 +6028,14 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
             summary = None
         slides.append(_table_slide(
             prs, "Onboarding Breakdown — Landing Page", ["Principle / Heuristic", "Where It Shows Up", "Directional Suggestion"], rows,
-            col_widths=[2.6, 3.6, 5.9], source=source, row_height=0.6, wrap_cols={0, 1, 2},
+            # row_height was 0.6in/line (2026-09-22 fix) — real Directional
+            # Suggestion text runs 2-3 wrapped lines, and at 0.6/line even 5
+            # rows blew past _draw_table's available-height budget, so its
+            # own (3,2,1) fallback collapsed every row to 1 line and
+            # ellipsis-truncated the cell — the reference deck (a real
+            # manual example) shows full, untruncated 3-line suggestions.
+            # 0.35in/line leaves enough budget for genuine 3-line wraps.
+            col_widths=[2.6, 3.6, 5.9], source=source, row_height=0.35, wrap_cols={0, 1, 2},
             insights=[summary] if summary else None,
         ))
 
