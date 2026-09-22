@@ -73,16 +73,17 @@ def test_page_lever_never_glues_ctr_and_ranking():
 
 def test_country_benchmark_never_cites_another_countrys_raw_ctr():
     # Old behavior benchmarked every country against the single best-CTR
-    # peer row; must now cite an aggregate/external source, never a bare
-    # peer country CTR comparison like "vs France's 9.0%".
+    # peer row; 2026-09-22 spec removed CTR-based benchmarking entirely —
+    # must never cite a peer country's raw CTR, or any CTR benchmark at all.
     countries = [
         {"country": "usa", "clicks": 50, "impressions": 1500, "ctr": 50 / 1500},
         {"country": "fra", "clicks": 20, "impressions": 1000, "ctr": 90 / 1000},
     ]
     result = build_high_potential_countries(countries)
     for r in result["material"]:
-        assert "source:" in r["fix"] or "outside the client's stated target markets" in r["fix"] or "checking query-level breakdown" in r["fix"]
+        assert "page/query validation is required before prescribing a specific optimization" in r["fix"]
         assert "vs France" not in r["fix"] and "vs United States" not in r["fix"]
+        assert "benchmark" not in r["fix"].lower()
 
 
 def test_page_with_no_flag_reason_not_included():
@@ -143,6 +144,44 @@ def test_best_ctr_benchmark_never_drawn_from_a_low_signal_country():
     material_fixes = " ".join(r["fix"] for r in result["material"])
     assert "Ecuador" not in material_fixes
     assert "Ecuador" in result["low_signal"]["countries"]
+
+
+def test_country_fix_never_prescribes_budget_localization_or_meta_changes():
+    # 2026-09-22 spec: country-level GSC data (impressions/clicks/CTR/
+    # country) can only show observed presence, never the cause of
+    # performance — must never auto-recommend budget expansion, localized
+    # pages, title/meta rewrites, or currency/language cues off it alone.
+    countries = [
+        {"country": "usa", "clicks": 500, "impressions": 5000, "ctr": 500 / 5000},  # high CTR, would have triggered "expand" before
+        {"country": "fra", "clicks": 20, "impressions": 8000, "ctr": 20 / 8000},  # low CTR, would have triggered "localize" before
+    ]
+    result = build_high_potential_countries(countries)
+    banned = ["expand budget", "localize title", "localize the", "meta description", "currency", "language cues"]
+    for r in result["material"]:
+        fix_lower = r["fix"].lower()
+        for phrase in banned:
+            assert phrase not in fix_lower, f"{phrase!r} found in: {r['fix']}"
+        # Required disclosure sentence, verbatim, on every material row —
+        # page/query evidence is never available to this function.
+        assert "page/query validation is required before prescribing a specific optimization" in r["fix"]
+
+
+def test_country_zero_clicks_lands_in_low_signal_never_a_material_fix():
+    # clicks < minimum_click_threshold (15) is always low-signal by
+    # construction — a material row's clicks are never 0, so there's no
+    # "impressions with zero clicks" branch to test in the material Fix.
+    countries = [{"country": "deu", "clicks": 0, "impressions": 2000, "ctr": 0.0}]
+    result = build_high_potential_countries(countries)
+    assert result["material"] == []
+    assert "Germany" in result["low_signal"]["countries"]
+
+
+def test_country_out_of_market_never_mentions_budget_expansion():
+    countries = [{"country": "usa", "clicks": 50, "impressions": 3000, "ctr": 50 / 3000}]
+    result = build_high_potential_countries(countries, target_countries=["gbr"])
+    fix = result["material"][0]["fix"]
+    assert "outside the client's stated target markets" in fix
+    assert "budget" not in fix.lower()
 
 
 def test_branded_slide_states_headline_share():

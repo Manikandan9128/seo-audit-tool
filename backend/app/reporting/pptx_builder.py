@@ -3347,7 +3347,15 @@ _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE = 50
 # it is "low-signal" (grouped summary only, never an individual Fix).
 _COUNTRY_MIN_CLICK_THRESHOLD = 15
 _COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS = 100
-_COUNTRY_ANOMALY_CTR_MULTIPLE = 2.0
+
+# 2026-09-22 spec's own required disclosure — country_rows only ever
+# carries impressions/clicks/CTR/country (see build_high_potential_
+# countries), never page/query-level data, so this sentence is always
+# true here and always appended.
+_COUNTRY_EVIDENCE_DISCLAIMER = (
+    "Country-level data indicates search presence; page/query validation is required before prescribing a "
+    "specific optimization."
+)
 
 
 _PAGE_CTR_BENCHMARK_SOURCE = "internal position-based CTR benchmark (not an external published study)"
@@ -3652,29 +3660,31 @@ def _summarize_low_signal_countries(rows: list[dict]) -> dict | None:
 def build_high_potential_countries(
     country_rows: list[dict],
     target_countries: list[str] | None = None,
-    benchmark_ctr_pct: float | None = None,
-    benchmark_source: str | None = None,
     minimum_click_threshold: float = _COUNTRY_MIN_CLICK_THRESHOLD,
 ) -> dict:
-    """Part 3 flagging logic (2026-09-16 user spec): split by signal
-    strength first — clicks < minimum_click_threshold never gets an
-    individual Fix, it's rolled into one grouped low-signal summary.
-    Material rows are benchmarked against a DEFINED external standard,
-    never against another country's row in this same table: if the
-    caller supplies benchmark_ctr_pct/benchmark_source (a position-based
-    CTR curve, or the client's stated target-market average), that's
-    used; otherwise the fallback is this dataset's own impression-
-    weighted average CTR across every material row — an aggregate, not
-    any single peer country's number, so no one row can become the bar
-    every other row is told to match (the exact bug the old best-country
-    benchmark had). Countries outside target_countries (when supplied)
-    are labeled explicitly as out-of-market instead of getting an
-    "expand" recommendation off CTR alone. A row whose CTR is >2x the
-    highest CTR among all other rows, with volume small next to the
-    top-impression row, is flagged as a possible anomaly (small-sample
-    luck) instead of a confident action. Country codes are resolved to
-    full names via _country_label so nothing renders as an unexplained
-    code."""
+    """Part 3 flagging logic (2026-09-16 user spec, recommendation wording
+    rewritten 2026-09-22): split by signal strength first — clicks <
+    minimum_click_threshold never gets an individual Fix, it's rolled into
+    one grouped low-signal summary.
+
+    2026-09-22 spec: country-level GSC data (impressions/clicks/CTR/
+    country) shows OBSERVED search presence only, never the cause of it —
+    this function no longer benchmarks a country's CTR against anything
+    (another country, an aggregate, an external curve) to justify a
+    prescriptive fix like "expand budget" or "localize title/meta/
+    currency." CTR is an observed metric here, not a universal benchmark,
+    and must never independently trigger a recommendation. Every material
+    row instead gets the same directional "review pages/queries and assess
+    demand" next step (target-market membership is the only thing that
+    branches it, never a CTR or click-volume comparison — clicks here are
+    already >= minimum_click_threshold by construction, so a zero-click
+    branch would be dead code), plus the spec's own required disclosure
+    sentence, since page/query-level
+    evidence is categorically unavailable here (country_rows never carries
+    a page or query dimension). Countries outside target_countries (when
+    supplied) are labeled explicitly as out-of-market rather than told to
+    expand. Country codes are resolved to full names via _country_label so
+    nothing renders as an unexplained code."""
     candidates = [r for r in country_rows if float(r.get("impressions", 0) or 0) >= _COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS]
     if not candidates:
         return {"material": [], "low_signal": None}
@@ -3686,17 +3696,6 @@ def build_high_potential_countries(
 
     target_set = {str(t).strip().lower() for t in target_countries} if target_countries else None
 
-    if benchmark_ctr_pct is not None and benchmark_source:
-        bench_ctr_pct, bench_source = benchmark_ctr_pct, benchmark_source
-    else:
-        agg_clicks = sum(float(r.get("clicks", 0) or 0) for r in material_pool)
-        agg_impressions = sum(float(r.get("impressions", 0) or 0) for r in material_pool)
-        bench_ctr_pct = round(agg_clicks / agg_impressions * 100, 1) if agg_impressions else 0.0
-        bench_source = "this dataset's own impression-weighted average CTR across all material countries"
-
-    top_impression_row = max(material_pool, key=lambda r: float(r.get("impressions", 0) or 0))
-    top_impression_clicks = float(top_impression_row.get("clicks", 0) or 0)
-
     material = []
     for r in material_pool:
         impressions = float(r.get("impressions", 0) or 0)
@@ -3704,38 +3703,15 @@ def build_high_potential_countries(
         ctr_pct = float(r.get("ctr", 0) or 0) * 100
         label = _country_label(r.get("country", ""))
         code = str(r.get("country", "")).strip().lower()
-
-        others_max_ctr = max(
-            (float(o.get("ctr", 0) or 0) * 100 for o in material_pool if o is not r), default=0.0
-        )
-        is_anomaly = (
-            others_max_ctr > 0 and ctr_pct > others_max_ctr * _COUNTRY_ANOMALY_CTR_MULTIPLE
-            and clicks < top_impression_clicks
-        )
         out_of_market = target_set is not None and code not in target_set
 
-        if is_anomaly:
-            fix = (
-                f"CTR here ({ctr_pct:.1f}%) is unusually high relative to volume ({int(clicks):,} clicks) — "
-                f"recommend checking query-level breakdown (branded vs. non-branded) before treating this as "
-                f"a targeting opportunity."
-            )
-        elif out_of_market:
-            fix = (
-                f"{label} is outside the client's stated target markets — not recommending budget expansion "
-                f"off CTR alone; check query-level intent (branded vs. non-branded) for this country first."
-            )
-        elif ctr_pct >= bench_ctr_pct:
-            fix = (
-                f"Expand budget/content targeting for {label} — already converting {int(clicks):,} clicks "
-                f"at a {ctr_pct:.1f}% click-through rate, at or above the {bench_ctr_pct:.1f}% benchmark "
-                f"(source: {bench_source})."
-            )
+        if out_of_market:
+            fix = f"{label} is outside the client's stated target markets. {_COUNTRY_EVIDENCE_DISCLAIMER}"
         else:
             fix = (
-                f"Localize title, meta description, and currency/language cues for {label} to close the "
-                f"click-through-rate gap — currently {ctr_pct:.1f}% vs the {bench_ctr_pct:.1f}% benchmark "
-                f"(source: {bench_source})."
+                f"Review the highest-visibility pages and queries for {label} ({int(clicks):,} clicks, "
+                f"{int(impressions):,} impressions observed) and assess whether country-specific content is "
+                f"justified by that demand. {_COUNTRY_EVIDENCE_DISCLAIMER}"
             )
         material.append({
             "country": label, "impressions": int(impressions), "clicks": int(clicks),
