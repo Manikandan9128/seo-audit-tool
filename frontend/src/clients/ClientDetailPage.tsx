@@ -831,7 +831,11 @@ export default function ClientDetailPage() {
         const topCompetitorDr = competitorDrRows.length
           ? competitorDrRows.reduce((a, b) => (b.dr > a.dr ? b : a))
           : null;
-        const backlinkImports = imports.filter((i) => i.import_type === "backlinks");
+        // Own-site only (matches the PPTX report's Backlink Profile slide) —
+        // without this filter, competitor backlink exports got summed in
+        // too, so "Backlinks tracked" silently included every uploaded
+        // domain's backlinks, not just the client's own.
+        const backlinkImports = imports.filter((i) => i.import_type === "backlinks" && i.is_own_site);
         const backlinksTracked = backlinkImports.reduce((s, i) => s + (i.row_count || 0), 0);
         const competitorsTrackedCount = new Set(
           imports.filter((i) => !i.is_own_site && i.domain_label).map((i) => i.domain_label)
