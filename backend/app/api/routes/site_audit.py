@@ -1601,8 +1601,18 @@ def _gather_report_data(
     # Health %, Blocked/Redirect/Have issues/Broken/Healthy page counts) — a
     # real full-site crawl, replaces our own homepage + 20-page approximation
     # on the Site Health slide when uploaded.
-    site_audit_overview_rows = _all_rows("site_audit_overview", own_only=True)
-    site_audit_overview = site_audit_overview_rows[-1] if site_audit_overview_rows else None
+    # PDF stays the primary source; a PNG screenshot (2026-09-22, for clients
+    # who can't download Semrush's PDF export) only ever fills in when no
+    # PDF-sourced overview was uploaded for this client — never picked over
+    # a PDF just because it was uploaded more recently.
+    _overview_imports_own = [r for r in all_imports if r.import_type == "site_audit_overview" and r.is_own_site]
+    _pdf_overview_imports = [r for r in _overview_imports_own if r.original_filename.lower().endswith(".pdf")]
+    _chosen_overview_import = (
+        max(_pdf_overview_imports, key=lambda r: r.created_at) if _pdf_overview_imports
+        else max(_overview_imports_own, key=lambda r: r.created_at) if _overview_imports_own
+        else None
+    )
+    site_audit_overview = _chosen_overview_import.parsed_data["rows"][0] if _chosen_overview_import else None
     # Crawled Pages (site_audit_pages) and Site Health overview are two
     # independently-uploaded Semrush exports that the Understanding Current
     # Scenario slide combines into one card — if they were pulled from the

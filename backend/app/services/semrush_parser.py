@@ -1,8 +1,14 @@
 import io
+import json
+import logging
 import re
 
 import pandas as pd
 import pdfplumber
+
+from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text_with_image
+
+logger = logging.getLogger(__name__)
 
 # Semrush export column names vary slightly by report/locale — match case-insensitively
 # on a set of known aliases per field, so a real export loads without manual mapping.
@@ -544,6 +550,78 @@ def parse_site_audit_overview_pdf(content: bytes) -> dict | None:
     return result
 
 
+_SITE_AUDIT_OVERVIEW_IMAGE_PROMPT = """You are reading a screenshot of Semrush's "Site Audit: Overview" page for \
+an SEO audit report. Extract ONLY the numbers actually visible in the image — never invent or estimate a value \
+that isn't legible. Use null for anything not visible or not present in this screenshot.
+
+Extract:
+- site_health_pct: the "Site Health" percentage (a single number, e.g. 78 for "78%").
+- ai_search_health_pct: the "AI Search Health" percentage, if this screenshot shows that card (null if absent).
+- The Blocked / Redirect / Have issues / Broken / Healthy crawled-page breakdown — for each category visible, \
+its percentage and its page count. Semrush abbreviates large counts (e.g. "1.34K" = 1340) — convert to the real \
+integer count, never just the leading digit.
+- pages_total: the total crawled pages count (also convert any "K"/"M" abbreviation to the real integer).
+- export_date: the date shown on this export, if visible (null if not shown).
+
+Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
+{
+  "site_health_pct": int or null,
+  "ai_search_health_pct": int or null,
+  "blocked_pct": number or null, "blocked_count": int or null,
+  "redirect_pct": number or null, "redirect_count": int or null,
+  "have_issues_pct": number or null, "have_issues_count": int or null,
+  "broken_pct": number or null, "broken_count": int or null,
+  "healthy_pct": number or null, "healthy_count": int or null,
+  "pages_total": int or null,
+  "export_date": string or null
+}
+"""
+
+
+def parse_site_audit_overview_image(content: bytes, mime_type: str = "image/png") -> dict | None:
+    """Vision-AI fallback for parse_site_audit_overview_pdf above, for when a
+    client can't get Semrush's PDF export (confirmed real limitation:
+    Semrush's Site Audit Overview PDF download isn't always available on
+    every plan/seat) but can still take a screenshot of the same dashboard
+    page. Same output shape as the PDF parser so every downstream consumer
+    (Understanding Current Scenario's Site Health slide) needs no changes —
+    this is purely an alternate INPUT format for the same "site_audit_
+    overview" data. Returns None on any failure (no AI key, bad JSON, no
+    site_health_pct in the response) so the caller falls through to
+    "unknown" exactly like an unrecognized PDF does, rather than silently
+    fabricating a row."""
+    try:
+        raw, _provider = generate_text_with_image(_SITE_AUDIT_OVERVIEW_IMAGE_PROMPT, content, mime_type)
+    except NoAIProviderConfigured as e:
+        logger.warning("Site Audit Overview image parsing failed: %s", e)
+        return None
+
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("Site Audit Overview image: AI returned invalid JSON: %s", cleaned[:300])
+        return None
+    if not isinstance(data, dict) or data.get("site_health_pct") is None:
+        return None
+
+    result: dict = {"site_health_pct": int(data["site_health_pct"])}
+    if data.get("ai_search_health_pct") is not None:
+        result["ai_search_health_pct"] = int(data["ai_search_health_pct"])
+    for category in _CRAWLED_PAGE_CATEGORIES:
+        key = category.lower().replace(" ", "_")
+        pct, count = data.get(f"{key}_pct"), data.get(f"{key}_count")
+        if pct is not None:
+            result[f"{key}_pct"] = float(pct)
+        if count is not None:
+            result[f"{key}_count"] = int(count)
+    if data.get("pages_total") is not None:
+        result["pages_total"] = int(data["pages_total"])
+    result["export_date"] = data.get("export_date")
+    return result
+
+
 _LINK_ATTRIBUTE_LABELS = ["Follow", "Nofollow", "Sponsored", "UGC"]
 
 
@@ -822,6 +900,18 @@ def parse_semrush_file(filename: str, content: bytes) -> tuple[str, dict]:
         if row is None:
             return "unknown", {"row_count": 0, "rows": []}
         return "domain_overview", {"row_count": 1, "rows": [row]}
+
+    # PNG fallback for the Site Audit Overview export (2026-09-22) — only
+    # ever a fallback: the PDF path above stays the primary source, and
+    # site_audit.py's own selection logic prefers a PDF-sourced row over an
+    # image-sourced one whenever both exist for the same client. This exists
+    # for clients who can't download Semrush's PDF export but can still
+    # screenshot the same dashboard page.
+    if filename.lower().endswith(".png"):
+        overview_row = parse_site_audit_overview_image(content, mime_type="image/png")
+        if overview_row is None:
+            return "unknown", {"row_count": 0, "rows": []}
+        return "site_audit_overview", {"row_count": 1, "rows": [overview_row]}
 
     df = _read_table(filename, content)
 

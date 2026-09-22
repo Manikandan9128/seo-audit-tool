@@ -235,12 +235,12 @@ export default function SemrushImportCard({
       )}
 
       <Dropzone
-        accept=".csv,.xlsx,.xls,.pdf,.json,.xml,.tsv"
+        accept=".csv,.xlsx,.xls,.pdf,.json,.xml,.tsv,.png"
         multiple
         onFiles={setFiles}
         hint={
           isOwnSite
-            ? "Accepted: CSV, XLSX, XLS, PDF, JSON, XML, TSV — type is auto-detected"
+            ? "Accepted: CSV, XLSX, XLS, PDF, JSON, XML, TSV, PNG — type is auto-detected. PNG is a fallback for the Site Audit Overview export only — a screenshot of that Semrush page, for when the PDF download isn't available."
             : "Enter the competitor domain above first — select multiple files to bulk-upload"
         }
       />
