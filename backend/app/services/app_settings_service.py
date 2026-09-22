@@ -95,6 +95,16 @@ def set_groq_api_key(db: Session, value: str) -> None:
 # Groq (OpenAI-compatible) returns these on every response, success or
 # not — real-time quota visibility with zero extra API calls, just reading
 # headers that were already there and previously discarded.
+#
+# 2026-09-22 correction: x-ratelimit-*-tokens is the PER-MINUTE (TPM)
+# window, not the daily (TPD) one — confirmed live, the limit value
+# matches GROQ_TPM_BUDGET's own documented ~8000 TPM observed cap, and
+# reset_t comes back in low single-digit seconds on a fresh call, never
+# anywhere near a day. This never reveals how much of the 200,000/day
+# cap is used — Groq only discloses that in the 429 error body's own text
+# when the daily cap is actually hit (see _attempt_groq's Retry-After
+# handling in text_ai_client.py), there is no "check today's usage without
+# hitting the limit" header for TPD the way there is for TPM.
 def _groq_quota_note(response: httpx.Response) -> str:
     h = response.headers
     limit_t, remaining_t = h.get("x-ratelimit-limit-tokens"), h.get("x-ratelimit-remaining-tokens")
@@ -103,7 +113,10 @@ def _groq_quota_note(response: httpx.Response) -> str:
         return ""
     try:
         used = int(limit_t) - int(remaining_t)
-        return f" Daily token quota: {used:,}/{int(limit_t):,} used, {int(remaining_t):,} remaining (resets in {reset_t})."
+        return (
+            f" Per-minute token quota (resets every ~60s, NOT the 200k/day cap): {used:,}/{int(limit_t):,} used, "
+            f"{int(remaining_t):,} remaining (resets in {reset_t})."
+        )
     except (TypeError, ValueError):
         return ""
 
