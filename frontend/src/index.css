@@ -624,6 +624,106 @@ td.mono {
 }
 
 /* =====================================================================
+   Redesign v3 — Stage 5: hover elevation is intentional, not blanket
+   (point 4). Applied only to genuinely interactive/clickable surfaces —
+   .card itself stays static (Getting Started, Manual Notes never get
+   this), buttons already carry their own hover state. .card-interactive
+   is an opt-in modifier for a card whose whole surface is a click target
+   (e.g. SectionCard's collapse/expand header) — never applied to a purely
+   informational card.
+   ===================================================================== */
+
+.card-interactive {
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.card-interactive:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* =====================================================================
+   Redesign v3 — Stage 3: KPI snapshot strip (point 1).
+   ===================================================================== */
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+}
+@media (max-width: 900px) {
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.kpi-tile {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--sp-5);
+}
+.kpi-top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.kpi-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.kpi-icon svg {
+  width: 17px;
+  height: 17px;
+}
+.kpi-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+/* Standalone hero number, not a table column — no tabular-nums here
+   (reserved for table cells like .dr-num), per the v3 spec's distinction. */
+.kpi-value {
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+  margin-bottom: 5px;
+}
+.kpi-sub {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.kpi-sub svg {
+  width: 12px;
+  height: 12px;
+}
+.kpi-sub.up {
+  color: var(--color-success);
+}
+.kpi-bar-track {
+  height: 5px;
+  background: var(--color-secondary-bg);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: var(--sp-3);
+}
+.kpi-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+/* =====================================================================
    Redesign v3 — Stage 2: card/section icon anchors (point 2).
    Purely additive scanning aid — decorative tint only, never repeated as
    a data-encoding color elsewhere on the page. Default tint is indigo
@@ -1082,9 +1182,13 @@ table.matrix th:first-child {
   padding: 14px 18px;
   cursor: pointer;
   background: var(--color-surface);
+  transition: box-shadow 0.15s ease, background 0.15s ease;
 }
 .competitor-head:hover {
   background: var(--color-secondary-bg);
+  box-shadow: var(--shadow-card-hover);
+  position: relative;
+  z-index: 1;
 }
 .competitor-head-left {
   display: flex;

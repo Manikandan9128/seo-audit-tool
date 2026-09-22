@@ -12,7 +12,9 @@ function normalizeDomain(d: string) {
   return d.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "").toLowerCase();
 }
 
-export default function DomainRatingEditor({ clientId, ownDomain }: { clientId: string; ownDomain?: string }) {
+export default function DomainRatingEditor({
+  clientId, ownDomain, onChanged,
+}: { clientId: string; ownDomain?: string; onChanged?: () => void }) {
   const [rows, setRows] = useState<DomainRatingRow[]>([]);
   const [domain, setDomain] = useState("");
   const [dr, setDr] = useState("");
@@ -47,6 +49,7 @@ export default function DomainRatingEditor({ clientId, ownDomain }: { clientId: 
       setDomain("");
       setDr("");
       await load();
+      onChanged?.();
     } catch (err: any) {
       setMsg(err?.response?.data?.detail || "Couldn't save");
     } finally {
@@ -58,6 +61,7 @@ export default function DomainRatingEditor({ clientId, ownDomain }: { clientId: 
     try {
       await api.delete(`/clients/${clientId}/domain-ratings/${id}`);
       setRows(rows.filter((r) => r.id !== id));
+      onChanged?.();
     } catch (err: any) {
       setMsg(err?.response?.data?.detail || "Couldn't delete");
     }
