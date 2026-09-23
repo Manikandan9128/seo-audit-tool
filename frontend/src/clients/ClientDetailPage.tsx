@@ -93,6 +93,17 @@ export default function ClientDetailPage() {
 
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditHistoryKey, setAuditHistoryKey] = useState(0);
+  // True when at least one saved site-audit run exists for this client. Fetched
+  // here rather than read from SiteAuditHistory, since that only mounts when
+  // the (collapsed-by-default) Site Audit card is expanded.
+  const [siteAuditHasData, setSiteAuditHasData] = useState(false);
+  useEffect(() => {
+    if (!clientId) return;
+    api
+      .get(`/clients/${clientId}/site-audit/history`)
+      .then((res) => setSiteAuditHasData(Array.isArray(res.data) && res.data.length > 0))
+      .catch(() => setSiteAuditHasData(false));
+  }, [clientId, auditHistoryKey]);
 
   const [psiMobile, setPsiMobile] = useState<any>(null);
   const [psiDesktop, setPsiDesktop] = useState<any>(null);
@@ -632,14 +643,13 @@ export default function ClientDetailPage() {
   // which are currently checked, so the count doesn't jump around as the
   // Sections dropdown selection changes.
   useEffect(() => {
-    const siteAuditReady = true; // Site Audit's own SectionCard always passes hasData={true}
     setReadiness({
-      ready: [siteAuditReady, !!overview, !!psiMobile, !!techStack, !!pageAuditResult, !!analyticsResult].filter(Boolean).length,
+      ready: [siteAuditHasData, !!overview, !!psiMobile, !!techStack, !!pageAuditResult, !!analyticsResult].filter(Boolean).length,
       total: SECTION_OPTIONS.length,
     });
     return () => setReadiness(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overview, psiMobile, techStack, pageAuditResult, analyticsResult]);
+  }, [siteAuditHasData, overview, psiMobile, techStack, pageAuditResult, analyticsResult]);
 
   if (!client) return <p>Loading...</p>;
 
@@ -1188,7 +1198,7 @@ export default function ClientDetailPage() {
               title="Site Audit"
               description="Checks HTTPS, robots.txt, sitemap, titles, meta tags — no login required."
               loading={auditLoading}
-              hasData={true}
+              hasData={siteAuditHasData}
             >
               <div style={{ marginTop: 12 }}>
                 <SiteAuditHistory clientId={clientId!} refreshKey={auditHistoryKey} gscConnected={!!client.gsc_site_url} />
