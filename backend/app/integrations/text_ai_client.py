@@ -274,7 +274,7 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
 # a stale preference into an unrelated later request.
 _provider_preference = threading.local()
 
-_VALID_PROVIDERS = {"groq", "gemini", "claude", "browser_use"}
+_VALID_PROVIDERS = {"groq", "gemini", "claude", "browser_use", "openrouter"}
 
 
 def set_preferred_provider(name: str | None) -> None:
@@ -428,13 +428,64 @@ def _attempt_browser_use(prompt: str, max_tokens: int, errors: list[str]) -> str
     return None
 
 
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+# OpenRouter's own auto-router, not a specific model — named free models
+# churn (deprecated/404ing within hours, see 98e8bf3), the alias doesn't.
+OPENROUTER_MODEL = "openrouter/free"
+OPENROUTER_TIMEOUT_SECONDS = 60
+
+
+def _try_openrouter(prompt: str, max_tokens: int) -> str:
+    response = httpx.post(
+        OPENROUTER_API_URL,
+        headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+        json={
+            "model": OPENROUTER_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        },
+        timeout=OPENROUTER_TIMEOUT_SECONDS,
+    )
+    if response.status_code >= 400:
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+            request=response.request,
+            response=response,
+        )
+    data = response.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
+def _attempt_openrouter(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.openrouter_api_key:
+        return None
+    try:
+        text = _call_with_timeout(_try_openrouter, OPENROUTER_TIMEOUT_SECONDS, prompt, max_tokens)
+        if text:
+            return text
+        errors.append("OpenRouter returned an empty response")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            # Free-tier cap is per-day (50/day with no credits bought) —
+            # a retry sleep won't clear it, fall straight through instead.
+            errors.append(f"OpenRouter rate-limited (likely today's free-tier request cap): {str(e)[:300]}")
+        else:
+            errors.append(f"OpenRouter request failed: {str(e)[:300]}")
+    except Exception as e:
+        errors.append(f"OpenRouter request failed: {str(e)[:300]}")
+    return None
+
+
 _PROVIDER_ATTEMPTS = {
     "groq": _attempt_groq, "gemini": _attempt_gemini, "claude": _attempt_claude,
-    "browser_use": _attempt_browser_use,
+    "browser_use": _attempt_browser_use, "openrouter": _attempt_openrouter,
 }
 # browser_use deliberately excluded from the default order — real billed
 # agent run, seconds-to-minutes latency, not a fit to try on every report
 # by default. Only reached via set_preferred_provider("browser_use").
+# openrouter likewise excluded: its free tier (50 requests/day) was already
+# tried in the default chain and removed (4ceb14d) for running out mid-
+# report — re-added 2026-09-23 as an explicit pick only.
 _DEFAULT_PROVIDER_ORDER = ["groq", "gemini", "claude"]
 
 
@@ -469,8 +520,8 @@ def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
     is configured at all; yields nothing if every configured provider's
     raw call itself failed or returned empty (same as generate_text()
     raising NoAIProviderConfigured with `errors` joined)."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, Claude, or Browser Use API key configured — add one in Settings")
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key or settings.openrouter_api_key):
+        raise NoAIProviderConfigured("No Groq, Gemini, Claude, Browser Use, or OpenRouter API key configured — add one in Settings")
     for provider in _provider_order():
         text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
         if text:
@@ -488,8 +539,8 @@ def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
     includes each provider's error). max_tokens only affects the
     Groq/Claude paths — Gemini has no equivalent cap exposed here and just
     returns whatever it generates."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, Claude, or Browser Use API key configured — add one in Settings")
+    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key or settings.openrouter_api_key):
+        raise NoAIProviderConfigured("No Groq, Gemini, Claude, Browser Use, or OpenRouter API key configured — add one in Settings")
 
     preferred = getattr(_provider_preference, "value", None)
     order = _DEFAULT_PROVIDER_ORDER

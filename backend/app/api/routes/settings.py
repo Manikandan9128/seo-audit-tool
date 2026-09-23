@@ -13,16 +13,19 @@ from app.services.app_settings_service import (
     masked_claude_api_key,
     masked_gemini_api_key,
     masked_groq_api_key,
+    masked_openrouter_api_key,
     set_browser_use_api_key,
     set_claude_api_key,
     set_gemini_api_key,
     set_groq_api_key,
+    set_openrouter_api_key,
     set_sheets_oauth_client,
     set_sheets_oauth_tokens,
     test_browser_use_key,
     test_claude_key,
     test_gemini_key,
     test_groq_key,
+    test_openrouter_key,
     test_sheets_connection,
 )
 
@@ -51,6 +54,10 @@ class BrowserUseKeyIn(BaseModel):
     browser_use_api_key: str
 
 
+class OpenRouterKeyIn(BaseModel):
+    openrouter_api_key: str
+
+
 class GoogleSheetsOAuthClientIn(BaseModel):
     google_sheets_oauth_client_id: str
     google_sheets_oauth_client_secret: str
@@ -62,6 +69,7 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
     groq_masked = masked_groq_api_key()
     claude_masked = masked_claude_api_key()
     browser_use_masked = masked_browser_use_api_key()
+    openrouter_masked = masked_openrouter_api_key()
     return {
         "gemini_api_key_set": gemini_masked is not None,
         "gemini_api_key_masked": gemini_masked,
@@ -71,6 +79,8 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
         "claude_api_key_masked": claude_masked,
         "browser_use_api_key_set": browser_use_masked is not None,
         "browser_use_api_key_masked": browser_use_masked,
+        "openrouter_api_key_set": openrouter_masked is not None,
+        "openrouter_api_key_masked": openrouter_masked,
         "google_sheets_oauth_email": get_sheets_oauth_email(db),
         "google_sheets_oauth_client_id": get_sheets_oauth_client_id(),
     }
@@ -180,6 +190,31 @@ def update_browser_use_api_key(
 def test_browser_use_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_browser_use_key()
+    return {"test_ok": test["ok"], "test_message": test["message"]}
+
+
+@router.put("/openrouter-api-key")
+def update_openrouter_api_key(
+    payload: OpenRouterKeyIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Saves the key, then immediately makes one real call to confirm it
+    works, same pattern as the other AI provider keys above."""
+    set_openrouter_api_key(db, payload.openrouter_api_key)
+    test = test_openrouter_key()
+    return {
+        "openrouter_api_key_set": True,
+        "openrouter_api_key_masked": masked_openrouter_api_key(),
+        "test_ok": test["ok"],
+        "test_message": test["message"],
+    }
+
+
+@router.post("/openrouter-api-key/test")
+def test_openrouter_api_key(current_user: User = Depends(get_current_user)):
+    """Re-runs the connectivity test on demand, without changing the key."""
+    test = test_openrouter_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 

@@ -2528,15 +2528,15 @@ def start_generate_report_job(
     """Kicks off a background PPTX build and returns a job id to poll —
     avoids blocking on a single long request that could outlast the hosting
     gateway's timeout. preferred_provider ('groq'/'gemini'/'claude'/
-    'browser_use', or None for the default Groq-first order) tries that AI
+    'browser_use'/'openrouter', or None for the default Groq-first order) tries that AI
     provider first for every AI call this job makes, still falling back to
-    the others (Groq, Gemini, Claude — never Browser Use, see
+    the others (Groq, Gemini, Claude — never Browser Use/OpenRouter, see
     _DEFAULT_PROVIDER_ORDER) on failure. 'browser_use' runs a real Browser
     Use Cloud agent run per AI call this job makes — much slower per call
     (a billed agent run, not a token completion) than the other three."""
     _get_owned_client(client_id, db, current_user)
-    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use"):
-        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', or omitted")
+    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use", "openrouter"):
+        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', 'openrouter', or omitted")
     job = ReportGenerationJob(client_id=client_id, status="pending")
     db.add(job)
     db.commit()

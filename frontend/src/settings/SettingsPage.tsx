@@ -276,6 +276,8 @@ export default function SettingsPage() {
   const [claudeMasked, setClaudeMasked] = useState<string | null>(null);
   const [browserUseSet, setBrowserUseSet] = useState(false);
   const [browserUseMasked, setBrowserUseMasked] = useState<string | null>(null);
+  const [openRouterSet, setOpenRouterSet] = useState(false);
+  const [openRouterMasked, setOpenRouterMasked] = useState<string | null>(null);
   const [sheetsOauthEmail, setSheetsOauthEmail] = useState<string | null>(null);
   const [sheetsOauthClientId, setSheetsOauthClientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -294,6 +296,8 @@ export default function SettingsPage() {
       setClaudeMasked(res.data.claude_api_key_masked);
       setBrowserUseSet(res.data.browser_use_api_key_set);
       setBrowserUseMasked(res.data.browser_use_api_key_masked);
+      setOpenRouterSet(res.data.openrouter_api_key_set);
+      setOpenRouterMasked(res.data.openrouter_api_key_masked);
       setSheetsOauthEmail(res.data.google_sheets_oauth_email);
       setSheetsOauthClientId(res.data.google_sheets_oauth_client_id);
     } catch (err: any) {
@@ -411,6 +415,29 @@ export default function SettingsPage() {
           onSaved={(set, masked) => {
             setBrowserUseSet(set);
             setBrowserUseMasked(masked);
+          }}
+        />
+
+        <ApiKeyCard
+          title="OpenRouter API Key"
+          description={
+            <>
+              Get a key at{" "}
+              <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">
+                openrouter.ai/keys
+              </a>
+              . Uses the openrouter/free auto-router. Only used when picked in the report AI-provider dropdown.
+            </>
+          }
+          keySet={openRouterSet}
+          masked={openRouterMasked}
+          loading={loading}
+          saveUrl="/settings/openrouter-api-key"
+          testUrl="/settings/openrouter-api-key/test"
+          saveField="openrouter_api_key"
+          onSaved={(set, masked) => {
+            setOpenRouterSet(set);
+            setOpenRouterMasked(masked);
           }}
         />
 
