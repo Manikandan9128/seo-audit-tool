@@ -19,14 +19,14 @@ from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_at
 
 CATEGORY_TITLES = {
     "local_seo": "Next Steps: Local SEO",
-    "technical_seo": "Next Steps: Technical SEO",
     "conversion_seo": "Next Steps: Conversion SEO",
     "aeo": "Answer Engine Optimization (AEO)",
     "geo": "Generative Engine Optimization (GEO)",
 }
-# goals deliberately excluded too (2026-09-23) — SEO Goals & Targets is
-# built deterministically by pptx_builder.build_goals_kpis so every
-# baseline is a measured value from the report's own data.
+# goals and technical_seo deliberately excluded too (2026-09-23) — SEO Goals & Targets is
+# built deterministically (pptx_builder.build_goals_kpis /
+# build_technical_next_steps) so every number and finding is traceable
+# to the report's own data.
 # content_seo deliberately excluded — that slide always renders through
 # pptx_builder's deterministic keyword-page-category classifier
 # (_classify_keyword_page_category) instead of this AI path. It needs an
@@ -41,30 +41,12 @@ bullet must sound like an analyst who actually studied this specific business: n
 competitors, real numbers, real customer-question types — using ONLY the facts given below. Never invent a \
 fact, number, competitor name, or product that isn't in the data.
 
-For EACH of these 5 categories, decide first whether it genuinely applies to this business, THEN write it:
+For EACH of these 4 categories, decide first whether it genuinely applies to this business, THEN write it:
 - local_seo — only applies to a business with physical locations, regional service areas, or city-level search \
 intent. A national or global B2B/SaaS/e-commerce business with no physical storefront must get \
 "applicable": false — never recommend Google Business Profile, NAP consistency, or local citations to a \
 business that has no physical location. When it IS applicable, favor geo-targeted CONTENT strategy (e.g. \
 city-specific landing pages for real service areas) over generic listing-hygiene advice.
-- technical_seo — foundational crawl/on-page fixes; applicable whenever technical findings exist. Select the \
-3-5 most important actions — prioritize by severity, number of affected URLs, template/site-wide impact, and \
-crawlability/indexation impact, never by raw issue count alone. When multiple URLs share the same underlying \
-issue or template-level problem, consolidate them into ONE bullet (e.g. "Expand structured-data coverage across \
-affected blog pages" instead of one bullet per URL) — never list the same underlying issue once per URL. Only \
-recommend a specific schema type when the data confirms it's applicable and missing/invalid (never generic \
-"add relevant JSON-LD" wording, and never JobPosting schema just because a Careers page exists — only for \
-confirmed individual job-detail pages). Each bullet should read as "[Fix/Resolve/Implement/Consolidate/Improve \
-specific area] — [confirmed evidence] — [specific action]," grounded only in confirmed findings — never invent \
-severity, business/traffic/ranking impact, or a cause the audit didn't establish. Never recommend a domain \
-migration or ccTLD/domain-consolidation change — that decision is explicitly out of scope for this report. Any \
-OTHER recommendation that is high-risk or hard to reverse — a platform/CMS change, a full URL-structure \
-overhaul, or a mass redirect/canonical change — must still be phrased as a DECISION for {client_name} to make, \
-not an instruction to just do it: state the specific tradeoff (traffic/ranking risk during the transition vs. \
-the problem it fixes) and name it as something requiring their own sign-off before starting, e.g. "Decide \
-whether to move off the current CMS — this fixes {{specific problem}}, but a platform change carries real \
-short-term ranking risk and needs a dedicated migration plan before it starts." Never phrase one of these as a \
-routine bullet alongside ordinary fixes like a missing meta tag.
 - conversion_seo — turning traffic into leads/sales, using real trust signals, real competitor conversion \
 tactics, or real top-traffic pages if given.
 - aeo — schema/FAQ eligibility for AI Overviews and answer boxes, referencing real customer-question types for \
@@ -90,7 +72,6 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
   "categories": {{
     "local_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
-    "technical_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "conversion_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "aeo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "geo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}}

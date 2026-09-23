@@ -2888,7 +2888,10 @@ def _tech_fixes_next_steps_items(
         elif len(paths) <= 3:
             evidence = f"confirmed on {len(paths)} pages ({', '.join(paths)})"
         else:
-            evidence = f"confirmed on {len(paths)} pages sharing the same template/pattern"
+            # Page count and examples only — a shared template is never
+            # claimed without evidence of one (Technical SEO spec
+            # 2026-09-23, section 6).
+            evidence = f"confirmed on {len(paths)} pages (e.g. {', '.join(paths[:2])})"
         items.append(f"{verb} {issue} — {evidence} — {fix_text}")
     return items
 
@@ -6295,41 +6298,6 @@ def add_brand_mentions_slide(
     return slide
 
 
-def _derive_next_steps(site_audit: dict | None, page_audit: dict | None) -> list[str]:
-    steps = []
-    if site_audit:
-        for issue in site_audit.get("issues", []):
-            if "https" in issue.lower():
-                steps.append("Move the site fully to HTTPS — browsers flag non-HTTPS pages as insecure.")
-            elif "robots" in issue.lower():
-                steps.append("Add a robots.txt file so search engines can crawl the site predictably.")
-            elif "sitemap" in issue.lower():
-                steps.append("Publish a valid sitemap.xml and submit it in Google Search Console.")
-            elif "title" in issue.lower():
-                steps.append("Fix missing/oversized <title> tags — keep titles under 60 characters and unique per page.")
-            elif "meta description" in issue.lower():
-                steps.append("Add unique meta descriptions to every page to improve click-through from search results.")
-            elif "h1" in issue.lower():
-                steps.append("Ensure every page has exactly one <h1> describing its main topic.")
-            elif "viewport" in issue.lower():
-                steps.append("Add a mobile viewport meta tag — required for mobile usability and rankings.")
-            elif "canonical" in issue.lower():
-                steps.append("Add canonical tags to prevent duplicate-content issues.")
-    if page_audit and page_audit.get("pages_with_issues"):
-        steps.append(
-            f"{page_audit['pages_with_issues']} of {page_audit['pages_checked']} crawled pages have on-page "
-            "issues (missing titles/descriptions) — work through the page list and fix each."
-        )
-    # de-dupe while preserving order
-    seen = set()
-    unique = []
-    for s in steps:
-        if s not in seen:
-            seen.add(s)
-            unique.append(s)
-    return unique
-
-
 def add_domain_strategy_slide(prs: Presentation, domain_strategy: dict):
     """Domain Strategy finding — generic-TLD vs. single-target-country
     mismatch. Framed as a tradeoff explainer plus an open question, since
@@ -6823,22 +6791,172 @@ def add_goals_slide(
     return slide
 
 
+# Semrush Site Audit issue name -> (concept, specific action). Order matters:
+# the more specific phrase is checked first ("duplicate meta description"
+# before "meta description"). The concept key de-duplicates the same
+# problem reported by two sources (Semrush's sitewide rollup and this
+# tool's own page crawl) so it's never recommended twice.
+_TECH_ISSUE_ACTIONS: list[tuple[tuple[str, ...], str, str]] = [
+    (("broken internal link",), "internal_links", "fix or remove the broken internal links on the affected pages"),
+    (("broken external link",), "external_links", "update or remove the broken outbound links"),
+    (("4xx",), "4xx", "restore these URLs or 301-redirect them to the closest relevant live page, then update internal links that point to them"),
+    (("5xx", "server error"), "5xx", "investigate the server errors on these URLs with the hosting/development team"),
+    (("redirect chain", "redirect loop"), "redirects", "point internal links and redirects straight at the final destination URL"),
+    (("duplicate title",), "duplicate_title", "write a unique title for each affected page"),
+    (("duplicate meta description",), "duplicate_meta", "write a unique meta description for each affected page"),
+    (("duplicate content",), "duplicate_content", "consolidate or differentiate the duplicate pages"),
+    (("title",), "title", "add or rewrite the title on each affected page"),
+    (("meta description",), "meta_description", "add a relevant meta description to each affected page"),
+    (("hreflang",), "hreflang", "correct the hreflang annotations on the affected pages"),
+    (("canonical",), "canonical", "correct the canonical tags on the affected pages"),
+    (("sitemap",), "sitemap", "correct the sitemap so it lists only live, canonical, indexable URLs"),
+    (("robots.txt",), "robots", "fix the robots.txt problem flagged by the audit"),
+    (("mixed content", "https", "http page", "not secure"), "https", "serve every page and resource over HTTPS"),
+    (("structured data", "schema", "markup"), "schema", "fix the invalid structured data on the affected pages"),
+    (("h1",), "h1", "give each affected page one descriptive H1"),
+    (("viewport",), "viewport", "add a mobile viewport meta tag"),
+]
+
+
+def _tech_issue_concept(issue: str) -> tuple[str | None, str | None]:
+    text = (issue or "").lower()
+    for phrases, concept, action in _TECH_ISSUE_ACTIONS:
+        if any(ph in text for ph in phrases):
+            return concept, action
+    return None, None
+
+
+# Tier for prioritisation (spec section 7): crawl/indexation first, then
+# errors that break pages or links, then on-page, then enhancements.
+_TECH_CONCEPT_TIER = {
+    "https": 0, "robots": 0, "sitemap": 0, "5xx": 0, "4xx": 0, "canonical": 0, "hreflang": 0,
+    "internal_links": 1, "redirects": 1, "duplicate_content": 1,
+    "duplicate_title": 2, "title": 2, "duplicate_meta": 2, "meta_description": 2, "h1": 2, "viewport": 2,
+    "external_links": 3, "schema": 3,
+}
+
+
+def build_technical_next_steps(
+    site_audit: dict | None,
+    page_audit: dict | None,
+    tech_stack: dict | None = None,
+    technical_fix_items: list[str] | None = None,
+    site_audit_issues: list[dict] | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
+    schema_validation: dict | None = None,
+    psi_mobile: dict | None = None,
+    max_items: int = 7,
+) -> list[str]:
+    """Technical SEO Next Steps (spec 2026-09-23): only confirmed findings,
+    each as Issue — evidence/affected scope — specific action, at the scope
+    the source actually supports (sitewide rollup, named pages, homepage
+    only). Sources, each the same one its own report slide uses: Semrush
+    Site Audit error rollup (Critical Issues), this tool's page crawl
+    (Tech Fixes), the homepage check, the schema validator's per-page-type
+    applicability, and PageSpeed's own metric statuses. No domain/TLD
+    migration, no best-practice-only advice, no "every page" claims from a
+    homepage-only check."""
+    candidates: list[tuple[int, float, str, str]] = []  # (tier, -weight, concept, text)
+    seen_concepts: set[str] = set()
+
+    # Semrush sitewide error rollup — authoritative affected counts.
+    if site_audit_issues:
+        errors, _warnings = classify_seo_issues(site_audit_issues)
+        total_crawled = (_canonical_page_totals(site_audit_pages_rows, None) or {}).get("total")
+        for e in errors:
+            concept, action = _tech_issue_concept(e["issue"])
+            key = concept or f"semrush:{e['issue'].lower()}"
+            if key in seen_concepts:
+                continue
+            seen_concepts.add(key)
+            action = action or "resolve this error on the affected URLs listed in the Site Audit export"
+            scope = _issue_count_label(int(e["pages"]), total_crawled)
+            candidates.append((
+                _TECH_CONCEPT_TIER.get(concept, 1), -float(e["pages"]), key,
+                f"Resolve \"{e['issue']}\" — flagged by the site audit on {scope} — {action}.",
+            ))
+
+    # This tool's page crawl, already grouped per issue+fix with real URLs.
+    for item in technical_fix_items or []:
+        concept, _action = _tech_issue_concept(item.split(" — ")[0])
+        key = concept or f"page:{item.split(' — ')[0].lower()}"
+        if key in seen_concepts:
+            continue
+        seen_concepts.add(key)
+        text = item if item.rstrip().endswith(".") else item.rstrip() + "."
+        candidates.append((_TECH_CONCEPT_TIER.get(concept, 2), 0.0, key, text))
+
+    # Homepage check — sitewide only for issues that are sitewide by nature.
+    https_off = bool(tech_stack and tech_stack.get("https") is False)
+    homepage_issues = list((site_audit or {}).get("issues") or [])
+    if https_off and not any("https" in i.lower() for i in homepage_issues):
+        homepage_issues.append("Site is not served over HTTPS")
+    sitewide_text = {
+        "https": "The site isn't fully served over HTTPS (site-audit check) — move every page and resource to HTTPS with 301 redirects from HTTP.",
+        "robots": "robots.txt is missing or unreadable (site-audit check) — publish a valid robots.txt so crawlers get predictable access rules.",
+        "sitemap": "No valid XML sitemap was found (site-audit check) — publish sitemap.xml listing live, canonical URLs and submit it in Search Console.",
+    }
+    for issue in homepage_issues:
+        concept, action = _tech_issue_concept(issue)
+        if not concept or concept in seen_concepts:
+            continue
+        seen_concepts.add(concept)
+        if concept in sitewide_text:
+            candidates.append((0, 0.0, concept, sitewide_text[concept]))
+        else:
+            candidates.append((2, 0.0, concept, f"Homepage: {issue.rstrip('.')} — {action}."))
+
+    # Schema — only page types the validator confirms are applicable and
+    # under-covered; never "add schema to all pages".
+    if schema_validation and "schema" not in seen_concepts:
+        gaps = [
+            b for b in (schema_validation.get("by_page_type") or [])
+            if b.get("applicable_schema") not in (None, "", "—") and b.get("pages")
+            and (b.get("valid_pages") or 0) < b["pages"]
+        ][:2]
+        for b in gaps:
+            missing = b["pages"] - (b.get("valid_pages") or 0)
+            candidates.append((
+                3, -float(missing), "schema",
+                f"Add valid {b['applicable_schema']} schema on {b['page_type']} — {missing:,} of {b['pages']:,} pages "
+                "lack valid markup per the Structured Data validator.",
+            ))
+        if gaps:
+            seen_concepts.add("schema")
+
+    # Performance — only metrics PageSpeed itself rates Poor on mobile.
+    poor = [m for m in ((psi_mobile or {}).get("metric_table") or []) if m.get("status") == "Poor"]
+    if poor:
+        detail = ", ".join(f"{m['label']} {m.get('display_value') or m['value']}" for m in poor[:3])
+        candidates.append((
+            1, 0.0, "performance",
+            f"Improve mobile performance — PageSpeed rates {detail} as poor on the homepage — "
+            "work through the PageSpeed opportunities for those metrics.",
+        ))
+
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    return [c[3] for c in candidates[:max_items]]
+
+
 def add_technical_seo_next_steps_slide(
     prs: Presentation,
     site_audit: dict | None,
     page_audit: dict | None,
     tech_stack: dict | None,
-    domain_strategy: dict | None,
+    domain_strategy: dict | None = None,
     technical_fix_items: list[str] | None = None,
+    site_audit_issues: list[dict] | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
+    schema_validation: dict | None = None,
+    psi_mobile: dict | None = None,
 ):
-    items = list(_derive_next_steps(site_audit, page_audit))
-    if tech_stack and tech_stack.get("https") is False and not any("HTTPS" in i for i in items):
-        items.append("Move the site fully to HTTPS before any further SEO work — it's a baseline ranking and trust signal.")
-    if domain_strategy:
-        items.insert(0, f"Decide the domain strategy first — {domain_strategy['open_question']}")
-    if technical_fix_items:
-        items += technical_fix_items
-    intro = "Foundational and on-page fixes that unblock every other SEO effort — tackle these first."
+    """domain_strategy is accepted for call compatibility but never used —
+    a domain/TLD migration is out of scope for this report."""
+    items = build_technical_next_steps(
+        site_audit, page_audit, tech_stack, technical_fix_items,
+        site_audit_issues, site_audit_pages_rows, schema_validation, psi_mobile,
+    )
+    intro = "Confirmed technical issues from the audit, highest crawl and indexation impact first."
     return _next_steps_category_slide(prs, "Next Steps: Technical SEO", intro, items)
 
 
@@ -7623,7 +7741,6 @@ def _build_report(
     # classifier below, never through this AI-category routing.
     _ai_category_titles = {
         "local_seo": "Next Steps: Local SEO",
-        "technical_seo": "Next Steps: Technical SEO",
         "conversion_seo": "Next Steps: Conversion SEO",
         "aeo": "Answer Engine Optimization (AEO)",
         "geo": "Generative Engine Optimization (GEO)",
@@ -7652,9 +7769,11 @@ def _build_report(
     # fallback_fn arg (static-fallback path) and as extra_items (AI-
     # generated path), so the merge holds regardless of which one renders.
     technical_fix_items = _tech_fixes_next_steps_items(page_audit, analytics, site_audit_pages_rows)
-    _next_steps_slide(
-        "technical_seo", add_technical_seo_next_steps_slide, prs, site_audit, page_audit, tech_stack, domain_strategy,
-        technical_fix_items, extra_items=technical_fix_items,
+    # Always deterministic, never the AI category — every bullet must trace
+    # to a confirmed finding (Technical SEO spec 2026-09-23).
+    add_technical_seo_next_steps_slide(
+        prs, site_audit, page_audit, tech_stack, None, technical_fix_items,
+        site_audit_issues, site_audit_pages_rows, schema_validation, psi_mobile,
     )
     # Always the deterministic keyword-page-category classifier below, never
     # the AI path — this needs an EXACT, guaranteed-consistent rule applied
