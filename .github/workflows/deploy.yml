@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
 
+# Two pushes close together used to run deploy.sh concurrently and race on
+# the seo-audit-app container ("container name already in use"). Queue
+# them instead; cancel-in-progress: false so a started deploy always
+# finishes, and GitHub keeps only the newest pending run.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest

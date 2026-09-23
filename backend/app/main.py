@@ -31,6 +31,30 @@ def _google_refresh_error_handler(request: Request, exc: RefreshError):
 
 
 @app.on_event("startup")
+def _fail_jobs_orphaned_by_restart():
+    # Report builds and All Pages crawls run in daemon threads inside this
+    # process, so a restart (every deploy restarts the container) kills
+    # them with nothing left to mark the row finished. Previously they sat
+    # "running" until get_generate_report_job's 15-minute staleness check
+    # reported a vague "stalled or crashed". At startup no job can still be
+    # running (single uvicorn process — see Dockerfile CMD), so mark them
+    # failed right away with the real cause.
+    from app.models.page_audit_job import PageAuditJob
+    from app.models.report_generation_job import ReportGenerationJob
+
+    db = SessionLocal()
+    try:
+        for model, what in ((ReportGenerationJob, "Report generation"), (PageAuditJob, "The All Pages crawl")):
+            db.query(model).filter(model.status.in_(("pending", "running"))).update(
+                {"status": "failed", "error": f"{what} was interrupted by a server restart (usually a deploy) — please run it again."},
+                synchronize_session=False,
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
 def _load_settings_overrides():
     db = SessionLocal()
     try:
