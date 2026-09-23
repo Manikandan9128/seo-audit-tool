@@ -238,10 +238,14 @@ def test_gap_scale_insight_adds_interpretation_not_just_counts():
     }
     slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
     text = _slide_text(slides[1])
-    assert "indicating the scale of the competitive keyword gap" in text
+    assert "showing the scale of the competitive gap" in text
 
 
 def test_off_topic_count_and_split_stated_in_insights():
+    # 2026-09-23: the gap-scale bullet's "unrelated to {client}'s business"
+    # framing was dropped (shortened to reduce PowerPoint line-wrap risk) —
+    # the off-topic count and Shared/Missing/Untapped split are what this
+    # test actually cares about.
     analysis = {
         "keyword_gap_rows": [
             _gap_row("shared kw", 1000, 40, your_position=5, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Shared"),
@@ -253,7 +257,7 @@ def test_off_topic_count_and_split_stated_in_insights():
     slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
     text = _slide_text(slides[1])
     assert "4 off-topic excluded" in text
-    assert "unrelated to Acme's business" in text
+    assert "1 Shared / 1 Missing / 1 Untapped" in text
     assert "3 relevant keyword" in text
     assert "1 Shared / 1 Missing / 1 Untapped" in text
 

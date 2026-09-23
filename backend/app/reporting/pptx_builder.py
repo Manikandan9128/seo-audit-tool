@@ -5019,6 +5019,32 @@ def _render_gap_table(slide, top, rows: list[dict], competitor_columns: list[str
     return bottom, table
 
 
+def _render_gap_insights(slide, top, insights: list[str], has_sheet_link: bool) -> None:
+    """Key Insights for a Keyword Gap slide (summary or dedicated status),
+    inside its own bordered card (2026-09-23) — previously bare text
+    floating directly under the table with only a flat 0.15in gap and no
+    visual separation, which read as overlapping the table above it once a
+    long bullet (e.g. the gap-scale summary line) wrapped to more real
+    lines in PowerPoint than _insights_strip's own line-count estimate
+    predicted. The card gives the section a fixed, generous height that
+    stops well clear of the "Open full keyword list" button's own fixed
+    position (or the footer, when there's no button) — insights render
+    inside it with real margin on every side, and the card's presence
+    means any residual estimate slack reads as empty space inside a
+    bordered panel, never as text running into the table above."""
+    if not insights:
+        return
+    card_bottom = (SLIDE_H - Inches(1.15)) if has_sheet_link else (SLIDE_H - Inches(0.55))
+    card_height = card_bottom - top
+    if card_height < Inches(0.6):
+        return  # not enough room left on the slide — skip rather than draw a squashed/overlapping card
+    _card(slide, Inches(0.6), top, Inches(12.1), card_height)
+    _insights_strip(
+        slide, Inches(0.85), top + Inches(0.18), Inches(11.6), insights[:5],
+        max_y=top + card_height - Inches(0.18),
+    )
+
+
 def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int, off_topic_count: int, client_name: str | None) -> list[str]:
     """Key Insights for a dedicated status slide — built ONLY from that
     status's own keywords and data (2026-09-22 spec rule 9), never
@@ -5366,21 +5392,17 @@ def add_keyword_gap_slides(
         top_y += Inches(0.15)
 
     insights = []
-    # Bug fixed 2026-09-20: this used to embed the client's full multi-
-    # sentence company-overview description straight into a one-line
-    # insight ("unrelated to Lumber provides an AI-powered construction
-    # workforce management platform that unifies..."), confirmed live on a
-    # real Lumber report — grammatically broken and far too long for a Key
-    # Insights bullet. A short "{client_name}'s business" reads correctly
-    # and needs no description text at all.
-    topic_ref = f"{client_name.strip()}'s business" if client_name and client_name.strip() else "the client's business"
     # 2026-09-21 spec rule 5: the gap-scale bullet must explain what the
-    # split means, not just restate the counts — the "indicating..." clause
-    # is the only addition; every number is still the same real count.
+    # split means, not just restate the counts — the trailing clause is the
+    # only addition; every number is still the same real count. Shortened
+    # 2026-09-23 (was a single ~180-char run-on sentence, the likeliest
+    # candidate for wrapping to more real lines in PowerPoint than
+    # _insights_strip's own line-count estimate reserved for it) — same
+    # numbers, same interpretive framing, half the length.
     insights.append(
-        f"{off_topic_count} off-topic excluded (unrelated to {topic_ref}), {len(kd_filtered)} relevant keyword(s), "
-        f"split {counts['Shared']} Shared / {counts['Missing']} Missing / {counts['Untapped']} Untapped — "
-        "indicating the scale of the competitive keyword gap within this analyzed set."
+        f"{len(kd_filtered)} relevant keyword(s) analyzed ({off_topic_count} off-topic excluded) — "
+        f"{counts['Shared']} Shared / {counts['Missing']} Missing / {counts['Untapped']} Untapped, "
+        "showing the scale of the competitive gap."
     )
     missing_rows = [r for r in by_category["Missing"] if r.get("competitor_positions")]
     if missing_rows:
@@ -5421,13 +5443,7 @@ def add_keyword_gap_slides(
             "immediately following this one."
         )
 
-    # Same reserved-footer-zone discipline as add_competitor_table_slide's
-    # own keyword_sheet_link button — confirmed live there that skipping
-    # this cap lets a long insights list grow straight over the button/
-    # footer instead of stopping short of it.
-    insights_max_y = (SLIDE_H - Inches(1.10)) if keyword_gap_sheet_link else None
-    if insights:
-        _insights_strip(summary_slide, Inches(0.6), top_y, Inches(12.1), insights[:6], max_y=insights_max_y)
+    _render_gap_insights(summary_slide, top_y, insights, bool(keyword_gap_sheet_link))
     if keyword_gap_sheet_link:
         _add_gap_sheet_link_button(summary_slide, keyword_gap_sheet_link)
     slides.append(summary_slide)
@@ -5446,8 +5462,7 @@ def add_keyword_gap_slides(
 
         bottom, _table = _render_gap_table(slide, Inches(1.32), shown, competitor_columns, headers, col_widths)
         status_insights = _gap_status_insights(category, status_rows, len(shown), off_topic_count, client_name)
-        insights_max_y2 = (SLIDE_H - Inches(1.10)) if keyword_gap_sheet_link else None
-        _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), status_insights[:6], max_y=insights_max_y2)
+        _render_gap_insights(slide, bottom + Inches(0.15), status_insights, bool(keyword_gap_sheet_link))
         if keyword_gap_sheet_link:
             _add_gap_sheet_link_button(slide, keyword_gap_sheet_link)
         slides.append(slide)
