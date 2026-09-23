@@ -5019,30 +5019,71 @@ def _render_gap_table(slide, top, rows: list[dict], competitor_columns: list[str
     return bottom, table
 
 
-def _render_gap_insights(slide, top, insights: list[str], has_sheet_link: bool) -> None:
-    """Key Insights for a Keyword Gap slide (summary or dedicated status),
-    inside its own bordered card (2026-09-23) — previously bare text
-    floating directly under the table with only a flat 0.15in gap and no
-    visual separation, which read as overlapping the table above it once a
-    long bullet (e.g. the gap-scale summary line) wrapped to more real
-    lines in PowerPoint than _insights_strip's own line-count estimate
-    predicted. The card gives the section a fixed, generous height that
-    stops well clear of the "Open full keyword list" button's own fixed
-    position (or the footer, when there's no button) — insights render
-    inside it with real margin on every side, and the card's presence
-    means any residual estimate slack reads as empty space inside a
-    bordered panel, never as text running into the table above."""
-    if not insights:
-        return
-    card_bottom = (SLIDE_H - Inches(1.15)) if has_sheet_link else (SLIDE_H - Inches(0.55))
-    card_height = card_bottom - top
-    if card_height < Inches(0.6):
-        return  # not enough room left on the slide — skip rather than draw a squashed/overlapping card
-    _card(slide, Inches(0.6), top, Inches(12.1), card_height)
-    _insights_strip(
-        slide, Inches(0.85), top + Inches(0.18), Inches(11.6), insights[:5],
-        max_y=top + card_height - Inches(0.18),
-    )
+def add_keyword_gap_insights_slide(
+    prs: Presentation,
+    overview_insights: list[str],
+    insights_by_category: dict[str, list[str]],
+) -> object | None:
+    """Every Keyword Gap Key Insight, off the table slides entirely and
+    onto its own slide (2026-09-23 user request) — the Analysis/Missing/
+    Shared/Untapped slides previously each carried their own Key Insights
+    card at the bottom, competing for space with the table above it (the
+    direct cause of a reported text/table overlap on a large Missing
+    table). Those slides now render table-only, with real headroom; every
+    insight that used to live on one of them moves here instead, onto a
+    dedicated slide with nothing else competing for its space — "no
+    overwrite" by construction, not by a tighter height estimate.
+
+    One column per status that has any rows (1-3 columns, same _card
+    layout as add_core_problem_slide) — never an empty column for a status
+    with nothing to say. overview_insights (off-topic/relevant/split,
+    ambiguous-review, KD-unavailable) render above the columns since they
+    describe the whole analysis, not one status."""
+    if not overview_insights and not any(insights_by_category.values()):
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Competitor Keyword Gap — Key Insights")
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
+
+    y = Inches(1.15)
+    if overview_insights:
+        overview_h = Inches(0.32) * len(overview_insights[:3]) + Inches(0.2)
+        _card(slide, Inches(0.6), y, Inches(12.1), overview_h)
+        iy = y + Inches(0.15)
+        for line in overview_insights[:3]:
+            lines = _wrap_lines(line, Inches(11.5), size_pt=11.5)
+            _icon_dot(slide, Inches(0.85), iy + Inches(0.07), Inches(0.08), _accent())
+            _textbox(slide, Inches(1.0), iy, Inches(11.4), Inches(0.24) * lines, line, size=11.5)
+            iy += Inches(0.24) * lines + Inches(0.08)
+        y += overview_h + Inches(0.25)
+
+    categories = [c for c in ("Missing", "Shared", "Untapped") if insights_by_category.get(c)]
+    if categories:
+        col_top, col_height = y, SLIDE_H - Inches(0.55) - y
+        gap = Inches(0.2)
+        total_width = Inches(12.1)
+        col_width = Emu(int((total_width - gap * (len(categories) - 1)) / len(categories)))
+        left = Inches(0.6)
+        for cat in categories:
+            color = _GAP_CHIP[cat][1]
+            _card(slide, left, col_top, col_width, col_height)
+            cy = col_top + Inches(0.2)
+            _textbox(slide, left + Inches(0.25), cy, col_width - Inches(0.5), Inches(0.35), cat, size=14, bold=True, color=color)
+            rule = slide.shapes.add_shape(1, left + Inches(0.25), cy + Inches(0.36), col_width - Inches(0.5), Pt(1.5))
+            _fill(rule, color)
+            rule.shadow.inherit = False
+            cy += Inches(0.55)
+            max_cy = col_top + col_height - Inches(0.15)
+            for point in insights_by_category[cat]:
+                lines = _wrap_lines(point, col_width - Inches(0.5), size_pt=11)
+                item_h = Inches(0.2) * lines + Inches(0.1)
+                if cy + item_h > max_cy:
+                    break
+                _textbox(slide, left + Inches(0.25), cy, col_width - Inches(0.5), Inches(0.2) * lines, point, size=11)
+                cy += item_h
+            left += col_width + gap
+    return slide
 
 
 def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int, off_topic_count: int, client_name: str | None) -> list[str]:
@@ -5389,66 +5430,18 @@ def add_keyword_gap_slides(
     inline_rows = [r for cat in inline_categories for r in by_category[cat]]
     if inline_rows:
         top_y, _table = _render_gap_table(summary_slide, top_y, inline_rows, competitor_columns, headers, col_widths)
-        top_y += Inches(0.15)
 
-    insights = []
-    # 2026-09-21 spec rule 5: the gap-scale bullet must explain what the
-    # split means, not just restate the counts — the trailing clause is the
-    # only addition; every number is still the same real count. Shortened
-    # 2026-09-23 (was a single ~180-char run-on sentence, the likeliest
-    # candidate for wrapping to more real lines in PowerPoint than
-    # _insights_strip's own line-count estimate reserved for it) — same
-    # numbers, same interpretive framing, half the length.
-    insights.append(
-        f"{len(kd_filtered)} relevant keyword(s) analyzed ({off_topic_count} off-topic excluded) — "
-        f"{counts['Shared']} Shared / {counts['Missing']} Missing / {counts['Untapped']} Untapped, "
-        "showing the scale of the competitive gap."
-    )
-    missing_rows = [r for r in by_category["Missing"] if r.get("competitor_positions")]
-    if missing_rows:
-        top_m = missing_rows[0]
-        insights.append(
-            f"Highest-volume Missing keyword: \"{top_m['keyword']}\" ({int(_num(top_m.get('search_volume'))):,}/mo) — "
-            f"ranking competitors: {_gap_row_competitors_text(top_m)}."
-        )
-    if by_category["Shared"]:
-        top_s = by_category["Shared"][0]
-        insights.append(
-            f"Highest-volume Shared keyword: \"{top_s['keyword']}\" ({int(_num(top_s.get('search_volume'))):,}/mo) — "
-            f"you and {_gap_row_competitors_text(top_s)} both rank."
-        )
-    # Rule 5's fourth bullet ("Actionable implication") + rule 6 (never an
-    # unsupported strategic claim like "will generate X traffic") — only
-    # emitted when there's a real Missing row with a ranking competitor to
-    # point the validation step at.
-    if missing_rows:
-        insights.append(
-            "Prioritize validation of high-volume Missing keywords where competitors already have a relevant "
-            "ranking page before treating any of them as a confirmed SEO target."
-        )
-    if by_category["Untapped"]:
-        top_u = by_category["Untapped"][0]
-        insights.append(
-            f"Highest-volume Untapped keyword: \"{top_u['keyword']}\" ({int(_num(top_u.get('search_volume'))):,}/mo) — "
-            "no tracked domain ranks for it yet."
-        )
-    if ambiguous_rows:
-        review_examples = ", ".join(f"\"{r.get('keyword')}\"" for r in ambiguous_rows[:3])
-        insights.append(f"Needs manual relevance review: {review_examples} — could not confidently judge against the client's business.")
-    if kd_unavailable_count:
-        insights.append(f"{kd_unavailable_count} keyword(s) excluded — KD_UNAVAILABLE (keyword difficulty missing in the source export).")
-    if dedicated_categories:
-        insights.append(
-            f"{', '.join(dedicated_categories)} shown on its own dedicated slide (6+ keywords) — see the slide(s) "
-            "immediately following this one."
-        )
-
-    _render_gap_insights(summary_slide, top_y, insights, bool(keyword_gap_sheet_link))
+    # Table-only from here — no Key Insights card on this slide (2026-09-23
+    # user request: insights competed for space with the table and one
+    # long line overlapped it on a large Missing table). Every insight this
+    # slide used to show now lives on add_keyword_gap_insights_slide
+    # instead, appended after every table slide below.
     if keyword_gap_sheet_link:
         _add_gap_sheet_link_button(summary_slide, keyword_gap_sheet_link)
     slides.append(summary_slide)
 
-    # ---- One dedicated slide per status with 6+ keywords, never merged. ----
+    # ---- One dedicated slide per status with 6+ keywords, never merged.
+    # Table-only, same reasoning as the summary slide above. ----
     for category in ("Missing", "Shared", "Untapped"):
         if category not in dedicated_categories:
             continue
@@ -5460,12 +5453,46 @@ def add_keyword_gap_slides(
         _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
         _draw_gap_legend(slide)
 
-        bottom, _table = _render_gap_table(slide, Inches(1.32), shown, competitor_columns, headers, col_widths)
-        status_insights = _gap_status_insights(category, status_rows, len(shown), off_topic_count, client_name)
-        _render_gap_insights(slide, bottom + Inches(0.15), status_insights, bool(keyword_gap_sheet_link))
+        _render_gap_table(slide, Inches(1.32), shown, competitor_columns, headers, col_widths)
         if keyword_gap_sheet_link:
             _add_gap_sheet_link_button(slide, keyword_gap_sheet_link)
         slides.append(slide)
+
+    # ---- One consolidated Key Insights slide, covering every status that
+    # has any rows — dedicated or inline — in its own column. ----
+    overview_insights = []
+    # 2026-09-21 spec rule 5: the gap-scale bullet must explain what the
+    # split means, not just restate the counts — the trailing clause is the
+    # only addition; every number is still the same real count. Shortened
+    # 2026-09-23 (was a single ~180-char run-on sentence, the likeliest
+    # candidate for wrapping to more real lines in PowerPoint than
+    # _insights_strip's own line-count estimate reserved for it) — same
+    # numbers, same interpretive framing, half the length.
+    overview_insights.append(
+        f"{len(kd_filtered)} relevant keyword(s) analyzed ({off_topic_count} off-topic excluded) — "
+        f"{counts['Shared']} Shared / {counts['Missing']} Missing / {counts['Untapped']} Untapped, "
+        "showing the scale of the competitive gap."
+    )
+    if ambiguous_rows:
+        review_examples = ", ".join(f"\"{r.get('keyword')}\"" for r in ambiguous_rows[:3])
+        overview_insights.append(f"Needs manual relevance review: {review_examples} — could not confidently judge against the client's business.")
+    if kd_unavailable_count:
+        overview_insights.append(f"{kd_unavailable_count} keyword(s) excluded — KD_UNAVAILABLE (keyword difficulty missing in the source export).")
+
+    insights_by_category: dict[str, list[str]] = {}
+    for category in ("Missing", "Shared", "Untapped"):
+        status_rows = by_category[category]
+        if not status_rows:
+            continue
+        # Same shown-count every status's own table actually displays: the
+        # dedicated row cap for a status that crossed the threshold, every
+        # row (1-5) for one that stayed inline on the summary table.
+        shown_count = min(len(status_rows), _GAP_DEDICATED_ROW_CAP) if category in dedicated_categories else len(status_rows)
+        insights_by_category[category] = _gap_status_insights(category, status_rows, shown_count, off_topic_count, client_name)
+
+    insights_slide = add_keyword_gap_insights_slide(prs, overview_insights, insights_by_category)
+    if insights_slide:
+        slides.append(insights_slide)
 
     return slides
 
