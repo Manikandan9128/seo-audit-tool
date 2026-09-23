@@ -1371,6 +1371,16 @@ def _gather_report_data(
             if date_range:
                 analytics["date_range"] = date_range
 
+    # 2026-09-23: the next progress() call after this one wasn't until 82%
+    # (competitor screenshots), leaving the whole keyword-clustering/SEO-
+    # issues/core-problem AI stretch — several sequential LLM calls, each
+    # provider-fallback-and-retry, easily the biggest chunk of total runtime
+    # on a large site (confirmed real on a 284-page Geopits run: progress
+    # sat on "Pulling Analytics..." for minutes after that pull had long
+    # finished, reading as a hang with nothing to show it wasn't). These
+    # checkpoints don't change what runs, only what the progress bar says
+    # while it does.
+    progress("Merging keyword data and clustering topics...", 52)
     all_imports = db.query(SemrushImport).filter(SemrushImport.client_id == client_id).all()
 
     def _all_rows(import_type: str, own_only: bool = False) -> list[dict]:
@@ -1893,6 +1903,7 @@ def _gather_report_data(
     # about a number the reader can't also see on the table.
     seo_issues_ai_insights = None
     if site_audit_issues_rows and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
+        progress("Generating SEO Issues insights...", 62)
         error_entries, warning_entries = classify_seo_issues(site_audit_issues_rows)
         page_totals = _canonical_page_totals(site_audit_pages_rows, None)
         insights_candidate = generate_seo_issues_insights(
@@ -1977,6 +1988,7 @@ def _gather_report_data(
         )
 
         if settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key:
+            progress("Analyzing branded vs non-branded search...", 70)
             top_branded = sorted(branded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
             top_nonbranded = sorted(nonbranded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
             gsc_range = f"{date_range.get('gsc_start', '')} to {date_range.get('gsc_end', '')}"
@@ -1996,6 +2008,7 @@ def _gather_report_data(
     # actively wrong once a client fixes something.
     core_problem_result = None
     if settings.gemini_api_key or settings.claude_api_key:
+        progress("Diagnosing core problem...", 75)
         core_problem_findings = {
             "homepage_issues": site_audit_result.get("issues", []),
             "pages_checked": (page_audit_result or {}).get("pages_checked"),
