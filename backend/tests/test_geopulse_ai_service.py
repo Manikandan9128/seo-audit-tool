@@ -13,13 +13,13 @@ def _attempts(*items):
 
 def test_returns_aeo_and_geo_items():
     fake_response = """{
-      "aeo_items": ["Add FAQ schema to the pricing page — GeoPulse shows 0 citations there."],
+      "aeo_items": ["Create a pricing explainer answering the missed pricing prompts — GeoPulse shows 0 citations there."],
       "geo_items": ["Publish a comparison page — GeoPulse shows competitor X cited 12 times for this query."]
     }"""
     with patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=_attempts((fake_response, "gemini"))):
         result = generate_aeo_geo_content("some raw geopulse export text")
     assert result == {
-        "aeo_items": ["Add FAQ schema to the pricing page — GeoPulse shows 0 citations there."],
+        "aeo_items": ["Create a pricing explainer answering the missed pricing prompts — GeoPulse shows 0 citations there."],
         "geo_items": ["Publish a comparison page — GeoPulse shows competitor X cited 12 times for this query."],
     }
 
@@ -96,7 +96,7 @@ def test_drops_items_with_unsupported_causal_claims():
     fake_response = """{
       "aeo_items": [
         "Implement FAQ schema on the pricing page — this will increase AI answer-box visibility.",
-        "Add structured data to the product page to address eligibility for AI Overview inclusion."
+        "Answer the missed product-comparison prompts on the product page to address the observed visibility gap."
       ],
       "geo_items": [
         "Publish a comparison page — this will improve AI parsing of the brand's offerings.",
@@ -105,21 +105,21 @@ def test_drops_items_with_unsupported_causal_claims():
     }"""
     with patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=_attempts((fake_response, "gemini"))):
         result = generate_aeo_geo_content("some raw geopulse export text")
-    assert result["aeo_items"] == ["Add structured data to the product page to address eligibility for AI Overview inclusion."]
+    assert result["aeo_items"] == ["Answer the missed product-comparison prompts on the product page to address the observed visibility gap."]
     assert result["geo_items"] == ["Create comparison-friendly content to strengthen competitive presence in AI responses."]
 
 
 def test_bare_guarantee_claim_dropped_but_explicit_disclaimer_kept():
     fake_response = """{
       "aeo_items": [
-        "Implementing FAQPage schema guarantees inclusion in the AI answer box.",
-        "FAQPage structured data is a prerequisite for eligibility, not a guarantee of inclusion."
+        "Answering the missed setup questions guarantees inclusion in the AI answer box.",
+        "Answer the missed setup questions directly — a prerequisite for eligibility, not a guarantee of inclusion."
       ],
       "geo_items": ["Some geo item with no issues at all."]
     }"""
     with patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=_attempts((fake_response, "gemini"))):
         result = generate_aeo_geo_content("some raw geopulse export text")
-    assert result["aeo_items"] == ["FAQPage structured data is a prerequisite for eligibility, not a guarantee of inclusion."]
+    assert result["aeo_items"] == ["Answer the missed setup questions directly — a prerequisite for eligibility, not a guarantee of inclusion."]
 
 
 def test_returns_empty_dict_when_all_items_fail_causal_guard():

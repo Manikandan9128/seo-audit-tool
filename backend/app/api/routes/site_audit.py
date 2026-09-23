@@ -1703,6 +1703,12 @@ def _gather_report_data(
             geopulse_analysis_result = generate_aeo_geo_content(combined_geopulse_text) or None
         except Exception as e:
             logger.warning("GeoPulse AEO/GEO content generation failed for client %s: %s", client.id, e)
+        if not geopulse_analysis_result:
+            # A visibility check WAS uploaded but produced nothing usable —
+            # distinct from "never uploaded" so the slide can say so
+            # instead of implying the check was never run.
+            geopulse_analysis_result = {"uploaded_but_unavailable": True}
+            content_issues.append("AEO/GEO slides: the AI visibility-check file couldn't be analysed this run.")
             content_issues.append(f"AEO/GEO content (GeoPulse): {e}")
 
     # Competitor Analysis comparison table: prefer Domain Overview rows (own +

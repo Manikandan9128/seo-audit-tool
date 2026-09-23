@@ -3,9 +3,10 @@ content for the AEO and GEO Next Steps slides. Before this, both slides were
 static boilerplate identical across every client report (same bullets
 regardless of the site) — this makes them reflect the client's actual
 GeoPulse findings (AI-visibility mentions, citation gaps, answer-engine
-presence, etc.) once a GeoPulse file is uploaded. Falls back to the existing
-generic bullets when no GeoPulse data is uploaded or the AI call fails — see
-add_aeo_slide/add_geo_slide in pptx_builder.py."""
+presence, etc.) once a GeoPulse file is uploaded. It is the ONLY source of
+AEO/GEO recommendations (spec 2026-09-23): with no file, or no usable
+result, pptx_builder renders add_aeo_geo_visibility_required_slide instead
+of generic AI-search advice."""
 
 import json
 import logging
@@ -87,6 +88,22 @@ observed visibility gap...", "to strengthen external source coverage...".
 For unbranded clusters, do not simply recommend adding the brand name to pages — prioritize missing \
 topics/use cases/entities/comparisons/product coverage/informational content/citations instead.
 
+COMPETITORS: name only competitors that actually appear in this export. Never bring in a competitor \
+from anywhere else.
+
+SCHEMA: do not recommend any schema/structured-data markup at all — this export carries no \
+technical/schema applicability data, and schema is covered by the report's Technical SEO and \
+Structured Data slides.
+
+URLS: never write a URL unless it appears verbatim in the export below.
+
+CAUSES: never state or guess why the AI engine did or didn't mention the brand ("was not mentioned \
+because..."). Describe what the check shows ("The visibility check shows...", "The tested prompts \
+indicate...", "The cluster recorded...").
+
+GENERIC (never output): "create more content", "optimize for ChatGPT", "improve AI visibility", "add \
+schema to all pages", "use more keywords", "build backlinks".
+
 GeoPulse export content:
 {raw_text}
 
@@ -122,7 +139,7 @@ def _find_disputed_metrics(raw_text: str) -> list[tuple[str, str, str]]:
 # drive/generate/ensure [outcome]") case-insensitively; a bare "guarantee"
 # is only flagged when it's NOT part of an explicit disclaimer ("not a
 # guarantee", "no guarantee") — that phrasing is the compliant, required
-# framing (see add_aeo_slide's own "not a guarantee of inclusion"), not a
+# framing ("not a guarantee of inclusion"), not a
 # claim, and must never be stripped.
 _CAUSAL_CLAIM_RE = re.compile(
     r"\bwill (?:definitely |certainly |likely )?(?:increase|improve|boost|cause|drive|generate|ensure)\b",
@@ -142,6 +159,66 @@ def _drop_unsupported_claims(items: list[str], list_name: str) -> list[str]:
             logger.warning("GeoPulse %s item dropped for unsupported causal claim: %s", list_name, item[:200])
             continue
         kept.append(item)
+    return kept
+
+
+# 2026-09-23 AEO/GEO spec sections 11-13, 16 — mechanical backstops for the
+# prompt rules above, same reasoning as _CAUSAL_CLAIM_RE: an LLM can slip
+# despite the instruction, so the output is checked too.
+_GENERIC_REC_RE = re.compile(
+    r"^\W*(create more content|optimi[sz]e for chatgpt|improve (your |the )?ai visibility|add schema to all pages|"
+    r"use more keywords|build (more )?backlinks)\W*$",
+    re.IGNORECASE,
+)
+_SCHEMA_REC_RE = re.compile(r"\b(schema|structured data|json-ld|faqpage|howto markup|markup)\b", re.IGNORECASE)
+_ASSUMED_CAUSE_RE = re.compile(
+    r"\b(was|were|is|are|wasn'?t|weren'?t|isn'?t|aren'?t)\s+(not\s+)?(mentioned|cited|recommended)\s+because\b"
+    r"|\bfailed to (mention|cite|recommend)\b",
+    re.IGNORECASE,
+)
+_URL_RE = re.compile(r"https?://[^\s)\]\"']+|\bwww\.[^\s)\]\"']+", re.IGNORECASE)
+_MAX_ITEMS = 5
+
+
+def _item_violation(item: str, raw_text: str) -> str | None:
+    if _GENERIC_REC_RE.search(item):
+        return "generic recommendation"
+    if _SCHEMA_REC_RE.search(item):
+        return "schema recommendation without applicability data"
+    if _ASSUMED_CAUSE_RE.search(item):
+        return "assumed cause"
+    raw_lower = (raw_text or "").lower()
+    for url in _URL_RE.findall(item):
+        if url.rstrip(".,;").lower() not in raw_lower:
+            return f"URL not in the visibility report ({url})"
+    return None
+
+
+def _drop_spec_violations(items: list[str], list_name: str, raw_text: str) -> list[str]:
+    kept = []
+    for item in items:
+        reason = _item_violation(item, raw_text)
+        if reason:
+            logger.warning("GeoPulse %s item dropped (%s): %s", list_name, reason, item[:200])
+            continue
+        kept.append(item)
+    return kept
+
+
+def _tokens(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 3}
+
+
+def _drop_cross_list_duplicates(aeo_items: list[str], geo_items: list[str]) -> list[str]:
+    """Section 3: a GEO item that restates an AEO item (>= 80% shared
+    significant words) is the same recommendation twice — kept on AEO only."""
+    kept = []
+    for g in geo_items:
+        gt = _tokens(g)
+        if any(gt and len(gt & _tokens(a)) / max(1, min(len(gt), len(_tokens(a)))) >= 0.8 for a in aeo_items):
+            logger.warning("GeoPulse geo_items item dropped (duplicates an AEO item): %s", g[:200])
+            continue
+        kept.append(g)
     return kept
 
 
@@ -201,6 +278,8 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
     geo_items = [str(x).strip() for x in (data.get("geo_items") or []) if str(x).strip()]
     aeo_items = _drop_unsupported_claims(aeo_items, "aeo_items")
     geo_items = _drop_unsupported_claims(geo_items, "geo_items")
+    aeo_items = _drop_spec_violations(aeo_items, "aeo_items", raw_text)[:_MAX_ITEMS]
+    geo_items = _drop_cross_list_duplicates(aeo_items, _drop_spec_violations(geo_items, "geo_items", raw_text))[:_MAX_ITEMS]
     if not aeo_items and not geo_items:
         return {}
     return {"aeo_items": aeo_items, "geo_items": geo_items}

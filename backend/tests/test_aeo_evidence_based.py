@@ -1,6 +1,7 @@
 from pptx import Presentation
 
-from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, add_aeo_slide
+from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, add_aeo_geo_visibility_required_slide
+from app.services.geopulse_ai_service import _drop_cross_list_duplicates, _item_violation
 
 
 def _prs():
@@ -11,43 +12,36 @@ def _prs():
 
 
 def _slide_text(slide) -> str:
-    parts = []
-    for shape in slide.shapes:
-        if shape.has_text_frame and shape.text_frame.text.strip():
-            parts.append(shape.text_frame.text)
-    return "\n".join(parts)
+    return "\n".join(s.text_frame.text for s in slide.shapes if s.has_text_frame and s.text_frame.text.strip())
 
 
-def _pages(faq_n=13, other_n=810):
-    pages = []
-    for i in range(faq_n):
-        pages.append({"url": f"https://x.com/faq/{i}", "meta": {"schema_types_found": [], "schema_field_issues": []}})
-    for i in range(other_n):
-        pages.append({"url": f"https://x.com/page-{i}", "meta": {"schema_types_found": ["WebSite", "Organization"], "schema_field_issues": []}})
-    return pages
+RAW = "Workflow / How-To: 0/10 unbranded mentions. Cited source: https://example.com/guides/fleet"
 
 
-def test_cites_real_faq_missing_count_when_schema_validation_available():
-    from app.services.technical_seo_service import aggregate_schema_validation
-    sv = aggregate_schema_validation(_pages())
-    slide = add_aeo_slide(_prs(), None, None, sv)
-    text = _slide_text(slide)
-    assert "FAQPage structured data is missing on 13 of 13 applicable page(s)" in text
-    assert "not a guarantee of inclusion" in text
-    # Old generic, evidence-free bullet must not also appear alongside real data.
-    assert "Add structured FAQ sections to key pages" not in text
+def test_no_visibility_check_states_the_gap_instead_of_generic_advice():
+    text = _slide_text(add_aeo_geo_visibility_required_slide(_prs()))
+    assert "AI visibility check required" in text
+    assert "ChatGPT" not in text and "schema" not in text.lower()
 
 
-def test_confirmed_win_when_faq_schema_fully_present():
-    pages = [{"url": f"https://x.com/faq/{i}", "meta": {"schema_types_found": ["FAQPage"], "schema_field_issues": []}} for i in range(5)]
-    from app.services.technical_seo_service import aggregate_schema_validation
-    sv = aggregate_schema_validation(pages)
-    slide = add_aeo_slide(_prs(), None, None, sv)
-    text = _slide_text(slide)
-    assert "already present on all 5 applicable page(s)" in text
+def test_uploaded_but_unavailable_is_worded_differently():
+    text = _slide_text(add_aeo_geo_visibility_required_slide(_prs(), uploaded_but_unavailable=True))
+    assert "was uploaded" in text and "required" not in text.split("\n")[1]
 
 
-def test_falls_back_to_generic_bullets_when_no_schema_validation():
-    slide = add_aeo_slide(_prs(), None, None, None)
-    text = _slide_text(slide)
-    assert "Add structured FAQ sections to key pages" in text
+def test_generic_schema_cause_and_invented_url_items_are_dropped():
+    assert _item_violation("Create more content.", RAW) == "generic recommendation"
+    assert _item_violation("Add FAQPage schema to the fleet guides.", RAW).startswith("schema")
+    assert _item_violation("The brand was not mentioned because its pages are thin.", RAW) == "assumed cause"
+    assert _item_violation("Expand https://example.com/pricing with fleet sizing answers.", RAW).startswith("URL not in")
+    ok = "Create fleet-operation guides covering tipper capacity and servicing to address the 0/10 Workflow / How-To gap; see https://example.com/guides/fleet."
+    assert _item_violation(ok, RAW) is None
+
+
+def test_geo_item_restating_an_aeo_item_is_dropped():
+    aeo = ["Create fleet-operation guides covering tipper capacity, fuel efficiency and servicing for the Workflow gap."]
+    geo = [
+        "Create fleet-operation guides covering tipper capacity, fuel efficiency and servicing for the Workflow gap.",
+        "Strengthen third-party citations around commercial-vehicle topics — no client-domain sources were cited in this run.",
+    ]
+    assert _drop_cross_list_duplicates(aeo, geo) == [geo[1]]
