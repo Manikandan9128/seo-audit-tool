@@ -4155,79 +4155,82 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     return slide
 
 
+# Bounce-rate gap (percentage points) above which the spike day counts as
+# materially less engaged than the period (Traffic Spike spec 2026-09-23).
+_SPIKE_BOUNCE_MATERIAL_PP = 5
+
+
 def _traffic_spike_hypothesis(spike: dict) -> list[str]:
-    """Channel -> landing page -> engagement -> key event evidence chain,
-    ending in one testable causal hypothesis — teammate QA on the last
-    report flagged this slide as a plain date/country/channel dump with no
-    reasoning. Every clause here traces to a real number ga4_service.
-    get_traffic_spike_breakdown returned; when engagement/key-event data
-    isn't available (property has no Google Signals / key events
-    configured) the hypothesis narrows to what evidence actually exists
-    rather than guessing at the missing half."""
+    """Key Insights for the Traffic Spike slide (spec 2026-09-23): traffic
+    VOLUME (dominant channel + landing page, dominant geography) and traffic
+    QUALITY (spike-day bounce rate vs the period average, then engagement
+    and key events). Order matters — _insights_strip caps at 5 lines, so
+    the bounce-rate quality signal comes right after the source lines and
+    can never be pushed off. Every number traces to ga4_service.
+    get_traffic_spike_breakdown; a missing metric is omitted, never assumed.
+    Attribution language only ("accounted for", "coincided with"), and a
+    high bounce rate is a quality signal, never called bot traffic."""
     lines: list[str] = []
+
+    # 1. Volume — channel + landing page.
     top_channel = (spike.get("by_channel") or [None])[0]
     top_landing = (spike.get("by_landing_page") or [None])[0]
     if top_channel and top_landing:
         lines.append(
-            f"{top_channel['label']} drove {top_channel['pct']:.0f}% of the spike, landing mostly on "
+            f"{top_channel['label']} accounted for {top_channel['pct']:.0f}% of spike-day sessions, landing mostly on "
             f"\"{top_landing['label']}\" ({top_landing['pct']:.0f}% of that day's sessions)."
         )
     elif top_channel:
-        lines.append(f"{top_channel['label']} drove {top_channel['pct']:.0f}% of the spike.")
+        lines.append(f"{top_channel['label']} accounted for {top_channel['pct']:.0f}% of spike-day sessions.")
 
+    # 2. Volume — geography.
+    top_country = (spike.get("by_country") or [None])[0]
+    if top_country:
+        lines.append(f"{top_country['label']} was the dominant geography, with {top_country['pct']:.0f}% of spike-day sessions.")
+
+    # 3. Quality — bounce rate (GA4 bounceRate is a 0-1 fraction).
+    avg_bounce, spike_bounce = spike.get("avg_bounce_rate"), spike.get("spike_bounce_rate")
+    if spike_bounce is not None:
+        spike_bounce_pct = spike_bounce * 100
+        if avg_bounce is None:
+            lines.append(f"Bounce rate on the spike day was {spike_bounce_pct:.0f}%; no period baseline is available to compare it with.")
+        else:
+            avg_bounce_pct = avg_bounce * 100
+            diff = spike_bounce_pct - avg_bounce_pct
+            compare = f"Bounce rate on the spike day was {spike_bounce_pct:.0f}% versus {avg_bounce_pct:.0f}% for the period ({diff:+.0f} percentage points)"
+            if diff > _SPIKE_BOUNCE_MATERIAL_PP:
+                lines.append(
+                    f"{compare}, indicating lower engagement — review the concentrated traffic sources, landing pages, "
+                    "geography, and referral patterns for anomalies."
+                )
+            else:
+                lines.append(f"{compare} — bounce-rate behaviour does not indicate a clear quality deterioration.")
+
+    # 4. Quality — engagement and key events, when measured.
     avg_eng, spike_eng = spike.get("avg_engagement_rate"), spike.get("spike_engagement_rate")
     avg_ke, spike_ke = spike.get("avg_key_events"), spike.get("spike_key_events")
     have_engagement = avg_eng is not None and spike_eng is not None
     have_key_events = avg_ke is not None and spike_ke is not None
-
+    quality_bits = []
     if have_engagement:
-        eng_pct, avg_eng_pct = spike_eng * 100, avg_eng * 100
-        eng_delta = eng_pct - avg_eng_pct
-        eng_verdict = "held up" if eng_delta >= -5 else "dropped noticeably"
-        lines.append(f"Engagement rate that day was {eng_pct:.0f}% vs a {avg_eng_pct:.0f}% period average — {eng_verdict}.")
+        quality_bits.append(f"engagement rate {spike_eng * 100:.0f}% vs {avg_eng * 100:.0f}% average")
+    avg_dur, spike_dur = spike.get("avg_session_duration_sec"), spike.get("spike_session_duration_sec")
+    if avg_dur is not None and spike_dur is not None:
+        quality_bits.append(f"average session duration {spike_dur:.0f}s vs {avg_dur:.0f}s")
     if have_key_events:
-        ke_verdict = "rose with it" if spike_ke >= avg_ke * 1.1 else ("stayed flat" if spike_ke >= avg_ke * 0.9 else "did not follow")
-        lines.append(f"Key events that day: {spike_ke:.0f} vs a {avg_ke:.0f}/day average — {ke_verdict}.")
+        quality_bits.append(f"key events {spike_ke:.0f} vs a {avg_ke:.0f}/day average")
+    if quality_bits:
+        lines.append("On the spike day: " + "; ".join(quality_bits) + ".")
 
-    # Bounce rate — the number that answers "was this good traffic or
-    # noise" directly, added as one line alongside the engagement/key-event
-    # evidence above without touching that existing logic. GA4's bounceRate
-    # metric is a 0-1 fraction, same convention as engagementRate above, so
-    # *100 for both display and the "~5 points" comparison threshold.
-    # Classification + reasoning stays one sentence, per spec, so it can't
-    # push an existing line out of _insights_strip's 5-line cap.
-    avg_bounce, spike_bounce = spike.get("avg_bounce_rate"), spike.get("spike_bounce_rate")
-    if avg_bounce is not None and spike_bounce is not None:
-        avg_bounce_pct, spike_bounce_pct = avg_bounce * 100, spike_bounce * 100
-        duration_note = ""
-        avg_dur, spike_dur = spike.get("avg_session_duration_sec"), spike.get("spike_session_duration_sec")
-        if avg_dur is not None and spike_dur is not None:
-            duration_note = f", avg. session duration {spike_dur:.0f}s vs {avg_dur:.0f}s average"
-
-        diff = spike_bounce_pct - avg_bounce_pct
-        if abs(diff) <= 5:
-            label, reason = "SAME PATTERN", "likely a real volume event, not a quality issue"
-        elif diff < 0:
-            label, reason = "MORE ENGAGED THAN USUAL", "worth identifying and repeating the driver"
-        else:
-            label, reason = "LESS ENGAGED THAN USUAL", "likely low-quality/bot traffic, treat with caution"
-        lines.append(
-            f"Bounce rate that day was {spike_bounce_pct:.0f}% vs a {avg_bounce_pct:.0f}% period average{duration_note} "
-            f"— {label}: {reason}."
-        )
-
-    # The hypothesis itself: only stated when there's enough evidence to
-    # actually distinguish "real demand" from "low-quality traffic" —
-    # engagement AND key events both present and pointing the same
-    # direction. Anything thinner than that stays as the raw evidence
-    # lines above without a claimed verdict, rather than guessing.
+    # 5. Combined read — only when engagement AND key events both exist and
+    # point the same way; otherwise the evidence above stands on its own.
     if have_engagement and have_key_events:
         engagement_held = spike_eng >= avg_eng * 0.9
         key_events_held = spike_ke >= avg_ke * 0.9
         if engagement_held and key_events_held:
-            lines.append("Hypothesis: this looks like genuine demand, not bot/referral noise — engagement and key events moved with sessions, not against them.")
+            lines.append("Engagement and key events rose in line with sessions, consistent with genuine demand coinciding with the spike.")
         elif not engagement_held and not key_events_held:
-            lines.append("Hypothesis: this spike is likely low-intent or referral/bot traffic — sessions rose but engagement and key events didn't follow, worth checking the top landing page's referrer detail.")
+            lines.append("Sessions rose but engagement and key events did not follow — review the top source's referrer and landing-page detail before treating this traffic as normal demand.")
     return lines
 
 
@@ -4272,7 +4275,13 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
     # data (2-4 in practice) rather than a fixed per-column width, so a
     # 4th column (Channel) fits without redesigning the layout, and a
     # client with only 2 populated columns still fills the row width.
-    col_top, col_height = Inches(2.55), Inches(3.7)
+    # Columns sized to their real row count (max 5 each), not a fixed 3.7in
+    # — the fixed height left room for only ONE Key Insights line below,
+    # so the bounce-rate quality insight never actually rendered.
+    columns = [(label, rows[:5]) for label, rows in columns]
+    max_rows = max(len(rows) for _label, rows in columns)
+    col_top = Inches(2.45)
+    col_height = Inches(0.75) + Inches(0.36) * max_rows
     gap = Inches(0.2)
     total_width = Inches(12.1)
     col_width = Emu(int((total_width - gap * (len(columns) - 1)) / len(columns)))
@@ -4296,7 +4305,7 @@ def add_traffic_spike_slide(prs: Presentation, spike: dict):
 
     hypothesis = _traffic_spike_hypothesis(spike)
     if hypothesis:
-        _insights_strip(slide, Inches(0.6), col_top + col_height + Inches(0.15), Inches(11.9), hypothesis, title="Causal Hypothesis")
+        _insights_strip(slide, Inches(0.6), col_top + col_height + Inches(0.15), Inches(11.9), hypothesis, title="Key Insights")
     return slide
 
 
