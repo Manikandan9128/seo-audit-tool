@@ -8,6 +8,11 @@ interface DomainRatingRow {
   dr: number;
 }
 
+function domainInitials(d: string) {
+  const name = normalizeDomain(d).split(".")[0] || d;
+  return name.slice(0, 2).toUpperCase();
+}
+
 function normalizeDomain(d: string) {
   return d.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "").toLowerCase();
 }
@@ -71,12 +76,19 @@ export default function DomainRatingEditor({
 
   return (
     <div className="card">
-      <h3 style={{ marginTop: 0 }}>Domain Rating</h3>
-      <p style={{ color: "#6b7280", fontSize: 13 }}>
-        Manually entered — look up each domain on Ahrefs' free Authority Checker and enter it here.
-        Covers the DR column in Competitor Analysis for your own site and any competitor domain.
-      </p>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <div className="card-title-row">
+        <div className="card-icon" aria-hidden>
+          <svg viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><rect x="7" y="12" width="3" height="6" rx="1" fill="currentColor" /><rect x="12" y="8" width="3" height="10" rx="1" fill="currentColor" /><rect x="17" y="5" width="3" height="13" rx="1" fill="currentColor" /></svg>
+        </div>
+        <div className="card-title-text">
+          <h3 className="card-title">Domain Rating</h3>
+          <p className="card-desc">
+            Manually entered — look up each domain on Ahrefs' free Authority Checker and enter it here.
+            Covers the DR column in Competitor Analysis for your own site and any competitor domain.
+          </p>
+        </div>
+      </div>
+      <div className="card-body" style={{ display: "flex", gap: "var(--sp-3)", alignItems: "center", flexWrap: "wrap" }}>
         <input
           type="text"
           placeholder="Domain (e.g. example.com)"
@@ -95,47 +107,41 @@ export default function DomainRatingEditor({
           {saving ? "Saving..." : "Add / Update"}
         </button>
       </div>
-      {msg && <p style={{ fontSize: 13, color: "#991b1b", marginTop: 8 }}>{msg}</p>}
+      {msg && <p style={{ fontSize: 13, color: "var(--color-danger-text)", marginTop: "var(--sp-2)" }}>{msg}</p>}
 
       {rows.length > 0 && (
-        <div className="table-wrap" style={{ marginTop: 16 }}>
-          <table>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left" }}>Domain</th>
-                <th style={{ textAlign: "left", width: 220 }}>Rating</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const isSelf = ownNorm !== null && normalizeDomain(r.domain) === ownNorm;
-                return (
-                  <tr key={r.id}>
-                    <td>
-                      {r.domain}
-                      {isSelf && <span className="self-tag">Own site</span>}
-                    </td>
-                    <td>
-                      <div className="dr-cell">
-                        <div className="dr-bar-wrap">
-                          <div
-                            className={`dr-bar${isSelf ? " self" : ""}`}
-                            style={{ width: `${Math.max(0, Math.min(100, r.dr))}%` }}
-                          />
-                        </div>
-                        <span className="dr-num">{r.dr}</span>
-                      </div>
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <ConfirmDeleteButton label={r.domain} onConfirm={() => remove(r.id)} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <ol className="leaderboard" aria-label="Domain Rating, highest first">
+          {[...rows]
+            .sort((a, b) => b.dr - a.dr)
+            .map((r, i) => {
+              const isSelf = ownNorm !== null && normalizeDomain(r.domain) === ownNorm;
+              const rank = i + 1;
+              return (
+                <li key={r.id} className={`lb-row${isSelf ? " self" : ""}`}>
+                  <span className={`lb-rank${rank === 1 ? " gold" : rank <= 3 ? " top" : ""}`} aria-label={`Rank ${rank}`}>
+                    {rank}
+                  </span>
+                  <span className={`lb-avatar${isSelf ? " self" : ""}`} aria-hidden>
+                    {domainInitials(r.domain)}
+                  </span>
+                  <span className="lb-domain">
+                    <span className="lb-domain-name">{r.domain}</span>
+                    {isSelf && <span className="self-tag">Own site</span>}
+                  </span>
+                  <span className="lb-bar-wrap" aria-hidden>
+                    <span
+                      className={`lb-bar-fill${isSelf ? " self" : rank <= 3 ? " top" : ""}`}
+                      style={{ width: `${Math.max(0, Math.min(100, r.dr))}%` }}
+                    />
+                  </span>
+                  <span className="lb-value">{r.dr}</span>
+                  <span className="lb-actions">
+                    <ConfirmDeleteButton label={r.domain} onConfirm={() => remove(r.id)} />
+                  </span>
+                </li>
+              );
+            })}
+        </ol>
       )}
     </div>
   );
