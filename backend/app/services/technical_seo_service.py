@@ -631,6 +631,13 @@ def run_site_audit(website_url: str) -> dict:
     started = time.monotonic()
     home_resp = _fetch(website_url)
     load_time_ms = int((time.monotonic() - started) * 1000)
+    # A client URL saved as http:// (e.g. "http://lumberfi.com") that
+    # redirects to HTTPS IS served over HTTPS — judge the final URL after
+    # redirects, not the scheme typed into the client record. Confirmed
+    # real 2026-09-23: a LumberFi deck told the client "The site is not
+    # served over HTTPS" while its own Tech Stack slide said HTTPS: Yes.
+    if not https and home_resp is not None and str(home_resp.url).startswith("https://"):
+        https = True
 
     result = {
         "url": website_url,

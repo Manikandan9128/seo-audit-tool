@@ -5837,6 +5837,26 @@ def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_cl
     return slides
 
 
+# Same routing buckets Content SEO already excludes — not business topics.
+_NON_TARGET_CLUSTER_LABELS = {
+    _NEEDS_REVIEW_CLUSTER_LABEL, _COMPETITOR_ROUTE_CLUSTER_LABEL,
+    _CAREER_ROUTE_CLUSTER_LABEL, _GEO_ROUTE_CLUSTER_LABEL,
+}
+
+
+def _metric_cell(value) -> str:
+    """Search volume / KD table cell: a real number formatted, or "—" when
+    the row has none (Search Console-only rows) — never the literal "None"
+    a raw str() of a missing value printed (LumberFi deck, 2026-09-23)."""
+    if value in (None, "") or str(value).strip().lower() in ("none", "nan", "n/a"):
+        return "—"
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{int(f):,}" if f.is_integer() else f"{f:,.1f}"
+
+
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
     """One table slide per keyword cluster (Educational Toys, Development
     Skills, etc.), matching the reference deck's "Target Keywords" format —
@@ -5868,8 +5888,20 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         top = next((r for r in rows_for_group if r.get("primary_or_secondary") == "Primary"), None) \
             or max(rows_for_group, key=lambda r: _num(r.get("search_volume")))
         easy_wins = [r for r in rows_for_group if _num(r.get("keyword_difficulty"), default=100) < 20 and _num(r.get("search_volume")) > 0]
-        out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
-        out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month, KD {top.get('keyword_difficulty', 'n/a')}.")
+        if total_volume > 0:
+            out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
+            kd = top.get("keyword_difficulty")
+            kd_text = f", KD {kd}" if kd not in (None, "") else ""
+            out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month{kd_text}.")
+        else:
+            # Search Console-only rows carry no Semrush search volume —
+            # never print "0 searches/month, KD n/a" as if that were data
+            # (LumberFi deck, 2026-09-23).
+            impressions = sum(_num(r.get("gsc_impressions")) for r in rows_for_group)
+            out = [f"{len(rows_for_group)} keyword(s) from Search Console"
+                   + (f" — {impressions:,.0f} impressions in the report window." if impressions else ".")
+                   + " No Semrush search volume uploaded for these."]
+            out.append(f"Top keyword: \"{top.get('keyword')}\".")
         page_category = top.get("page_category")
         existing_url = top.get("existing_page_url")
         # Only a strong/partial match is evidence a page covers the topic —
@@ -5931,7 +5963,7 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             seen.add(kw)
             deduped.append(r)
         rows = [
-            (r.get("keyword", ""), "Primary" if i == 0 else "Secondary", r.get("search_volume", ""), r.get("keyword_difficulty", ""))
+            (r.get("keyword", ""), "Primary" if i == 0 else "Secondary", _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")))
             for i, r in enumerate(deduped)
         ]
         insights = _keyword_insights(deduped) if deduped else []
@@ -5955,6 +5987,11 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             return (0, min(priorities))
         return (1, -sum(_num(r.get("search_volume")) for r in cluster_rows))
 
+    # Internal buckets, never client-facing Target Keywords: keywords the
+    # relevance check couldn't confirm, and job-seeker queries.
+    clusters = {k: v for k, v in clusters.items() if k not in _NON_TARGET_CLUSTER_LABELS and not k.startswith("Needs Review")}
+    if not clusters:
+        return []
     ranked = sorted(clusters.items(), key=_cluster_sort_key)
     slides = []
     for label, rows_for_cluster in ranked[:max_clusters]:
@@ -5971,7 +6008,7 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             (
                 r.get("keyword", ""),
                 r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
-                r.get("search_volume", ""), r.get("keyword_difficulty", ""),
+                _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")),
             )
             for i, r in enumerate(deduped)
         ]

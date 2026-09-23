@@ -4,6 +4,7 @@ import re
 import threading
 import traceback
 import uuid
+from types import SimpleNamespace
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
@@ -633,6 +634,33 @@ _JUNK_KEYWORD_RE = re.compile(
 # per chunk, same classifier as the Semrush/GSC keyword pool.
 _SHEET_CLASSIFY_CHUNK = 120
 _SHEET_CLASSIFY_MAX_CHUNKS = 4
+
+
+def _reclassify_mislabeled_competitor_overviews(imports: list, website_url: str) -> list:
+    """A Domain Overview PDF names its own domain inside the file, so a
+    competitor's PDF uploaded under the client's own site (no competitor
+    label) can be recognized. Confirmed real 2026-09-23 (LumberFi): four
+    Domain Overview PDFs — lumberfi.com, rippling.com, ebacon.com,
+    payroll4construction.com — were all uploaded as "own site", so the
+    latest (rippling.com: 540K traffic, 3M backlinks) was shown as
+    LumberFi's own row and no competitor rows or competitor slides rendered
+    at all. Such an import is treated as that competitor's upload for this
+    report (in memory only — stored imports are untouched)."""
+    own = _normalize_domain(website_url.replace("https://", "").replace("http://", "").split("/")[0])
+    out = []
+    for imp in imports:
+        if imp.import_type == "domain_overview" and imp.is_own_site:
+            rows = (imp.parsed_data or {}).get("rows") or []
+            pdf_domain = _normalize_domain(str(rows[0].get("domain") or "")) if rows else ""
+            if pdf_domain and own and pdf_domain != own:
+                out.append(SimpleNamespace(
+                    id=getattr(imp, "id", None), original_filename=getattr(imp, "original_filename", None),
+                    created_at=imp.created_at, import_type=imp.import_type, is_own_site=False,
+                    domain_label=pdf_domain, parsed_data=imp.parsed_data,
+                ))
+                continue
+        out.append(imp)
+    return out
 
 
 def _clean_manual_sheet_rows(
@@ -1511,6 +1539,7 @@ def _gather_report_data(
     # a Semrush MCP report, swaps the uploaded Semrush-account imports for
     # the fetched MCP snapshot (see semrush_mcp_data_service's docstring).
     all_imports = semrush_mcp_data_service.apply_report_source(all_imports)
+    all_imports = _reclassify_mislabeled_competitor_overviews(all_imports, client.website_url)
 
     def _all_rows(import_type: str, own_only: bool = False) -> list[dict]:
         """Every row from every upload of this type — not just the latest —
