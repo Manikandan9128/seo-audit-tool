@@ -53,6 +53,7 @@ phrase itself as the cluster name — real evidence, not an AI guess.
 """
 
 import logging
+from collections import Counter
 import re
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
@@ -500,7 +501,12 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
 
     for _label, cluster_rows in clusters.items():
         keywords = [r.get("keyword") for r in cluster_rows if r.get("keyword")]
-        match = match_existing_page_for_cluster(keywords, site_audit_pages_rows)
+        # Clusters never mix page formats (a hard clustering boundary), so
+        # the most common page_category is the cluster's own — passed so
+        # the matcher can refuse a page whose type contradicts it.
+        categories = Counter((r.get("page_category") or "") for r in cluster_rows if r.get("page_category"))
+        page_category = categories.most_common(1)[0][0] if categories else None
+        match = match_existing_page_for_cluster(keywords, site_audit_pages_rows, page_category)
         strength = match["match_strength"] if match else "none"
         for r in cluster_rows:
             if match:

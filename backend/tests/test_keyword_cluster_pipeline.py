@@ -178,7 +178,7 @@ def test_cannibalization_overrides_action_with_primary_and_differentiate():
         "Construction Payroll": ["construction payroll"], "Certified Payroll": ["certified payroll"],
     })
 
-    def fake_match(keywords, pages):
+    def fake_match(keywords, pages, page_category=None):
         return {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}
 
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
@@ -204,7 +204,7 @@ def test_cannibalization_flags_two_clusters_sharing_a_strong_existing_page_match
         "Construction Payroll": ["construction payroll"], "Certified Payroll": ["certified payroll"],
     })
 
-    def fake_match(keywords, pages):
+    def fake_match(keywords, pages, page_category=None):
         return {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}
 
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \

@@ -655,8 +655,80 @@ def match_existing_page(primary_keyword: str, site_audit_pages_rows: list[dict] 
     return None
 
 
+# Page-type classification of a crawled URL, by path segment only — no
+# fetch, no AI. Used to keep keyword -> page mapping honest (Content SEO
+# spec 2026-09-23 sections 2-4): a keyword must never be mapped onto a page
+# whose TYPE doesn't fit its search intent (an informational query onto a
+# product page, a commercial query onto a blog post), and never onto a
+# utility page (privacy/login/cart/careers/tag archive...) at all.
+_UTILITY_PAGE_RE = re.compile(
+    r"/(privacy|privacy-policy|terms|terms-and-conditions|terms-of-service|cookies?|cookie-policy|legal|disclaimer|"
+    r"login|log-in|signin|sign-in|register|signup|sign-up|my-account|account|cart|checkout|wishlist|search|"
+    r"tag|tags|author|feed|wp-json|wp-admin|wp-login\.php|careers?|jobs?|sitemap(\.xml)?|thank-you|thanks)(/|$|\?)",
+    re.I,
+)
+_COMPARISON_PAGE_RE = re.compile(r"(^|[/\-])(vs|versus|compare|comparison|alternatives?)([/\-]|$)", re.I)
+_BLOG_PAGE_RE = re.compile(
+    r"/(blog|blogs|news|article|articles|guide|guides|resources?|insights|learn|knowledge-base|kb|faqs?|how-to|"
+    r"tips|posts?|stories|academy|glossary|library|whitepapers?|case-studies|ebooks?)(/|$)",
+    re.I,
+)
+_LOCATION_PAGE_RE = re.compile(
+    r"/(locations?|dealers?|dealer-locator|dealerships?|branches|offices|store-locator|service-cent(er|re)s?|near-me)(/|$)",
+    re.I,
+)
+_COMMERCIAL_PAGE_RE = re.compile(
+    r"/(products?|services?|solutions?|pricing|plans|shop|store|buy|features?|platform|software|categor(y|ies)|"
+    r"collections?|catalog(ue)?|models?|range|industries|use-cases?|request-a-demo|demo)(/|$)",
+    re.I,
+)
+
+# Keyword page category (from _classify_keyword_page_category) -> crawled
+# page types it must NOT be mapped onto. A page type absent from this set
+# (or "other", an unrecognized path) is left to the title/topic overlap
+# check alone — unknown is not the same as mismatched.
+_INCOMPATIBLE_PAGE_TYPES = {
+    "Blog / Guide": {"commercial", "comparison", "location", "home"},
+    "Landing Page": {"blog"},
+    "Comparison / Alternative": {"blog", "location", "home", "commercial"},
+}
+
+
+def normalize_source_url(url: str | None) -> str | None:
+    """Collapses accidental duplicate slashes in a crawled URL's path
+    (e.g. "https://x.com//blog///post") without touching the scheme's own
+    "//" — the URL itself is still the exact crawled one, never rebuilt or
+    re-pathed. Returns None for an empty value."""
+    if not url:
+        return None
+    m = re.match(r"^([a-z][a-z0-9+.-]*://[^/]*)(.*)$", url.strip(), re.I)
+    if not m:
+        return re.sub(r"/{2,}", "/", url.strip())
+    return m.group(1) + re.sub(r"/{2,}", "/", m.group(2))
+
+
+def classify_page_type(url: str | None) -> str:
+    """"utility" | "comparison" | "blog" | "location" | "commercial" |
+    "home" | "other", from the URL path alone."""
+    m = re.match(r"^[a-z][a-z0-9+.-]*://[^/]*(.*)$", (url or "").strip(), re.I)
+    path = (m.group(1) if m else (url or "")).split("#")[0]
+    if path.split("?")[0].strip("/") == "":
+        return "home"
+    if _UTILITY_PAGE_RE.search(path):
+        return "utility"
+    if _COMPARISON_PAGE_RE.search(path):
+        return "comparison"
+    if _BLOG_PAGE_RE.search(path):
+        return "blog"
+    if _LOCATION_PAGE_RE.search(path):
+        return "location"
+    if _COMMERCIAL_PAGE_RE.search(path):
+        return "commercial"
+    return "other"
+
+
 def match_existing_page_for_cluster(
-    cluster_keywords: list[str], site_audit_pages_rows: list[dict] | None
+    cluster_keywords: list[str], site_audit_pages_rows: list[dict] | None, page_category: str | None = None
 ) -> dict | None:
     """Cluster-level existing-page match (FINAL PIPELINE step 11) — pools
     token signal from every keyword in a validated cluster (primary +
@@ -677,20 +749,37 @@ def match_existing_page_for_cluster(
     if not kw_tokens:
         return None
 
+    # Content SEO spec (2026-09-23) sections 2-4: utility pages are never a
+    # candidate, and neither is a page whose type contradicts the cluster's
+    # page category — better no match (a genuine new-page opportunity) than
+    # a forced one. A URL-path-only overlap (nothing shared with the page's
+    # own title) is capped at "weak": a related word in the URL alone isn't
+    # evidence the page actually covers the topic.
+    incompatible = _INCOMPATIBLE_PAGE_TYPES.get(page_category or "", set())
     best = None
-    best_score = 0
+    best_key = (0, 0)
     for row in site_audit_pages_rows:
         url = row.get("page_url") or ""
+        if not url:
+            continue
+        page_type = classify_page_type(url)
+        if page_type == "utility" or page_type in incompatible:
+            continue
         title = row.get("page_title") or ""
         path = re.sub(r"[/\-_]", " ", url)
-        page_tokens = _match_tokens(title) | _match_tokens(path)
+        title_tokens = _match_tokens(title)
+        page_tokens = title_tokens | _match_tokens(path)
         score = len(kw_tokens & page_tokens)
-        if score > best_score:
-            best_score = score
-            best = {"url": url, "title": title}
-    if not best or best_score == 0:
+        title_score = len(kw_tokens & title_tokens)
+        if (score, title_score) > best_key:
+            best_key = (score, title_score)
+            best = {"url": normalize_source_url(url), "title": title, "page_type": page_type, "_title_score": title_score}
+    if not best or best_key[0] == 0:
         return None
 
-    ratio = best_score / len(kw_tokens)
-    best["match_strength"] = "strong" if ratio >= 0.66 else "partial" if ratio >= 0.35 else "weak"
+    ratio = best_key[0] / len(kw_tokens)
+    strength = "strong" if ratio >= 0.66 else "partial" if ratio >= 0.35 else "weak"
+    if best.pop("_title_score") == 0:
+        strength = "weak"
+    best["match_strength"] = strength
     return best

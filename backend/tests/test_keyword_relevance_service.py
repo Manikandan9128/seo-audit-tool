@@ -62,3 +62,38 @@ def test_falls_back_to_word_list_when_intent_navigational():
 
 def test_returns_none_when_no_signal_and_no_usable_intent():
     assert _classify_keyword_page_category("acme corp login", "Navigational") is None
+
+
+# --- Content SEO spec 2026-09-23: page-type-aware existing-page matching ---
+from app.services.keyword_relevance_service import classify_page_type, match_existing_page_for_cluster, normalize_source_url
+
+
+def test_classify_page_type():
+    assert classify_page_type("https://x.com/") == "home"
+    assert classify_page_type("https://x.com/blog/payroll-guide") == "blog"
+    assert classify_page_type("https://x.com/products/payroll") == "commercial"
+    assert classify_page_type("https://x.com/acme-vs-gusto") == "comparison"
+    assert classify_page_type("https://x.com/privacy-policy") == "utility"
+    assert classify_page_type("https://x.com/careers/") == "utility"
+
+
+def test_normalize_source_url_keeps_scheme():
+    assert normalize_source_url("https://x.com//a///b") == "https://x.com/a/b"
+    assert normalize_source_url(None) is None
+
+
+def test_utility_pages_are_never_matched():
+    pages = [{"page_url": "https://x.com/privacy-policy", "page_title": "Payroll Privacy Policy"}]
+    assert match_existing_page_for_cluster(["payroll privacy"], pages) is None
+
+
+def test_informational_cluster_not_mapped_onto_product_page():
+    pages = [{"page_url": "https://x.com/products/payroll-software", "page_title": "Payroll Software"}]
+    assert match_existing_page_for_cluster(["what is payroll software"], pages, "Blog / Guide") is None
+    assert match_existing_page_for_cluster(["payroll software"], pages, "Landing Page")["match_strength"] == "strong"
+
+
+def test_url_only_overlap_is_capped_at_weak():
+    pages = [{"page_url": "https://x.com/payroll-software", "page_title": "Home of Acme"}]
+    match = match_existing_page_for_cluster(["payroll software"], pages, "Landing Page")
+    assert match["match_strength"] == "weak"

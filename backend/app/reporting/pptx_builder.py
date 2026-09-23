@@ -27,6 +27,13 @@ from app.services.keyword_relevance_service import (
     _is_branded_keyword,
     filter_other_brand_keywords,
     is_branded_or_near_brand,
+    normalize_source_url,
+)
+from app.services.keyword_cluster_pipeline import (
+    _CAREER_ROUTE_CLUSTER_LABEL,
+    _COMPETITOR_ROUTE_CLUSTER_LABEL,
+    _GEO_ROUTE_CLUSTER_LABEL,
+    _NEEDS_REVIEW_CLUSTER_LABEL,
 )
 from app.services.priority_model import compute_priority_score
 
@@ -6712,20 +6719,87 @@ def add_technical_seo_next_steps_slide(
     return _next_steps_category_slide(prs, "Next Steps: Technical SEO", intro, items)
 
 
+# Keyword-cluster routing buckets (keyword_cluster_pipeline) that exist so
+# a keyword is never silently deleted — NOT validated business topics, so
+# never a Content SEO recommendation (Content SEO spec 2026-09-23, sections
+# 1, 5, 8): unconfirmed relevance, competitor-brand searches, job searches,
+# and out-of-market geography.
+_CONTENT_SEO_EXCLUDED_CLUSTERS = {
+    _NEEDS_REVIEW_CLUSTER_LABEL, _COMPETITOR_ROUTE_CLUSTER_LABEL,
+    _CAREER_ROUTE_CLUSTER_LABEL, _GEO_ROUTE_CLUSTER_LABEL,
+}
+_CONTENT_SEO_EXCLUDED_RELEVANCE = {
+    "Irrelevant", "Irrelevant Competitor Query", "Competitor Brand Search",
+    "Career / Recruitment Query", "Unknown / Needs Review",
+}
+
+
+def _content_seo_eligible_rows(keyword_rows: list[dict]) -> list[dict]:
+    """The validated-relevant subset of keyword_rows a Content SEO
+    recommendation may use: never a routing bucket, never a row the
+    relevance classifier excluded, flagged as competitor intent, or left
+    unjudged. Rows with no relevance_status at all (the classifier never
+    ran — e.g. a manual clustering upload) are kept: their relevance was
+    never contested, and the cluster itself is still required below."""
+    eligible = []
+    for r in keyword_rows:
+        if not r.get("keyword"):
+            continue
+        if (r.get("cluster") or "").strip() in _CONTENT_SEO_EXCLUDED_CLUSTERS:
+            continue
+        if r.get("competitor_status"):
+            continue
+        status = r.get("relevance_status")
+        if status and (status in _CONTENT_SEO_EXCLUDED_RELEVANCE or status.lower().startswith("irrelevant")):
+            continue
+        eligible.append(r)
+    return eligible
+
+
+def _content_seo_cluster_evidence(rows: list[dict]) -> str | None:
+    """Supplied evidence for one cluster, as client-facing text — search
+    volume, best current ranking, and GSC impressions/clicks, only what the
+    rows actually carry. None when the cluster has no evidence at all, which
+    means no recommendation (spec section 6: "No action when evidence does
+    not support an opportunity")."""
+    volume = sum(_num(r.get("search_volume")) for r in rows)
+    positions = []
+    for r in rows:
+        raw = r.get("current_position") if r.get("current_position") not in (None, "") else r.get("position")
+        if _num(raw) > 0:
+            positions.append(_num(raw))
+    impressions = sum(_num(r.get("gsc_impressions")) for r in rows)
+    clicks = sum(_num(r.get("gsc_clicks")) for r in rows)
+    parts = []
+    if volume:
+        parts.append(f"{int(volume):,} combined monthly searches")
+    if positions:
+        parts.append(f"currently ranking #{int(min(positions))} at best")
+    if impressions:
+        parts.append(f"{int(impressions):,} Search Console impressions" + (f" / {int(clicks):,} clicks" if clicks else ""))
+    return ", ".join(parts) or None
+
+
 def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict] | None):
+    """Content SEO Next Steps (spec 2026-09-23). Every bullet is traceable:
+    validated-relevant keywords only -> their real cluster -> the upstream
+    existing-page decision (keyword_cluster_pipeline, which already refuses
+    utility pages, page-type/intent mismatches, and URL-only word overlap)
+    -> the evidence the rows carry. A cluster with no evidence, or a
+    routing bucket, gets no bullet — and there is no generic filler, so the
+    slide is skipped entirely when nothing survives."""
     items = []
-    if keyword_rows:
+    rows = _content_seo_eligible_rows(keyword_rows or [])
+    if rows:
         # WHAT KIND of page each keyword calls for (format), separate from
         # WHAT TOPIC it belongs to (the cluster bullets below) — a client
         # can need both a landing page AND a guide for the same topic.
         category_counts: dict[str, int] = {}
         category_volume: dict[str, float] = {}
         category_examples: dict[str, list[str]] = {}
-        for r in keyword_rows:
-            keyword = r.get("keyword")
-            if not keyword:
-                continue
-            category = _classify_keyword_page_category(keyword, r.get("intent"))
+        for r in rows:
+            keyword = r["keyword"]
+            category = r.get("page_category") or _classify_keyword_page_category(keyword, r.get("intent"))
             if not category:
                 continue
             category_counts[category] = category_counts.get(category, 0) + 1
@@ -6737,60 +6811,50 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
         category_action = {label: action for label, _signals, action in _KEYWORD_PAGE_CATEGORIES}
         for label, count in sorted(category_counts.items(), key=lambda kv: -category_volume.get(kv[0], 0)):
             vol = category_volume.get(label, 0)
-            vol_text = f", {int(vol):,} combined monthly searches" if vol else ""
+            if not vol or label not in category_action:
+                continue
             example_text = ", ".join(f"\"{e}\"" for e in category_examples.get(label, []))
             items.append(
-                f"{count} target keyword(s) are {label}-shaped{vol_text} (e.g. {example_text}) — "
-                f"{category_action[label]}."
+                f"{count} relevant keyword(s) call for {label.lower()} content, {int(vol):,} combined monthly searches "
+                f"(e.g. {example_text}) — {category_action[label]}."
             )
 
-        cluster_counts: dict[str, int] = {}
-        cluster_volume: dict[str, float] = {}
         cluster_rows: dict[str, list[dict]] = {}
-        for r in keyword_rows:
+        for r in rows:
             label = (r.get("cluster") or "").strip()
-            if not label:
-                continue
-            cluster_counts[label] = cluster_counts.get(label, 0) + 1
-            cluster_volume[label] = cluster_volume.get(label, 0) + _num(r.get("search_volume"))
-            cluster_rows.setdefault(label, []).append(r)
+            if label:
+                cluster_rows.setdefault(label, []).append(r)
 
         # Exact URL decision per cluster (spec section 20/47: the renderer
         # must not make this decision itself — existing_page_action is
         # already computed upstream by keyword_cluster_pipeline, from the
-        # SAME strong/partial/weak/no-match evidence and cannibalization
-        # check the Target Keywords slide's data is built from, so this
-        # slide's wording can never disagree with that decision). Falls
-        # back to the old half-the-keywords-matched heuristic only when
-        # existing_page_action was never set at all (e.g. a raw Semrush-
-        # native Cluster column upload the pipeline never ran over).
-        url_to_clusters: dict[str, set[str]] = {}
-        for label, count in sorted(cluster_counts.items(), key=lambda kv: -cluster_volume.get(kv[0], 0)):
-            vol = cluster_volume.get(label, 0)
-            vol_text = f", {int(vol):,} combined monthly searches" if vol else ""
-            sample = cluster_rows[label][0]
-            pipeline_action = sample.get("existing_page_action")
-            existing_url = sample.get("existing_page_url")
-            if pipeline_action:
-                action_by_type = {
-                    "Optimize Existing Page": f"optimize the existing page ({existing_url}) rather than starting a new one",
-                    "Expand Existing Page": f"expand the existing page ({existing_url}) — it already partially covers this cluster",
-                    "Differentiate": f"create a new page and differentiate it from the closest existing match ({existing_url})",
-                    "Create New Page": "create a new page — no existing page covers this cluster's keywords",
-                }
-                action = action_by_type.get(pipeline_action, f"{pipeline_action.lower()} ({existing_url})" if existing_url else pipeline_action.lower())
+        # SAME match-strength and cannibalization evidence the Target
+        # Keywords slide uses, so the two slides can never disagree). With
+        # no upstream decision, or no URL behind an existing-page action,
+        # the only honest reading is a new-page opportunity — a URL is
+        # never guessed here.
+        def _cluster_volume(label: str) -> float:
+            return sum(_num(r.get("search_volume")) for r in cluster_rows[label])
+
+        for label in sorted(cluster_rows, key=lambda c: -_cluster_volume(c)):
+            crow = cluster_rows[label]
+            evidence = _content_seo_cluster_evidence(crow)
+            if not evidence:
+                continue
+            sample = crow[0]
+            pipeline_action = sample.get("existing_page_action") or ""
+            existing_url = normalize_source_url(sample.get("existing_page_url"))
+            if existing_url and pipeline_action == "Optimize Existing Page":
+                action = f"optimize the existing page ({existing_url}) for this topic rather than creating a new one"
+            elif existing_url and pipeline_action == "Expand Existing Page":
+                action = f"expand the existing page ({existing_url}), which already partly covers this topic"
+            elif existing_url and pipeline_action.startswith("Consolidate"):
+                action = f"make {existing_url} the single primary page for this topic"
+            elif pipeline_action.startswith("Differentiate or Redirect"):
+                action = pipeline_action[0].lower() + pipeline_action[1:]
             else:
-                url_counts = Counter(r["existing_page_url"] for r in cluster_rows[label] if r.get("existing_page_url"))
-                if url_counts:
-                    target_url, matched = url_counts.most_common(1)[0]
-                    if matched >= max(1, count // 2):
-                        action = f"update the existing page ({target_url}) rather than starting a new one"
-                        url_to_clusters.setdefault(target_url, set()).add(label)
-                    else:
-                        action = f"create a new page — the closest existing match ({target_url}) only covers {matched} of this cluster's {count} keyword(s)"
-                else:
-                    action = "create a new page — no existing page covers this cluster's keywords"
-            items.append(f"Build out content for the \"{label}\" keyword cluster — {count} keyword(s) tracked{vol_text}; {action}.")
+                action = "create a new page — no existing page covers this topic closely enough"
+            items.append(f"\"{label}\" topic — {len(crow)} keyword(s), {evidence}; {action}.")
 
         # Cannibalization notes — already computed upstream per cluster
         # (cannibalization_status), one bullet per affected existing URL
@@ -6804,8 +6868,6 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
             if note and url and url not in cannibal_notes_by_url:
                 cannibal_notes_by_url[url] = note
         items.extend(cannibal_notes_by_url.values())
-    items.append("Audit existing content for thin or outdated pages and refresh or consolidate them to strengthen topical authority.")
-    items.append("Keep a content calendar built around the highest-volume clusters above so publishing stays consistent rather than one-off.")
     intro = "Where to focus content production, based on the keyword research and clustering above."
     return _next_steps_category_slide(prs, "Next Steps: Content SEO", intro, items)
 
