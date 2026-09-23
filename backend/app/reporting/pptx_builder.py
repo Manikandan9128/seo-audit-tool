@@ -6484,6 +6484,11 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
     _PROGRAMMATIC_MAX_OPPORTUNITIES strongest opportunities and ranked by
     distinct validated sub-intents first, combined demand second — never
     search volume alone."""
+    # Programmatic SEO spec 2026-09-23 section 13: the same validated-
+    # relevant keyword set as Content SEO — never a routing bucket
+    # (competitor-brand, careers, unconfirmed, out-of-market) or a keyword
+    # excluded as irrelevant elsewhere in the report.
+    keyword_rows = _content_seo_eligible_rows(keyword_rows or [])
     if not keyword_rows:
         return None
     clusters: dict[str, list[dict]] = {}
@@ -6559,13 +6564,27 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             too_few_subpages_count += 1
             continue  # not enough genuinely distinct sub-pages to call this a template pattern
 
-        why = f"{len(sub_keywords)} distinct search intents with sufficient demand to support a scalable hub + subpage structure."
-        if consolidated_any:
-            why = f"{len(sub_keywords)} distinct search intents remain after consolidating near-duplicate variants."
+        # Existing-URL check (spec section 7) — the cluster's own upstream
+        # existing-page decision: a strong/partial match means the hub
+        # already exists and only the sub-pages are new.
+        sample = rows_for_cluster[0]
+        existing_hub = (
+            normalize_source_url(sample.get("existing_page_url"))
+            if sample.get("existing_page_match_strength") in ("strong", "partial") else None
+        )
+        # The template variable is what actually differs between the kept
+        # sub-keywords (spec section 8) — never an invented dimension.
+        modifiers = sorted({t for toks in sub_token_sets for t in toks})[:6]
+        hub_text = f"existing hub page {existing_hub}" if existing_hub else "no existing hub page yet"
+        why = (
+            f"{label}: {len(sub_keywords)} distinct sub-intents varying by {', '.join(modifiers)}, "
+            f"{int(cluster_volume):,} combined monthly searches; {hub_text}"
+            + ("; near-duplicate variants folded in rather than given their own page." if consolidated_any else ".")
+        )
         candidates.append({
             "label": label, "volume": cluster_volume,
             "subpage_names": [kw.title() for kw in sub_keywords],
-            "why": why,
+            "why": why, "existing_hub": existing_hub,
         })
 
     if not candidates:
@@ -6600,7 +6619,8 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
 
     rows = [
         (
-            c["label"], _demand_label(c["volume"]), f"Hub + {len(c['subpage_names'])} subpages",
+            c["label"], _demand_label(c["volume"]),
+            f"{'Existing hub' if c['existing_hub'] else 'New hub'} + {len(c['subpage_names'])} subpages",
             " · ".join(c["subpage_names"]),
         )
         for c in top

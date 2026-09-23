@@ -69,7 +69,7 @@ def test_renders_real_opportunities_when_eligible():
     text = _slide_text(slide)
     assert "No validated" not in text
     assert "Widgets" in text
-    assert "Hub + 4 subpages" in text
+    assert "New hub + 4 subpages" in text
     assert "3.4K/mo" in text  # combined volume, real number not a placeholder
 
 
@@ -110,7 +110,7 @@ def test_near_duplicates_consolidated_not_shown_as_separate_subpages():
     ]
     slide = add_programmatic_seo_slide(_prs(), rows)
     text = _slide_text(slide)
-    assert "consolidating near-duplicate variants" in text
+    assert "near-duplicate variants folded in" in text
 
 
 def test_ranking_prefers_more_distinct_subintents_over_raw_volume():
@@ -145,3 +145,33 @@ def test_caps_at_max_opportunities_never_manufactures_extra():
     slide = add_programmatic_seo_slide(_prs(), rows)
     table = next(s for s in slide.shapes if s.has_table).table
     assert len(table.rows) - 1 == 5  # header + at most 5 opportunity rows
+
+
+# --- Programmatic SEO spec 2026-09-23 --------------------------------------
+_WIDGETS = [
+    {"keyword": "widget pricing calculator", "search_volume": 1000, "cluster": "Widgets"},
+    {"keyword": "widget installation guide", "search_volume": 900, "cluster": "Widgets"},
+    {"keyword": "widget maintenance tips", "search_volume": 800, "cluster": "Widgets"},
+    {"keyword": "widget troubleshooting steps", "search_volume": 700, "cluster": "Widgets"},
+]
+
+
+def test_routing_bucket_clusters_never_become_programmatic_opportunities():
+    rows = [dict(r, cluster="Competitor / Comparison Opportunities") for r in _WIDGETS]
+    assert add_programmatic_seo_slide(_prs(), rows) is None
+
+
+def test_existing_hub_page_is_reused_not_recreated():
+    rows = [dict(r, existing_page_url="https://x.com//widgets", existing_page_match_strength="strong") for r in _WIDGETS]
+    text = _slide_text(add_programmatic_seo_slide(_prs(), rows))
+    assert "Existing hub + 4 subpages" in text and "existing hub page https://x.com/widgets" in text
+
+
+def test_insights_are_distinct_per_opportunity():
+    rows = list(_WIDGETS) + [
+        {"keyword": "gadget repair cost", "search_volume": 900, "cluster": "Gadgets"},
+        {"keyword": "gadget setup manual", "search_volume": 800, "cluster": "Gadgets"},
+        {"keyword": "gadget battery life", "search_volume": 700, "cluster": "Gadgets"},
+    ]
+    text = _slide_text(add_programmatic_seo_slide(_prs(), rows))
+    assert "Widgets: 4 distinct sub-intents" in text and "Gadgets: 3 distinct sub-intents" in text
