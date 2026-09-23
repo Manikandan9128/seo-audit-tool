@@ -268,6 +268,36 @@ def _unique_keywords_by_volume(rows: list[dict]) -> list[str]:
     return ordered
 
 
+# Candidate-pool ordering for clustering: relevance to the client's
+# business first, volume second. Pure volume ordering let high-volume
+# off-business keywords ("database news", 22K, flagged Needs Review) take
+# slots in the 100-keyword AI pool while low-volume core-service keywords
+# ("remote dba services", 260, already ranking #12) never got clustered at
+# all — confirmed on a Geopits deck, 2026-09-23.
+_RELEVANCE_TIER = {"Core Relevant": 0, "Relevant": 0}
+_NEEDS_REVIEW_STATUS = "Unknown / Needs Review"
+
+
+def _relevance_tier(r: dict) -> int:
+    status = (r.get("relevance_status") or "").strip()
+    if status in _RELEVANCE_TIER:
+        return 0
+    if not status or status == _NEEDS_REVIEW_STATUS:
+        return 2
+    return 1
+
+
+def _unique_keywords_for_clustering(rows: list[dict]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for r in sorted(rows, key=lambda r: (_relevance_tier(r), -_demand_proxy(r))):
+        kw = r.get("keyword")
+        if kw and kw not in seen:
+            seen.add(kw)
+            ordered.append(kw)
+    return ordered
+
+
 def _assign_business_themes(rows: list[dict], client_name: str, client_description: str | None) -> None:
     if any((r.get("business_theme") or "").strip() for r in rows):
         for r in rows:
@@ -355,7 +385,7 @@ def _build_candidate_clusters(rows: list[dict], keyword_rows_by_text: dict[str, 
     Fails safe end to end: if either phase's AI call fails outright, every
     row in the pool simply stays unclustered rather than falling back to
     the old bucket-only design or inventing a group."""
-    candidates = _unique_keywords_by_volume(rows)[:_BUSINESS_THEME_CANDIDATE_CAP]
+    candidates = _unique_keywords_for_clustering(rows)[:_BUSINESS_THEME_CANDIDATE_CAP]
     if not candidates:
         return
 

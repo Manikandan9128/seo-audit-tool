@@ -403,6 +403,19 @@ def add_title_slide(
     return slide
 
 
+def _drop_divider_if_section_empty(prs: Presentation, count_before_divider: int | None) -> None:
+    """Removes a section divider that nothing ended up following — confirmed
+    real 2026-09-23 (BharatBenz): `analytics` was a non-empty dict (date
+    range only) so "Traffic & Search Performance" rendered, but every GA4/
+    GSC slide under it had no rows, leaving a bare divider in the deck."""
+    if count_before_divider is None or len(prs.slides) != count_before_divider + 1:
+        return
+    sld_id_lst = prs.slides._sldIdLst
+    last = sld_id_lst[-1]
+    prs.part.drop_rel(last.rId)
+    sld_id_lst.remove(last)
+
+
 def add_section_slide(prs: Presentation, client_name: str, section_title: str):
     slide = _blank_slide(prs)
     top_bar = slide.shapes.add_shape(1, 0, 0, SLIDE_W, Inches(0.15))
@@ -1074,8 +1087,13 @@ def add_site_health_slide(
                 pct = site_audit_overview.get(f"{key}_pct")
                 if count is None:
                     continue
+                # Some Site Audit sources carry counts without percentages —
+                # derive from the crawl total rather than printing "None%"
+                # (confirmed real on a BharatBenz deck, 2026-09-23).
+                if pct is None and page_totals.get("total"):
+                    pct = round(count / page_totals["total"] * 100, 1)
                 _icon_dot(slide, Inches(0.85), y + Inches(0.06), Inches(0.11), category_colors[key])
-                _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count} ({pct}%)", size=11.5, color=TEXT_DARK)
+                _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count:,}" + (f" ({pct}%)" if pct is not None else ""), size=11.5, color=TEXT_DARK)
                 y += Inches(0.29)
         elif page_totals.get("with_issues") is not None:
             _textbox(
@@ -5854,6 +5872,13 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month, KD {top.get('keyword_difficulty', 'n/a')}.")
         page_category = top.get("page_category")
         existing_url = top.get("existing_page_url")
+        # Only a strong/partial match is evidence a page covers the topic —
+        # a weak (incidental word) match previously read as "already covers
+        # this" and pointed clusters at unrelated pages (a Dell case study
+        # for "how to fix slow mysql queries", the homepage for "data
+        # management services" — Geopits deck, 2026-09-23).
+        if existing_url and top.get("existing_page_match_strength") not in ("strong", "partial"):
+            existing_url = None
         if page_category and existing_url:
             out.append(f"Recommended format: {page_category} — an existing page already covers this: {existing_url}.")
         elif page_category:
@@ -7649,7 +7674,9 @@ def _build_report(
     # untouched and function kept below for fast re-enable.
     # add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
 
+    traffic_divider_at: int | None = None
     if analytics:
+        traffic_divider_at = len(prs.slides)
         add_section_slide(prs, client_name, "Traffic & Search Performance")
         ga4_span = _ga4_date_span(analytics.get("date_range"))
         gsc_span = _gsc_date_span(analytics.get("date_range"))
@@ -7743,8 +7770,12 @@ def _build_report(
         if high_potential_countries:
             add_search_opportunities_countries_slide(prs, high_potential_countries, gsc_source)
 
+    _drop_divider_if_section_empty(prs, traffic_divider_at)
+
+    research_divider_at: int | None = None
     if (competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions
             or competitor_narratives or strategic_keyword_clusters):
+        research_divider_at = len(prs.slides)
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
         # Two scenarios, never both (2026-09-23 user instruction, replaces
         # the 2026-09-22 "both always coexist" rule): a manually uploaded
@@ -7784,6 +7815,8 @@ def _build_report(
                 prs, competitor_analysis, client_name=client_name,
                 keyword_gap_sheet_link=keyword_sheet_link,
             )
+
+    _drop_divider_if_section_empty(prs, research_divider_at)
 
     if core_problem:
         add_core_problem_slide(prs, core_problem)

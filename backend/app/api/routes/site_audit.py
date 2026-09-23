@@ -623,6 +623,87 @@ def _merge_keyword_gap_and_positions(
     return [by_keyword[key] for key in order]
 
 
+# Adult/spam terms a keyword export can carry (confirmed real 2026-09-23: a
+# client cluster sheet's "indian bus xxx" rendered on a Target Keywords
+# slide). Never a legitimate B2B/B2C SEO target for any client here.
+_JUNK_KEYWORD_RE = re.compile(
+    r"\b(xxx+|porn\w*|sex|sexy|nude\w*|xnxx|xvideos?|xhamster|escort\w*|onlyfans|hentai|nsfw)\b", re.IGNORECASE,
+)
+# Chunk size / ceiling for classifying a client cluster sheet — one AI call
+# per chunk, same classifier as the Semrush/GSC keyword pool.
+_SHEET_CLASSIFY_CHUNK = 120
+_SHEET_CLASSIFY_MAX_CHUNKS = 4
+
+
+def _clean_manual_sheet_rows(
+    client: Client, rows: list[dict], company_overview: dict | None, competitor_domains,
+) -> list[dict]:
+    """Filters a client-provided keyword cluster sheet before it becomes the
+    Target Keywords slides. Until 2026-09-23 sheet rows went to the slides
+    completely unfiltered (only KD >= 50 dropped), so whatever the sheet
+    held rendered as-is — confirmed on a BharatBenz deck: adult spam ("indian
+    bus xxx"), a competitor's model ("boss trucks"), and off-business terms
+    ("brabus price in india", "peterbilt truck price in india", "egg
+    transport vehicle in india"). Same three filters the Semrush/GSC keyword
+    pool already gets: junk terms, competitor brand names, then the AI
+    relevance classifier against the client's own business. Rows the
+    classifier couldn't judge (fail-open / outside the classified pool) are
+    kept, never silently dropped. Works on copies — the sheet's stored rows
+    are never mutated."""
+    rows = [dict(r) for r in rows if not _JUNK_KEYWORD_RE.search(r.get("keyword") or "")]
+    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    rows = filter_other_brand_keywords(rows, client_domain, competitor_domains)
+    if not rows:
+        return rows
+
+    brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client_domain)) if t}
+    client_description = _company_overview_context(company_overview)
+    ordered = sorted(rows, key=_demand_proxy, reverse=True)
+    keywords = []
+    seen = set()
+    for r in ordered:
+        k = (r.get("keyword") or "").strip()
+        if k and k.lower() not in seen:
+            seen.add(k.lower())
+            keywords.append(k)
+    keywords = keywords[: _SHEET_CLASSIFY_CHUNK * _SHEET_CLASSIFY_MAX_CHUNKS]
+
+    classifications: dict[str, dict] = {}
+    for i in range(0, len(keywords), _SHEET_CLASSIFY_CHUNK):
+        try:
+            classifications.update(classify_keywords(
+                client.name, client_domain, brand_tokens, keywords[i : i + _SHEET_CLASSIFY_CHUNK], client_description,
+            ) or {})
+        except Exception as e:  # best-effort, same fail-open discipline as _filter_keyword_rows
+            logger.warning("Cluster sheet relevance classification failed for %s: %s", client.name, e)
+
+    kept = []
+    for r in rows:
+        entry = classifications.get((r.get("keyword") or "").strip().lower())
+        if entry and entry.get("label") == "exclude":
+            continue
+        kept.append(r)
+    return kept
+
+
+def _company_overview_cluster_context(company_overview: dict | None) -> str | None:
+    """Clustering context: the relevance context plus the client's own
+    product/service list, so Phase 2 clustering can anchor one cluster per
+    product the client actually sells (the SEO team's manual-deck
+    structure) instead of grouping by keyword wording alone."""
+    base = _company_overview_context(company_overview)
+    if not company_overview:
+        return base
+    products = [p for p in (company_overview.get("products") or []) if p][:25]
+    solutions = [p for p in (company_overview.get("solutions") or []) if p][:12]
+    parts = [base] if base else []
+    if products:
+        parts.append("Products/services the client sells: " + "; ".join(products))
+    if solutions:
+        parts.append("Solution areas: " + "; ".join(solutions))
+    return "\n".join(parts) or None
+
+
 def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dict | None) -> list[dict]:
     """Core, side-effect-free relevance filter for the client's OWN Keyword
     Gap rows — pulled out of _filter_own_keyword_rows so it can run INSIDE
@@ -1586,7 +1667,7 @@ def _gather_report_data(
                 build_final_keyword_clusters(
                     keyword_rows_all,
                     client.name,
-                    _company_overview_context(company_overview_result),
+                    _company_overview_cluster_context(company_overview_result),
                     _all_rows("site_audit_pages", own_only=True),
                     manual_cluster_map=manual_cluster_map or None,
                 )
@@ -2167,7 +2248,14 @@ def _gather_report_data(
     # own source of truth), independent of keyword_rows_all/the AI Phase
     # 2/3 pipeline above — empty list (never rendered) when no such sheet
     # was uploaded for this client.
-    strategic_keyword_clusters = select_strategic_clusters(list(manual_cluster_rows_full.values()))
+    strategic_keyword_clusters = []
+    if manual_cluster_rows_full:
+        _sheet_competitor_domains = set(_gap_domains) | {
+            r.get("domain") for r in (competitor_rows_all or []) if r.get("domain") and r.get("domain") != own_website_domain
+        }
+        strategic_keyword_clusters = select_strategic_clusters(_clean_manual_sheet_rows(
+            client, list(manual_cluster_rows_full.values()), company_overview_result, _sheet_competitor_domains,
+        ))
 
     return {
         "site_audit": site_audit_result,

@@ -213,51 +213,19 @@ def _dedupe_and_rank_keywords(cluster_label: str, rows: list[dict], used_keyword
 
 
 def _select_representative_keywords(cluster_label: str, rows: list[dict], used_keywords: set[str]) -> list[dict]:
-    """Picks up to _MAX_KEYWORDS_PER_CLUSTER keywords, spreading selection
-    across sub-categories where the sheet provides them (section 2/6 —
-    "select keywords across relevant sub-categories to provide broader
-    topic coverage") rather than letting one sub-category's keywords crowd
-    out the others just because they happen to score highest individually."""
+    """Picks up to _MAX_KEYWORDS_PER_CLUSTER keywords by search volume,
+    highest first — the SEO team's own manual decks list each cluster as
+    head term first, then its variants by volume (2026-09-23 reference:
+    "income protection insurance" 18,100 -> "... uk" 4,400 -> "what is ..."
+    1,300 ...). Replaces the earlier round-robin across sub-categories,
+    which gave a one-row sub-category a slot ahead of stronger keywords and
+    surfaced weak picks like "egg transport vehicle in india" (320/mo) over
+    the cluster's real demand. Near-duplicate phrasings are still
+    consolidated first (_dedupe_and_rank_keywords); a keyword with no
+    volume in the sheet sorts last, never dropped for that alone."""
     deduped = _dedupe_and_rank_keywords(cluster_label, rows, used_keywords)
-    if not deduped:
-        return []
-
-    by_sub: dict[str, list[dict]] = {}
-    no_sub: list[dict] = []
-    for r in deduped:
-        sub = r.get("sub_category")
-        if sub:
-            by_sub.setdefault(sub, []).append(r)
-        else:
-            no_sub.append(r)
-
-    selected: list[dict] = []
-    if by_sub:
-        # Round-robin: one keyword from each sub-category per pass, each
-        # sub-category's own list already ranked by _dedupe_and_rank_keywords'
-        # score order, so pass 1 takes every sub-category's single best
-        # keyword before any sub-category gets a second.
-        sub_lists = list(by_sub.values())
-        idx = 0
-        while len(selected) < _MAX_KEYWORDS_PER_CLUSTER:
-            progressed = False
-            for lst in sub_lists:
-                if idx < len(lst) and len(selected) < _MAX_KEYWORDS_PER_CLUSTER:
-                    selected.append(lst[idx])
-                    progressed = True
-            idx += 1
-            if not progressed:
-                break
-        # Any remaining room after every sub-category is exhausted goes to
-        # the next-best no-sub-category keywords, if there's still room.
-        for r in no_sub:
-            if len(selected) >= _MAX_KEYWORDS_PER_CLUSTER:
-                break
-            selected.append(r)
-    else:
-        selected = deduped[:_MAX_KEYWORDS_PER_CLUSTER]
-
-    return selected
+    deduped.sort(key=lambda r: _num(r.get("search_volume")) or -1.0, reverse=True)
+    return deduped[:_MAX_KEYWORDS_PER_CLUSTER]
 
 
 def select_strategic_clusters(manual_rows: list[dict]) -> list[dict]:
