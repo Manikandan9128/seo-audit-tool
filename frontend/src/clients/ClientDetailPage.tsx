@@ -776,17 +776,29 @@ export default function ClientDetailPage() {
             )}
           </div>
         </div>
-        <div className="tabs" role="tablist" style={{ marginTop: 16 }}>
-          <button className={`tab ${activeTab === "overview" ? "active" : ""}`} onClick={() => setActiveTab("overview")}>
+        <div className="tabs" role="tablist" aria-label="Client sections">
+          <button role="tab" aria-selected={activeTab === "overview"} className={`tab ${activeTab === "overview" ? "active" : ""}`} onClick={() => setActiveTab("overview")}>
+            <span className="tab-icon" aria-hidden>
+              <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="currentColor" strokeWidth="2" /><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="currentColor" strokeWidth="2" /><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="currentColor" strokeWidth="2" /><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="currentColor" strokeWidth="2" /></svg>
+            </span>
             Overview
           </button>
-          <button className={`tab ${activeTab === "datasources" ? "active" : ""}`} onClick={() => setActiveTab("datasources")}>
+          <button role="tab" aria-selected={activeTab === "datasources"} className={`tab ${activeTab === "datasources" ? "active" : ""}`} onClick={() => setActiveTab("datasources")}>
+            <span className="tab-icon" aria-hidden>
+              <svg viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="5" rx="8" ry="3" stroke="currentColor" strokeWidth="2" /><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" stroke="currentColor" strokeWidth="2" /></svg>
+            </span>
             Data Sources <span className="tab-count">{imports.length} file{imports.length === 1 ? "" : "s"}</span>
           </button>
-          <button className={`tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
+          <button role="tab" aria-selected={activeTab === "analytics"} className={`tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
+            <span className="tab-icon" aria-hidden>
+              <svg viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><path d="M7 15l4-4 3 3 5-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </span>
             Analytics
           </button>
-          <button className={`tab ${activeTab === "keywordclusters" ? "active" : ""}`} onClick={() => setActiveTab("keywordclusters")}>
+          <button role="tab" aria-selected={activeTab === "keywordclusters"} className={`tab ${activeTab === "keywordclusters" ? "active" : ""}`} onClick={() => setActiveTab("keywordclusters")}>
+            <span className="tab-icon" aria-hidden>
+              <svg viewBox="0 0 24 24" fill="none"><circle cx="6" cy="7" r="3" stroke="currentColor" strokeWidth="2" /><circle cx="18" cy="7" r="3" stroke="currentColor" strokeWidth="2" /><circle cx="12" cy="17" r="3" stroke="currentColor" strokeWidth="2" /><path d="M8.5 8.8l2 5.4M15.5 8.8l-2 5.4M9 7h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+            </span>
             Keyword Clusters
           </button>
         </div>

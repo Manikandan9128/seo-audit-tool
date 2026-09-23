@@ -1943,3 +1943,113 @@ button.secondary:hover:not(:disabled) {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* =====================================================================
+   Redesign v4 — client tabs as a segmented control (user request
+   2026-09-23). Active tab = raised white pill + gradient-tinted icon +
+   glowing gradient underline; hover = soft tint; keyboard focus ring
+   only on :focus-visible (mouse clicks leave no glow box behind).
+   ===================================================================== */
+
+.tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin: var(--sp-4) 0 var(--sp-3);
+  padding: var(--sp-1);
+  background: rgba(238, 240, 255, 0.7);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: none;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.tab:hover {
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--color-text-primary);
+  transform: translateY(-1px);
+}
+.tab:active {
+  transform: translateY(0);
+}
+.tab:focus {
+  outline: none;
+  box-shadow: none;
+}
+.tab:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.tab-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-tertiary);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.tab-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.tab.active {
+  background: var(--color-surface);
+  color: var(--color-primary);
+  border-color: var(--color-border-soft);
+  border-bottom-color: var(--color-border-soft);
+  box-shadow: 0 1px 2px rgba(15, 18, 34, 0.06), 0 6px 16px -6px rgba(79, 70, 229, 0.30);
+}
+.tab.active:hover {
+  transform: none;
+}
+.tab.active .tab-icon {
+  background: var(--gradient-primary);
+  color: #fff;
+  box-shadow: 0 3px 10px var(--primary-glow);
+}
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: var(--sp-4);
+  right: var(--sp-4);
+  bottom: -4px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--gradient-primary-h);
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+.tab-count {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--color-secondary-bg);
+  color: var(--color-text-secondary);
+}
+.tab.active .tab-count {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+/* Table rows: center icons, badges, numbers and delete buttons on the
+   same line as the file name (base td is vertical-align: top). */
+.table-wrap td {
+  vertical-align: middle;
+}
