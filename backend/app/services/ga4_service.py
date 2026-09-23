@@ -11,32 +11,26 @@ logger = logging.getLogger(__name__)
 
 
 def list_properties(creds: Credentials) -> list[dict]:
-    """Every GA4 account + property visible to the connected Google login.
-    Both accounts().list and properties().list are paginated by the Admin
-    API (page size caps well under an agency account's real account count)
-    — without following nextPageToken, any account/property past page 1
-    silently disappears from this list with no error, even though it's
-    right there in the GA4 UI (which paginates correctly on its own).
-    Confirmed live 2026-09-16: 2 real client GA4 accounts missing from the
-    picker under an agency login connected to 50+ GA4 accounts."""
+    """Every GA4 property visible to the connected Google login, via the
+    Admin API's accountSummaries.list — ONE paginated call that returns
+    every account with its properties, instead of accounts.list plus a
+    separate properties.list per account (2026-09-23: an agency login sees
+    50+ accounts, and a single transient Google 503 on any one of those ~50
+    calls failed the whole picker with "Failed to load Google properties").
+    execute(num_retries=...) retries 5xx/429 with Google's own backoff.
+    Still follows nextPageToken — page size caps well under an agency
+    account's real account count (confirmed live 2026-09-16)."""
     admin = build("analyticsadmin", "v1beta", credentials=creds)
     results = []
-    accounts, page_token = [], None
+    page_token = None
     while True:
-        page = admin.accounts().list(pageSize=200, pageToken=page_token).execute()
-        accounts.extend(page.get("accounts", []))
+        page = admin.accountSummaries().list(pageSize=200, pageToken=page_token).execute(num_retries=3)
+        for account in page.get("accountSummaries", []):
+            for prop in account.get("propertySummaries", []):
+                results.append({"name": prop["property"], "display_name": prop.get("displayName") or prop["property"]})
         page_token = page.get("nextPageToken")
         if not page_token:
             break
-    for acc in accounts:
-        prop_token = None
-        while True:
-            props = admin.properties().list(filter=f"parent:{acc['name']}", pageSize=200, pageToken=prop_token).execute()
-            for p in props.get("properties", []):
-                results.append({"name": p["name"], "display_name": p["displayName"]})
-            prop_token = props.get("nextPageToken")
-            if not prop_token:
-                break
     return results
 
 
