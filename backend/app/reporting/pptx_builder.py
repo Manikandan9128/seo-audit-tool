@@ -5760,6 +5760,80 @@ def _strategic_cluster_insights(keywords: list[dict]) -> list[str]:
     return out
 
 
+def _short_exclusion_reason(reason: str) -> str:
+    r = (reason or "").lower()
+    if "adult" in r or "explicit" in r:
+        return "adult/explicit"
+    if "brand" in r:
+        return "another company's brand"
+    if "career" in r or "recruitment" in r:
+        return "job search"
+    if "navigation" in r or "login" in r:
+        return "navigation query"
+    if "geographic" in r:
+        return "out of market"
+    return "not relevant to this business"
+
+
+def _quoted_list(items: list[str], limit: int = 3) -> str:
+    shown = ", ".join(f'"{i}"' for i in items[:limit])
+    more = len(items) - limit
+    return f"{shown} (+{more} more)" if more > 0 else shown
+
+
+def _validated_strategic_cluster_insights(c: dict) -> list[str]:
+    """Universal SEO Keyword engine (2026-09-23) insights for one client-
+    sheet cluster: the sheet's grouping is kept, and these lines report
+    what the engine's validation found — target page + action + confidence
+    (§53/§55/§30), what the relevance/brand gate removed (§21/§45), where
+    the sheet's intent label disagrees with the keyword's own wording (§8),
+    and a split-test flag (§42). Capped at 5 lines, most decision-relevant
+    first; the plain demand lines from _strategic_cluster_insights fill any
+    space left."""
+    keywords = c["keywords"]
+    out: list[str] = []
+    base = _strategic_cluster_insights(keywords)
+    if base:
+        out.append(base[0])
+    target = c.get("target_url")
+    if target:
+        target_text = f"existing page {target}"
+    elif c.get("closest_url"):
+        target_text = f"closest existing page is only a weak match ({c['closest_url']})"
+    else:
+        target_text = "new page (no existing page covers this)"
+    out.append(
+        f"Target: {c.get('recommended_page_type') or 'dedicated page'} — {target_text}. "
+        f"Action: {c.get('recommended_action')}. Confidence {c.get('confidence_level')} ({c.get('confidence')}/100)."
+    )
+    excluded = c.get("excluded") or []
+    if excluded:
+        out.append(
+            "Removed from this cluster: "
+            + ", ".join(f'"{e["keyword"]}" ({_short_exclusion_reason(e["reason"])})' for e in excluded[:3])
+            + (f" (+{len(excluded) - 3} more)" if len(excluded) > 3 else "") + "."
+        )
+    mismatches = c.get("intent_mismatches") or []
+    if mismatches:
+        detected = Counter(m["detected"] for m in mismatches).most_common(1)[0][0]
+        sheet = mismatches[0].get("sheet")
+        out.append(
+            f"Intent check: {_quoted_list([m['keyword'] for m in mismatches])} read as {detected.lower()}, "
+            f"not the sheet's {sheet} — cover these in a guide/spec section, not the main product page."
+        )
+    outliers = c.get("outliers") or []
+    if len(outliers) >= 2:
+        out.append(
+            f"Split test: {_quoted_list(outliers)} share no core term with the rest of this cluster — "
+            "likely separate search needs; consider separate pages."
+        )
+    for line in base[1:]:
+        if mismatches and line.startswith("Every keyword here carries commercial"):
+            continue  # contradicted by the intent check above
+        out.append(line)
+    return out[:5]
+
+
 def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_clusters: list[dict] | None) -> list:
     """SEO Cluster & Keyword Selection for Presentation (2026-09-21 spec):
     one table slide per cluster the client's own manually-uploaded
@@ -5814,9 +5888,19 @@ def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_cl
         slides.append(_table_slide(
             prs, f"Target Keywords: {c['cluster']}", headers, rows,
             col_widths=col_widths, source="Client-provided keyword cluster sheet",
-            insights=_strategic_cluster_insights(c["keywords"]),
+            insights=_validated_strategic_cluster_insights(c) if "confidence" in c else _strategic_cluster_insights(c["keywords"]),
         ))
     return slides
+
+
+_TARGET_KEYWORDS_EXCLUDED_CLUSTERS = {
+    _NEEDS_REVIEW_CLUSTER_LABEL, _CAREER_ROUTE_CLUSTER_LABEL, _GEO_ROUTE_CLUSTER_LABEL,
+}
+_EXCLUDED_CLUSTER_NOUN = {
+    _NEEDS_REVIEW_CLUSTER_LABEL: "keyword(s) awaiting relevance review",
+    _CAREER_ROUTE_CLUSTER_LABEL: "job/career search(es)",
+    _GEO_ROUTE_CLUSTER_LABEL: "out-of-market location search(es)",
+}
 
 
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
@@ -5831,10 +5915,24 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
     # FINAL CLUSTER -> Primary Keyword / Secondary Keywords step.
     headers = ["Keyword", "Role", "Search Volume", "Keyword Difficulty"]
     col_widths = [5.6, 1.6, 2.6, 2.3]
+    # Universal SEO Keyword engine (2026-09-23): per-keyword detected intent
+    # (§8) shown when the pipeline computed it.
+    show_intent = any(r.get("detected_intent") for r in keyword_rows)
+    if show_intent:
+        headers = ["Keyword", "Role", "Intent", "Search Volume", "KD"]
+        col_widths = [4.9, 1.4, 2.4, 2.0, 1.4]
 
+    # §21/§53: routing buckets (job searches, out-of-market geography,
+    # unconfirmed relevance) are exclusions, never "Target Keywords" — the
+    # Lumber report showed "Jobs / Careers" and "Geographic Mismatch" as
+    # target slides. Counted into one visible note instead.
+    excluded_counts: Counter = Counter()
     clusters: dict[str, list[dict]] = {}
     for r in keyword_rows:
         label = (r.get("cluster") or "").strip()
+        if label in _TARGET_KEYWORDS_EXCLUDED_CLUSTERS:
+            excluded_counts[label] += 1
+            continue
         clusters.setdefault(label, []).append(r)
 
     def _keyword_insights(rows_for_group: list[dict]) -> list[str]:
@@ -5854,10 +5952,16 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month, KD {top.get('keyword_difficulty', 'n/a')}.")
         page_category = top.get("page_category")
         existing_url = top.get("existing_page_url")
-        if page_category and existing_url:
-            out.append(f"Recommended format: {page_category} — an existing page already covers this: {existing_url}.")
+        # Universal SEO Keyword engine (2026-09-23) §53/§55: the cluster's
+        # own target decision — only added when the pipeline computed it.
+        action = top.get("recommended_action")
+        action_text = f" Action: {action}." if action else ""
+        if page_category and existing_url and top.get("existing_page_match_strength") == "weak":
+            out.append(f"Recommended format: {page_category} — closest existing page is only a weak match ({existing_url}).{action_text}")
+        elif page_category and existing_url:
+            out.append(f"Recommended format: {page_category} — an existing page already covers this: {existing_url}.{action_text}")
         elif page_category:
-            out.append(f"Recommended format: {page_category} — no existing page covers this yet, new page opportunity.")
+            out.append(f"Recommended format: {page_category} — no existing page covers this yet, new page opportunity.{action_text}")
         # Cluster validation (lead's reference flow, doc 1 final step): can
         # one page realistically satisfy every keyword in this cluster?
         # Deterministic — reuses page_category already computed per
@@ -5879,6 +5983,14 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 # disagree when the top-volume keyword's own format wasn't
                 # the cluster's most common one.
                 out.append(f"Cluster validation: consistent format ({page_category or cat_counts[0][0]}) — one page can reasonably target every keyword here.")
+        # §30/§60/§61: confidence + the evidence behind the grouping, placed
+        # ahead of the KD/CPC colour lines so the 5-line insight cap never
+        # drops it.
+        if top.get("cluster_confidence") is not None:
+            out.append(
+                f"Confidence: {top.get('cluster_confidence_level')} ({top.get('cluster_confidence')}/100) — "
+                f"{top.get('cluster_reason') or 'grouped by shared entity and intent'}."
+            )
         if kds:
             out.append(f"Avg. keyword difficulty {sum(kds) / len(kds):.0f} — {'competitive cluster, prioritize content depth over volume' if sum(kds) / len(kds) > 40 else 'low-competition cluster, faster to rank in'}.")
         if easy_wins:
@@ -5931,8 +6043,14 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         return (1, -sum(_num(r.get("search_volume")) for r in cluster_rows))
 
     ranked = sorted(clusters.items(), key=_cluster_sort_key)
+    # §41 minimum useful pages: multi-keyword clusters first, then single-
+    # keyword pages only if slide room is left over.
+    multi = [kv for kv in ranked if len({r.get("keyword") for r in kv[1]}) > 1 or not kv[0]]
+    single = [kv for kv in ranked if kv not in multi]
+    ranked = multi + single
     slides = []
-    for label, rows_for_cluster in ranked[:max_clusters]:
+    shown = ranked[:max_clusters]
+    for idx, (label, rows_for_cluster) in enumerate(shown):
         sorted_rows = sorted(rows_for_cluster, key=lambda r: _num(r.get("search_volume")), reverse=True)
         seen = set()
         deduped = []
@@ -5942,14 +6060,25 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 continue
             seen.add(kw)
             deduped.append(r)
-        rows = [
-            (
-                r.get("keyword", ""),
-                r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
-                r.get("search_volume", ""), r.get("keyword_difficulty", ""),
-            )
-            for i, r in enumerate(deduped)
-        ]
+        if show_intent:
+            rows = [
+                (
+                    r.get("keyword", ""),
+                    r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
+                    r.get("detected_intent") or r.get("intent") or "—",
+                    r.get("search_volume", ""), r.get("keyword_difficulty", ""),
+                )
+                for i, r in enumerate(deduped)
+            ]
+        else:
+            rows = [
+                (
+                    r.get("keyword", ""),
+                    r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
+                    r.get("search_volume", ""), r.get("keyword_difficulty", ""),
+                )
+                for i, r in enumerate(deduped)
+            ]
         # An empty label here means real clustering DID run (this loop only
         # runs when `clusters` has at least one non-"" key — the fully-flat
         # no-clustering-at-all case returns early above) but these specific
@@ -5961,6 +6090,13 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         # Ungrouped Keywords" makes the distinction explicit instead.
         title = f"Target Keywords: {label}" if label else "Target Keywords: Other / Ungrouped Keywords"
         insights = _keyword_insights(deduped) if deduped else []
+        if idx == len(shown) - 1 and excluded_counts:
+            # §62 review queue / exclusions, stated once on the last slide
+            # (kept within the 5-line insight cap).
+            parts = ", ".join(
+                f"{n} {_EXCLUDED_CLUSTER_NOUN.get(lbl, lbl.lower())}" for lbl, n in excluded_counts.most_common()
+            )
+            insights = insights[:4] + [f"Not targeted: {parts} — kept in the full keyword list for review, not on any target page."]
         slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source="Semrush export", insights=insights))
     return slides
 

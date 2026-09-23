@@ -24,6 +24,7 @@ import logging
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.services.keyword_intelligence_service import singularize
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ _CAREERS_WORDS = [
 # just the highest-traffic, unambiguous ones — but zero tolerance beats the
 # previous zero coverage.
 _ADULT_CONTENT_WORDS = [
-    "xnxx", "xvideos", "xhamster", "pornhub", "redtube", "youporn", "porn", "porno",
+    "xnxx", "xvideos", "xhamster", "pornhub", "redtube", "youporn", "porn", "porno", "xxx",
     "xxx video", "sex video", "sex videos", "nude video", "nude videos", "hentai", "onlyfans",
 ]
 
@@ -613,8 +614,11 @@ _MATCH_STOPWORDS = {
 
 
 def _match_tokens(text: str) -> set[str]:
+    # Singular form (keyword engine 2026-09-23 §5) so a "truck" keyword
+    # matches a "Trucks" page — plural-only differences were reading as no
+    # overlap at all.
     words = re.findall(r"[a-z0-9]+", (text or "").lower())
-    return {w for w in words if w not in _MATCH_STOPWORDS and len(w) > 2}
+    return {singularize(w) for w in words if w not in _MATCH_STOPWORDS and len(w) > 2}
 
 
 def match_existing_page(primary_keyword: str, site_audit_pages_rows: list[dict] | None) -> dict | None:
@@ -727,8 +731,45 @@ def classify_page_type(url: str | None) -> str:
     return "other"
 
 
+class _PageIndex(list):
+    """Pre-tokenized pages plus a token -> page-position lookup, so matching
+    one cluster only scores the pages that share at least one of its
+    tokens instead of every crawled page."""
+
+    def __init__(self, pages: list[dict]):
+        super().__init__(pages)
+        self.by_token: dict[str, list[int]] = {}
+        for i, page in enumerate(pages):
+            for t in page["page_tokens"]:
+                self.by_token.setdefault(t, []).append(i)
+
+    def candidates(self, tokens: set[str]) -> list[dict]:
+        positions = sorted({i for t in tokens for i in self.by_token.get(t, ())})
+        return [self[i] for i in positions]
+
+
+def build_page_index(site_audit_pages_rows: list[dict] | None) -> list[dict]:
+    """Pre-tokenizes the crawled pages once so a caller matching many
+    clusters (the keyword engine now clusters every keyword, not just the
+    top 100) doesn't re-run the URL/title regexes per cluster."""
+    index = []
+    for row in site_audit_pages_rows or []:
+        url = row.get("page_url") or ""
+        if not url:
+            continue
+        title = row.get("page_title") or ""
+        title_tokens = _match_tokens(title)
+        index.append({
+            "url": url, "title": title, "page_type": classify_page_type(url),
+            "title_tokens": title_tokens,
+            "page_tokens": title_tokens | _match_tokens(re.sub(r"[/\-_]", " ", url)),
+        })
+    return _PageIndex(index)
+
+
 def match_existing_page_for_cluster(
-    cluster_keywords: list[str], site_audit_pages_rows: list[dict] | None, page_category: str | None = None
+    cluster_keywords: list[str], site_audit_pages_rows: list[dict] | None, page_category: str | None = None,
+    page_index: list[dict] | None = None,
 ) -> dict | None:
     """Cluster-level existing-page match (FINAL PIPELINE step 11) — pools
     token signal from every keyword in a validated cluster (primary +
@@ -758,18 +799,16 @@ def match_existing_page_for_cluster(
     incompatible = _INCOMPATIBLE_PAGE_TYPES.get(page_category or "", set())
     best = None
     best_key = (0, 0)
-    for row in site_audit_pages_rows:
-        url = row.get("page_url") or ""
-        if not url:
-            continue
-        page_type = classify_page_type(url)
+    index = page_index if page_index is not None else build_page_index(site_audit_pages_rows)
+    # Iterating only pages that share a token keeps the original scan order
+    # (positions are sorted), so ties resolve to the same page as before.
+    pages = index.candidates(kw_tokens) if isinstance(index, _PageIndex) else index
+    for page in pages:
+        url, title, page_type = page["url"], page["title"], page["page_type"]
         if page_type == "utility" or page_type in incompatible:
             continue
-        title = row.get("page_title") or ""
-        path = re.sub(r"[/\-_]", " ", url)
-        title_tokens = _match_tokens(title)
-        page_tokens = title_tokens | _match_tokens(path)
-        score = len(kw_tokens & page_tokens)
+        title_tokens = page["title_tokens"]
+        score = len(kw_tokens & page["page_tokens"])
         title_score = len(kw_tokens & title_tokens)
         if (score, title_score) > best_key:
             best_key = (score, title_score)

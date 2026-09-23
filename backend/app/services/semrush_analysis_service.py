@@ -3,7 +3,14 @@ uploads and surfaces concrete gaps — what's behind, by how much, and what
 to do about it. Pure comparison logic over already-parsed imports; no
 external calls."""
 
+import re
 from urllib.parse import urlparse
+
+from app.services.keyword_relevance_service import (
+    _COMPARISON_KEYWORD_SIGNALS,
+    brand_token_variants,
+    is_branded_or_near_brand,
+)
 
 
 def _num(v, default=0):
@@ -177,11 +184,30 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     #   Missing   — you don't rank, at least one competitor does.
     #   Untapped  — nobody compared ranks for it yet (a genuine white-space
     #               keyword, not just a competitor blind spot).
+    brand_excluded_count = 0
     if matrix_rows and own_col:
         seen_keywords = set()
         classified = []
+        # Universal SEO engine §21/§45-46 (2026-09-23): a keyword that is
+        # really a search for a compared competitor's own brand ("ashok
+        # leyland price", "mahindra") is never a gap the client can
+        # legitimately close — BharatBenz's gap slides and Core Problem
+        # were led by exactly these. Deterministic and applied to EVERY
+        # gap row (the AI relevance filter only ever sees the top 40), with
+        # comparison/alternative queries kept as real opportunities.
+        own_brands = brand_token_variants(own_col)
+        competitor_brands: set[str] = set()
+        for d in matrix_rows[0]["domain_positions"]:
+            if d != own_col:
+                competitor_brands |= brand_token_variants(d)
+        competitor_brands -= own_brands
         for r in matrix_rows:
             kw = r.get("keyword")
+            if kw and competitor_brands and is_branded_or_near_brand(kw, competitor_brands) and not any(
+                re.search(rf"\b{re.escape(sig)}\b", kw.lower()) for sig in _COMPARISON_KEYWORD_SIGNALS
+            ):
+                brand_excluded_count += 1
+                continue
             # 2026-09-21 spec: normalize casing before dedup — the raw export
             # can repeat the same keyword under different casing (e.g. a
             # branded vs. lowercase variant), which a case-sensitive `in`
@@ -357,4 +383,7 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     severity_order = {"warn": 0, "opportunity": 1, "info": 2}
     issues.sort(key=lambda i: severity_order[i["severity"]])
 
-    return {"has_data": has_data, "issues": issues, "coverage": coverage, "keyword_gap_rows": keyword_gap_result_rows}
+    return {
+        "has_data": has_data, "issues": issues, "coverage": coverage, "keyword_gap_rows": keyword_gap_result_rows,
+        "keyword_gap_brand_excluded_count": brand_excluded_count,
+    }

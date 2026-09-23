@@ -93,7 +93,10 @@ def test_phase2_and_phase3_each_called_exactly_once_for_the_whole_report():
     mock_p3.assert_not_called()  # phase2 returned no candidate clusters, nothing to validate
 
 
-def test_phase2_failure_leaves_candidate_pool_unclustered_never_falls_back():
+def test_phase2_failure_falls_back_to_rule_based_cluster_never_ungrouped():
+    # Universal SEO Keyword engine (2026-09-23): an AI failure no longer
+    # leaves keywords in an "Other / Ungrouped" dump — every keyword still
+    # gets its deterministic same-page group, visibly marked not AI-validated.
     rows = [{"keyword": "certified payroll compliance audit", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"}]
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"certified payroll compliance audit": "Payroll Compliance"}), \
          patch(_PHASE2_PATH, return_value=({}, ["certified payroll compliance audit"])), \
@@ -102,10 +105,13 @@ def test_phase2_failure_leaves_candidate_pool_unclustered_never_falls_back():
         build_final_keyword_clusters(rows, "Acme", None, None)
 
     mock_p3.assert_not_called()
-    assert rows[0]["cluster"] == ""
+    assert rows[0]["cluster"] == "Certified Payroll Compliance Audit — Guides"
+    assert rows[0]["cluster_source"] == "rule"
+    assert rows[0]["cluster_status"] == "Rule-based (not AI-validated)"
+    assert rows[0]["primary_or_secondary"] == "Primary"
 
 
-def test_unclassified_theme_without_any_candidate_cluster_stays_unclustered():
+def test_unclassified_theme_without_any_candidate_cluster_gets_rule_based_groups():
     rows = [
         {"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
         {"keyword": "random two", "search_volume": 40, "intent": "Informational", "page_category": "Blog / Guide"},
@@ -118,8 +124,11 @@ def test_unclassified_theme_without_any_candidate_cluster_stays_unclustered():
 
     mock_p3.assert_not_called()
     assert all(r["business_theme"] == UNCLASSIFIED_THEME for r in rows)
-    assert all(r["cluster"] == "" for r in rows)
-    assert all("primary_or_secondary" not in r for r in rows)
+    # Different core entities ("random one" vs "random two") stay separate
+    # pages — never merged just because the AI didn't run.
+    assert rows[0]["cluster"] != rows[1]["cluster"]
+    assert all(r["cluster_source"] == "rule" for r in rows)
+    assert all(r["cluster_confidence_level"] in ("Low", "Medium") for r in rows)
 
 
 def test_phase3_primary_keyword_selection_is_respected_not_recomputed():
@@ -178,7 +187,7 @@ def test_cannibalization_overrides_action_with_primary_and_differentiate():
         "Construction Payroll": ["construction payroll"], "Certified Payroll": ["certified payroll"],
     })
 
-    def fake_match(keywords, pages, page_category=None):
+    def fake_match(keywords, pages, page_category=None, **_kwargs):
         return {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}
 
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
@@ -204,7 +213,7 @@ def test_cannibalization_flags_two_clusters_sharing_a_strong_existing_page_match
         "Construction Payroll": ["construction payroll"], "Certified Payroll": ["certified payroll"],
     })
 
-    def fake_match(keywords, pages, page_category=None):
+    def fake_match(keywords, pages, page_category=None, **_kwargs):
         return {"url": "https://example.com/payroll", "title": "Payroll", "match_strength": "strong"}
 
     with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value=themes), \
@@ -232,7 +241,7 @@ def test_no_cannibalization_when_only_one_cluster_matches_a_page():
     assert rows[0]["existing_page_match_strength"] == "strong"
 
 
-def test_catchall_cluster_name_is_rejected_and_left_unclustered():
+def test_catchall_cluster_name_is_rejected_and_falls_back_to_rule_name():
     # 2026-09-21 spec Phase 3 Step 3: a generic/catch-all name means "set
     # cluster_status = Needs Review instead of forcing a name" — no theme
     # fallback name exists in the literal spec, unlike the old engine's
@@ -250,8 +259,10 @@ def test_catchall_cluster_name_is_rejected_and_left_unclustered():
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
 
-    assert all(r["cluster"] == "" for r in rows)
-    assert all(r["cluster_status"] == "Needs Review" for r in rows)
+    # The AI's catch-all "Overview" name never reaches a slide; each
+    # keyword keeps its own evidence-based rule group instead.
+    assert all(r["cluster"] and r["cluster"] != "Overview" for r in rows)
+    assert all(r["cluster_source"] == "rule" for r in rows)
 
 
 def test_duplicate_cluster_names_from_phase3_are_disambiguated():
@@ -341,7 +352,7 @@ def test_semantic_topic_and_modifier_fields_computed_before_any_ai_call():
     assert "pricing" in rows[0]["modifier"] and "plans" in rows[0]["modifier"]
 
 
-def test_evidence_confidence_low_for_unclustered_rows():
+def test_evidence_confidence_low_for_rule_only_rows_with_no_evidence():
     rows = [
         {"keyword": "random one", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
     ]
@@ -350,7 +361,7 @@ def test_evidence_confidence_low_for_unclustered_rows():
          patch(_PHASE3_PATH, return_value=[]), \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None)
-    assert rows[0]["cluster"] == ""
+    assert rows[0]["cluster_source"] == "rule"
     assert rows[0]["evidence_confidence"] == "Low"
 
 
