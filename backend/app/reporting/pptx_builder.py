@@ -6023,7 +6023,9 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         # Ungrouped Keywords" makes the distinction explicit instead.
         title = f"Target Keywords: {label}" if label else "Target Keywords: Other / Ungrouped Keywords"
         insights = _keyword_insights(deduped) if deduped else []
-        slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source="Semrush export", insights=insights))
+        has_volume = any(_num(r.get("search_volume")) > 0 for r in deduped)
+        source = "Semrush export" if has_volume else "Google Search Console queries"
+        slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source=source, insights=insights))
     return slides
 
 
