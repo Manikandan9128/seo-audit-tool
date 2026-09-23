@@ -1309,6 +1309,11 @@ def _gather_report_data(
                 jobs["page_performance"] = pool.submit(
                     ga4_service.get_page_performance, creds, client.ga4_property_id, ga4_start, ga4_end
                 )
+                # Key events + organic landing-page conversion data for the
+                # Conversion SEO slide (spec 2026-09-23) — same window.
+                jobs["conversion_evidence"] = pool.submit(
+                    ga4_service.get_conversion_evidence, creds, client.ga4_property_id, ga4_start, ga4_end
+                )
             if client.gsc_site_url:
                 jobs["search_queries"] = pool.submit(
                     # 20 was too thin once split into Branded/Non-Branded —

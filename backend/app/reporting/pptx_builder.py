@@ -27,6 +27,7 @@ from app.services.keyword_relevance_service import (
     _is_branded_keyword,
     filter_other_brand_keywords,
     is_branded_or_near_brand,
+    classify_page_type,
     normalize_source_url,
 )
 from app.services.keyword_cluster_pipeline import (
@@ -7133,36 +7134,127 @@ def add_local_seo_next_steps_slide(prs: Presentation, structured_data_rows: list
     return _next_steps_category_slide(prs, "Next Steps: Local SEO", intro, items)
 
 
+def _conversion_action_for_page(path: str) -> str:
+    """Page-intent-matched next step (spec section 4) — never the same CTA
+    forced onto every page type."""
+    page_type = classify_page_type(path if "://" in path else f"https://x{path if path.startswith('/') else '/' + path}")
+    if page_type == "blog":
+        return "add a contextual next step from this article to the most relevant product or service page, and measure clicks on it"
+    if page_type in ("commercial", "comparison"):
+        return "review the enquiry/demo/quote call-to-action and form on this page and test one specific change to it"
+    if page_type == "location":
+        return "check the contact, directions, and call options on this page are prominent and tracked"
+    if page_type == "home":
+        return "review whether the primary call-to-action leads visitors clearly into the main product/service paths"
+    return "review the call-to-action and next step on this page against its purpose"
+
+
+def build_conversion_next_steps(
+    conversion_evidence: dict | None,
+    ux_findings: dict | None = None,
+    max_items: int = 6,
+) -> tuple[str, list[str]]:
+    """Conversion SEO Next Steps (spec 2026-09-23): Evidence -> Opportunity
+    -> Action, from GA4 key events/events and organic landing pages first,
+    then any explicitly supplied UX walkthrough findings. Returns (intro,
+    items). Never claims poor conversion without key-event data, never
+    computes its own conversion rate (GA4's sessionKeyEventRate only),
+    never invents functionality."""
+    items: list[str] = []
+    ev = conversion_evidence or {}
+    events = ev.get("events") or []
+    pages = ev.get("organic_landing_pages") or []
+    key_configured = bool(ev.get("key_events_configured"))
+
+    if key_configured:
+        key_events = [e for e in events if e.get("key_events")]
+        total = sum(e["key_events"] for e in key_events)
+        names = ", ".join(e["name"] for e in key_events[:3])
+        converting = [p for p in pages if p.get("sessions")]
+        # Session-weighted mean of GA4's own per-page sessionKeyEventRate —
+        # still converting-sessions / sessions, so like for like. Key-event
+        # COUNT / sessions would not be (one session can fire several).
+        total_sessions = sum(p["sessions"] for p in converting)
+        site_rate = (
+            sum((p.get("session_key_event_rate") or 0) * p["sessions"] for p in converting) / total_sessions
+            if total_sessions else None
+        )
+        # High-traffic organic pages whose own GA4 session key-event rate is
+        # well below the organic-landing-page average — a measured gap.
+        for p in converting[:10]:
+            rate = p.get("session_key_event_rate") or 0
+            if site_rate and p["sessions"] >= 50 and rate < 0.5 * site_rate:
+                items.append(
+                    f"{p['path']} — {p['sessions']:,} organic sessions with a {rate * 100:.1f}% session key-event rate "
+                    f"against {site_rate * 100:.1f}% across the top organic landing pages — "
+                    f"{_conversion_action_for_page(p['path'])}."
+                )
+            if len(items) >= 3:
+                break
+        best = max(converting, key=lambda p: p.get("key_events") or 0, default=None)
+        if best and best.get("key_events"):
+            items.append(
+                f"{best['path']} drives the most organic key events ({best['key_events']:,} from {best['sessions']:,} sessions) — "
+                "keep its call-to-action and form unchanged while testing, and link to it from related high-traffic pages."
+            )
+        intro = f"Based on GA4 key events ({names}; {total:,} in the report period) and organic landing-page data."
+    elif any(e.get("kind") == "conversion" for e in events):
+        tracked = [e for e in events if e.get("kind") == "conversion"]
+        listing = ", ".join(f"{e['name']} ({e['count']:,})" for e in tracked[:3])
+        intro = "Completed conversions are tracked as GA4 events but not marked as key events, so they can't be tied to landing pages yet."
+        items.append(
+            f"Mark {listing} as GA4 key events so each organic landing page's conversion performance becomes measurable."
+        )
+    else:
+        intro = "No GA4 key events are configured, so conversion performance can't be measured yet — these pages carry the organic traffic where a conversion path matters most."
+        if pages:
+            top = pages[:3]
+            listing = ", ".join(f"{p['path']} ({p['sessions']:,} organic sessions)" for p in top)
+            items.append(
+                f"Mark the site's real enquiry, demo, quote, or purchase completions as GA4 key events — organic traffic lands on "
+                f"{listing}, but no completed conversion is measured on any of them."
+            )
+            for p in top[:2]:
+                items.append(
+                    f"{p['path']} — {p['sessions']:,} organic sessions, conversion path not yet measured — "
+                    f"{_conversion_action_for_page(p['path'])}."
+                )
+
+    # Path-signal drop-off: only when BOTH a start and a completion event
+    # are actually measured (spec section 5).
+    by_name = {e["name"].lower(): e for e in events}
+    start = by_name.get("form_start")
+    done = next((by_name[n] for n in ("form_submit", "generate_lead") if n in by_name), None)
+    if start and done and start["count"] > 0 and done["count"] < 0.5 * start["count"]:
+        items.append(
+            f"Forms are started {start['count']:,} times but completed {done['count']:,} times ({done['name']}) — "
+            "review the form's fields and error states for friction and measure completion after each change."
+        )
+
+    if ux_findings and not ux_findings.get("error") and not ux_findings.get("no_ux_pass_done"):
+        items += [f"From the UX walkthrough: {c}" for c in (ux_findings.get("conversion_opportunities") or [])]
+
+    return intro, items[:max_items]
+
+
 def add_conversion_seo_next_steps_slide(
     prs: Presentation,
     ux_findings: dict | None,
-    backlink_row_count: int,
+    backlink_row_count: int = 0,
+    conversion_evidence: dict | None = None,
 ):
-    items = []
-    if ux_findings and not ux_findings.get("error") and not ux_findings.get("no_ux_pass_done"):
-        items += list(ux_findings.get("conversion_opportunities") or [])
-    if backlink_row_count:
-        items.append(
-            f"Turn authority growth into conversions — pair the {backlink_row_count:,} tracked backlinks with clear, "
-            "tested calls-to-action on the pages that authority actually lands on."
-        )
+    """backlink_row_count is accepted for call compatibility but unused —
+    backlink volume isn't conversion evidence."""
+    intro, items = build_conversion_next_steps(conversion_evidence, ux_findings)
     if not items:
-        # Universal SEO Audit Engine spec (2026-09-20) section 39: "If a
-        # step lacks tracking data: 'Tracking data required.' Do not assume
-        # a conversion problem without conversion evidence." No manual UX
-        # pass and no backlink data means there's genuinely no real
-        # conversion-funnel evidence at all (no GA4 goal/event/conversion
-        # data is pulled by this tool) — state that explicitly instead of
-        # silently omitting the slide, same discipline as every other
-        # "nothing to show" case fixed this session (Schema Key Insights,
-        # Programmatic SEO, GA4/GSC OAuth).
+        # Universal SEO Audit Engine spec (2026-09-20) section 39: state the
+        # gap instead of assuming a conversion problem.
         return _next_steps_category_slide(
             prs, "Next Steps: Conversion SEO",
-            "Tracking data required — no manual UX walkthrough and no conversion/funnel data available for this site yet.",
-            ["Run a manual UX walkthrough of the core purchase/signup flow (checkout, forms, primary CTAs), and connect "
-             "GA4 conversion/goal tracking, to unlock evidence-based conversion recommendations here."],
+            "Tracking data required — no GA4 conversion data and no UX walkthrough available for this site yet.",
+            ["Connect GA4 with the site's real enquiry, demo, quote, or purchase completions marked as key events, and run a "
+             "UX walkthrough of the main conversion path, to unlock evidence-based conversion recommendations here."],
         )
-    intro = "Turning existing traffic into leads and sales — from the manual UX walkthrough where available."
     return _next_steps_category_slide(prs, "Next Steps: Conversion SEO", intro, items)
 
 
@@ -7741,7 +7833,6 @@ def _build_report(
     # classifier below, never through this AI-category routing.
     _ai_category_titles = {
         "local_seo": "Next Steps: Local SEO",
-        "conversion_seo": "Next Steps: Conversion SEO",
         "aeo": "Answer Engine Optimization (AEO)",
         "geo": "Generative Engine Optimization (GEO)",
     }
@@ -7781,7 +7872,11 @@ def _build_report(
     # keywords), not an AI's variable phrasing of the same idea.
     add_content_seo_next_steps_slide(prs, keyword_rows)
     add_programmatic_seo_slide(prs, keyword_rows)
-    _next_steps_slide("conversion_seo", add_conversion_seo_next_steps_slide, prs, ux_findings, backlink_row_count)
+    # Always deterministic, never the AI category — Evidence -> Opportunity
+    # -> Action from GA4 key events (Conversion SEO spec 2026-09-23).
+    add_conversion_seo_next_steps_slide(
+        prs, ux_findings, backlink_row_count, (analytics or {}).get("conversion_evidence"),
+    )
     # GeoPulse-grounded content (the client's own AI-visibility tool export)
     # outranks both the generic next_steps_ai category AND the static
     # schema-only fallback below — it's the only source of these two slides

@@ -19,13 +19,12 @@ from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_at
 
 CATEGORY_TITLES = {
     "local_seo": "Next Steps: Local SEO",
-    "conversion_seo": "Next Steps: Conversion SEO",
     "aeo": "Answer Engine Optimization (AEO)",
     "geo": "Generative Engine Optimization (GEO)",
 }
-# goals and technical_seo deliberately excluded too (2026-09-23) — SEO Goals & Targets is
+# goals, technical_seo and conversion_seo deliberately excluded too (2026-09-23) — SEO Goals & Targets is
 # built deterministically (pptx_builder.build_goals_kpis /
-# build_technical_next_steps) so every number and finding is traceable
+# build_technical_next_steps / build_conversion_next_steps) so every number and finding is traceable
 # to the report's own data.
 # content_seo deliberately excluded — that slide always renders through
 # pptx_builder's deterministic keyword-page-category classifier
@@ -41,14 +40,12 @@ bullet must sound like an analyst who actually studied this specific business: n
 competitors, real numbers, real customer-question types — using ONLY the facts given below. Never invent a \
 fact, number, competitor name, or product that isn't in the data.
 
-For EACH of these 4 categories, decide first whether it genuinely applies to this business, THEN write it:
+For EACH of these 3 categories, decide first whether it genuinely applies to this business, THEN write it:
 - local_seo — only applies to a business with physical locations, regional service areas, or city-level search \
 intent. A national or global B2B/SaaS/e-commerce business with no physical storefront must get \
 "applicable": false — never recommend Google Business Profile, NAP consistency, or local citations to a \
 business that has no physical location. When it IS applicable, favor geo-targeted CONTENT strategy (e.g. \
 city-specific landing pages for real service areas) over generic listing-hygiene advice.
-- conversion_seo — turning traffic into leads/sales, using real trust signals, real competitor conversion \
-tactics, or real top-traffic pages if given.
 - aeo — schema/FAQ eligibility for AI Overviews and answer boxes, referencing real customer-question types for \
 this specific product/service where possible.
 - geo — being cited/recommended by AI assistants (ChatGPT, Gemini, Claude), grounded in the real industry and \
@@ -72,7 +69,6 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
   "categories": {{
     "local_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
-    "conversion_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "aeo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "geo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}}
   }}

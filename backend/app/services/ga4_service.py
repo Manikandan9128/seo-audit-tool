@@ -556,3 +556,82 @@ def get_traffic_sources(creds: Credentials, property_id: str, start_date: str, e
         r["return_rate_pct"] = round(100 * returning_users / total, 1) if total else None
 
     return {"rows": rows}
+
+
+# GA4 event-name classification (Conversion SEO spec 2026-09-23, section 2).
+# A key event (keyEvents > 0, i.e. marked as a key event in the property) is
+# always conversion evidence; otherwise only an explicitly COMPLETED
+# submission/purchase name counts. Starts/clicks are conversion-path
+# signals, scroll/engagement are engagement signals, and everything else
+# (page_view, session_start, first_visit...) is not classified at all.
+_COMPLETED_CONVERSION_EVENT_RE = r"(^|_)(form_submit|generate_lead|submit_lead|sign_up|purchase|contact_submit|demo_request|request_demo|quote_request|request_quote|book_demo|booking_complete)($|_)"
+_PATH_SIGNAL_EVENT_RE = r"(form_start|cta|click_|_click|outbound|phone|tel_|call_|mailto|email_click|whatsapp|begin_checkout|add_to_cart)"
+_ENGAGEMENT_EVENT_RE = r"(scroll|user_engagement|video_|file_download|view_search_results)"
+
+
+def classify_ga4_event(name: str, key_events: float) -> str | None:
+    import re as _re
+
+    n = (name or "").lower()
+    if key_events and key_events > 0:
+        return "conversion"
+    if _re.search(_COMPLETED_CONVERSION_EVENT_RE, n):
+        return "conversion"
+    if _re.search(_PATH_SIGNAL_EVENT_RE, n):
+        return "path_signal"
+    if _re.search(_ENGAGEMENT_EVENT_RE, n):
+        return "engagement"
+    return None
+
+
+def get_conversion_evidence(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
+    """GA4 conversion evidence for the Conversion SEO slide: every event
+    (count + key-event count + classification) and the top Organic Search
+    landing pages with sessions, key events, and GA4's OWN session key-event
+    rate (sessionKeyEventRate) — the rate is never computed here from
+    mismatched numerator/denominator."""
+    client = _data_client(creds)
+    events_body = {
+        "dimensions": [{"name": "eventName"}],
+        "metrics": [{"name": "eventCount"}, {"name": "keyEvents"}],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "limit": 100,
+        "orderBys": [{"metric": {"metricName": "eventCount"}, "desc": True}],
+    }
+    landing_body = {
+        "dimensions": [{"name": "landingPage"}],
+        "metrics": [{"name": "sessions"}, {"name": "keyEvents"}, {"name": "sessionKeyEventRate"}],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "dimensionFilter": {"filter": {
+            "fieldName": "sessionDefaultChannelGroup", "stringFilter": {"value": "Organic Search"},
+        }},
+        "limit": 15,
+        "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
+    }
+    events_resp = client.properties().runReport(property=property_id, body=events_body).execute()
+    landing_resp = client.properties().runReport(property=property_id, body=landing_body).execute()
+
+    events = []
+    for row in events_resp.get("rows", []):
+        name = row["dimensionValues"][0]["value"]
+        count = float(row["metricValues"][0]["value"] or 0)
+        key = float(row["metricValues"][1]["value"] or 0)
+        events.append({"name": name, "count": int(count), "key_events": int(key), "kind": classify_ga4_event(name, key)})
+
+    landing_pages = []
+    for row in landing_resp.get("rows", []):
+        path = row["dimensionValues"][0]["value"]
+        if not path or path == "(not set)":
+            continue
+        mv = row["metricValues"]
+        landing_pages.append({
+            "path": path,
+            "sessions": int(float(mv[0]["value"] or 0)),
+            "key_events": int(float(mv[1]["value"] or 0)),
+            "session_key_event_rate": float(mv[2]["value"] or 0),
+        })
+    return {
+        "events": events,
+        "organic_landing_pages": landing_pages,
+        "key_events_configured": any(e["key_events"] > 0 for e in events),
+    }
