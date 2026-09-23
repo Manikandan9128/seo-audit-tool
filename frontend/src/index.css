@@ -2053,3 +2053,16 @@ button.secondary:hover:not(:disabled) {
 .table-wrap td {
   vertical-align: middle;
 }
+
+/* Getting-started step labels: clickable text, not primary buttons —
+   dark text, no glow; a soft tint on hover shows they're clickable. */
+.step-btn {
+  color: var(--color-text-primary);
+  box-shadow: none;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s ease;
+}
+.step-btn:hover {
+  background: var(--color-primary-subtle) !important;
+  box-shadow: none;
+}

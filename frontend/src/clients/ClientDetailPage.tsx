@@ -1050,6 +1050,7 @@ export default function ClientDetailPage() {
                 {steps.map((step, i) => (
                   <button
                     key={step.n}
+                    className="step-btn"
                     onClick={step.onClick}
                     style={{
                       gridColumn: i + 1,
