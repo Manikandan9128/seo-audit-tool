@@ -22,7 +22,19 @@ the MCP authorization spec — verified live 2026-09-23:
 So there's nothing to register by hand in a Semrush dashboard: the first
 Connect registers this app's callback URL via RFC 7591 and stores the
 returned client_id, re-registering if the callback URL changes (e.g. local
-dev vs the production host)."""
+dev vs the production host).
+
+Semrush's registration endpoint only accepts allowlisted redirect URIs —
+confirmed live 2026-09-23: any localhost/127.0.0.1 URL and known MCP
+clients (claude.ai, cursor://, vscode.dev) register fine, while arbitrary
+domains (this app's production host, example.com) get 400 "redirect URI
+... is not allowed". So when the app's own callback is rejected,
+connect_semrush() falls back to LOOPBACK_REDIRECT_URI ("paste" mode):
+Semrush redirects the browser to a localhost URL that doesn't load, and
+the user pastes that URL (carrying code + state) back into Settings,
+where complete_semrush_oauth_from_url() finishes the same exchange. The
+state check and PKCE verifier are unchanged — the verifier never leaves
+the server, so the pasted code is useless to anyone else."""
 
 import asyncio
 import base64
@@ -32,7 +44,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 import httpx2
@@ -49,6 +61,9 @@ PROTECTED_RESOURCE_METADATA_URL = "https://mcp.semrush.com/.well-known/oauth-pro
 # and is what gets a refresh token issued alongside the access token.
 OAUTH_SCOPES = "mcp.access offline_access"
 CLIENT_NAME = "SEO Audit Tool"
+# Nothing listens here on purpose: the browser shows a "can't connect"
+# page whose address bar holds the code + state the user pastes back.
+LOOPBACK_REDIRECT_URI = "http://localhost/semrush-oauth-callback"
 
 PENDING_STATE_TTL_SECONDS = 600
 # Refresh this long before the access token's stated expiry, so a token
@@ -113,6 +128,10 @@ class SemrushRateLimited(SemrushError):
 
 class SemrushConnectionFailed(SemrushError):
     code = "connection_failed"
+
+
+class _RedirectUriNotAllowed(SemrushConnectionFailed):
+    """Registration refused this redirect URI (not on Semrush's allowlist)."""
 
 
 # ---------------------------------------------------------------- storage
@@ -193,6 +212,8 @@ def _registered_client_id(db: Session, redirect_uri: str) -> str:
         )
     except httpx.HTTPError as e:
         raise SemrushConnectionFailed(f"Couldn't reach Semrush to register this app: {str(e)[:200]}") from e
+    if response.status_code == 400 and "is not allowed" in response.text:
+        raise _RedirectUriNotAllowed(f"Semrush doesn't allow the redirect URI {redirect_uri}")
     if response.status_code >= 400:
         raise SemrushConnectionFailed(
             f"Semrush rejected this app's client registration ({response.status_code}): {response.text[:200]}"
@@ -205,15 +226,24 @@ def _registered_client_id(db: Session, redirect_uri: str) -> str:
 # ------------------------------------------------------------------ OAuth
 
 
-def connect_semrush(db: Session, redirect_uri: str, user_id: str) -> str:
+def connect_semrush(db: Session, redirect_uri: str, user_id: str) -> dict:
     """Starts the OAuth flow: registers the client if needed, stores a
-    single-use state + PKCE verifier server-side, and returns the Semrush
-    authorization URL to send the browser to.
+    single-use state + PKCE verifier server-side, and returns
+    {"auth_url", "mode"}. mode is "redirect" when Semrush accepted this
+    app's own callback URL (Semrush redirects straight back), or "paste"
+    when it didn't and LOOPBACK_REDIRECT_URI is used instead (see module
+    docstring).
 
     Only one pending authorization is kept (the integration is app-wide):
     starting a new Connect invalidates any earlier unfinished one."""
     metadata = _auth_server_metadata()
-    client_id = _registered_client_id(db, redirect_uri)
+    mode = "redirect"
+    try:
+        client_id = _registered_client_id(db, redirect_uri)
+    except _RedirectUriNotAllowed:
+        mode = "paste"
+        redirect_uri = LOOPBACK_REDIRECT_URI
+        client_id = _registered_client_id(db, redirect_uri)
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -237,7 +267,18 @@ def connect_semrush(db: Session, redirect_uri: str, user_id: str) -> str:
         # spec so the token is audience-bound to this MCP server.
         "resource": SEMRUSH_MCP_URL,
     })
-    return f"{metadata['authorization_endpoint']}?{query}"
+    return {"auth_url": f"{metadata['authorization_endpoint']}?{query}", "mode": mode}
+
+
+def complete_semrush_oauth_from_url(db: Session, callback_url: str) -> None:
+    """Paste mode: finishes the flow from the localhost URL Semrush
+    redirected the browser to. Accepts the full URL or just its query."""
+    text = callback_url.strip()
+    query = urlparse(text).query if "?" in text else text.lstrip("?")
+    params = {k: v[0] for k, v in parse_qs(query).items()}
+    if not params.get("state"):
+        raise SemrushInvalidState("That address has no OAuth state — paste the full address from the page Semrush sent you to.")
+    complete_semrush_oauth(db, params.get("state"), params.get("code"), params.get("error"), params.get("error_description"))
 
 
 def complete_semrush_oauth(db: Session, state: str | None, code: str | None, error: str | None, error_description: str | None) -> None:

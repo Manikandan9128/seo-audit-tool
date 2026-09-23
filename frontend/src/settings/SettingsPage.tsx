@@ -282,6 +282,11 @@ function SemrushMcpCard() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Paste mode: Semrush only allows localhost redirect URIs for this app,
+  // so after sign-in the browser lands on a localhost page that won't load
+  // and the user pastes its address here.
+  const [pasteMode, setPasteMode] = useState(false);
+  const [callbackUrl, setCallbackUrl] = useState("");
 
   async function loadStatus() {
     try {
@@ -309,11 +314,42 @@ function SemrushMcpCard() {
   async function connect() {
     setBusy(true);
     setError("");
+    setNotice("");
+    // Opened before the await so the popup blocker treats it as a
+    // user-initiated window.
+    const signInWindow = window.open("", "_blank");
     try {
       const res = await api.get("/integrations/semrush/connect");
-      window.location.href = res.data.auth_url;
+      if (res.data.mode === "paste") {
+        setPasteMode(true);
+        setCallbackUrl("");
+        if (signInWindow) signInWindow.location.href = res.data.auth_url;
+        else window.location.href = res.data.auth_url;
+        setBusy(false);
+      } else {
+        signInWindow?.close();
+        window.location.href = res.data.auth_url;
+      }
     } catch (err: any) {
+      signInWindow?.close();
       setError(err?.response?.data?.detail || "Couldn't start Semrush connect");
+      setBusy(false);
+    }
+  }
+
+  async function finishConnect() {
+    if (!callbackUrl.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api.post("/integrations/semrush/complete", { callback_url: callbackUrl.trim() });
+      setStatus(res.data);
+      setPasteMode(false);
+      setCallbackUrl("");
+      setNotice("Semrush connected.");
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't finish connecting Semrush");
+    } finally {
       setBusy(false);
     }
   }
@@ -384,6 +420,26 @@ function SemrushMcpCard() {
           </>
         )}
       </div>
+      {pasteMode && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 13, margin: "0 0 6px" }}>
+            Sign in and allow access in the Semrush tab. It will then land on a <strong>localhost</strong> page that
+            doesn't load — that's expected. Copy that page's full address and paste it here:
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              placeholder="http://localhost/semrush-oauth-callback?code=...&state=..."
+              style={{ flex: 1 }}
+              value={callbackUrl}
+              onChange={(e) => setCallbackUrl(e.target.value)}
+            />
+            <button onClick={finishConnect} disabled={busy || !callbackUrl.trim()}>
+              {busy ? "Connecting..." : "Finish"}
+            </button>
+          </div>
+        </div>
+      )}
       {notice && !error && <p style={{ fontSize: 13, marginTop: 8, color: "var(--success)" }}>✓ {notice}</p>}
       {error && <p style={{ fontSize: 13, color: "#991b1b", marginTop: 8 }}>{error}</p>}
       {testResult && (

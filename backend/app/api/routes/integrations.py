@@ -12,6 +12,10 @@ from app.models.user import User
 router = APIRouter(prefix="/integrations/semrush", tags=["integrations"])
 
 
+class CompleteIn(BaseModel):
+    callback_url: str
+
+
 class ToolCallIn(BaseModel):
     name: str
     arguments: dict[str, Any] = {}
@@ -49,15 +53,26 @@ def _http_error(e: semrush_mcp.SemrushError) -> HTTPException:
 
 @router.get("/connect")
 def semrush_connect(request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Returns the Semrush authorization URL for the frontend to navigate
-    to (same shape as the Google Sheets connect route — the browser can't
-    carry the app's Bearer token on a plain navigation, so this is fetched
-    with it and the redirect happens client-side)."""
+    """Returns {auth_url, mode} for the frontend to navigate to (same shape
+    as the Google Sheets connect route — the browser can't carry the app's
+    Bearer token on a plain navigation, so this is fetched with it and the
+    redirect happens client-side). mode "paste" means Semrush won't
+    redirect back here — see semrush_mcp's module docstring."""
     try:
-        auth_url = semrush_mcp.connect_semrush(db, _redirect_uri(request), str(current_user.id))
+        return semrush_mcp.connect_semrush(db, _redirect_uri(request), str(current_user.id))
     except semrush_mcp.SemrushError as e:
         raise _http_error(e)
-    return {"auth_url": auth_url}
+
+
+@router.post("/complete")
+def semrush_complete(payload: CompleteIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Paste mode: finishes the OAuth flow from the localhost URL Semrush
+    redirected the browser to."""
+    try:
+        semrush_mcp.complete_semrush_oauth_from_url(db, payload.callback_url)
+    except semrush_mcp.SemrushError as e:
+        raise _http_error(e)
+    return semrush_mcp.semrush_status(db)
 
 
 @router.get("/callback")
