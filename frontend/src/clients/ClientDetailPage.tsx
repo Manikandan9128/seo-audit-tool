@@ -573,7 +573,7 @@ export default function ClientDetailPage() {
     const collapsed = collapsedSections.includes(sectionKey);
     return (
       <div
-        className="card card-interactive"
+        className="card card-interactive section-card"
         style={{
           display: "flex",
           flexDirection: "column",
@@ -644,7 +644,7 @@ export default function ClientDetailPage() {
   if (!client) return <p>Loading...</p>;
 
   return (
-    <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 20 }}>
+    <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
       <div
         style={{
           position: "sticky",
@@ -821,7 +821,7 @@ export default function ClientDetailPage() {
         </div>
       )}
 
-      <section className={`panel ${activeTab === "overview" ? "active" : ""}`} style={{ display: activeTab === "overview" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
+      <section className={`panel ${activeTab === "overview" ? "active" : ""}`} style={{ display: activeTab === "overview" ? "flex" : "none", flexDirection: "column", gap: "var(--card-stack-gap)" }}>
       {(() => {
         // KPI snapshot strip (redesign v3 stage 3) — every number here
         // is derived from state this page already loads (domainRatings,
@@ -1123,7 +1123,9 @@ export default function ClientDetailPage() {
         selectedSections.includes("site_audit") ||
         selectedSections.includes("pagespeed") ||
         selectedSections.includes("tech_stack")) && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <div>
+        <div className="section-group-title">Report sections</div>
+        <div className="stack-sections">
           {/* Company Overview — review/edit before generating */}
           {selectedSections.includes("overview") && (
             <SectionCard
@@ -1260,6 +1262,7 @@ export default function ClientDetailPage() {
             </SectionCard>
           )}
         </div>
+        </div>
       )}
 
       {/* Multi-page audit — full width, has a wide table */}
@@ -1290,9 +1293,9 @@ export default function ClientDetailPage() {
       )}
       </section>
 
-      <section className={`panel ${activeTab === "datasources" ? "active" : ""}`} style={{ display: activeTab === "datasources" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
+      <section className={`panel ${activeTab === "datasources" ? "active" : ""}`} style={{ display: activeTab === "datasources" ? "flex" : "none", flexDirection: "column", gap: "var(--card-stack-gap)" }}>
       {/* Semrush uploads — one for our domain, one for competitors */}
-      <div id="semrush-section" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div id="semrush-section" className="stack-cards">
         <DomainRatingEditor clientId={clientId!} ownDomain={client.website_url} onChanged={loadDomainRatingsForKpi} />
         {/* Upload checklist matrix cut 2026-09-22 per user request — "will
             share better idea for this later." Component kept in
@@ -1319,11 +1322,11 @@ export default function ClientDetailPage() {
       </div>
       </section>
 
-      <section className={`panel ${activeTab === "keywordclusters" ? "active" : ""}`} style={{ display: activeTab === "keywordclusters" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
+      <section className={`panel ${activeTab === "keywordclusters" ? "active" : ""}`} style={{ display: activeTab === "keywordclusters" ? "flex" : "none", flexDirection: "column", gap: "var(--card-stack-gap)" }}>
         <ManualKeywordClusterCard clientId={clientId!} imports={imports} onChanged={loadImports} />
       </section>
 
-      <section className={`panel ${activeTab === "analytics" ? "active" : ""}`} style={{ display: activeTab === "analytics" ? "flex" : "none", flexDirection: "column", gap: 20 }}>
+      <section className={`panel ${activeTab === "analytics" ? "active" : ""}`} style={{ display: activeTab === "analytics" ? "flex" : "none", flexDirection: "column", gap: "var(--card-stack-gap)" }}>
       <SemrushAnalysis clientId={clientId!} />
 
       {/* Google Analytics / Search Console */}

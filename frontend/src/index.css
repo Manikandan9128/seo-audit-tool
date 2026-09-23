@@ -1,23 +1,52 @@
 :root {
   /* ---- Design-system tokens (2026-09 redesign) ---- */
+  /* v4 palette (2026-09-23) — values per seo-audit-tool-redesign-v4. */
   --color-bg: #F8FAFC;
+  --color-page-plane: #F3F4FA;
   --color-surface: #FFFFFF;
-  --color-border: #E2E8F0;
+  --color-border: #E5E7F0;
+  --color-border-soft: #EEF0F7;
   --color-border-strong: #CBD5E1;
-  --color-text-primary: #0F172A;
-  --color-text-secondary: #64748B;
-  --color-text-tertiary: #94A3B8;
+  --color-text-primary: #0F1222;
+  --color-text-secondary: #63667D;
+  /* Spec value #9698AC fails AA as text (2.8:1); darkened to pass on
+     both white cards and the page plane. Hierarchy comes from size. */
+  --color-text-tertiary: #6B6D7B;
   --color-primary: #4F46E5;
+  --color-primary-2: #8B5CF6;
   --color-primary-hover: #4338CA;
-  --color-primary-subtle: #EEF2FF;
-  --color-secondary-bg: #F1F5F9;
-  --color-secondary-bg-hover: #E2E8F0;
-  --color-danger: #DC2626;
-  --color-danger-subtle: #FEF2F2;
+  --color-primary-subtle: #EEF0FF;
+  --color-secondary-bg: #F1F2FA;
+  --color-secondary-bg-hover: #E6E7F5;
+  /* Status colors — flat only, always paired with icon + label, never
+     gradient, never decorative. */
+  --color-danger: #E23636;
+  --color-danger-subtle: #FEF0F0;
   --color-success: #16A34A;
-  --color-success-subtle: #F0FDF4;
+  --color-success-subtle: #EFFCF3;
   --color-warning: #D97706;
-  --color-warning-subtle: #FFFBEB;
+  --color-warning-subtle: #FFF9EC;
+  /* Text-on-tint variants: the flat status colors above fall to ~3:1 on
+     their own subtle backgrounds, so status TEXT uses these (AA 4.6:1+). */
+  --color-success-text: #11823B;
+  --color-warning-text: #AB5E04;
+  --color-danger-text: #CD3131;
+
+  /* Brand/action gradient — primary buttons, progress fills, leaderboard
+     top-3 bars. Never used for status. */
+  --gradient-primary: linear-gradient(135deg, var(--color-primary), var(--color-primary-2));
+  --gradient-primary-h: linear-gradient(90deg, var(--color-primary), var(--color-primary-2));
+  --gradient-success-h: linear-gradient(90deg, var(--color-success), #34D399);
+  --primary-glow: rgba(99, 80, 238, 0.30);
+  --shadow-primary-glow: 0 4px 14px var(--primary-glow);
+  --shadow-primary-glow-hover: 0 8px 22px var(--primary-glow);
+
+  /* Dark sidebar (used from stage 2). */
+  --sidebar-1: #181433;
+  --sidebar-2: #0A0818;
+  --sidebar-text: #E7E5F7;
+  --sidebar-text-dim: #A9A5CC;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
   /* Decorative icon-anchor tints only (redesign v3 stage 2) — never used
      to encode status or data; success/warning/danger above already carry
      every meaningful state in this UI. */
@@ -25,14 +54,14 @@
   --accent-teal-subtle: #F0FDFA;
   --accent-violet: #7C3AED;
   --accent-violet-subtle: #F5F3FF;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 6px rgba(15, 23, 42, 0.04);
-  --shadow-card-hover: 0 4px 10px rgba(15, 23, 42, 0.07), 0 2px 4px rgba(15, 23, 42, 0.05);
-  --shadow-pop: 0 8px 24px rgba(15, 23, 42, 0.14);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --shadow-card: 0 1px 1px rgba(15, 18, 34, 0.03), 0 10px 28px -8px rgba(15, 18, 34, 0.10);
+  --shadow-card-hover: 0 1px 1px rgba(15, 18, 34, 0.04), 0 18px 36px -10px rgba(15, 18, 34, 0.16);
+  --shadow-pop: 0 16px 40px rgba(15, 18, 34, 0.30);
 
-  /* ---- Redesign v3 — Stage 1: 8pt spacing scale ----
+  /* ---- Spacing scale (v3 stage 1; v4 applies it everywhere) ----
      Every redesigned-in-v3 component must read one of these instead of an
      ad hoc pixel value. card-padding (28px) is the one deliberate off-scale
      exception (spec: "chosen for card content density"). Not yet applied
@@ -49,6 +78,10 @@
   --sp-8: 40px;
   --sp-9: 48px;
   --card-padding: 28px;
+  /* v4 spacing rules — scale with visual weight. */
+  --card-stack-gap: var(--sp-7);      /* top-level cards: room for shadows */
+  --table-cell-py: 14px;              /* table cells 14/18 */
+  --table-cell-px: 18px;
 
   /* ---- Legacy token names, aliased to the tokens above ----
      Every existing component (CSS and inline style={{}}) still reads
@@ -87,7 +120,7 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--color-page-plane);
   color: var(--text);
 }
 
@@ -156,10 +189,37 @@ input:focus, select:focus {
 
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 22px;
-  box-shadow: 0 1px 3px rgba(20, 20, 15, 0.04);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-lg);
+  padding: var(--card-padding);
+  box-shadow: var(--shadow-card);
+}
+
+/* v4 stacks — replace ad hoc inline gaps. */
+.stack-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--card-stack-gap);
+}
+.stack-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+/* Section list rows: tighter than cards — a scanning list (16/20). */
+.section-card.card {
+  padding: var(--sp-4) var(--sp-5);
+}
+.section-group-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: var(--sp-8) 0 var(--sp-4) 2px;
+}
+.section-group-title:first-child {
+  margin-top: 0;
 }
 
 .client-tile {
@@ -336,7 +396,7 @@ input:focus, select:focus {
 }
 .badge.success {
   background: var(--success-soft);
-  color: var(--success);
+  color: var(--color-success-text);
 }
 .badge.muted {
   background: #f1f0ea;
@@ -344,7 +404,7 @@ input:focus, select:focus {
 }
 .badge.danger {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--color-danger-text);
 }
 
 /* ---- article-style report ---- */
@@ -449,11 +509,11 @@ nav.toc a.active {
 }
 .status.ok {
   background: var(--success-soft);
-  color: var(--success);
+  color: var(--color-success-text);
 }
 .status.fail {
   background: var(--danger-soft);
-  color: var(--danger);
+  color: var(--color-danger-text);
 }
 
 .metric-grid {
@@ -483,10 +543,10 @@ nav.toc a.active {
   font-variant-numeric: tabular-nums;
 }
 .metric .value.good {
-  color: var(--success);
+  color: var(--color-success-text);
 }
 .metric .value.bad {
-  color: var(--danger);
+  color: var(--color-danger-text);
 }
 
 .issue-list {
@@ -508,7 +568,7 @@ nav.toc a.active {
 }
 .issue-list li .idx {
   font-family: var(--font-mono);
-  color: var(--danger);
+  color: var(--color-danger-text);
   font-size: 11px;
   margin-top: 2px;
 }
@@ -616,7 +676,7 @@ td.mono {
 }
 .btn-icon:hover {
   background: var(--color-danger-subtle);
-  color: var(--color-danger);
+  color: var(--color-danger-text);
 }
 .btn-icon svg {
   width: 15px;
@@ -649,8 +709,9 @@ td.mono {
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-6);
+  gap: var(--sp-5);
+  /* Spacing below comes from the parent .stack-cards gap. */
+  margin-bottom: 0;
 }
 @media (max-width: 900px) {
   .kpi-row {
@@ -662,7 +723,7 @@ td.mono {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
-  padding: var(--sp-5);
+  padding: var(--sp-6);
 }
 .kpi-top {
   display: flex;
@@ -709,7 +770,7 @@ td.mono {
   height: 12px;
 }
 .kpi-sub.up {
-  color: var(--color-success);
+  color: var(--color-success-text);
 }
 .kpi-bar-track {
   height: 5px;
@@ -761,7 +822,7 @@ td.mono {
 }
 .card-icon.success {
   background: var(--color-success-subtle);
-  color: var(--color-success);
+  color: var(--color-success-text);
 }
 .card-title-text {
   padding-top: 3px;
@@ -801,10 +862,12 @@ td.mono {
 }
 .section-icon.ready {
   background: var(--color-success-subtle);
-  color: var(--color-success);
+  color: var(--color-success-text);
 }
 
 /* ---- Sidebar logout — compact, not a full CTA-sized button ---- */
+/* User rule 2026-09-23: logout button is NOT part of the v4 redesign —
+   values pinned to its pre-v4 look so token changes never reach it. */
 .btn-logout {
   width: 100%;
   display: flex;
@@ -813,16 +876,16 @@ td.mono {
   justify-content: center;
   padding: 8px 12px;
   background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
+  border: 1px solid #E2E8F0;
+  border-radius: 6px;
+  color: #64748B;
   font-weight: 500;
   font-size: 12.5px;
   box-shadow: none;
 }
 .btn-logout:hover {
-  background: var(--color-secondary-bg);
-  color: var(--color-text-primary);
+  background: #F1F5F9;
+  color: #0F172A;
   box-shadow: none;
 }
 .btn-logout svg {
@@ -860,7 +923,7 @@ td.mono {
 }
 .badge-ready {
   background: var(--color-success-subtle);
-  color: var(--color-success);
+  color: var(--color-success-text);
 }
 .badge-ready::before {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E");
@@ -868,7 +931,7 @@ td.mono {
 }
 .badge-pending {
   background: var(--color-warning-subtle);
-  color: var(--color-warning);
+  color: var(--color-warning-text);
 }
 .badge-pending::before {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E");
@@ -945,7 +1008,14 @@ td.mono {
   width: 100%;
   margin: 0;
 }
+.table-wrap th,
+.table-wrap td {
+  padding: var(--table-cell-py) var(--table-cell-px);
+  border-bottom-color: var(--color-border-soft);
+}
 .table-wrap thead th {
+  padding-top: var(--sp-3);
+  padding-bottom: var(--sp-3);
   position: sticky;
   top: 0;
   background: var(--color-bg);
@@ -1117,7 +1187,7 @@ table.matrix th:first-child {
 }
 .dot.yes {
   background: var(--color-success-subtle);
-  color: var(--color-success);
+  color: var(--color-success-text);
 }
 .dot.no {
   color: var(--color-text-tertiary);
@@ -1158,7 +1228,7 @@ table.matrix th:first-child {
 .self-tag {
   font-size: 10.5px;
   font-weight: 700;
-  color: var(--color-success);
+  color: var(--color-success-text);
   background: var(--color-success-subtle);
   padding: 2px 7px;
   border-radius: 5px;
@@ -1364,7 +1434,7 @@ table.matrix th:first-child {
 .toast svg {
   width: 16px;
   height: 16px;
-  color: var(--color-success);
+  color: var(--color-success-text);
   flex-shrink: 0;
 }
 .toast-close {
