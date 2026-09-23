@@ -232,6 +232,30 @@ def is_branded_or_near_brand(keyword: str, brand_tokens) -> bool:
     return False
 
 
+def is_competitor_brand_query(keyword: str, brand_tokens) -> bool:
+    """Strict version of is_branded_or_near_brand for deciding a keyword is
+    really a search for a COMPARED competitor's brand — used where a match
+    removes the keyword outright (keyword gap, manual sheet), so it must
+    never fire on an innocent word. No edit-distance typo matching ("taxi"
+    is 2 edits from "tata"). Matches only: the brand as a whole word, the
+    brand spelled with its words split ("ashok leyland" -> "ashokleyland",
+    "tata motors" -> "tatamotors"), or a 5+ letter leading word that starts
+    a mashed-together domain brand ("mahindra" -> "mahindratruckandbus")."""
+    words = re.findall(r"[a-z0-9]+", (keyword or "").lower())
+    if not words:
+        return False
+    joined_pairs = {words[i] + words[i + 1] for i in range(len(words) - 1)}
+    for brand in brand_tokens or ():
+        if not brand or len(brand) < 3:
+            continue
+        if brand in words or brand in joined_pairs:
+            return True
+        first = words[0]
+        if len(first) >= 5 and len(brand) > len(first) and brand.startswith(first):
+            return True
+    return False
+
+
 def filter_other_brand_keywords(keyword_rows: list[dict], client_domain: str, competitor_domains) -> list[dict]:
     """Standing rule for every client, not just one: an export of the
     CLIENT's own ranking keywords can still legitimately contain another
@@ -735,7 +759,17 @@ def classify_page_type(url: str | None) -> str:
 class _PageIndex(list):
     """Pre-tokenized pages plus a token -> page-position lookup, so matching
     one cluster only scores the pages that share at least one of its
-    tokens instead of every crawled page."""
+    tokens instead of every crawled page.
+
+    `common` holds site-wide boilerplate tokens — words in more than 15% of
+    page titles/URLs (the brand name, "india", the core product word in
+    every title template). They say nothing about which page covers a
+    topic, and on BharatBenz they matched "bus price in india" to
+    /important-information-for-customers and a specs cluster to /about-us.
+    Matching ignores them."""
+
+    _COMMON_SHARE = 0.15
+    _COMMON_MIN_PAGES = 4
 
     def __init__(self, pages: list[dict]):
         super().__init__(pages)
@@ -743,6 +777,8 @@ class _PageIndex(list):
         for i, page in enumerate(pages):
             for t in page["page_tokens"]:
                 self.by_token.setdefault(t, []).append(i)
+        threshold = max(self._COMMON_MIN_PAGES, self._COMMON_SHARE * len(pages))
+        self.common = {t for t, positions in self.by_token.items() if len(positions) > threshold}
 
     def candidates(self, tokens: set[str]) -> list[dict]:
         positions = sorted({i for t in tokens for i in self.by_token.get(t, ())})
@@ -801,6 +837,11 @@ def match_existing_page_for_cluster(
     best = None
     best_key = (0, 0)
     index = page_index if page_index is not None else build_page_index(site_audit_pages_rows)
+    if isinstance(index, _PageIndex) and index.common:
+        kw_tokens = kw_tokens - index.common
+        if not kw_tokens:
+            # Only boilerplate words overlap — no page genuinely covers this.
+            return None
     # Iterating only pages that share a token keeps the original scan order
     # (positions are sorted), so ties resolve to the same page as before.
     pages = index.candidates(kw_tokens) if isinstance(index, _PageIndex) else index

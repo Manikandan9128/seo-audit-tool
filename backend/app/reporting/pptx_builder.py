@@ -5115,7 +5115,7 @@ def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int,
     total = len(status_rows)
     insights = [
         f"{total:,} {status} keyword(s) identified in the relevant, KD-filtered set "
-        f"({off_topic_count} off-topic keyword(s) excluded as unrelated to {topic_ref})."
+        f"({off_topic_count} off-topic or competitor-brand keyword(s) excluded as not relevant to {topic_ref})."
     ]
     top = status_rows[0]
     if status == "Missing":
@@ -5322,7 +5322,7 @@ def add_keyword_gap_executive_summary_slide(
         return round(100 * n / total_relevant) if total_relevant else 0
 
     cards = [
-        ("Total Relevant Keywords", f"{total_relevant:,}", f"({off_topic_count:,} off-topic excluded)", _accent()),
+        ("Total Relevant Keywords", f"{total_relevant:,}", f"({off_topic_count:,} off-topic / competitor-brand excluded)", _accent()),
         ("Missing Keywords", f"{counts['Missing']:,} ({pct(counts['Missing'])}%)",
          "Keywords where competitors rank and the target website does not.", BAD),
         ("Shared Keywords", f"{counts['Shared']:,} ({pct(counts['Shared'])}%)",
@@ -5490,7 +5490,7 @@ def add_keyword_gap_slides(
     # _insights_strip's own line-count estimate reserved for it) — same
     # numbers, same interpretive framing, half the length.
     overview_insights.append(
-        f"{len(kd_filtered)} relevant keyword(s) analyzed ({off_topic_count} off-topic excluded) — "
+        f"{len(kd_filtered)} relevant keyword(s) analyzed ({off_topic_count} off-topic / competitor-brand excluded) — "
         f"{counts['Shared']} Shared / {counts['Missing']} Missing / {counts['Untapped']} Untapped, "
         "showing the scale of the competitive gap."
     )
@@ -5813,6 +5813,12 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
             "Removed from this cluster: "
             + ", ".join(f'"{e["keyword"]}" ({_short_exclusion_reason(e["reason"])})' for e in excluded[:3])
             + (f" (+{len(excluded) - 3} more)" if len(excluded) > 3 else "") + "."
+        )
+    flags = c.get("relevance_flags") or []
+    if flags:
+        out.append(
+            f"Relevance check: {_quoted_list([f['keyword'] for f in flags])} may not match this business "
+            "(possible other brand or product) — confirm with the client before targeting."
         )
     mismatches = c.get("intent_mismatches") or []
     if mismatches:

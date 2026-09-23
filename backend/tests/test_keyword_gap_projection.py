@@ -258,7 +258,7 @@ def test_off_topic_count_and_split_stated_in_insights():
     }
     slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
     text = _slide_text(slides[-1])
-    assert "4 off-topic excluded" in text
+    assert "4 off-topic / competitor-brand excluded" in text
     assert "1 Shared / 1 Missing / 1 Untapped" in text
     assert "3 relevant keyword" in text
     assert "1 Shared / 1 Missing / 1 Untapped" in text

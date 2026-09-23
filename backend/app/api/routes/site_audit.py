@@ -53,7 +53,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, match_existing_page_for_cluster
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, match_existing_page_for_cluster
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
 from app.services.content_safety import safe_imports, scrub as scrub_adult
 from app.services.logo_service import fetch_logo_bytes
@@ -666,7 +666,7 @@ def _save_keyword_cache(client: Client, cache: KeywordIntelligenceCache | None, 
 def _select_validated_manual_clusters(
     client: Client, manual_rows: list[dict], company_overview: dict | None, gap_domains: set,
     domain_overview_rows: list[dict], site_audit_pages_rows: list[dict] | None,
-    cache: KeywordIntelligenceCache | None,
+    cache: KeywordIntelligenceCache | None, keyword_rows: list[dict] | None = None,
 ) -> list[dict]:
     """Scenario A of the Universal SEO Keyword engine (2026-09-23): the
     client's own cluster sheet stays the source of truth for grouping, but
@@ -701,17 +701,27 @@ def _select_validated_manual_clusters(
             )
         except Exception as e:
             logger.warning("Manual keyword relevance check failed for client %s: %s", client.id, e)
-    kept, excluded = gate_manual_rows(
+    kept, excluded, flagged = gate_manual_rows(
         manual_rows,
         lambda kw: _rule_exclude(kw, set()),
-        lambda kw: bool(competitor_brands) and is_branded_or_near_brand(kw, competitor_brands),
+        lambda kw: bool(competitor_brands) and is_competitor_brand_query(kw, competitor_brands),
         relevance,
     )
+    # The same sheet also drives keyword_rows' clusters (Content SEO,
+    # Programmatic SEO). Stamp the AI verdict onto those rows too, so a
+    # flagged other-brand keyword ("brabus price in india") is never
+    # proposed as a programmatic subpage — while still shown, flagged, on
+    # its Target Keywords slide.
+    for r in keyword_rows or []:
+        verdict = relevance.get((r.get("keyword") or "").strip().lower())
+        if verdict and r.get("relevance_status") in (None, "", "Unknown / Needs Review"):
+            r["relevance_status"] = verdict.get("status")
+            r["relevance_reason"] = verdict.get("reason")
     clusters = select_strategic_clusters(kept)
     if clusters:
         enrich_manual_clusters(
             clusters, site_audit_pages_rows, excluded, match_existing_page_for_cluster,
-            page_index=build_page_index(site_audit_pages_rows),
+            page_index=build_page_index(site_audit_pages_rows), flagged=flagged,
         )
     return clusters
 
@@ -2288,7 +2298,7 @@ def _gather_report_data(
     # was uploaded for this client.
     strategic_keyword_clusters = _select_validated_manual_clusters(
         client, list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,
-        domain_overview_rows, site_audit_pages_rows, kw_cache,
+        domain_overview_rows, site_audit_pages_rows, kw_cache, keyword_rows_all,
     )
     _save_keyword_cache(client, kw_cache, db)
 

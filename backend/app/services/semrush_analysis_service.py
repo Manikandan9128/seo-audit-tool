@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from app.services.keyword_relevance_service import (
     _COMPARISON_KEYWORD_SIGNALS,
     brand_token_variants,
-    is_branded_or_near_brand,
+    is_competitor_brand_query,
 )
 
 
@@ -203,7 +203,7 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
         competitor_brands -= own_brands
         for r in matrix_rows:
             kw = r.get("keyword")
-            if kw and competitor_brands and is_branded_or_near_brand(kw, competitor_brands) and not any(
+            if kw and competitor_brands and is_competitor_brand_query(kw, competitor_brands) and not any(
                 re.search(rf"\b{re.escape(sig)}\b", kw.lower()) for sig in _COMPARISON_KEYWORD_SIGNALS
             ):
                 brand_excluded_count += 1

@@ -676,37 +676,43 @@ def manual_classify_candidates(manual_rows: list[dict]) -> list[str]:
 
 def gate_manual_rows(
     manual_rows: list[dict], rule_exclude, competitor_brand_check, relevance: dict[str, dict] | None,
-) -> tuple[list[dict], list[dict]]:
-    """§21/§45 business-relevance + brand gate over the client's sheet.
-    `rule_exclude(keyword)` -> (status_key, reason) | None is the
-    deterministic junk/adult/nav check; `competitor_brand_check(keyword)` ->
-    bool flags a compared competitor's brand; `relevance` is the (cached) AI
-    verdict per lowercased keyword. Returns (kept_rows, excluded) where each
-    excluded entry is {"keyword", "cluster", "reason"} — surfaced on the
-    slide, never silently dropped. Keywords the AI never judged are kept."""
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """§21/§45 gate over the client's sheet. The sheet is a strategist's
+    curated work, so only DETERMINISTIC, certain cases are removed:
+    `rule_exclude(keyword)` -> (status_key, reason) | None (adult/18+, nav/
+    login, careers) and `competitor_brand_check(keyword)` (an exact compared
+    competitor's brand). The AI relevance verdicts in `relevance` only FLAG
+    a keyword for client confirmation — never remove it: on BharatBenz the
+    AI judged "luxury bus", "cng trucks" and the client's own parent-group
+    brands ("mercedes benz bus", "daimler india commercial vehicles") as not
+    relevant, which silently dropped the client's own high-volume keywords.
+
+    Returns (kept_rows, excluded, flagged); excluded/flagged entries are
+    {"keyword", "cluster", "reason"}, both surfaced on the slide."""
     kept: list[dict] = []
     excluded: list[dict] = []
+    flagged: list[dict] = []
     for r in manual_rows:
         kw = (r.get("keyword") or "").strip()
         if not kw:
             continue
-        reason = None
+        cluster = (r.get("cluster") or "").strip()
         hit = rule_exclude(kw)
         if hit:
-            reason = hit[1]
-        elif competitor_brand_check(kw):
-            reason = "Another company's brand — not a keyword this business can own."
-        else:
-            verdict = (relevance or {}).get(kw.lower())
-            if verdict and verdict.get("status") in _EXCLUDED_RELEVANCE_STATUSES:
-                reason = f'{verdict["status"]}: {verdict.get("reason") or "judged not relevant to this business"}'
-            elif verdict:
-                r = {**r, "relevance_status": verdict.get("status")}
-        if reason:
-            excluded.append({"keyword": kw, "cluster": (r.get("cluster") or "").strip(), "reason": reason})
-        else:
-            kept.append(r)
-    return kept, excluded
+            excluded.append({"keyword": kw, "cluster": cluster, "reason": hit[1]})
+            continue
+        if competitor_brand_check(kw):
+            excluded.append({"keyword": kw, "cluster": cluster,
+                             "reason": "Another company's brand — not a keyword this business can own."})
+            continue
+        verdict = (relevance or {}).get(kw.lower())
+        if verdict:
+            r = {**r, "relevance_status": verdict.get("status")}
+            if verdict.get("status") in _EXCLUDED_RELEVANCE_STATUSES:
+                flagged.append({"keyword": kw, "cluster": cluster,
+                                "reason": f'{verdict["status"]}: {verdict.get("reason") or ""}'.strip()})
+        kept.append(r)
+    return kept, excluded, flagged
 
 
 _PAGE_CATEGORY_BY_FAMILY = {
@@ -717,6 +723,7 @@ _PAGE_CATEGORY_BY_FAMILY = {
 
 def enrich_manual_clusters(
     clusters: list[dict], site_audit_pages_rows: list[dict] | None, excluded: list[dict], match_fn, page_index=None,
+    flagged: list[dict] | None = None,
 ) -> None:
     """Adds the §55 cluster output to each selected manual cluster in
     place: target_url / match_strength / recommended_action /
@@ -729,6 +736,7 @@ def enrich_manual_clusters(
     excluded_by_cluster: dict[str, list[dict]] = {}
     for e in excluded:
         excluded_by_cluster.setdefault(e["cluster"], []).append(e)
+    flagged_keywords = {f["keyword"].lower(): f for f in flagged or []}
     for c in clusters:
         rows = [dict(k) for k in c["keywords"]]
         annotate_keyword_rows(rows)
@@ -765,4 +773,7 @@ def enrich_manual_clusters(
         c["intent_mismatches"] = mismatches
         c["outliers"] = result["outliers"]
         c["excluded"] = excluded_by_cluster.get(c["cluster"], [])
+        c["relevance_flags"] = [
+            flagged_keywords[r["keyword"].lower()] for r in rows if r["keyword"].lower() in flagged_keywords
+        ]
         c["detected_intents"] = {r["keyword"]: r.get("detected_intent") for r in rows}

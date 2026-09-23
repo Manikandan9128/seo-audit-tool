@@ -235,7 +235,7 @@ def _gate(rows, relevance=None, competitor_domains=("ashokleyland.com",)):
     )
 
 
-def test_manual_gate_removes_adult_brand_and_irrelevant_keywords_with_reasons():
+def test_manual_gate_removes_only_certain_cases_and_flags_ai_doubts():
     rows = [
         {"keyword": "school bus", "cluster": "Buses"},
         {"keyword": "indian bus xxx", "cluster": "Buses"},
@@ -243,17 +243,19 @@ def test_manual_gate_removes_adult_brand_and_irrelevant_keywords_with_reasons():
         {"keyword": "peterbilt truck price in india", "cluster": "Truck Price"},
     ]
     relevance = {"peterbilt truck price in india": {"status": "Product/Service Mismatch", "reason": "Peterbilt is not sold here."}}
-    kept, excluded = _gate(rows, relevance)
-    assert [r["keyword"] for r in kept] == ["school bus"]
+    kept, excluded, flagged = _gate(rows, relevance)
+    # AI doubts never remove a client-sheet keyword (no missing data) — they
+    # are flagged for client confirmation instead.
+    assert [r["keyword"] for r in kept] == ["school bus", "peterbilt truck price in india"]
     reasons = {e["keyword"]: e["reason"] for e in excluded}
     assert "Adult" in reasons["indian bus xxx"]
     assert "brand" in reasons["ashok leyland bus price"]
-    assert "Product/Service Mismatch" in reasons["peterbilt truck price in india"]
+    assert [f["keyword"] for f in flagged] == ["peterbilt truck price in india"]
 
 
 def test_manual_gate_keeps_unjudged_keywords():
-    kept, excluded = _gate([{"keyword": "tipper truck", "cluster": "Trucks"}], relevance={})
-    assert len(kept) == 1 and not excluded
+    kept, excluded, flagged = _gate([{"keyword": "tipper truck", "cluster": "Trucks"}], relevance={})
+    assert len(kept) == 1 and not excluded and not flagged
 
 
 def test_manual_cluster_enrichment_flags_intent_mismatch_and_split_without_rewriting_the_sheet():
@@ -337,3 +339,37 @@ def test_rule_based_brand_verdicts_are_never_cached_across_callers():
 
     classify_with_cache(fake_classify, cache, ["acme truck"], "Acme", "acme.com", {"acme"}, None)
     assert cache.get_relevance("acme truck") is None
+
+
+def test_strict_competitor_brand_match_never_fires_on_similar_words():
+    from app.services.keyword_relevance_service import is_competitor_brand_query
+    brands = brand_token_variants("tatamotors.com") | brand_token_variants("ashokleyland.com") | brand_token_variants("vecv.in")
+    assert is_competitor_brand_query("tata motors truck price", brands)
+    assert is_competitor_brand_query("ashok leyland dost price", brands)
+    assert not is_competitor_brand_query("taxi price", brands)
+    assert not is_competitor_brand_query("data truck tracking", brands)
+    assert not is_competitor_brand_query("deck truck", brands)
+
+
+def test_page_matching_ignores_site_wide_boilerplate_words():
+    # Every title carries the brand + "india" + "trucks" — those words must
+    # not decide which page "covers" a cluster.
+    pages = [{"page_url": f"https://bb.com/page-{i}", "page_title": f"BharatBenz Trucks India | Topic {i}"} for i in range(20)]
+    pages.append({"page_url": "https://bb.com/important-information-for-customers", "page_title": "BharatBenz Trucks India Bus Information"})
+    pages.append({"page_url": "https://bb.com/buses/school-bus", "page_title": "School Bus"})
+    match = match_existing_page_for_cluster(["bus price in india", "school bus"], pages, "Landing Page")
+    assert match["url"].endswith("/buses/school-bus")
+    assert match_existing_page_for_cluster(["trucks in india"], pages, "Landing Page") is None
+
+
+def test_manual_slide_shows_relevance_flags():
+    clusters = [{"cluster": "Truck Price", "keywords": [
+        {"keyword": "petrol truck price", "search_volume": 140, "intent": "Commercial"},
+        {"keyword": "brabus price in india", "search_volume": 2400, "intent": "Commercial"},
+        {"keyword": "chassis price", "search_volume": 480, "intent": "Commercial"},
+    ]}]
+    enrich_manual_clusters(clusters, None, [], match_existing_page_for_cluster,
+                           flagged=[{"keyword": "brabus price in india", "cluster": "Truck Price", "reason": "Competitor Brand Search"}])
+    text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
+    assert "brabus price in india" in text  # still shown — never silently dropped
+    assert "Relevance check:" in text and "confirm with the client" in text
