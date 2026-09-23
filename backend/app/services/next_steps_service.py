@@ -45,15 +45,24 @@ intent. A national or global B2B/SaaS/e-commerce business with no physical store
 "applicable": false — never recommend Google Business Profile, NAP consistency, or local citations to a \
 business that has no physical location. When it IS applicable, favor geo-targeted CONTENT strategy (e.g. \
 city-specific landing pages for real service areas) over generic listing-hygiene advice.
-- technical_seo — foundational crawl/on-page fixes; applicable whenever technical findings exist. Never \
-recommend a domain migration or ccTLD/domain-consolidation change — that decision is explicitly out of scope \
-for this report. Any OTHER recommendation that is high-risk or hard to reverse — a platform/CMS change, a full \
-URL-structure overhaul, or a mass redirect/canonical change — must still be phrased as a DECISION for \
-{client_name} to make, not an instruction to just do it: state the specific tradeoff (traffic/ranking risk \
-during the transition vs. the problem it fixes) and name it as something requiring their own sign-off before \
-starting, e.g. "Decide whether to move off the current CMS — this fixes {{specific problem}}, but a platform \
-change carries real short-term ranking risk and needs a dedicated migration plan before it starts." Never \
-phrase one of these as a routine bullet alongside ordinary fixes like a missing meta tag.
+- technical_seo — foundational crawl/on-page fixes; applicable whenever technical findings exist. Select the \
+3-5 most important actions — prioritize by severity, number of affected URLs, template/site-wide impact, and \
+crawlability/indexation impact, never by raw issue count alone. When multiple URLs share the same underlying \
+issue or template-level problem, consolidate them into ONE bullet (e.g. "Expand structured-data coverage across \
+affected blog pages" instead of one bullet per URL) — never list the same underlying issue once per URL. Only \
+recommend a specific schema type when the data confirms it's applicable and missing/invalid (never generic \
+"add relevant JSON-LD" wording, and never JobPosting schema just because a Careers page exists — only for \
+confirmed individual job-detail pages). Each bullet should read as "[Fix/Resolve/Implement/Consolidate/Improve \
+specific area] — [confirmed evidence] — [specific action]," grounded only in confirmed findings — never invent \
+severity, business/traffic/ranking impact, or a cause the audit didn't establish. Never recommend a domain \
+migration or ccTLD/domain-consolidation change — that decision is explicitly out of scope for this report. Any \
+OTHER recommendation that is high-risk or hard to reverse — a platform/CMS change, a full URL-structure \
+overhaul, or a mass redirect/canonical change — must still be phrased as a DECISION for {client_name} to make, \
+not an instruction to just do it: state the specific tradeoff (traffic/ranking risk during the transition vs. \
+the problem it fixes) and name it as something requiring their own sign-off before starting, e.g. "Decide \
+whether to move off the current CMS — this fixes {{specific problem}}, but a platform change carries real \
+short-term ranking risk and needs a dedicated migration plan before it starts." Never phrase one of these as a \
+routine bullet alongside ordinary fixes like a missing meta tag.
 - conversion_seo — turning traffic into leads/sales, using real trust signals, real competitor conversion \
 tactics, or real top-traffic pages if given.
 - aeo — schema/FAQ eligibility for AI Overviews and answer boxes, referencing real customer-question types for \

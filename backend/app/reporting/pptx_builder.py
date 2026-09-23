@@ -1498,6 +1498,7 @@ def add_seo_issues_slide(
     site_audit_issues: list[dict] | None = None,
     site_audit_pages_rows: list[dict] | None = None,
     insights_ai: dict | None = None,
+    analytics: dict | None = None,
 ):
     slide = _blank_slide(prs)
     _content_header(slide, "SEO Issues")
@@ -1623,7 +1624,8 @@ def add_seo_issues_slide(
     # 10 rows only ever need ~4.0in (header + 10*row_h + padding), the extra
     # 1.6in of card height was previously just empty space at the bottom of
     # each card, now reclaimed for the insights section instead.
-    has_insights = bool(insights_ai and insights_ai.get("headline"))
+    priority_shortlist = _seo_issues_priority_shortlist_text(page_audit, analytics)
+    has_insights = bool(insights_ai and insights_ai.get("headline")) or bool(priority_shortlist)
     has_scope_note = bool(scope_note)
     scope_note_line_h = Inches(0.19)
     scope_note_lines = _wrap_lines(scope_note, Inches(12.1), size_pt=10) if has_scope_note else 0
@@ -1669,11 +1671,11 @@ def add_seo_issues_slide(
         )
         note_bottom += scope_note_h
     if has_insights:
-        _seo_issues_insights_section(slide, note_bottom + Inches(0.15), insights_ai)
+        _seo_issues_insights_section(slide, note_bottom + Inches(0.15), insights_ai or {}, priority_shortlist)
     return slide
 
 
-def _seo_issues_insights_section(slide, top, insights_ai: dict):
+def _seo_issues_insights_section(slide, top, insights_ai: dict, priority_shortlist: str | None = None):
     """Renders the AI-generated headline / supporting-bullets / executive-
     takeaway insights (2026-09-10 spec) below the Errors/Warnings columns —
     distinct visual weight per part so a reader can skim just the headline
@@ -1728,6 +1730,20 @@ def _seo_issues_insights_section(slide, top, insights_ai: dict):
         if y + item_h <= max_y:
             y += Inches(0.05)
             _textbox(slide, left, y, width, line_h * lines, text, size=11, bold=True, color=_accent())
+            y += item_h
+
+    # Closes Key Insights with a traffic-ranked shortlist instead of a
+    # separate priority slide (2026-09-23 spec) — deliberately last, after
+    # the takeaway, since it's the "now go do this" line.
+    if priority_shortlist:
+        lines = _wrap_lines(priority_shortlist, width - Inches(0.18), size_pt=11)
+        item_h = line_h * lines + Inches(0.08)
+        if y + item_h > max_y:
+            priority_shortlist = _truncate_cell(priority_shortlist, (width - Inches(0.18)) / 914400, size_pt=11, max_lines=1)
+            lines, item_h = 1, line_h + Inches(0.08)
+        if y + item_h <= max_y:
+            _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
+            _textbox(slide, left + Inches(0.18), y, width - Inches(0.18), line_h * lines, priority_shortlist, size=11)
 
 
 def _traffic_by_path(analytics: dict | None) -> tuple[dict[str, int], dict[str, int]]:
@@ -2524,6 +2540,34 @@ def _page_wise_priority_rows(
     return rows
 
 
+def _seo_issues_priority_shortlist_text(
+    page_audit: dict | None, analytics: dict | None, top_n: int = 3,
+) -> str | None:
+    """SEO Issues slide's closing Key Insights bullet (2026-09-23 spec):
+    "Start with your highest-traffic affected pages" — the top_n confirmed-
+    issue pages by GA4 pageviews, descending. Computed here in code, not by
+    the AI insights prompt, same reasoning as _page_wise_priority_rows'
+    docstring: confirmed_issues values must match a real issue name
+    word-for-word, which code guarantees and an LLM only approximates.
+    Reuses _page_level_issue_records so "confirmed issue" means the same
+    thing here as it does on Priority Issues - Page Wise (a named,
+    recognized issue — never a bare Semrush issue count). No separate
+    slide — this folds straight into _seo_issues_insights_section."""
+    by_path = _page_level_issue_records(page_audit, analytics)
+    candidates = [e for e in by_path.values() if e["items"] and e["page_views"] > 0]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda e: e["page_views"], reverse=True)
+    parts = []
+    for entry in candidates[:top_n]:
+        issue_names = []
+        for item in sorted(entry["items"], key=lambda it: it["severity_rank"]):
+            if item["issue"] not in issue_names:
+                issue_names.append(item["issue"])
+        parts.append(f"{entry['path']} ({entry['page_views']:,} views): {', '.join(issue_names)}")
+    return "Start with your highest-traffic affected pages: " + "; ".join(parts) + "."
+
+
 _TECH_IMPACT_BY_SEVERITY_RANK = {
     0: "High — error-level issue, likely blocking indexing/rankings or breaking the user experience.",
     1: "Medium — warning-level issue, weakens on-page SEO signal quality.",
@@ -2797,16 +2841,50 @@ def add_tech_fixes_slide(
 def _tech_fixes_next_steps_items(
     page_audit: dict | None, analytics: dict | None, site_audit_pages_rows: list[dict] | None, max_items: int = 5,
 ) -> list[str]:
-    """The technical-category rows from _tech_fixes_scored_rows, reformatted
-    as Next Steps bullets instead of a standalone table slide — feeds BOTH
-    the AI-generated and static-fallback versions of "Next Steps: Technical
-    SEO" (see its call site in build_report) so the merge holds regardless
-    of which one actually renders for a given report."""
+    """The technical-category rows from _tech_fixes_scored_rows, GROUPED and
+    reformatted as Next Steps bullets (2026-09-23 spec: consolidate every
+    URL sharing the same issue+fix into ONE action instead of one bullet
+    per page — a template-level issue on 12 pages must read as one
+    recommendation, not 12, per the spec's "Group Related Issues"/"Avoid
+    Repetition" rules). Grouping key is (issue, fix_text) rather than issue
+    alone: Missing structured data's fix_text varies by each page's own
+    classified schema type (_structured_data_fix_text) — pages needing
+    different schema types stay separate, evidence-backed actions instead
+    of merging into one misleadingly generic bullet (spec's schema rule).
+    Ranked by severity first, then aggregate GA4 traffic across the
+    group's pages — never by raw page count alone (spec: "do not
+    prioritize solely by raw issue count"). Feeds BOTH the AI-generated
+    and static-fallback versions of "Next Steps: Technical SEO" (see its
+    call site in build_report) so the merge holds regardless of which one
+    actually renders for a given report."""
     if not page_audit:
         return []
     scored_rows = _tech_fixes_scored_rows(page_audit, analytics, site_audit_pages_rows)
-    technical_rows = [r for r in scored_rows if r[6] == "technical"][:max_items]
-    return [f"{issue} on {path} — {fix_text}" for _, _, issue, path, fix_text, _, _ in technical_rows]
+    technical_rows = [r for r in scored_rows if r[6] == "technical"]
+
+    groups: dict[tuple[str, str], dict] = {}
+    for severity_rank, _neg_score, issue, path, fix_text, page_views, _category in technical_rows:
+        g = groups.setdefault((issue, fix_text), {"severity_rank": severity_rank, "paths": [], "traffic": 0})
+        g["severity_rank"] = min(g["severity_rank"], severity_rank)
+        g["traffic"] += page_views
+        if path not in g["paths"]:
+            g["paths"].append(path)
+
+    ordered = sorted(groups.items(), key=lambda kv: (kv[1]["severity_rank"], -kv[1]["traffic"]))[:max_items]
+
+    action_word = {0: "Fix", 1: "Resolve", 2: "Improve"}
+    items = []
+    for (issue, fix_text), g in ordered:
+        paths = g["paths"]
+        verb = action_word.get(g["severity_rank"], "Resolve")
+        if len(paths) == 1:
+            evidence = f"confirmed on {paths[0]}"
+        elif len(paths) <= 3:
+            evidence = f"confirmed on {len(paths)} pages ({', '.join(paths)})"
+        else:
+            evidence = f"confirmed on {len(paths)} pages sharing the same template/pattern"
+        items.append(f"{verb} {issue} — {evidence} — {fix_text}")
+    return items
 
 
 def _truncate_cell(text: str, width_in: float, size_pt: float = 11, max_lines: int = 1) -> str:
@@ -4765,12 +4843,14 @@ def _short_path(url: str | None, max_chars: int = _URL_PATH_MAX_CHARS) -> str | 
 
 
 def _gap_position_cell(position) -> str:
-    """"Not ranking" is always exactly that string — never a variant with a
-    trailing dash or an empty URL slot (2026-09-18 spec hard rule). Position
-    and URL render as two separate table columns (2026-09-22 — "#N · /path"
-    crammed into one line/cell read poorly once every ranking column had
-    its own URL, own+competitors both), so this only ever needs the number."""
-    return f"#{int(position)}" if position else "Not ranking"
+    """"NA" is always exactly that string — never a variant like "Not
+    ranking" or a trailing dash (2026-09-23 spec hard rule: use NA
+    consistently for "client/competitor doesn't rank" everywhere on this
+    slide). Position and URL render as two separate table columns
+    (2026-09-22 — "#N · /path" crammed into one line/cell read poorly once
+    every ranking column had its own URL, own+competitors both), so this
+    only ever needs the number."""
+    return f"#{int(position)}" if position else "NA"
 
 
 def _gap_url_cell(url: str | None) -> str:
@@ -4799,8 +4879,9 @@ _GAP_DEDICATED_THRESHOLD = 6
 # Same "top N by volume, rest via the full-list Sheet link" escape hatch
 # every other capped table in this file uses — a dedicated slide can still
 # have hundreds of keywords (e.g. 440 Missing), so this stays a cap, not a
-# promise every row is shown.
-_GAP_DEDICATED_ROW_CAP = 9
+# promise every row is shown. 2026-09-23 spec: max 6-7 rows per status
+# slide, prefer 7 — down from 9.
+_GAP_DEDICATED_ROW_CAP = 7
 _GAP_STATUS_SLIDE_TITLE = {
     "Missing": "Competitor Keyword Gap — Missing",
     "Shared": "Competitor Keyword Gap — Shared",
@@ -4970,6 +5051,10 @@ def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int,
         )
     if shown_count < total:
         insights.append(f"Showing top {shown_count:,} of {total:,} {status} keyword(s), ranked by volume.")
+    else:
+        # 2026-09-23 spec: fewer than the row cap available — say so plainly
+        # rather than the "top N of M" phrasing, which implies more exist.
+        insights.append(f"Showing {shown_count:,} of {total:,} {status} keyword(s).")
     return insights
 
 
@@ -5024,6 +5109,172 @@ def _prepare_keyword_gap_rows(rows: list[dict], max_kd: float = _KEYWORD_GAP_MAX
     competitor_columns = sorted(coverage, key=lambda d: -coverage[d])[:_KEYWORD_GAP_MAX_COMPETITOR_COLS]
 
     return kd_filtered, ambiguous_rows, kd_unavailable_count, competitor_columns
+
+
+_GAP_SHARED_BLUE = RGBColor(0x3E, 0x6B, 0x99)
+
+
+def _soften(color: RGBColor, amount: float = 0.85) -> RGBColor:
+    """Blends `color` toward white by `amount` (0-1) — the soft KPI-card
+    tint the 2026-09-23 exec-summary spec asks for, without a second set of
+    hardcoded pastel constants to keep in sync with BAD/GOOD/_accent()."""
+    return RGBColor(
+        int(color[0] + (255 - color[0]) * amount),
+        int(color[1] + (255 - color[1]) * amount),
+        int(color[2] + (255 - color[2]) * amount),
+    )
+
+
+def _gap_kpi_card(slide, left, top, width, height, label, value, sub, color):
+    card = slide.shapes.add_shape(5, left, top, width, height)  # rounded rectangle
+    try:
+        card.adjustments[0] = 0.06
+    except (IndexError, AttributeError):
+        pass
+    card.fill.solid()
+    card.fill.fore_color.rgb = _soften(color)
+    card.line.color.rgb = color
+    card.line.width = Pt(1)
+    card.shadow.inherit = False
+    pad = Inches(0.22)
+    _textbox(slide, left + pad, top + Inches(0.18), width - pad * 2, Inches(0.4), label, size=12, bold=True, color=TEXT_MUTED)
+    _textbox(slide, left + pad, top + Inches(0.58), width - pad * 2, Inches(0.55), value, size=24, bold=True, color=color)
+    if sub:
+        lines = _wrap_lines(sub, width - pad * 2, size_pt=9.5)
+        _textbox(slide, left + pad, top + height - Inches(0.2) - Inches(0.16) * lines, width - pad * 2, Inches(0.16) * lines, sub, size=9.5, color=TEXT_MUTED)
+
+
+def _gap_exec_action_items(
+    by_category: dict[str, list[dict]], counts: dict[str, int], total_relevant: int, client_name: str | None,
+) -> list[tuple[str, str]]:
+    """Exactly 3 (fewer only if the data genuinely doesn't support 3)
+    heading+sentence action items for the Executive Summary slide
+    (2026-09-23 spec) — never a generic action for a status with no real
+    rows, never a repeat of the KPI numbers already on the cards above.
+    Priority order: close the Missing gap (competitors already rank, no
+    page exists) -> narrow the widest Shared ranking gap (visible today,
+    losing to a competitor) -> defend Untapped wins (no competitor there
+    yet). by_category rows are already volume-sorted (_prepare_keyword_gap_
+    rows), so by_category[cat][0] is each status's highest-volume row.
+    Every number cited is read straight off the row data — nothing
+    invented, no keyword-validation advice (relevance is already validated
+    upstream by _prepare_keyword_gap_rows)."""
+    topic_ref = f"{client_name.strip()}'s" if client_name and client_name.strip() else "the client's"
+    items: list[tuple[str, str]] = []
+
+    missing_rows = [r for r in by_category.get("Missing", []) if r.get("competitor_positions")]
+    if missing_rows:
+        top = missing_rows[0]
+        pct = round(100 * counts["Missing"] / total_relevant) if total_relevant else 0
+        items.append((
+            "Close the Missing-Keyword Gap",
+            f"{counts['Missing']} keywords ({pct}%) have competitors ranking with no page on {topic_ref} site yet — "
+            f"start with \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo), where "
+            f"{_gap_row_competitors_text(top)} already rank.",
+        ))
+
+    behind_rows = []
+    for r in by_category.get("Shared", []):
+        your_pos = r.get("your_position")
+        if not your_pos:
+            continue
+        comp_positions = [cp.get("position") for cp in (r.get("competitor_positions") or []) if cp.get("position")]
+        if not comp_positions:
+            continue
+        best_comp = min(comp_positions)
+        if best_comp < your_pos:
+            behind_rows.append((your_pos - best_comp, r, best_comp))
+    if behind_rows:
+        behind_rows.sort(key=lambda t: t[0], reverse=True)
+        gap, row, best_comp = behind_rows[0]
+        items.append((
+            "Strengthen the Weakest Shared Ranking",
+            f"Of {counts['Shared']} keywords where both sides rank, \"{row['keyword']}\" shows the widest gap — "
+            f"{topic_ref} site sits at #{int(row['your_position'])} vs. #{int(best_comp)} for the closest-ranking "
+            "competitor.",
+        ))
+
+    untapped_rows = by_category.get("Untapped", [])
+    if untapped_rows and len(items) < 3:
+        top_u = untapped_rows[0]
+        pct = round(100 * counts["Untapped"] / total_relevant) if total_relevant else 0
+        items.append((
+            "Defend Untapped Keyword Wins",
+            f"{counts['Untapped']} keywords ({pct}%) rank for {topic_ref} site with no tracked competitor present "
+            f"yet — reinforce these pages, starting with \"{top_u['keyword']}\" "
+            f"({int(_num(top_u.get('search_volume'))):,}/mo), before a competitor moves in.",
+        ))
+
+    return items[:3]
+
+
+def add_keyword_gap_executive_summary_slide(
+    prs: Presentation,
+    by_category: dict[str, list[dict]],
+    counts: dict[str, int],
+    off_topic_count: int,
+    total_relevant: int,
+    client_name: str | None = None,
+) -> object | None:
+    """C-level Executive Summary slide (2026-09-23 spec), rendered ahead of
+    the detailed Competitor Keyword Gap slides that add_keyword_gap_slides
+    draws. KPI cards for whichever statuses have real data — the Untapped
+    card is omitted entirely (never a "0 Untapped" empty card) when its
+    count is 0, and the remaining cards rebalance across the full row
+    width automatically since card width is computed from len(cards). One
+    slide, no detailed keyword tables — those are the slides that follow."""
+    if not total_relevant:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Competitor Keyword Gap — Executive Summary")
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
+
+    def pct(n: int) -> int:
+        return round(100 * n / total_relevant) if total_relevant else 0
+
+    cards = [
+        ("Total Relevant Keywords", f"{total_relevant:,}", f"({off_topic_count:,} off-topic excluded)", _accent()),
+        ("Missing Keywords", f"{counts['Missing']:,} ({pct(counts['Missing'])}%)",
+         "Keywords where competitors rank and the target website does not.", BAD),
+        ("Shared Keywords", f"{counts['Shared']:,} ({pct(counts['Shared'])}%)",
+         "Keywords where the target website and competitors both rank.", _GAP_SHARED_BLUE),
+    ]
+    if counts.get("Untapped"):
+        cards.append((
+            "Untapped Keywords", f"{counts['Untapped']:,} ({pct(counts['Untapped'])}%)",
+            "Keywords where the target website ranks and competitors do not.", GOOD,
+        ))
+
+    top = Inches(1.3)
+    card_h = Inches(1.9)
+    gap = Inches(0.2)
+    card_w = (Inches(12.1) - gap * (len(cards) - 1)) / len(cards)
+    for i, (label, value, sub, color) in enumerate(cards):
+        left = Inches(0.6) + i * (card_w + gap)
+        _gap_kpi_card(slide, left, top, card_w, card_h, label, value, sub, color)
+
+    max_y = SLIDE_H - Inches(0.55)
+    action_top = top + card_h + Inches(0.35)
+    _textbox(slide, Inches(0.6), action_top, Inches(6), Inches(0.3), "Key Action Items", size=15, bold=True, color=TEXT_DARK)
+    action_top += Inches(0.42)
+
+    row_w = Inches(12.1)
+    for heading, sentence in _gap_exec_action_items(by_category, counts, total_relevant, client_name):
+        lines = _wrap_lines(sentence, row_w, size_pt=12)
+        item_h = Inches(0.3) + Inches(0.19) * lines + Inches(0.24)
+        if action_top + item_h > max_y:
+            break
+        _textbox(slide, Inches(0.6), action_top, row_w, Inches(0.3), heading, size=13.5, bold=True, color=_accent())
+        action_top += Inches(0.3)
+        _textbox(slide, Inches(0.6), action_top, row_w, Inches(0.19) * lines, sentence, size=12, color=TEXT_DARK)
+        action_top += Inches(0.19) * lines + Inches(0.14)
+        rule = slide.shapes.add_shape(1, Inches(0.6), action_top, row_w, Pt(0.75))
+        _fill(rule, CARD_BORDER)
+        rule.shadow.inherit = False
+        action_top += Inches(0.1)
+
+    return slide
 
 
 def add_keyword_gap_slides(
@@ -5093,6 +5344,12 @@ def add_keyword_gap_slides(
         col_widths += [position_col_width, url_col_width]
 
     slides = []
+
+    exec_summary_slide = add_keyword_gap_executive_summary_slide(
+        prs, by_category, counts, off_topic_count, len(kd_filtered), client_name,
+    )
+    if exec_summary_slide:
+        slides.append(exec_summary_slide)
 
     # ---- Summary slide: overall distribution + whichever statuses have
     # 1-5 keywords shown inline. A status that got its own dedicated slide
@@ -6891,7 +7148,7 @@ def _build_report(
                 add_site_structure_slide(prs, site_audit_pages_rows)
 
     if site_audit:
-        add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights)
+        add_seo_issues_slide(prs, site_audit, page_audit, site_audit_issues, site_audit_pages_rows, seo_issues_ai_insights, analytics)
         # Not in the canonical list — kept at its existing position (right
         # after SEO Issues) per 2026-09-18 user instruction: Semrush ERROR-
         # severity issues get their own standalone slide, distinct from SEO
@@ -7045,7 +7302,6 @@ def _build_report(
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
         if keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
-            add_keyword_opportunity_slide(prs, keyword_rows)
         add_strategic_keyword_clusters_slide(prs, strategic_keyword_clusters)
         if competitor_rows:
             # 2026-09-20 user request: the "Open full keyword list" button
