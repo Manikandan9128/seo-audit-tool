@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { SEMRUSH_MCP_ENABLED } from "../features";
 import Dropzone from "./Dropzone";
 import { fileTypeChip } from "./fileTypeChip";
 import ConfirmDeleteButton from "./ConfirmDeleteButton";
@@ -270,9 +271,11 @@ export default function SemrushImportCard({
         >
           {uploading ? "Uploading..." : files.length > 0 ? `Upload ${files.length} file${files.length > 1 ? "s" : ""}` : "Upload"}
         </button>
-        <button className="btn btn-outline btn-sm" onClick={copyMcpPrompt}>
-          Fetch via Claude (Semrush MCP)
-        </button>
+        {SEMRUSH_MCP_ENABLED && (
+          <button className="btn btn-outline btn-sm" onClick={copyMcpPrompt}>
+            Fetch via Claude (Semrush MCP)
+          </button>
+        )}
       </div>
       {msg && <p style={{ fontSize: 13, marginTop: 8 }}>{msg}</p>}
 

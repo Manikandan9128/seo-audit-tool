@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api/client";
+import { SEMRUSH_MCP_ENABLED } from "../features";
 
 interface ApiKeyCardProps {
   title: string;
@@ -648,7 +649,7 @@ export default function SettingsPage() {
 
         <SheetsOAuthCard email={sheetsOauthEmail} clientId={sheetsOauthClientId} loading={loading} onChanged={load} />
 
-        <SemrushMcpCard />
+        {SEMRUSH_MCP_ENABLED && <SemrushMcpCard />}
       </div>
     </div>
   );

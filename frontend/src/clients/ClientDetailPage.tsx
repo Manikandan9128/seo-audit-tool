@@ -18,6 +18,7 @@ import { useToast } from "../components/ToastProvider";
 import { useReportReadiness } from "../components/ReportReadinessProvider";
 import ReportPreviewModal from "../components/ReportPreviewModal";
 import SemrushSourceModal from "../components/SemrushSourceModal";
+import { SEMRUSH_MCP_ENABLED } from "../features";
 import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourceModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
@@ -203,7 +204,7 @@ export default function ClientDetailPage() {
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(`semrush_source:${clientId}`) || "null");
-      if (saved?.source === "mcp" || saved?.source === "manual") setSemrushSource(saved.source);
+      if ((saved?.source === "mcp" && SEMRUSH_MCP_ENABLED) || saved?.source === "manual") setSemrushSource(saved.source);
       if (typeof saved?.database === "string") setSemrushDatabase(saved.database);
     } catch {
       // per-browser convenience only
@@ -808,7 +809,11 @@ export default function ClientDetailPage() {
                 ))}
               </select>
             )}
-            <button className="btn btn-primary" onClick={() => setShowSemrushSourceModal(true)} disabled={generating || selectedSections.length === 0}>
+            <button
+              className="btn btn-primary"
+              onClick={() => (SEMRUSH_MCP_ENABLED ? setShowSemrushSourceModal(true) : generateSelectedReport("manual"))}
+              disabled={generating || selectedSections.length === 0}
+            >
               {generating ? "Generating..." : "Generate Report"}
             </button>
             {showSemrushSourceModal && (
@@ -822,7 +827,7 @@ export default function ClientDetailPage() {
                 onConnectSemrush={connectSemrushForReport}
               />
             )}
-            {!generating && hasGenerated && (
+            {SEMRUSH_MCP_ENABLED && !generating && hasGenerated && (
               <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
                 Semrush: {semrushSource === "mcp" ? `MCP (${semrushDatabase.toUpperCase()})` : "Manual Upload"}
               </span>
