@@ -6645,59 +6645,182 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
     )
 
 
+_GOALS_TIMEFRAME = "Next 6–12 months"
+
+
+def _goals_report_period(analytics: dict | None) -> str | None:
+    """The GA4/GSC report period as supplied, only when it's real ISO dates
+    (never a relative placeholder like "30daysAgo" and never a template
+    date)."""
+    date_range = (analytics or {}).get("date_range") or {}
+    start, end = date_range.get("start"), date_range.get("end")
+    if not (start and end and re.match(r"^\d{4}-\d{2}-\d{2}$", str(start)) and re.match(r"^\d{4}-\d{2}-\d{2}$", str(end))):
+        return None
+    from datetime import datetime as _datetime
+
+    try:
+        s_dt = _datetime.strptime(str(start), "%Y-%m-%d")
+        e_dt = _datetime.strptime(str(end), "%Y-%m-%d")
+    except ValueError:
+        return None
+    return f"{s_dt:%d %b %Y} – {e_dt:%d %b %Y}"
+
+
+def build_goals_kpis(
+    own_domain_rating: int | None,
+    competitor_rows: list[dict] | None,
+    keyword_rows: list[dict] | None,
+    analytics: dict | None = None,
+    backlink_summary: dict | None = None,
+    schema_validation: dict | None = None,
+    site_audit_overview: dict | None = None,
+) -> list[dict]:
+    """SEO Goals & Targets rows (spec 2026-09-23): each one Metric ->
+    Source -> Current -> Target -> Timeframe, every value read from the same
+    dataset the matching report slide uses (so the baseline can never
+    disagree with that slide). No business targets are supplied to this
+    tool, so a numeric target appears only where the data itself defines
+    one (a named set of keywords, a named competitor's DR); everything else
+    is a stated direction, never an invented number. A KPI with no measured
+    baseline is omitted — except conversions, which get an explicit
+    measurement objective instead of an assumed rate."""
+    kpis: list[dict] = []
+
+    # Organic traffic — GA4 Organic Search channel sessions, same source as
+    # the Traffic Sources slide.
+    source_rows = ((analytics or {}).get("traffic_sources") or {}).get("rows") or []
+    organic = [r for r in source_rows if (r.get("channel") or "").strip().lower() == "organic search"]
+    if organic:
+        sessions = int(sum(_num(r.get("sessions")) for r in organic))
+        if sessions:
+            kpis.append({
+                "metric": "Organic sessions", "source": "GA4 (Organic Search channel)",
+                "current": f"{sessions:,} sessions in the report period",
+                "target": "Grow above the current baseline", "timeframe": _GOALS_TIMEFRAME,
+            })
+
+    # Rankings — validated-relevant keywords only (same eligibility as
+    # Content SEO), positions from the supplied ranking data.
+    rows = _content_seo_eligible_rows(keyword_rows or [])
+
+    def _pos(r: dict) -> float:
+        raw = r.get("current_position") if r.get("current_position") not in (None, "") else r.get("position")
+        return _num(raw)
+
+    ranked = [r for r in rows if _pos(r) > 0]
+    if ranked:
+        top10 = sum(1 for r in ranked if _pos(r) <= 10)
+        low_kd_not_top10 = [
+            r for r in rows
+            if r.get("keyword_difficulty") not in (None, "") and _num(r.get("keyword_difficulty"), default=100) < 30
+            and not (0 < _pos(r) <= 10)
+        ]
+        if low_kd_not_top10:
+            target = f"Page 1 for the {len(low_kd_not_top10)} low-difficulty (KD < 30) target keyword(s) not yet there"
+        else:
+            target = "Grow the number of target keywords on page 1"
+        kpis.append({
+            "metric": "Target keywords on page 1", "source": "Semrush / Search Console rankings",
+            "current": f"{top10} of {len(ranked)} ranking target keyword(s) in the top 10",
+            "target": target, "timeframe": _GOALS_TIMEFRAME,
+        })
+
+    # Domain Rating — the manually entered DR table, same as the Backlink
+    # Profile and Competitor Analysis slides. Competitor DR comes from that
+    # same table, so the comparison is like for like. A target, never a
+    # promised outcome of any number of backlinks.
+    if own_domain_rating is not None:
+        competitor_drs = [
+            (_num(r.get("authority_score")), r.get("domain")) for r in (competitor_rows or [])
+            if r.get("authority_score") not in (None, "") and r.get("domain")
+        ]
+        leader = max(competitor_drs, key=lambda t: t[0]) if competitor_drs else None
+        if leader and leader[0] > own_domain_rating:
+            target = f"Narrow the gap to {leader[1]} (DR {int(leader[0])})"
+        else:
+            target = "Maintain the lead over tracked competitors"
+        kpis.append({
+            "metric": "Domain Rating", "source": "Domain Rating (Ahrefs)",
+            "current": f"DR {own_domain_rating}", "target": target, "timeframe": _GOALS_TIMEFRAME,
+        })
+
+    # Referring domains / backlinks — the Semrush backlink summary, same as
+    # the Backlink Profile slide. Never the uploaded file's row count.
+    if backlink_summary and backlink_summary.get("referring_domains"):
+        rd = int(_num(backlink_summary.get("referring_domains")))
+        bl = backlink_summary.get("backlinks_total")
+        current = f"{rd:,} referring domains" + (f" / {int(_num(bl)):,} backlinks" if bl not in (None, "") else "")
+        kpis.append({
+            "metric": "Referring domains", "source": "Semrush Backlinks",
+            "current": current, "target": "Grow relevant referring domains", "timeframe": _GOALS_TIMEFRAME,
+        })
+
+    # Structured data — the schema validator's own measured coverage.
+    if schema_validation and schema_validation.get("total_pages"):
+        total = int(_num(schema_validation.get("total_pages")))
+        with_schema = int(_num(schema_validation.get("pages_with_schema")))
+        missing_types = schema_validation.get("missing_types") or []
+        target = (
+            "Add the applicable schema types flagged in the Structured Data slide"
+            if missing_types else "Keep schema valid as pages are added"
+        )
+        kpis.append({
+            "metric": "Structured data coverage", "source": "Site Audit crawl (JSON-LD)",
+            "current": f"{with_schema:,} of {total:,} crawled pages carry schema",
+            "target": target, "timeframe": _GOALS_TIMEFRAME,
+        })
+
+    # Technical health — the Site Health slide's own figure.
+    health = (site_audit_overview or {}).get("site_health_pct")
+    if health not in (None, ""):
+        kpis.append({
+            "metric": "Site health", "source": "Semrush Site Audit",
+            "current": f"{int(_num(health))}%", "target": "Raise by resolving the errors in SEO Issues",
+            "timeframe": _GOALS_TIMEFRAME,
+        })
+
+    # Conversions — no key-event totals are supplied to this report, so no
+    # baseline and no assumed rate: a measurement objective only.
+    if kpis:
+        kpis.append({
+            "metric": "Organic conversions", "source": "GA4 key events",
+            "current": "Not measured in this report",
+            "target": "Confirm key-event tracking and set a conversion baseline", "timeframe": "Next reporting period",
+        })
+    return kpis
+
+
 def add_goals_slide(
     prs: Presentation,
     own_domain_rating: int | None,
     competitor_rows: list[dict] | None,
     keyword_rows: list[dict] | None,
+    analytics: dict | None = None,
+    backlink_summary: dict | None = None,
+    schema_validation: dict | None = None,
+    site_audit_overview: dict | None = None,
 ):
-    """Early Stage / Advanced Stage target slide, matching the manual
-    reference deck's closing "Goal" page. Early Stage targets are derived
-    from data already gathered elsewhere in the report (low-difficulty
-    keywords on the table, current Domain Rating vs. the strongest tracked
-    competitor's) — Advanced Stage stays qualitative/process-oriented, same
-    as the reference deck's own advanced-stage bullets (SERP features, AI
-    answer visibility, brand-authority signals), since those aren't
-    something a crawl or export can size numerically."""
-    early = []
-    if keyword_rows:
-        low_kd = [
-            r for r in keyword_rows
-            if r.get("keyword_difficulty") not in (None, "") and _num(r.get("keyword_difficulty"), default=100) < 30
-        ]
-        if low_kd:
-            volume = sum(_num(r.get("search_volume")) for r in low_kd)
-            early.append(
-                f"Rank on page 1 (top 10) for the {len(low_kd)} target keyword(s) already identified under "
-                f"KD 30 — {volume:,.0f} combined monthly searches on the table today."
-            )
-    if own_domain_rating is not None:
-        competitor_drs = [
-            _num(r.get("authority_score")) for r in (competitor_rows or [])
-            if r.get("authority_score") not in (None, "") and r.get("domain")
-        ]
-        leader_dr = max(competitor_drs) if competitor_drs else None
-        if leader_dr and leader_dr > own_domain_rating:
-            target = min(int(leader_dr), own_domain_rating + 20)
-            early.append(
-                f"Increase Domain Rating from {own_domain_rating} toward {target} — the strongest tracked "
-                f"competitor sits at DR {int(leader_dr)}."
-            )
-        else:
-            early.append(f"Increase Domain Rating from {own_domain_rating} to {own_domain_rating + 15}+ through consistent, relevant backlink acquisition.")
-    if not early:
+    """SEO Goals & Targets as a Current -> Target -> Timeframe table built by
+    build_goals_kpis. Deterministic on purpose: an AI-written version kept
+    inventing baselines (an upload's row cap as a "backlink baseline"),
+    assumed conversion rates, and stale template dates."""
+    kpis = build_goals_kpis(
+        own_domain_rating, competitor_rows, keyword_rows, analytics,
+        backlink_summary, schema_validation, site_audit_overview,
+    )
+    if not kpis:
         return None
-    early.append("Drive consistent month-over-month organic traffic growth from the keyword and content work above.")
-
-    advanced = [
-        "Rank for high-difficulty (KD 50+) category keywords once the page-1 foundation from Early Stage is established.",
-        "Diversify traffic beyond traditional search — earn visibility in AI answers (ChatGPT, Gemini, Claude) alongside classic search results.",
-        "Win SERP features: featured snippets, AI Overviews, and image search placements.",
-        "Build brand-authority signals — directory/citation listings, LinkedIn referral traffic, and steady backlink growth toward the category-leading Domain Rating.",
-    ]
-    items = [f"Early Stage: {b}" for b in early] + [f"Advanced Stage: {b}" for b in advanced]
-    intro = "Near-term targets build the foundation; advanced-stage targets compound on them once page-1 rankings and a stronger Domain Rating are in place."
-    return _next_steps_category_slide(prs, "SEO Goals & Targets", intro, items)
+    slide = _blank_slide(prs)
+    _content_header(slide, "SEO Goals & Targets")
+    period = _goals_report_period(analytics)
+    intro = f"Baselines from the report period {period}." if period else "Baselines are the latest measured values in this report."
+    _textbox(slide, Inches(0.6), Inches(1.05), Inches(12.1), Inches(0.4), intro, size=12, color=TEXT_MUTED)
+    rows = [(k["metric"], k["source"], k["current"], k["target"], k["timeframe"]) for k in kpis]
+    _draw_table(
+        slide, ["Metric", "Source", "Current", "Target", "Timeframe"], rows, Inches(1.55),
+        col_widths=[1.9, 2.1, 2.9, 3.4, 1.8], row_height=0.55, wrap_cols={1, 2, 3, 4},
+    )
+    return slide
 
 
 def add_technical_seo_next_steps_slide(
@@ -7504,7 +7627,6 @@ def _build_report(
         "conversion_seo": "Next Steps: Conversion SEO",
         "aeo": "Answer Engine Optimization (AEO)",
         "geo": "Generative Engine Optimization (GEO)",
-        "goals": "SEO Goals & Targets",
     }
 
     def _next_steps_slide(key: str, fallback_fn, *fallback_args, extra_items: list[str] | None = None):
@@ -7554,7 +7676,11 @@ def _build_report(
         _next_steps_category_slide(prs, "Generative Engine Optimization (GEO)", None, geopulse_analysis["geo_items"])
     else:
         _next_steps_slide("geo", add_geo_slide, prs)
-    _next_steps_slide("goals", add_goals_slide, prs, own_domain_rating, competitor_rows, keyword_rows)
+    # Always deterministic, never the AI category — see add_goals_slide.
+    add_goals_slide(
+        prs, own_domain_rating, competitor_rows, keyword_rows, analytics,
+        backlink_summary, schema_validation, site_audit_overview,
+    )
 
     geometry_issues = _audit_slide_geometry(prs)
     if geometry_issues:

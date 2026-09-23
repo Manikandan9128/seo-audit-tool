@@ -1051,7 +1051,10 @@ def _build_next_steps_findings(data: dict, competitor_narratives: dict[str, dict
         "structured_data_coverage": structured_data_summary,
         "backlink_summary": data.get("backlink_summary"),
         "own_domain_rating": data.get("own_domain_rating"),
-        "own_backlink_row_count": data.get("backlink_row_count"),
+        # own_backlink_row_count deliberately NOT fed (2026-09-23): it's the
+        # uploaded file's row count (capped at the export limit), which the
+        # AI read as a real backlink baseline ("baseline 10,000 total
+        # rows"). backlink_summary above carries the real totals.
         "top_traffic_pages": [
             {"path": p.get("path"), "pageviews": p.get("page_views")} for p in top_pages
         ] or None,

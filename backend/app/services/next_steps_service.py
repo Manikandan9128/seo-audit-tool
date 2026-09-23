@@ -23,8 +23,10 @@ CATEGORY_TITLES = {
     "conversion_seo": "Next Steps: Conversion SEO",
     "aeo": "Answer Engine Optimization (AEO)",
     "geo": "Generative Engine Optimization (GEO)",
-    "goals": "SEO Goals & Targets",
 }
+# goals deliberately excluded too (2026-09-23) — SEO Goals & Targets is
+# built deterministically by pptx_builder.build_goals_kpis so every
+# baseline is a measured value from the report's own data.
 # content_seo deliberately excluded — that slide always renders through
 # pptx_builder's deterministic keyword-page-category classifier
 # (_classify_keyword_page_category) instead of this AI path. It needs an
@@ -39,7 +41,7 @@ bullet must sound like an analyst who actually studied this specific business: n
 competitors, real numbers, real customer-question types — using ONLY the facts given below. Never invent a \
 fact, number, competitor name, or product that isn't in the data.
 
-For EACH of these 6 categories, decide first whether it genuinely applies to this business, THEN write it:
+For EACH of these 5 categories, decide first whether it genuinely applies to this business, THEN write it:
 - local_seo — only applies to a business with physical locations, regional service areas, or city-level search \
 intent. A national or global B2B/SaaS/e-commerce business with no physical storefront must get \
 "applicable": false — never recommend Google Business Profile, NAP consistency, or local citations to a \
@@ -69,13 +71,6 @@ tactics, or real top-traffic pages if given.
 this specific product/service where possible.
 - geo — being cited/recommended by AI assistants (ChatGPT, Gemini, Claude), grounded in the real industry and \
 real named competitors.
-- goals — near-term and advanced-stage targets, using real current numbers (Domain Rating, keyword counts) \
-where given. Every numeric target must state the BASELINE it's measured from (the real current number, not just \
-the target) and, when the target isn't a direct extrapolation of that baseline (e.g. a backlink count/quality \
-target, or any conversion-rate target like "20% demo conversion"), name the assumption behind it in the same \
-sentence — never state a bare target number with no stated starting point or reasoning. Never premise a target \
-on a domain migration or ccTLD/domain-consolidation change — that decision is out of scope for this report.
-
 When a category is NOT applicable to this business, set "applicable": false and give a one-line "reason" \
 explaining why (e.g. "No physical locations or service areas — sells nationally, not locally.") — leave "items" \
 empty in that case.
@@ -98,8 +93,7 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
     "technical_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "conversion_seo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
     "aeo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
-    "geo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}},
-    "goals": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}}
+    "geo": {{"applicable": bool, "reason": string, "intro": string, "items": [string]}}
   }}
 }}
 "reason" is only needed when "applicable" is false. "intro" is one short sentence framing the category (shown \
