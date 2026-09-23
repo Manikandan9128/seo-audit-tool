@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from google.auth.exceptions import RefreshError
 
-from app.api.routes import auth, clients, competitors, google_oauth, settings as settings_routes, site_audit
+from app.api.routes import auth, clients, competitors, google_oauth, integrations, settings as settings_routes, site_audit
 from app.db.session import SessionLocal
 from app.services.app_settings_service import load_overrides_into_settings
 
@@ -52,6 +52,7 @@ app.include_router(google_oauth.router, prefix="/api")
 app.include_router(site_audit.router, prefix="/api")
 app.include_router(competitors.router, prefix="/api")
 app.include_router(settings_routes.router, prefix="/api")
+app.include_router(integrations.router, prefix="/api")
 
 
 @app.get("/api/health")

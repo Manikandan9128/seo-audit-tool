@@ -267,6 +267,135 @@ function SheetsOAuthCard({
   );
 }
 
+const SEMRUSH_ERROR_MESSAGES: Record<string, string> = {
+  oauth_denied: "Semrush access was denied — the connection wasn't authorized.",
+  invalid_state: "Invalid OAuth state — start the Semrush connection again.",
+  expired_session: "The Semrush sign-in expired — click Connect Semrush again.",
+  auth_failed: "Semrush sign-in failed — try connecting again.",
+  connection_failed: "Couldn't reach Semrush — try again in a moment.",
+};
+
+// Tokens never reach this page — the backend only reports connected/not.
+function SemrushMcpCard() {
+  const [status, setStatus] = useState<{ connected: boolean; connected_at?: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  async function loadStatus() {
+    try {
+      const res = await api.get("/integrations/semrush/status");
+      setStatus(res.data);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't load Semrush status");
+    }
+  }
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const errCode = params.get("semrush_error");
+    if (params.get("semrush_connected")) setNotice("Semrush connected.");
+    if (errCode) setError(SEMRUSH_ERROR_MESSAGES[errCode] || "Semrush connection failed.");
+    if (params.get("semrush_connected") || errCode) {
+      params.delete("semrush_connected");
+      params.delete("semrush_error");
+      const qs = params.toString();
+      window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    }
+    loadStatus();
+  }, []);
+
+  async function connect() {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api.get("/integrations/semrush/connect");
+      window.location.href = res.data.auth_url;
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't start Semrush connect");
+      setBusy(false);
+    }
+  }
+
+  async function test() {
+    setBusy(true);
+    setTestResult(null);
+    try {
+      const res = await api.post("/integrations/semrush/test");
+      setTestResult({ ok: res.data.test_ok, message: res.data.test_message });
+    } catch (err: any) {
+      setTestResult({ ok: false, message: err?.response?.data?.detail || "Test failed" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!confirm("Disconnect Semrush? MCP tools will stop working until reconnected.")) return;
+    setBusy(true);
+    setError("");
+    setTestResult(null);
+    try {
+      await api.post("/integrations/semrush/disconnect");
+      setNotice("");
+      await loadStatus();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't disconnect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ margin: 0, fontSize: 18 }}>Semrush (MCP)</h3>
+      <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>
+        Sign in with your Semrush account to use the official Semrush MCP server — no API key needed. Report tools spend
+        your Semrush account's API units.
+      </p>
+      {status === null ? (
+        <p style={{ fontSize: 13 }}>Loading...</p>
+      ) : (
+        <p style={{ fontSize: 13, margin: "10px 0 0" }}>
+          Current:{" "}
+          {status.connected ? (
+            <strong>
+              connected
+              {status.connected_at ? ` since ${new Date(status.connected_at * 1000).toLocaleDateString()}` : ""}
+            </strong>
+          ) : (
+            <span style={{ color: "var(--text-muted)" }}>not connected</span>
+          )}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button onClick={connect} disabled={busy || status === null}>
+          {status?.connected ? "Reconnect" : "Connect Semrush"}
+        </button>
+        {status?.connected && (
+          <>
+            <button className="secondary" onClick={test} disabled={busy}>
+              Test Semrush Connection
+            </button>
+            <button className="secondary" onClick={disconnect} disabled={busy}>
+              Disconnect
+            </button>
+          </>
+        )}
+      </div>
+      {notice && !error && <p style={{ fontSize: 13, marginTop: 8, color: "var(--success)" }}>✓ {notice}</p>}
+      {error && <p style={{ fontSize: 13, color: "#991b1b", marginTop: 8 }}>{error}</p>}
+      {testResult && (
+        <p style={{ fontSize: 13, marginTop: 8, color: testResult.ok ? "var(--success)" : "#991b1b" }}>
+          {testResult.ok ? "✓ " : "✗ "}
+          {testResult.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [geminiSet, setGeminiSet] = useState(false);
   const [geminiMasked, setGeminiMasked] = useState<string | null>(null);
@@ -442,6 +571,8 @@ export default function SettingsPage() {
         />
 
         <SheetsOAuthCard email={sheetsOauthEmail} clientId={sheetsOauthClientId} loading={loading} onChanged={load} />
+
+        <SemrushMcpCard />
       </div>
     </div>
   );
