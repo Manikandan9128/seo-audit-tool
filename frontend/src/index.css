@@ -1660,3 +1660,58 @@ table.matrix th:first-child {
     width: 208px;
   }
 }
+
+/* =====================================================================
+   Redesign v4 — Stage 3: KPI snapshot strip. 36px gradient-tinted icon,
+   32px proportional hero number, soft corner tint. Static info tiles —
+   deliberately NO hover lift (spec: lift only on interactive elements).
+   ===================================================================== */
+
+.kpi-tile {
+  position: relative;
+  overflow: hidden;
+  border-color: var(--color-border-soft);
+}
+.kpi-tile::after {
+  content: "";
+  position: absolute;
+  top: -30px;
+  right: -30px;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--kpi-tint, rgba(79, 70, 229, 0.12)), transparent 70%);
+  pointer-events: none;
+}
+.kpi-tile > * {
+  position: relative;
+}
+.kpi-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.kpi-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.kpi-value {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  font-variant-numeric: proportional-nums;
+}
+.kpi-value-of {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+}
+.kpi-primary { --kpi-tint: rgba(79, 70, 229, 0.14); }
+.kpi-primary .kpi-icon { background: linear-gradient(135deg, var(--color-primary-subtle), #E3E1FE); color: var(--color-primary); }
+.kpi-teal { --kpi-tint: rgba(13, 148, 136, 0.14); }
+.kpi-teal .kpi-icon { background: linear-gradient(135deg, var(--accent-teal-subtle), #C9F5EF); color: var(--accent-teal); }
+.kpi-violet { --kpi-tint: rgba(139, 92, 246, 0.16); }
+.kpi-violet .kpi-icon { background: linear-gradient(135deg, #F0EBFF, #E3D9FF); color: var(--color-primary-2); }
+.kpi-success { --kpi-tint: rgba(22, 163, 74, 0.14); }
+.kpi-success .kpi-icon { background: linear-gradient(135deg, var(--color-success-subtle), #C9F6DC); color: var(--color-success); }

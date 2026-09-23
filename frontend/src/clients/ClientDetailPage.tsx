@@ -849,9 +849,9 @@ export default function ClientDetailPage() {
 
         return (
           <div className="kpi-row">
-            <div className="kpi-tile">
+            <div className="kpi-tile kpi-primary">
               <div className="kpi-top">
-                <div className="kpi-icon" style={{ background: "var(--color-primary-subtle)", color: "var(--color-primary)" }}>
+                <div className="kpi-icon">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><rect x="7" y="12" width="3" height="6" rx="1" fill="currentColor" /><rect x="12" y="8" width="3" height="10" rx="1" fill="currentColor" /><rect x="17" y="5" width="3" height="13" rx="1" fill="currentColor" /></svg>
                 </div>
                 <span className="kpi-label">Domain Rating</span>
@@ -862,14 +862,14 @@ export default function ClientDetailPage() {
               </div>
               {ownDrRow && (
                 <div className="kpi-bar-track">
-                  <div className="kpi-bar-fill" style={{ width: `${Math.min(ownDrRow.dr, 100)}%`, background: "var(--color-primary)" }} />
+                  <div className="kpi-bar-fill" style={{ width: `${Math.min(ownDrRow.dr, 100)}%`, background: "var(--gradient-primary-h)" }} />
                 </div>
               )}
             </div>
 
-            <div className="kpi-tile">
+            <div className="kpi-tile kpi-teal">
               <div className="kpi-top">
-                <div className="kpi-icon" style={{ background: "var(--accent-teal-subtle)", color: "var(--accent-teal)" }}>
+                <div className="kpi-icon">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 007.07 0l2.83-2.83a5 5 0 00-7.07-7.07L11.5 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M14 11a5 5 0 00-7.07 0L4.1 13.83a5 5 0 007.07 7.07l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
                 </div>
                 <span className="kpi-label">Backlinks tracked</span>
@@ -884,9 +884,9 @@ export default function ClientDetailPage() {
               </div>
             </div>
 
-            <div className="kpi-tile">
+            <div className="kpi-tile kpi-violet">
               <div className="kpi-top">
-                <div className="kpi-icon" style={{ background: "var(--accent-violet-subtle)", color: "var(--accent-violet)" }}>
+                <div className="kpi-icon">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="7" r="4" stroke="currentColor" strokeWidth="2" /><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
                 </div>
                 <span className="kpi-label">Competitors tracked</span>
@@ -899,18 +899,18 @@ export default function ClientDetailPage() {
               </div>
             </div>
 
-            <div className="kpi-tile">
+            <div className="kpi-tile kpi-success">
               <div className="kpi-top">
-                <div className="kpi-icon" style={{ background: "var(--color-success-subtle)", color: "var(--color-success)" }}>
+                <div className="kpi-icon">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
                 </div>
                 <span className="kpi-label">Sections ready</span>
               </div>
               <div className="kpi-value">
-                {readyCount} <span style={{ fontSize: 15, color: "var(--color-text-tertiary)", fontWeight: 600 }}>/ {readiness?.total ?? SECTION_OPTIONS.length}</span>
+                {readyCount} <span className="kpi-value-of">/ {readiness?.total ?? SECTION_OPTIONS.length}</span>
               </div>
               <div className="kpi-bar-track">
-                <div className="kpi-bar-fill" style={{ width: `${(readyCount / readyTotal) * 100}%`, background: "var(--color-success)" }} />
+                <div className="kpi-bar-fill" style={{ width: `${(readyCount / readyTotal) * 100}%`, background: "var(--gradient-success-h)" }} />
               </div>
             </div>
           </div>
