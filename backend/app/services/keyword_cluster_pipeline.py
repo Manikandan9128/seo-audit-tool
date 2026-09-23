@@ -57,8 +57,15 @@ from collections import Counter
 import re
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
-from app.services.keyword_relevance_service import match_existing_page_for_cluster
+from app.services.keyword_relevance_service import build_page_index, match_existing_page_for_cluster
 from app.services.keyword_semantic_cluster_service import generate_phase2_candidate_clusters, generate_phase3_validated_clusters
+from app.services.keyword_intelligence_service import (
+    KeywordIntelligenceCache,
+    annotate_keyword_rows,
+    apply_cluster_intelligence,
+    build_rule_groups,
+    rule_group_name,
+)
 from app.services.priority_model import compute_priority_score, evidence_confidence_to_score
 
 logger = logging.getLogger(__name__)
@@ -223,18 +230,22 @@ def _route_non_clusterable_rows(rows: list[dict]) -> list[dict]:
         competitor_status = r.get("competitor_status")
         if relevance == _CAREER_ROUTE_STATUS:
             r["cluster"] = _CAREER_ROUTE_CLUSTER_LABEL
+            r["cluster_source"] = "routing"
             r["cluster_status"] = "Validated"
             continue
         if relevance == "Unknown / Needs Review" and reason != _UNJUDGED_REASON:
             r["cluster"] = _NEEDS_REVIEW_CLUSTER_LABEL
+            r["cluster_source"] = "routing"
             r["cluster_status"] = f"Needs Review: {reason}" if reason else "Needs Review"
             continue
         if competitor_status in _COMPETITOR_ROUTE_STATUSES:
             r["cluster"] = _COMPETITOR_ROUTE_CLUSTER_LABEL
+            r["cluster_source"] = "routing"
             r["cluster_status"] = "Validated"
             continue
         if r.get("geo_status") == _GEO_MISMATCH_STATUS:
             r["cluster"] = _GEO_ROUTE_CLUSTER_LABEL
+            r["cluster_source"] = "routing"
             r["cluster_status"] = "Validated"
             continue
         clusterable.append(r)
@@ -261,36 +272,6 @@ def _unique_keywords_by_volume(rows: list[dict]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
     for r in sorted(rows, key=_demand_proxy, reverse=True):
-        kw = r.get("keyword")
-        if kw and kw not in seen:
-            seen.add(kw)
-            ordered.append(kw)
-    return ordered
-
-
-# Candidate-pool ordering for clustering: relevance to the client's
-# business first, volume second. Pure volume ordering let high-volume
-# off-business keywords ("database news", 22K, flagged Needs Review) take
-# slots in the 100-keyword AI pool while low-volume core-service keywords
-# ("remote dba services", 260, already ranking #12) never got clustered at
-# all — confirmed on a Geopits deck, 2026-09-23.
-_RELEVANCE_TIER = {"Core Relevant": 0, "Relevant": 0}
-_NEEDS_REVIEW_STATUS = "Unknown / Needs Review"
-
-
-def _relevance_tier(r: dict) -> int:
-    status = (r.get("relevance_status") or "").strip()
-    if status in _RELEVANCE_TIER:
-        return 0
-    if not status or status == _NEEDS_REVIEW_STATUS:
-        return 2
-    return 1
-
-
-def _unique_keywords_for_clustering(rows: list[dict]) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for r in sorted(rows, key=lambda r: (_relevance_tier(r), -_demand_proxy(r))):
         kw = r.get("keyword")
         if kw and kw not in seen:
             seen.add(kw)
@@ -362,104 +343,141 @@ def _apply_manual_clusters(rows: list[dict], manual_cluster_map: dict[str, dict]
             continue
         r["cluster"] = entry["cluster"]
         r["cluster_status"] = "Validated (Manual)"
+        r["cluster_source"] = "manual"
         if entry.get("primary_or_secondary"):
             r["primary_or_secondary"] = entry["primary_or_secondary"]
 
 
-def _build_candidate_clusters(rows: list[dict], keyword_rows_by_text: dict[str, dict], client_description: str | None = None) -> None:
-    """External lead's Phase 2/3 spec (2026-09-21): two SEPARATE sequential
-    LLM calls (keyword_semantic_cluster_service.py) — semantic candidate
-    grouping, then validate/split/merge/finalize — replacing the earlier
-    single-call bucket-sub-split design. Only runs at all when the client
-    has no manual keyword-cluster upload (build_final_keyword_clusters's
-    own manual-first branch) — this is strictly the fallback path.
-    business_theme/intent/page_category are passed through as each
-    keyword's `source_cluster` — the spec's own "prior evidence only, never
-    treat it as the answer" framing — advisory prompt context for Phase 2,
-    not a structural boundary the way the old bucket design used it.
+def _build_candidate_clusters(
+    rows: list[dict], keyword_rows_by_text: dict[str, dict], client_description: str | None = None,
+    cache: KeywordIntelligenceCache | None = None,
+) -> None:
+    """Universal SEO Keyword Intelligence engine (2026-09-23) on top of the
+    external lead's Phase 2/3 spec (2026-09-21).
 
-    Sets `cluster`/`cluster_status`/`primary_or_secondary` on every row in
-    the capped candidate pool; a row outside that pool, or one Phase 2/3
-    together couldn't confidently place, is left with `cluster` = ""
-    (unclustered) — the spec's explicit fallback, never a forced group.
-    Fails safe end to end: if either phase's AI call fails outright, every
-    row in the pool simply stays unclustered rather than falling back to
-    the old bucket-only design or inventing a group."""
-    candidates = _unique_keywords_for_clustering(rows)[:_BUSINESS_THEME_CANDIDATE_CAP]
-    if not candidates:
+    Step 1 — rule-based same-page groups over EVERY row
+    (keyword_intelligence_service.build_rule_groups: core entity + intent
+    family, guarded parent attach), deterministic and instant. This is what
+    removed the old top-100-keywords cap: previously only the 100
+    highest-volume keywords were ever clustered and everything else fell
+    into "Other / Ungrouped" (Lumber: 1,831 of them).
+
+    Step 2 — the SAME two AI calls as before (Phase 2 semantic grouping,
+    Phase 3 validate/split/merge/name), but over the top
+    _BUSINESS_THEME_CANDIDATE_CAP groups' representative keywords instead
+    of the top 100 raw keywords, so each AI decision now covers a whole
+    variant group. The AI result is cached per client (`cache`), keyed by
+    the exact representative set + business context, so a regeneration on
+    unchanged data makes zero AI calls.
+
+    Step 3 — every group the AI didn't place (beyond the cap, AI
+    unavailable, or a catch-all name the AI returned) becomes its own
+    rule-based cluster, named from its shared core entity and marked
+    cluster_source="rule" so confidence scoring and the slide say it wasn't
+    AI-validated. No keyword is ever left in an "Ungrouped" bucket just
+    because the AI didn't get to it."""
+    groups = build_rule_groups(rows)
+    if not groups:
         return
+    group_by_rep: dict[str, dict] = {}
+    for g in groups:
+        rep_kw = (g["representative"].get("keyword") or "").strip()
+        if rep_kw:
+            group_by_rep[rep_kw] = g
+    ai_groups = [g for g in groups if (g["representative"].get("keyword") or "").strip()][:_BUSINESS_THEME_CANDIDATE_CAP]
 
     keyword_meta = []
-    for kw in candidates:
-        r = keyword_rows_by_text[kw]
+    for g in ai_groups:
+        r = g["representative"]
+        kw = r["keyword"].strip()
         theme = (r.get("business_theme") or UNCLASSIFIED_THEME).strip() or UNCLASSIFIED_THEME
-        intent = (r.get("intent") or "").strip() or "Unknown Intent"
+        intent = (r.get("intent") or r.get("detected_intent") or "").strip() or "Unknown Intent"
         category = (r.get("page_category") or "").strip() or "Unspecified Format"
         source_cluster = None if theme == UNCLASSIFIED_THEME else f'business theme "{theme}", intent "{intent}", page format "{category}"'
+        variants = [m.get("keyword") for m in g["rows"] if m is not r and m.get("keyword")][:3]
         keyword_meta.append({
             "keyword": kw, "search_volume": r.get("search_volume"),
             "keyword_difficulty": r.get("keyword_difficulty"), "source_cluster": source_cluster,
+            "variants": variants, "group_size": len(g["rows"]),
         })
 
-    try:
-        candidate_clusters, _unmapped = generate_phase2_candidate_clusters(keyword_meta, client_description)
-    except Exception as e:
-        logger.warning("Phase 2 candidate clustering raised: %s", e)
-        candidate_clusters = {}
+    final_clusters: list[dict] = []
+    cache_key = KeywordIntelligenceCache.cluster_key(keyword_meta, client_description) if cache is not None else None
+    cached = cache.get_clusters(cache_key) if cache is not None and keyword_meta else None
+    if cached:
+        final_clusters = cached
+    elif keyword_meta:
+        try:
+            candidate_clusters, _unmapped = generate_phase2_candidate_clusters(keyword_meta, client_description)
+        except Exception as e:
+            logger.warning("Phase 2 candidate clustering raised: %s", e)
+            candidate_clusters = {}
 
-    if not candidate_clusters:
-        for kw in candidates:
-            keyword_rows_by_text[kw].setdefault("cluster", "")
-        return
+        if candidate_clusters:
+            # Phase 3's own input shape wants each candidate cluster's
+            # keywords enriched with intent (Step 2's intent/page-type
+            # compatibility check), not just the bare keyword strings.
+            enriched_candidates = {}
+            for cid, info in candidate_clusters.items():
+                kw_objs = []
+                for kw in info["keywords"]:
+                    r = keyword_rows_by_text.get(kw)
+                    kw_objs.append({
+                        "keyword": kw, "search_volume": r.get("search_volume") if r else None,
+                        "keyword_difficulty": r.get("keyword_difficulty") if r else None,
+                        "intent": (r.get("intent") or r.get("detected_intent")) if r else None,
+                    })
+                enriched_candidates[cid] = {**info, "keywords": kw_objs}
+            try:
+                final_clusters = generate_phase3_validated_clusters(enriched_candidates)
+            except Exception as e:
+                logger.warning("Phase 3 cluster validation raised: %s", e)
+                final_clusters = []
+            if cache is not None and final_clusters:
+                cache.put_clusters(cache_key, final_clusters)
 
-    # Phase 3's own input shape wants each candidate cluster's keywords
-    # enriched with intent (Step 2's intent/page-type compatibility check),
-    # not just the bare keyword strings Phase 2 grouped.
-    enriched_candidates = {}
-    for cid, info in candidate_clusters.items():
-        kw_objs = []
-        for kw in info["keywords"]:
-            r = keyword_rows_by_text.get(kw)
-            kw_objs.append({
-                "keyword": kw, "search_volume": r.get("search_volume") if r else None,
-                "keyword_difficulty": r.get("keyword_difficulty") if r else None, "intent": r.get("intent") if r else None,
-            })
-        enriched_candidates[cid] = {**info, "keywords": kw_objs}
-
-    try:
-        final_clusters = generate_phase3_validated_clusters(enriched_candidates)
-    except Exception as e:
-        logger.warning("Phase 3 cluster validation raised: %s", e)
-        final_clusters = []
-
+    placed: set[int] = set()
     seen_names: dict[str, int] = {}
+
+    def _unique(name: str) -> str:
+        seen_names[name] = seen_names.get(name, 0) + 1
+        # Two independently-finalized clusters landed on the exact same
+        # name — disambiguate so they don't silently merge on the slide.
+        return name if seen_names[name] == 1 else f"{name} ({seen_names[name]})"
+
     for final in final_clusters:
-        name = final["cluster_name"]
-        status = final["cluster_status"]
+        name = final.get("cluster_name") or ""
+        status = final.get("cluster_status") or "Validated"
         if not name or _is_catchall_cluster_name(name):
-            # Cluster Name Validation (spec steps 15-17): reject a
-            # catch-all/generic-only AI-returned name outright.
-            name = ""
-            status = "Needs Review"
-        display_name = name
-        if name:
-            seen_names[name] = seen_names.get(name, 0) + 1
-            if seen_names[name] > 1:
-                # Two independently-finalized clusters landed on the exact
-                # same AI-chosen name by coincidence — disambiguate so they
-                # don't silently merge into one displayed cluster.
-                display_name = f"{name} ({seen_names[name]})"
-        for kw in final["member_keywords"]:
-            r = keyword_rows_by_text.get(kw)
-            if not r:
-                continue
-            if not display_name:
-                r["cluster"] = ""
-                r["cluster_status"] = "Needs Review"
-                continue
+            # Cluster Name Validation (spec steps 15-17): a catch-all/
+            # generic AI name is rejected; its groups fall through to the
+            # rule-based step below instead of vanishing.
+            continue
+        member_groups = [group_by_rep[kw] for kw in final.get("member_keywords") or [] if kw in group_by_rep]
+        member_groups = [g for g in member_groups if id(g) not in placed]
+        if not member_groups:
+            continue
+        display_name = _unique(name)
+        primary_kw = final.get("primary_keyword")
+        for g in member_groups:
+            placed.add(id(g))
+            for r in g["rows"]:
+                r["cluster"] = display_name
+                r["cluster_status"] = status
+                r["cluster_source"] = "ai"
+                r["primary_or_secondary"] = "Primary" if r.get("keyword") == primary_kw else "Secondary"
+
+    for g in groups:
+        if id(g) in placed:
+            continue
+        display_name = _unique(rule_group_name(g))
+        for r in g["rows"]:
             r["cluster"] = display_name
-            r["cluster_status"] = status
-            r["primary_or_secondary"] = "Primary" if kw == final["primary_keyword"] else "Secondary"
+            r["cluster_status"] = "Rule-based (not AI-validated)"
+            r["cluster_source"] = "rule"
+
+
+_RELEVANCE_RANK = {"Core Relevant": 3, "Relevant": 2, "Adjacent / Potential": 1}
 
 
 def _select_primary_secondary(rows: list[dict]) -> None:
@@ -486,15 +504,24 @@ def _select_primary_secondary(rows: list[dict]) -> None:
         if label:
             clusters.setdefault(label, []).append(r)
 
-    def _score(r: dict) -> tuple:
-        intent = (r.get("intent") or "").lower()
-        commercial = 1 if intent in ("commercial", "transactional") else 0
-        has_ranking_signal = 1 if r.get("current_position") not in (None, "") or r.get("position") not in (None, "") else 0
-        return (commercial, has_ranking_signal, _num(r.get("search_volume")))
-
     for _label, cluster_rows in clusters.items():
-        if any((r.get("primary_or_secondary") or "").strip() for r in cluster_rows):
+        if any((r.get("primary_or_secondary") or "").strip() == "Primary" for r in cluster_rows):
             continue
+        # Universal SEO engine §19-20: business relevance, then intent fit
+        # (the keyword matches the cluster's dominant intent family, so it
+        # represents the page's core need), then commercial intent and a
+        # real ranking signal — search volume is only the last tiebreaker.
+        families = Counter(r.get("intent_family") for r in cluster_rows if r.get("intent_family"))
+        dominant_family = families.most_common(1)[0][0] if families else None
+
+        def _score(r: dict) -> tuple:
+            intent = (r.get("intent") or "").lower()
+            relevance = _RELEVANCE_RANK.get(r.get("relevance_status") or "", 0)
+            intent_fit = 1 if dominant_family and r.get("intent_family") == dominant_family else 0
+            commercial = 1 if intent in ("commercial", "transactional") else 0
+            has_ranking_signal = 1 if r.get("current_position") not in (None, "") or r.get("position") not in (None, "") else 0
+            return (relevance, intent_fit, commercial, has_ranking_signal, _num(r.get("search_volume")))
+
         primary = max(cluster_rows, key=_score)
         for r in cluster_rows:
             r["primary_or_secondary"] = "Primary" if r is primary else "Secondary"
@@ -529,6 +556,7 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
         if label:
             clusters.setdefault(label, []).append(r)
 
+    page_index = build_page_index(site_audit_pages_rows)
     for _label, cluster_rows in clusters.items():
         keywords = [r.get("keyword") for r in cluster_rows if r.get("keyword")]
         # Clusters never mix page formats (a hard clustering boundary), so
@@ -536,7 +564,7 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
         # the matcher can refuse a page whose type contradicts it.
         categories = Counter((r.get("page_category") or "") for r in cluster_rows if r.get("page_category"))
         page_category = categories.most_common(1)[0][0] if categories else None
-        match = match_existing_page_for_cluster(keywords, site_audit_pages_rows, page_category)
+        match = match_existing_page_for_cluster(keywords, site_audit_pages_rows, page_category, page_index=page_index)
         strength = match["match_strength"] if match else "none"
         for r in cluster_rows:
             if match:
@@ -569,9 +597,16 @@ def _apply_cannibalization_check(rows: list[dict]) -> None:
     cluster_url: dict[str, str] = {}
     cluster_match_strength: dict[str, str] = {}
     cluster_volume: dict[str, float] = {}
+    # Universal SEO engine §24: cannibalization needs pages genuinely
+    # competing for one need — a single-keyword rule-based group (the
+    # engine now clusters every keyword) sharing a page with a real cluster
+    # is not evidence of that, so it never counts as a competing cluster.
+    cluster_sizes = Counter((r.get("cluster") or "").strip() for r in rows)
     for r in rows:
         label = (r.get("cluster") or "").strip()
         if not label:
+            continue
+        if r.get("cluster_source") == "rule" and cluster_sizes[label] < 2:
             continue
         cluster_volume[label] = cluster_volume.get(label, 0.0) + _num(r.get("search_volume"))
         url = r.get("existing_page_url")
@@ -828,6 +863,7 @@ def build_final_keyword_clusters(
     client_description: str | None,
     site_audit_pages_rows: list[dict] | None,
     manual_cluster_map: dict[str, dict] | None = None,
+    cache: KeywordIntelligenceCache | None = None,
 ) -> list[dict]:
     """Runs (Manual Clustering, when `manual_cluster_map` is non-empty — see
     `_apply_manual_clusters` — OR, as the fallback, Non-Clusterable Routing
@@ -858,12 +894,13 @@ def build_final_keyword_clusters(
         return rows
 
     keyword_rows_by_text = _annotate_semantic_fields(rows)
+    annotate_keyword_rows(rows)
     if manual_cluster_map:
         _apply_manual_clusters(rows, manual_cluster_map)
     else:
         clusterable_rows = _route_non_clusterable_rows(rows)
         _assign_business_themes(clusterable_rows, client_name, client_description)
-        _build_candidate_clusters(clusterable_rows, keyword_rows_by_text, client_description)
+        _build_candidate_clusters(clusterable_rows, keyword_rows_by_text, client_description, cache)
     _assign_core_category_and_priority(rows)
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)
@@ -871,4 +908,9 @@ def build_final_keyword_clusters(
     _final_cluster_acceptance_check(rows)
     _assign_evidence_confidence(rows)
     _assign_priority_score(rows)
+    apply_cluster_intelligence(rows)
+    for r in rows:
+        # Internal grouping keys — never part of the row data handed on.
+        r.pop("_core_key", None)
+        r.pop("_core_tokens", None)
     return rows

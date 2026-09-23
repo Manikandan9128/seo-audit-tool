@@ -54,7 +54,9 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, assign_geo_status, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, match_existing_page_for_cluster
+from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
+from app.services.content_safety import safe_imports, scrub as scrub_adult
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -440,7 +442,7 @@ def _company_overview_context(company_overview: dict | None) -> str | None:
     return " ".join(parts) or None
 
 
-def _filter_competitor_keywords(client: Client, data: dict) -> None:
+def _filter_competitor_keywords(client: Client, data: dict, cache: KeywordIntelligenceCache | None = None) -> None:
     """Classifies every competitor keyword (Highly relevant / Potentially
     relevant / Exclude — see keyword_relevance_service) and strips excluded
     rows from competitor_positions and competitor_analysis["keyword_gap_
@@ -486,7 +488,9 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
         return
 
     client_description = _company_overview_context(data.get("company_overview"))
-    classifications = classify_keywords(client.name, client_domain, brand_tokens, all_keywords, client_description)
+    classifications = classify_with_cache(
+        classify_keywords, cache, all_keywords, client.name, client_domain, brand_tokens, client_description,
+    )
     if not classifications:
         return
     keep = {"highly_relevant", "potentially_relevant"}
@@ -537,7 +541,12 @@ def _filter_competitor_keywords(client: Client, data: dict) -> None:
             kept_gap_rows.append(r)
         assign_geo_status(kept_gap_rows, target_country)
         competitor_analysis["keyword_gap_rows"] = kept_gap_rows
-        competitor_analysis["keyword_gap_off_topic_count"] = off_topic_count
+        # Competitor-brand searches were already dropped deterministically
+        # in semrush_analysis_service (every gap row, not just this top-40
+        # AI pool) — counted into the same visible "excluded" figure.
+        competitor_analysis["keyword_gap_off_topic_count"] = off_topic_count + int(
+            competitor_analysis.get("keyword_gap_brand_excluded_count") or 0
+        )
 
 
 def _merge_keyword_gap_and_positions(
@@ -624,18 +633,6 @@ def _merge_keyword_gap_and_positions(
     return [by_keyword[key] for key in order]
 
 
-# Adult/spam terms a keyword export can carry (confirmed real 2026-09-23: a
-# client cluster sheet's "indian bus xxx" rendered on a Target Keywords
-# slide). Never a legitimate B2B/B2C SEO target for any client here.
-_JUNK_KEYWORD_RE = re.compile(
-    r"\b(xxx+|porn\w*|sex|sexy|nude\w*|xnxx|xvideos?|xhamster|escort\w*|onlyfans|hentai|nsfw)\b", re.IGNORECASE,
-)
-# Chunk size / ceiling for classifying a client cluster sheet — one AI call
-# per chunk, same classifier as the Semrush/GSC keyword pool.
-_SHEET_CLASSIFY_CHUNK = 120
-_SHEET_CLASSIFY_MAX_CHUNKS = 4
-
-
 def _reclassify_mislabeled_competitor_overviews(imports: list, website_url: str) -> list:
     """A Domain Overview PDF names its own domain inside the file, so a
     competitor's PDF uploaded under the client's own site (no competitor
@@ -663,57 +660,6 @@ def _reclassify_mislabeled_competitor_overviews(imports: list, website_url: str)
     return out
 
 
-def _clean_manual_sheet_rows(
-    client: Client, rows: list[dict], company_overview: dict | None, competitor_domains,
-) -> list[dict]:
-    """Filters a client-provided keyword cluster sheet before it becomes the
-    Target Keywords slides. Until 2026-09-23 sheet rows went to the slides
-    completely unfiltered (only KD >= 50 dropped), so whatever the sheet
-    held rendered as-is — confirmed on a BharatBenz deck: adult spam ("indian
-    bus xxx"), a competitor's model ("boss trucks"), and off-business terms
-    ("brabus price in india", "peterbilt truck price in india", "egg
-    transport vehicle in india"). Same three filters the Semrush/GSC keyword
-    pool already gets: junk terms, competitor brand names, then the AI
-    relevance classifier against the client's own business. Rows the
-    classifier couldn't judge (fail-open / outside the classified pool) are
-    kept, never silently dropped. Works on copies — the sheet's stored rows
-    are never mutated."""
-    rows = [dict(r) for r in rows if not _JUNK_KEYWORD_RE.search(r.get("keyword") or "")]
-    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
-    rows = filter_other_brand_keywords(rows, client_domain, competitor_domains)
-    if not rows:
-        return rows
-
-    brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client_domain)) if t}
-    client_description = _company_overview_context(company_overview)
-    ordered = sorted(rows, key=_demand_proxy, reverse=True)
-    keywords = []
-    seen = set()
-    for r in ordered:
-        k = (r.get("keyword") or "").strip()
-        if k and k.lower() not in seen:
-            seen.add(k.lower())
-            keywords.append(k)
-    keywords = keywords[: _SHEET_CLASSIFY_CHUNK * _SHEET_CLASSIFY_MAX_CHUNKS]
-
-    classifications: dict[str, dict] = {}
-    for i in range(0, len(keywords), _SHEET_CLASSIFY_CHUNK):
-        try:
-            classifications.update(classify_keywords(
-                client.name, client_domain, brand_tokens, keywords[i : i + _SHEET_CLASSIFY_CHUNK], client_description,
-            ) or {})
-        except Exception as e:  # best-effort, same fail-open discipline as _filter_keyword_rows
-            logger.warning("Cluster sheet relevance classification failed for %s: %s", client.name, e)
-
-    kept = []
-    for r in rows:
-        entry = classifications.get((r.get("keyword") or "").strip().lower())
-        if entry and entry.get("label") == "exclude":
-            continue
-        kept.append(r)
-    return kept
-
-
 def _company_overview_cluster_context(company_overview: dict | None) -> str | None:
     """Clustering context: the relevance context plus the client's own
     product/service list, so Phase 2 clustering can anchor one cluster per
@@ -732,7 +678,103 @@ def _company_overview_cluster_context(company_overview: dict | None) -> str | No
     return "\n".join(parts) or None
 
 
-def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dict | None) -> list[dict]:
+def _scrub_report_data(data: dict) -> dict:
+    """18+ hard rule (content_safety.py): scrubs every report data key
+    except content_generation_issues, which must stay the SAME list object
+    later steps keep appending to (and holds only our own status text)."""
+    issues = data.get("content_generation_issues")
+    cleaned = scrub_adult({k: v for k, v in data.items() if k != "content_generation_issues"})
+    if "content_generation_issues" in data:
+        cleaned["content_generation_issues"] = issues
+    return cleaned
+
+
+def _keyword_cache_for(client: Client, company_overview: dict | None) -> KeywordIntelligenceCache:
+    return KeywordIntelligenceCache(
+        getattr(client, "keyword_intelligence_cache", None), client.name, _company_overview_context(company_overview),
+    )
+
+
+def _save_keyword_cache(client: Client, cache: KeywordIntelligenceCache | None, db: Session) -> None:
+    """Persists newly-cached AI keyword verdicts. Best-effort: a failed save
+    only means the next regeneration asks the AI again, never a failed report."""
+    if cache is None or not cache.dirty:
+        return
+    try:
+        client.keyword_intelligence_cache = dict(cache.data)
+        db.commit()
+        cache.dirty = False
+    except Exception as e:
+        logger.warning("Saving keyword intelligence cache failed for client %s: %s", client.id, e)
+        db.rollback()
+
+
+def _select_validated_manual_clusters(
+    client: Client, manual_rows: list[dict], company_overview: dict | None, gap_domains: set,
+    domain_overview_rows: list[dict], site_audit_pages_rows: list[dict] | None,
+    cache: KeywordIntelligenceCache | None, keyword_rows: list[dict] | None = None,
+) -> list[dict]:
+    """Scenario A of the Universal SEO Keyword engine (2026-09-23): the
+    client's own cluster sheet stays the source of truth for grouping, but
+    every keyword now passes the same relevance/brand/junk gate as the
+    Semrush path before selection (BharatBenz's sheet put "indian bus xxx",
+    "brabus price in india" and "peterbilt truck price in india" on client
+    slides), and every selected cluster gets a target URL, action,
+    confidence and intent/split-test flags. One bounded, cached AI relevance
+    call — the manual path makes no clustering AI calls at all."""
+    if not manual_rows:
+        return []
+    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    own_brands = brand_token_variants(client_domain) | {t for t in (_brand_token(client.name),) if t}
+    competitor_domains = set(gap_domains or set()) | {
+        r.get("domain") for r in (domain_overview_rows or []) if r.get("domain")
+    }
+    competitor_brands: set[str] = set()
+    for d in competitor_domains:
+        competitor_brands |= brand_token_variants(d)
+    competitor_brands -= own_brands
+
+    relevance: dict[str, dict] = {}
+    candidates = manual_classify_candidates(manual_rows)
+    if candidates:
+        try:
+            # No brand tokens: a client-sheet keyword naming the client's own
+            # brand is the client's deliberate choice, never a "competitor
+            # brand" rule exclude — relevance is judged by the AI alone.
+            relevance = classify_with_cache(
+                classify_keywords, cache, candidates, client.name, client_domain, set(),
+                _company_overview_context(company_overview),
+            )
+        except Exception as e:
+            logger.warning("Manual keyword relevance check failed for client %s: %s", client.id, e)
+    kept, excluded, flagged = gate_manual_rows(
+        manual_rows,
+        lambda kw: _rule_exclude(kw, set()),
+        lambda kw: bool(competitor_brands) and is_competitor_brand_query(kw, competitor_brands),
+        relevance,
+    )
+    # The same sheet also drives keyword_rows' clusters (Content SEO,
+    # Programmatic SEO). Stamp the AI verdict onto those rows too, so a
+    # flagged other-brand keyword ("brabus price in india") is never
+    # proposed as a programmatic subpage — while still shown, flagged, on
+    # its Target Keywords slide.
+    for r in keyword_rows or []:
+        verdict = relevance.get((r.get("keyword") or "").strip().lower())
+        if verdict and r.get("relevance_status") in (None, "", "Unknown / Needs Review"):
+            r["relevance_status"] = verdict.get("status")
+            r["relevance_reason"] = verdict.get("reason")
+    clusters = select_strategic_clusters(kept)
+    if clusters:
+        enrich_manual_clusters(
+            clusters, site_audit_pages_rows, excluded, match_existing_page_for_cluster,
+            page_index=build_page_index(site_audit_pages_rows), flagged=flagged,
+        )
+    return clusters
+
+
+def _filter_keyword_rows(
+    client: Client, rows: list[dict], company_overview: dict | None, cache: KeywordIntelligenceCache | None = None,
+) -> list[dict]:
     """Core, side-effect-free relevance filter for the client's OWN Keyword
     Gap rows — pulled out of _filter_own_keyword_rows so it can run INSIDE
     _gather_report_data, right after these rows are first assembled and
@@ -760,13 +802,25 @@ def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dic
     client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
     brand_tokens = {t for t in (_brand_token(client.name), _brand_token(client_domain)) if t}
 
-    candidates = sorted(rows, key=_demand_proxy, reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
+    # Keyword engine cache (2026-09-23): every keyword already judged in an
+    # earlier run keeps its verdict for free, and the AI call still only
+    # ever sees _CLASSIFY_CANDIDATE_CAP new keywords — so relevance coverage
+    # grows with each regeneration at zero extra report time.
+    ordered = sorted(rows, key=_demand_proxy, reverse=True)
+    if cache is not None:
+        cached_rows = [r for r in ordered if cache.get_relevance(r.get("keyword", ""))]
+        new_rows = [r for r in ordered if not cache.get_relevance(r.get("keyword", ""))][:_CLASSIFY_CANDIDATE_CAP]
+        candidates = cached_rows + new_rows
+    else:
+        candidates = ordered[:_CLASSIFY_CANDIDATE_CAP]
     candidate_keywords = [r.get("keyword", "") for r in candidates]
     if not candidate_keywords:
         return rows
 
     client_description = _company_overview_context(company_overview)
-    classifications = classify_keywords(client.name, client_domain, brand_tokens, candidate_keywords, client_description)
+    classifications = classify_with_cache(
+        classify_keywords, cache, candidate_keywords, client.name, client_domain, brand_tokens, client_description,
+    )
     if not classifications:
         return rows
     keep = {"highly_relevant", "potentially_relevant"}
@@ -812,7 +866,7 @@ def _filter_keyword_rows(client: Client, rows: list[dict], company_overview: dic
     return kept
 
 
-def _filter_search_queries(client: Client, data: dict) -> None:
+def _filter_search_queries(client: Client, data: dict, cache: KeywordIntelligenceCache | None = None) -> None:
     """Classifies GSC non-branded search queries for real business relevance
     before they become an "opportunity set" — teammate QA on the last
     report flagged Search Queries - Non-Branded as unfiltered: any
@@ -844,7 +898,9 @@ def _filter_search_queries(client: Client, data: dict) -> None:
         return
 
     client_description = _company_overview_context(data.get("company_overview"))
-    classifications = classify_keywords(client.name, client_domain, brand_tokens, candidate_keywords, client_description)
+    classifications = classify_with_cache(
+        classify_keywords, cache, candidate_keywords, client.name, client_domain, brand_tokens, client_description,
+    )
     if not classifications:
         return
     keep = {"highly_relevant", "potentially_relevant"}
@@ -1534,12 +1590,20 @@ def _gather_report_data(
     # checkpoints don't change what runs, only what the progress bar says
     # while it does.
     progress("Merging keyword data and clustering topics...", 52)
+    # Hard rule (2026-09-23): no 18+ content anywhere in a report. GSC
+    # queries/pages are scrubbed here, before any AI prompt or slide sees
+    # them (content_safety.py, layer 1).
+    if analytics:
+        analytics = scrub_adult(analytics)
     all_imports = db.query(SemrushImport).filter(SemrushImport.client_id == client_id).all()
     # Semrush MCP data-source option: no-op for a Manual Upload report; for
     # a Semrush MCP report, swaps the uploaded Semrush-account imports for
     # the fetched MCP snapshot (see semrush_mcp_data_service's docstring).
     all_imports = semrush_mcp_data_service.apply_report_source(all_imports)
     all_imports = _reclassify_mislabeled_competitor_overviews(all_imports, client.website_url)
+    # Same hard rule for every Semrush upload — read-only views with adult
+    # rows removed; the stored upload data itself is never modified.
+    all_imports = safe_imports(all_imports)
 
     def _all_rows(import_type: str, own_only: bool = False) -> list[dict]:
         """Every row from every upload of this type — not just the latest —
@@ -1601,7 +1665,8 @@ def _gather_report_data(
     # logic, was the actual bug here. Also means clustering only ever
     # clusters real BharatBenz-relevant keywords instead of wasting part of
     # its 100-keyword cap on off-topic ones that would've been dropped anyway.
-    keyword_rows_all = _filter_keyword_rows(client, keyword_rows_all, company_overview_result)
+    kw_cache = _keyword_cache_for(client, company_overview_result)
+    keyword_rows_all = _filter_keyword_rows(client, keyword_rows_all, company_overview_result, kw_cache)
     # FINAL PIPELINE (lead's spec, 2026-09-19): Merge+Dedupe (above) ->
     # Relevance Filter (above) -> Search Intent -> Page Category -> Business
     # Theme -> Candidate Clustering -> Cluster Validation -> Automatic
@@ -1699,6 +1764,7 @@ def _gather_report_data(
                     _company_overview_cluster_context(company_overview_result),
                     _all_rows("site_audit_pages", own_only=True),
                     manual_cluster_map=manual_cluster_map or None,
+                    cache=kw_cache,
                 )
             except Exception as e:
                 logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
@@ -2277,14 +2343,11 @@ def _gather_report_data(
     # own source of truth), independent of keyword_rows_all/the AI Phase
     # 2/3 pipeline above — empty list (never rendered) when no such sheet
     # was uploaded for this client.
-    strategic_keyword_clusters = []
-    if manual_cluster_rows_full:
-        _sheet_competitor_domains = set(_gap_domains) | {
-            r.get("domain") for r in (competitor_rows_all or []) if r.get("domain") and r.get("domain") != own_website_domain
-        }
-        strategic_keyword_clusters = select_strategic_clusters(_clean_manual_sheet_rows(
-            client, list(manual_cluster_rows_full.values()), company_overview_result, _sheet_competitor_domains,
-        ))
+    strategic_keyword_clusters = _select_validated_manual_clusters(
+        client, list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,
+        domain_overview_rows, site_audit_pages_rows, kw_cache, keyword_rows_all,
+    )
+    _save_keyword_cache(client, kw_cache, db)
 
     return {
         "site_audit": site_audit_result,
@@ -2357,6 +2420,7 @@ def report_preview(
         )
     finally:
         semrush_mcp_data_service.set_active_snapshot(None)
+    data = _scrub_report_data(data)
     return {"client_name": client.name, "website_url": client.website_url, **data}
 
 
@@ -2399,6 +2463,7 @@ def _build_pptx_for_client(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
         company_overview_override, competitor_analysis_override, ux_notes, on_progress,
     )
+    data = _scrub_report_data(data)
     # Snapshot BEFORE _filter_competitor_keywords below caps/strips this in
     # place — the competitor keyword Google Sheets are meant to hold
     # EVERYTHING Semrush returned for that domain (per explicit request: "not
@@ -2432,8 +2497,10 @@ def _build_pptx_for_client(
     # Strip excluded competitor keywords (brand, nav/login, careers, typos,
     # unrelated industries) before anything downstream — PPTX slides, the
     # ranking_page_types signal below, Next Steps findings — ever sees them.
-    _filter_competitor_keywords(client, data)
-    _filter_search_queries(client, data)
+    kw_cache = _keyword_cache_for(client, data.get("company_overview"))
+    _filter_competitor_keywords(client, data, kw_cache)
+    _filter_search_queries(client, data, kw_cache)
+    _save_keyword_cache(client, kw_cache, db)
     # _filter_own_keyword_rows removed from here 2026-09-16 — the client's
     # own keyword_rows are now filtered much earlier, inside
     # _gather_report_data right after they're assembled (see
@@ -2515,6 +2582,14 @@ def _build_pptx_for_client(
     # Semrush's own export-tier limit on the file, not a truncation here
     # (see create_combined_keyword_sheet's docstring).
     keyword_sheet_link: str | None = None
+    # Hard rule, layer 2: everything AI-written since (competitor
+    # narratives, Next Steps, brand mentions) and everything headed for the
+    # Sheet or the deck is scrubbed of 18+ content one final time.
+    data = _scrub_report_data(data)
+    competitor_narratives = scrub_adult(competitor_narratives)
+    next_steps_ai = scrub_adult(next_steps_ai)
+    brand_citations = scrub_adult(brand_citations)
+    full_competitor_positions = scrub_adult(full_competitor_positions)
     keyword_gap_rows_for_sheet = (data.get("competitor_analysis") or {}).get("keyword_gap_rows") or []
     has_sheet_worthy_data = bool(
         full_competitor_positions or data.get("keyword_rows") or data.get("own_site_positions_rows") or keyword_gap_rows_for_sheet

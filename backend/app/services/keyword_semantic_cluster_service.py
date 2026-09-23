@@ -40,8 +40,11 @@ semantic meaning — not shared words, not search volume, not any pre-existing c
 ## Input
 
 keywords: {keywords_json}
-// [{{keyword, search_volume, keyword_difficulty, source_cluster}}, ...]
+// [{{keyword, search_volume, keyword_difficulty, source_cluster, variants, group_size}}, ...]
 // source_cluster is prior evidence only — never treat it as the answer.
+// Each keyword already stands for a small pre-grouped set of close variants (same core entity, same
+// intent family — plural/word-order/price-modifier variants). `variants` lists a few of them and
+// `group_size` how many there are. Decide for the keyword as a whole; its variants follow it.
 
 client_context: {client_context}
 
@@ -54,25 +57,17 @@ configuration — never generalize this to "Heavy Trucks."
 Identify whether each keyword is a core topic or a topic + a modifier (pricing, guide, basics, \
 calculator, etc.). A modifier does NOT create a new cluster by default.
 
-## Step 3 — Group into candidate clusters by product/service first
-Anchor clusters on the client's own products and services (listed in client_context when \
-available): one cluster per product/service the client actually sells, plus separate clusters \
-only for genuinely different topics. Put a product's whole decision journey in ONE cluster — its \
-head term plus its "what is", "cost"/"price", "best", "quote", "near me"/country, "how to claim"/\
-"how to apply" and similar variants all belong together, because ONE well-built product page \
-(what it is, who needs it, cost, how it works, FAQs) should target all of them. Example: \
-"income protection insurance", "income protection insurance uk", "what is income protection \
-insurance", "income protection insurance cost" = ONE cluster. Two phrasings of the same service \
-("data management services" / "managed data services", "cloud migration service" / "cloud \
-migration services") = ONE cluster, never two. Do NOT group keywords just because they share \
-words or a parent category. Do NOT let a high-volume keyword pull unrelated keywords into its \
-group. Prefer fewer, fuller clusters (roughly 5-15 keywords) over many one-keyword clusters.
+## Step 3 — Group into candidate clusters by semantic topic + intent
+Group keywords sharing the same entity, semantic topic, underlying user need (what the searcher is \
+trying to accomplish), audience, and compatible search intent — i.e. keywords ONE page could genuinely \
+satisfy. Do NOT group keywords just because they share words or a parent category ("tipper truck" and \
+"mining truck" are different products, not one "Trucks" page). Do NOT let a high-volume keyword pull \
+unrelated keywords into its group. Informational ("how/what/guide") and commercial/transactional \
+("price/buy/software") searches for the same entity usually need different pages.
 
 ## Step 4 — Apply the modifier-to-cluster test
-A modifier becomes its own cluster ONLY if it needs a genuinely different PAGE — e.g. an \
-"X vs Y" comparison, or a distinct customer segment page like "income protection for self \
-employed" when there are several such keywords — never because it has high volume alone, and \
-never merely because it is informational ("what is X") while the head term is commercial.
+A modifier becomes its own cluster ONLY if it represents a genuinely distinct topic, intent, page \
+type, or user need from its core topic — never because it has high volume alone.
 
 ## Step 5 — Output
 Return each keyword mapped to a candidate_cluster_id, plus for each candidate cluster: \
@@ -111,18 +106,15 @@ For each candidate cluster: would ONE well-optimized page genuinely satisfy the 
 need, entity, and topic of every keyword in it? If no, split the cluster along the line where \
 satisfaction breaks.
 
-## Step 2 — Page compatibility check
-Split out a keyword only when it needs a genuinely different page: a comparison ("X vs Y") inside \
-a product cluster, a different product/service, or a job/news/unrelated query. Do NOT split a \
-product's own journey variants apart — "what is X", "X cost", "best X", "X quote", "X uk" stay \
-with "X", because one product page covers the full decision journey (what it is, who needs it, \
-cost, claims/how it works, FAQs).
+## Step 2 — Intent and page-type compatibility check
+Flag and split out any keyword whose intent or implied page type doesn't match the rest of the \
+cluster (e.g. a comparison-intent keyword sitting inside a product-topic cluster).
 
-## Step 2b — Merge duplicates
-Merge candidate clusters that are about the same product/service in different wording (e.g. \
-"data management services" and "managed data services"; "sql query optimization" and "cost based \
-optimizer" when both are about query performance tuning). One-keyword clusters should be merged \
-into the closest real cluster when they clearly share its product/service; otherwise leave them.
+## Step 2b — Over-cluster / over-split tests
+Merge two candidate clusters only if they share the same entity, user need, intent, audience and page \
+format. Split only if the user need, intent, audience, entity or expected page format materially differs \
+— never because of plural/singular, word order, or a minor modifier. Aim for the smallest number of \
+genuinely useful pages that satisfy these searches.
 
 ## Step 3 — Catch-all prevention
 Reject any cluster name from this list unless the keyword set genuinely matches it exactly: \
@@ -210,7 +202,7 @@ def generate_phase2_candidate_clusters(
         return {}, []
 
     prompt = _PHASE2_PROMPT_TEMPLATE.format(
-        keywords_json=json.dumps(keyword_meta, indent=2)[:16000],
+        keywords_json=json.dumps(keyword_meta, separators=(",", ":"))[:24000],
         client_context=client_context or "no additional business context available",
     )
     max_tokens = min(500 + 40 * len(keyword_meta), 8000)
@@ -290,7 +282,7 @@ def generate_phase3_validated_clusters(candidate_clusters: dict[str, dict]) -> l
     if not valid_keywords:
         return []
 
-    prompt = _PHASE3_PROMPT_TEMPLATE.format(candidate_clusters_json=json.dumps(candidate_clusters, indent=2)[:16000])
+    prompt = _PHASE3_PROMPT_TEMPLATE.format(candidate_clusters_json=json.dumps(candidate_clusters, separators=(",", ":"))[:24000])
     max_tokens = min(500 + 30 * len(valid_keywords), 8000)
 
     def _apply(parsed: dict) -> list[dict] | None:

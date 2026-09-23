@@ -23,5 +23,9 @@ class Client(Base):
     # changes. Cleared/replaced only via the explicit refresh endpoint.
     company_overview_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     company_overview_cached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Keyword engine cache (keyword_intelligence_service.KeywordIntelligenceCache):
+    # AI relevance verdicts per keyword + AI cluster results per input set,
+    # so a report regeneration re-uses them instead of calling the AI again.
+    keyword_intelligence_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
