@@ -22,6 +22,7 @@ of guessing blind from homepage text alone.
 import json
 import logging
 import re
+from urllib.parse import urlparse
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 from app.services.content_safety import is_adult
@@ -861,6 +862,15 @@ def match_existing_page_for_cluster(
     ratio = best_key[0] / len(kw_tokens)
     strength = "strong" if ratio >= 0.66 else "partial" if ratio >= 0.35 else "weak"
     if best.pop("_title_score") == 0:
+        strength = "weak"
+    # The homepage mentions every product in passing, so it word-matches
+    # most clusters — but it's never the dedicated page a product/topic
+    # cluster needs (the SEO team's decks recommend a dedicated landing page
+    # per core product). Treating it as a strong match also made several
+    # product clusters "cannibalize" each other on "/" and told the client to
+    # merge "Construction Payroll Software" into another cluster (LumberFi
+    # deck, 2026-09-23). Capped at weak: shown as a new-page opportunity.
+    if urlparse(best["url"]).path.strip("/") == "":
         strength = "weak"
     best["match_strength"] = strength
     return best

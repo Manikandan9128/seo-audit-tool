@@ -4,6 +4,7 @@ import re
 import threading
 import traceback
 import uuid
+from types import SimpleNamespace
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
@@ -55,7 +56,7 @@ from app.services.brand_citation_service import check_wikipedia_presence, search
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, match_existing_page_for_cluster
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
-from app.services.content_safety import safe_imports, scrub as scrub_adult
+from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -632,6 +633,51 @@ def _merge_keyword_gap_and_positions(
     return [by_keyword[key] for key in order]
 
 
+def _reclassify_mislabeled_competitor_overviews(imports: list, website_url: str) -> list:
+    """A Domain Overview PDF names its own domain inside the file, so a
+    competitor's PDF uploaded under the client's own site (no competitor
+    label) can be recognized. Confirmed real 2026-09-23 (LumberFi): four
+    Domain Overview PDFs — lumberfi.com, rippling.com, ebacon.com,
+    payroll4construction.com — were all uploaded as "own site", so the
+    latest (rippling.com: 540K traffic, 3M backlinks) was shown as
+    LumberFi's own row and no competitor rows or competitor slides rendered
+    at all. Such an import is treated as that competitor's upload for this
+    report (in memory only — stored imports are untouched)."""
+    own = _normalize_domain(website_url.replace("https://", "").replace("http://", "").split("/")[0])
+    out = []
+    for imp in imports:
+        if imp.import_type == "domain_overview" and imp.is_own_site:
+            rows = (imp.parsed_data or {}).get("rows") or []
+            pdf_domain = _normalize_domain(str(rows[0].get("domain") or "")) if rows else ""
+            if pdf_domain and own and pdf_domain != own:
+                out.append(SimpleNamespace(
+                    id=getattr(imp, "id", None), original_filename=getattr(imp, "original_filename", None),
+                    created_at=imp.created_at, import_type=imp.import_type, is_own_site=False,
+                    domain_label=pdf_domain, parsed_data=imp.parsed_data,
+                ))
+                continue
+        out.append(imp)
+    return out
+
+
+def _company_overview_cluster_context(company_overview: dict | None) -> str | None:
+    """Clustering context: the relevance context plus the client's own
+    product/service list, so Phase 2 clustering can anchor one cluster per
+    product the client actually sells (the SEO team's manual-deck
+    structure) instead of grouping by keyword wording alone."""
+    base = _company_overview_context(company_overview)
+    if not company_overview:
+        return base
+    products = [p for p in (company_overview.get("products") or []) if p][:25]
+    solutions = [p for p in (company_overview.get("solutions") or []) if p][:12]
+    parts = [base] if base else []
+    if products:
+        parts.append("Products/services the client sells: " + "; ".join(products))
+    if solutions:
+        parts.append("Solution areas: " + "; ".join(solutions))
+    return "\n".join(parts) or None
+
+
 def _scrub_report_data(data: dict) -> dict:
     """18+ hard rule (content_safety.py): scrubs every report data key
     except content_generation_issues, which must stay the SAME list object
@@ -947,6 +993,24 @@ def _generate_competitor_narratives(
         # it's what the Competitor Analysis table (add_competitor_table_slide)
         # already renders, so the narrative slides refer to the same string.
         canonical_by_norm[n] = d
+
+    # One company, one competitor: a subdomain and its parent domain (e.g.
+    # trucks.tatamotors.com from a positions upload + tatamotors.com from a
+    # Domain Overview upload) previously got two separate narratives — and
+    # the parent's homepage (corporate/investor pages) produced an
+    # irrelevant one (BharatBenz deck, 2026-09-23). The more specific
+    # subdomain wins — it's the business unit actually competing — and
+    # inherits the parent's stats row / positions if it had none.
+    for n in sorted(canonical_by_norm, key=len, reverse=True):
+        parent = next((o for o in canonical_by_norm if o != n and n.endswith("." + o)), None)
+        if not parent:
+            continue
+        if n not in rows_by_norm and parent in rows_by_norm:
+            rows_by_norm[n] = rows_by_norm[parent]
+        if n not in positions_by_norm and parent in positions_by_norm:
+            positions_by_norm[n] = positions_by_norm[parent]
+        for table in (canonical_by_norm, rows_by_norm, positions_by_norm):
+            table.pop(parent, None)
 
     domains = [canonical_by_norm[n] for n in canonical_by_norm][:max_competitors]
     if not domains:
@@ -1549,11 +1613,17 @@ def _gather_report_data(
     # them (content_safety.py, layer 1).
     if analytics:
         analytics = scrub_adult(analytics)
+        # Spam-injected gambling queries ("antikbet") — unless gambling is
+        # the client's own business.
+        _business_text = f"{client.name} {_company_overview_context(company_overview_result) or ''}"
+        if not is_gambling_spam(_business_text):
+            analytics = scrub_gambling_spam(analytics)
     all_imports = db.query(SemrushImport).filter(SemrushImport.client_id == client_id).all()
     # Semrush MCP data-source option: no-op for a Manual Upload report; for
     # a Semrush MCP report, swaps the uploaded Semrush-account imports for
     # the fetched MCP snapshot (see semrush_mcp_data_service's docstring).
     all_imports = semrush_mcp_data_service.apply_report_source(all_imports)
+    all_imports = _reclassify_mislabeled_competitor_overviews(all_imports, client.website_url)
     # Same hard rule for every Semrush upload — read-only views with adult
     # rows removed; the stored upload data itself is never modified.
     all_imports = safe_imports(all_imports)
@@ -1714,7 +1784,7 @@ def _gather_report_data(
                 build_final_keyword_clusters(
                     keyword_rows_all,
                     client.name,
-                    _company_overview_context(company_overview_result),
+                    _company_overview_cluster_context(company_overview_result),
                     _all_rows("site_audit_pages", own_only=True),
                     manual_cluster_map=manual_cluster_map or None,
                     cache=kw_cache,

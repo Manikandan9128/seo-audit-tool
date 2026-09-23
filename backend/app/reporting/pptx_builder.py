@@ -404,6 +404,19 @@ def add_title_slide(
     return slide
 
 
+def _drop_divider_if_section_empty(prs: Presentation, count_before_divider: int | None) -> None:
+    """Removes a section divider that nothing ended up following — confirmed
+    real 2026-09-23 (BharatBenz): `analytics` was a non-empty dict (date
+    range only) so "Traffic & Search Performance" rendered, but every GA4/
+    GSC slide under it had no rows, leaving a bare divider in the deck."""
+    if count_before_divider is None or len(prs.slides) != count_before_divider + 1:
+        return
+    sld_id_lst = prs.slides._sldIdLst
+    last = sld_id_lst[-1]
+    prs.part.drop_rel(last.rId)
+    sld_id_lst.remove(last)
+
+
 def add_section_slide(prs: Presentation, client_name: str, section_title: str):
     slide = _blank_slide(prs)
     top_bar = slide.shapes.add_shape(1, 0, 0, SLIDE_W, Inches(0.15))
@@ -1075,8 +1088,13 @@ def add_site_health_slide(
                 pct = site_audit_overview.get(f"{key}_pct")
                 if count is None:
                     continue
+                # Some Site Audit sources carry counts without percentages —
+                # derive from the crawl total rather than printing "None%"
+                # (confirmed real on a BharatBenz deck, 2026-09-23).
+                if pct is None and page_totals.get("total"):
+                    pct = round(count / page_totals["total"] * 100, 1)
                 _icon_dot(slide, Inches(0.85), y + Inches(0.06), Inches(0.11), category_colors[key])
-                _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count} ({pct}%)", size=11.5, color=TEXT_DARK)
+                _textbox(slide, Inches(1.05), y, Inches(2.9), Inches(0.28), f"{category}: {count:,}" + (f" ({pct}%)" if pct is not None else ""), size=11.5, color=TEXT_DARK)
                 y += Inches(0.29)
         elif page_totals.get("with_issues") is not None:
             _textbox(
@@ -5910,6 +5928,19 @@ _EXCLUDED_CLUSTER_NOUN = {
 }
 
 
+def _metric_cell(value) -> str:
+    """Search volume / KD table cell: a real number formatted, or "—" when
+    the row has none (Search Console-only rows) — never the literal "None"
+    a raw str() of a missing value printed (LumberFi deck, 2026-09-23)."""
+    if value in (None, "") or str(value).strip().lower() in ("none", "nan", "n/a"):
+        return "—"
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{int(f):,}" if f.is_integer() else f"{f:,.1f}"
+
+
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
     """One table slide per keyword cluster (Educational Toys, Development
     Skills, etc.), matching the reference deck's "Target Keywords" format —
@@ -5955,8 +5986,20 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         top = next((r for r in rows_for_group if r.get("primary_or_secondary") == "Primary"), None) \
             or max(rows_for_group, key=lambda r: _num(r.get("search_volume")))
         easy_wins = [r for r in rows_for_group if _num(r.get("keyword_difficulty"), default=100) < 20 and _num(r.get("search_volume")) > 0]
-        out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
-        out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month, KD {top.get('keyword_difficulty', 'n/a')}.")
+        if total_volume > 0:
+            out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
+            kd = top.get("keyword_difficulty")
+            kd_text = f", KD {kd}" if kd not in (None, "") else ""
+            out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month{kd_text}.")
+        else:
+            # Search Console-only rows carry no Semrush search volume —
+            # never print "0 searches/month, KD n/a" as if that were data
+            # (LumberFi deck, 2026-09-23).
+            impressions = sum(_num(r.get("gsc_impressions")) for r in rows_for_group)
+            out = [f"{len(rows_for_group)} keyword(s) from Search Console"
+                   + (f" — {impressions:,.0f} impressions in the report window." if impressions else ".")
+                   + " No Semrush search volume uploaded for these."]
+            out.append(f"Top keyword: \"{top.get('keyword')}\".")
         page_category = top.get("page_category")
         existing_url = top.get("existing_page_url")
         # Universal SEO Keyword engine (2026-09-23) §53/§55: the cluster's
@@ -6025,7 +6068,7 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             seen.add(kw)
             deduped.append(r)
         rows = [
-            (r.get("keyword", ""), "Primary" if i == 0 else "Secondary", r.get("search_volume", ""), r.get("keyword_difficulty", ""))
+            (r.get("keyword", ""), "Primary" if i == 0 else "Secondary", _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")))
             for i, r in enumerate(deduped)
         ]
         insights = _keyword_insights(deduped) if deduped else []
@@ -6073,7 +6116,7 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                     r.get("keyword", ""),
                     r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
                     r.get("detected_intent") or r.get("intent") or "—",
-                    r.get("search_volume", ""), r.get("keyword_difficulty", ""),
+                    _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")),
                 )
                 for i, r in enumerate(deduped)
             ]
@@ -6082,7 +6125,7 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 (
                     r.get("keyword", ""),
                     r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
-                    r.get("search_volume", ""), r.get("keyword_difficulty", ""),
+                    _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")),
                 )
                 for i, r in enumerate(deduped)
             ]
@@ -6104,7 +6147,9 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 f"{n} {_EXCLUDED_CLUSTER_NOUN.get(lbl, lbl.lower())}" for lbl, n in excluded_counts.most_common()
             )
             insights = insights[:4] + [f"Not targeted: {parts} — kept in the full keyword list for review, not on any target page."]
-        slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source="Semrush export", insights=insights))
+        has_volume = any(_num(r.get("search_volume")) > 0 for r in deduped)
+        source = "Semrush export" if has_volume else "Google Search Console queries"
+        slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source=source, insights=insights))
     return slides
 
 
@@ -7792,7 +7837,9 @@ def _build_report(
     # untouched and function kept below for fast re-enable.
     # add_brand_mentions_slide(prs, client_name, brand_citations, brand_wikipedia)
 
+    traffic_divider_at: int | None = None
     if analytics:
+        traffic_divider_at = len(prs.slides)
         add_section_slide(prs, client_name, "Traffic & Search Performance")
         ga4_span = _ga4_date_span(analytics.get("date_range"))
         gsc_span = _gsc_date_span(analytics.get("date_range"))
@@ -7886,8 +7933,12 @@ def _build_report(
         if high_potential_countries:
             add_search_opportunities_countries_slide(prs, high_potential_countries, gsc_source)
 
+    _drop_divider_if_section_empty(prs, traffic_divider_at)
+
+    research_divider_at: int | None = None
     if (competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions
             or competitor_narratives or strategic_keyword_clusters):
+        research_divider_at = len(prs.slides)
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
         # Two scenarios, never both (2026-09-23 user instruction, replaces
         # the 2026-09-22 "both always coexist" rule): a manually uploaded
@@ -7927,6 +7978,8 @@ def _build_report(
                 prs, competitor_analysis, client_name=client_name,
                 keyword_gap_sheet_link=keyword_sheet_link,
             )
+
+    _drop_divider_if_section_empty(prs, research_divider_at)
 
     if core_problem:
         add_core_problem_slide(prs, core_problem)

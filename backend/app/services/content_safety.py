@@ -237,3 +237,54 @@ def redact_presentation(prs) -> int:
                             run.text = _clean_string(run.text) if not is_adult(run.text) else ""
                         removed += 1
     return removed
+
+
+# --- Gambling/spam search queries -------------------------------------------
+# Separate from the 18+ rule above: Search Console routinely records
+# spam-injected gambling queries against a site's homepage (confirmed real
+# 2026-09-23: "antikbet", 75,472 impressions, shown as BharatBenz's top
+# homepage "search opportunity"). Filtered from GSC data only, and only when
+# the client's own business isn't gambling (see site_audit.py caller).
+_GAMBLING_WORDS = {
+    "casino", "casinos", "gacor", "togel", "judi", "sbobet", "1xbet", "bet365", "betway", "betting",
+    "bet", "bets", "sportsbook", "slot88", "maxwin", "jackpot", "roulette", "baccarat", "poker",
+}
+# Ordinary English words that happen to end in "bet" — never spam.
+_BET_SUFFIX_ALLOW = {"alphabet", "alphabets", "sorbet", "tibet", "gibbet", "abet", "barbet", "quodlibet", "rabbet"}
+
+
+def is_gambling_spam(text) -> bool:
+    if not isinstance(text, str) or not text.strip():
+        return False
+    for t in re.findall(r"[a-z0-9]+", text.lower()):
+        if t in _GAMBLING_WORDS:
+            return True
+        # Spam brand tokens like "antikbet", "zeusbet", "bet88" — a long
+        # token ending/starting with "bet" that isn't an English word.
+        if len(t) >= 6 and t.endswith("bet") and t not in _BET_SUFFIX_ALLOW:
+            return True
+        if re.fullmatch(r"bet\d{2,}", t):
+            return True
+    return False
+
+
+def scrub_gambling_spam(obj):
+    """Same traversal as scrub(), with the gambling-spam predicate: list
+    rows whose keyword/query field is spam are dropped, keyword-keyed dict
+    entries too. Free text is left alone. Never mutates the input."""
+    if isinstance(obj, list):
+        out = []
+        for item in obj:
+            if isinstance(item, dict):
+                if any(is_gambling_spam(item.get(f)) for f in _KEYWORD_FIELDS if isinstance(item.get(f), str)):
+                    continue
+                out.append({k: scrub_gambling_spam(v) for k, v in item.items() if not (isinstance(k, str) and is_gambling_spam(k))})
+            elif isinstance(item, str):
+                if not is_gambling_spam(item):
+                    out.append(item)
+            else:
+                out.append(scrub_gambling_spam(item))
+        return out
+    if isinstance(obj, dict):
+        return {k: scrub_gambling_spam(v) for k, v in obj.items() if not (isinstance(k, str) and is_gambling_spam(k))}
+    return obj
