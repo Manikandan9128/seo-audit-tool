@@ -17,8 +17,8 @@ import SemrushAnalysis from "../components/SemrushAnalysis";
 import { useToast } from "../components/ToastProvider";
 import { useReportReadiness } from "../components/ReportReadinessProvider";
 import ReportPreviewModal from "../components/ReportPreviewModal";
-import SemrushSourcePicker from "../components/SemrushSourcePicker";
-import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourcePicker";
+import SemrushSourceModal from "../components/SemrushSourceModal";
+import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourceModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
 
@@ -198,6 +198,7 @@ export default function ClientDetailPage() {
   const [semrushSource, setSemrushSource] = useState<SemrushSource>("manual");
   const [semrushDatabase, setSemrushDatabase] = useState("us");
   const [semrushMcp, setSemrushMcp] = useState<SemrushMcpState>({ status: "idle" });
+  const [showSemrushSourceModal, setShowSemrushSourceModal] = useState(false);
 
   useEffect(() => {
     try {
@@ -221,10 +222,10 @@ export default function ClientDetailPage() {
     }
   }
 
-  async function fetchSemrushMcpData() {
+  async function fetchSemrushMcpData(database = semrushDatabase) {
     setSemrushMcp({ status: "fetching" });
     try {
-      const res = await api.post(`/clients/${clientId}/semrush-mcp/fetch`, { database: semrushDatabase });
+      const res = await api.post(`/clients/${clientId}/semrush-mcp/fetch`, { database });
       const snap = res.data.snapshot;
       setSemrushMcp({
         status: "ready",
@@ -273,7 +274,15 @@ export default function ClientDetailPage() {
     );
   }
 
-  async function generateSelectedReport() {
+  // Generate Report opens the Semrush Data Source popup first; its
+  // choice is applied here, then the normal generate runs.
+  function confirmSemrushSourceAndGenerate(source: SemrushSource, database: string) {
+    setShowSemrushSourceModal(false);
+    updateSemrushSource(source, database);
+    generateSelectedReport(source, database);
+  }
+
+  async function generateSelectedReport(source: SemrushSource = semrushSource, database: string = semrushDatabase) {
     showToast("Report generation started — this can take a minute.");
     setGenerating(true);
     setError("");
@@ -292,7 +301,7 @@ export default function ClientDetailPage() {
       if (selectedSections.includes("analytics") && client?.google_connected) {
         tasks.push(runAnalyticsReport());
       }
-      if (semrushSource === "mcp") tasks.push(fetchSemrushMcpData());
+      if (source === "mcp") tasks.push(fetchSemrushMcpData(database));
       await Promise.all(tasks);
       setHasGenerated(true);
     } finally {
@@ -799,16 +808,25 @@ export default function ClientDetailPage() {
                 ))}
               </select>
             )}
-            <SemrushSourcePicker
-              source={semrushSource}
-              onSourceChange={(s) => updateSemrushSource(s)}
-              database={semrushDatabase}
-              onDatabaseChange={(d) => updateSemrushSource(semrushSource, d)}
-              disabled={generating}
-            />
-            <button className="btn btn-primary" onClick={generateSelectedReport} disabled={generating || selectedSections.length === 0}>
+            <button className="btn btn-primary" onClick={() => setShowSemrushSourceModal(true)} disabled={generating || selectedSections.length === 0}>
               {generating ? "Generating..." : "Generate Report"}
             </button>
+            {showSemrushSourceModal && (
+              <SemrushSourceModal
+                clientId={clientId!}
+                imports={imports || []}
+                initialSource={semrushSource}
+                initialDatabase={semrushDatabase}
+                onClose={() => setShowSemrushSourceModal(false)}
+                onConfirm={confirmSemrushSourceAndGenerate}
+                onConnectSemrush={connectSemrushForReport}
+              />
+            )}
+            {!generating && hasGenerated && (
+              <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
+                Semrush: {semrushSource === "mcp" ? `MCP (${semrushDatabase.toUpperCase()})` : "Manual Upload"}
+              </span>
+            )}
             {semrushSource === "mcp" && semrushMcp.status !== "idle" && (
               <div style={{ fontSize: 12, maxWidth: 360, alignSelf: "center" }}>
                 {semrushMcp.status === "fetching" && <span className="muted">Fetching Semrush data via MCP…</span>}
@@ -824,7 +842,7 @@ export default function ClientDetailPage() {
                 {semrushMcp.status === "error" && (
                   <span style={{ color: "#991b1b" }}>
                     {semrushMcp.message}{" "}
-                    <button className="btn btn-secondary" onClick={fetchSemrushMcpData} style={{ marginLeft: 6 }}>
+                    <button className="btn btn-secondary" onClick={() => fetchSemrushMcpData()} style={{ marginLeft: 6 }}>
                       Retry
                     </button>
                   </span>
