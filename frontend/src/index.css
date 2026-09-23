@@ -1407,9 +1407,12 @@ table.matrix th:first-child {
 /* ---- Toast ---- */
 .toast {
   position: fixed;
-  bottom: 24px;
-  right: 24px;
-  background: var(--color-text-primary);
+  bottom: var(--sp-6);
+  right: var(--sp-6);
+  background: rgba(15, 18, 34, 0.92);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   color: #fff;
   padding: 13px 18px;
   border-radius: var(--radius-md);
@@ -1420,21 +1423,23 @@ table.matrix th:first-child {
   font-size: 13px;
   font-weight: 500;
   opacity: 0;
-  transform: translateY(12px);
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transform: translate(16px, 12px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
   z-index: 100;
   pointer-events: none;
   max-width: 420px;
 }
 .toast.show {
   opacity: 1;
-  transform: translateY(0);
+  transform: translate(0, 0);
   pointer-events: auto;
 }
 .toast svg {
   width: 16px;
   height: 16px;
-  color: var(--color-success-text);
+  /* Bright green on the dark toast (the dark-on-tint success text
+     token would be unreadable here). */
+  color: #34D399;
   flex-shrink: 0;
 }
 .toast-close {
@@ -1839,5 +1844,102 @@ table.matrix th:first-child {
 @media (max-width: 1100px) {
   .lb-domain {
     width: 160px;
+  }
+}
+
+/* =====================================================================
+   Redesign v4 — Stage 5: micro-interactions. Gradient + glow on primary
+   actions, 1-2px hover lift on genuinely interactive elements only,
+   pulsing dot on Ready badges, 150-200ms transitions throughout.
+   The logout button is excluded from every rule here (user rule).
+   ===================================================================== */
+
+button:not([class]),
+.btn-primary {
+  background: var(--gradient-primary);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: var(--shadow-primary-glow);
+  transition: box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
+}
+button:not([class]):hover:not(:disabled),
+.btn-primary:hover:not(:disabled) {
+  background: var(--gradient-primary);
+  box-shadow: var(--shadow-primary-glow-hover);
+  transform: translateY(-1px);
+}
+button:not([class]):active:not(:disabled),
+.btn-primary:active:not(:disabled) {
+  transform: translateY(1px) scale(0.99);
+}
+button:not([class]):disabled,
+.btn-primary:disabled {
+  box-shadow: none;
+  transform: none;
+}
+.btn-secondary,
+.btn-outline,
+button.secondary {
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.btn-secondary:hover:not(:disabled),
+.btn-outline:hover:not(:disabled),
+button.secondary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* Clickable surfaces: soft shadow + lift. Static info cards never get
+   this (.card alone stays still). */
+.client-tile:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+}
+.card-interactive {
+  transition: box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.competitor-head {
+  transition: background 0.15s ease;
+}
+.competitor-group {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.competitor-group:hover {
+  box-shadow: var(--shadow-card);
+}
+.lb-row:hover {
+  border-color: #E4E2F7;
+}
+
+/* Pulsing dot on Ready badges — sits behind the check icon so the
+   icon + label stay the primary signal. */
+.badge-ready {
+  position: relative;
+}
+.badge-ready::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  border-radius: 50%;
+  background: var(--color-success);
+  opacity: 0;
+  pointer-events: none;
+  animation: badge-pulse 1.8s ease-out infinite;
+}
+@keyframes badge-pulse {
+  0% { transform: scale(0.6); opacity: 0.45; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
   }
 }
