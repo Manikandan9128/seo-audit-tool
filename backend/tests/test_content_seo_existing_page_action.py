@@ -96,3 +96,21 @@ def test_duplicate_slashes_in_existing_url_are_collapsed():
              "existing_page_action": "Optimize Existing Page", "existing_page_url": "https://example.com///payroll"}]
     text = _slide_text(add_content_seo_next_steps_slide(_prs(), rows))
     assert "https://example.com/payroll" in text and "///" not in text
+
+
+def test_unjudged_and_client_sheet_keywords_are_kept():
+    # 2026-09-23 BharatBenz regen: rows outside the relevance classifier's
+    # candidate pool, and rows from the client's own cluster sheet, were
+    # being dropped, emptying Content SEO + Programmatic entirely.
+    from app.reporting.pptx_builder import _content_seo_eligible_rows
+    rows = [
+        {"keyword": "tipper truck", "search_volume": 14800, "cluster": "Truck Types",
+         "relevance_status": "Unknown / Needs Review", "relevance_reason": "Keyword outside the classified candidate pool."},
+        {"keyword": "school bus", "search_volume": 22200, "cluster": "Buses", "cluster_status": "Validated (Manual)",
+         "relevance_status": "Unknown / Needs Review", "relevance_reason": "Could not confirm."},
+        {"keyword": "odd query", "search_volume": 500, "cluster": "Misc",
+         "relevance_status": "Unknown / Needs Review", "relevance_reason": "Could not confirm."},
+        {"keyword": "ashok leyland price", "search_volume": 9900, "cluster": "Trucks", "relevance_status": "Competitor Brand Search"},
+    ]
+    kept = [r["keyword"] for r in _content_seo_eligible_rows(rows)]
+    assert kept == ["tipper truck", "school bus"]

@@ -35,6 +35,7 @@ from app.services.keyword_cluster_pipeline import (
     _COMPETITOR_ROUTE_CLUSTER_LABEL,
     _GEO_ROUTE_CLUSTER_LABEL,
     _NEEDS_REVIEW_CLUSTER_LABEL,
+    _UNJUDGED_REASON,
 )
 from app.services.priority_model import compute_priority_score
 
@@ -7020,7 +7021,20 @@ def _content_seo_eligible_rows(keyword_rows: list[dict]) -> list[dict]:
             continue
         if r.get("competitor_status"):
             continue
+        # The client's own keyword-cluster sheet is their source of truth
+        # for what's relevant — never second-guessed here.
+        if r.get("cluster_status") == "Validated (Manual)":
+            eligible.append(r)
+            continue
         status = r.get("relevance_status")
+        # "Unknown / Needs Review" only excludes a row the classifier
+        # actually judged and couldn't confirm — NOT one simply outside the
+        # classifier's top-demand candidate pool (never judged at all).
+        # Excluding those emptied Content SEO and Programmatic entirely on
+        # a real BharatBenz regen (2026-09-23).
+        if status == "Unknown / Needs Review" and r.get("relevance_reason") == _UNJUDGED_REASON:
+            eligible.append(r)
+            continue
         if status and (status in _CONTENT_SEO_EXCLUDED_RELEVANCE or status.lower().startswith("irrelevant")):
             continue
         eligible.append(r)
