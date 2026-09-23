@@ -3,9 +3,30 @@ import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useReportReadiness } from "./ReportReadinessProvider";
 
+const NAV_ICONS: Record<string, ReactNode> = {
+  dashboard: (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="3" y="3" width="7" height="9" rx="1.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="14" y="3" width="7" height="5" rx="1.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="14" y="12" width="7" height="9" rx="1.5" stroke="currentColor" strokeWidth="2" />
+      <rect x="3" y="16" width="7" height="5" rx="1.5" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  ),
+  settings: (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+      <path
+        d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+    </svg>
+  ),
+};
+
 const NAV_ITEMS = [
-  { to: "/clients", label: "Dashboard", icon: "⌂" },
-  { to: "/settings", label: "Settings", icon: "⚙" },
+  { to: "/clients", label: "Dashboard", icon: "dashboard" },
+  { to: "/settings", label: "Settings", icon: "settings" },
 ];
 
 function isNavActive(pathname: string, to: string) {
@@ -22,57 +43,24 @@ export default function Layout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex" }}>
-      <aside
-        style={{
-          width: 220,
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          background: "var(--surface)",
-          borderRight: "1px solid var(--border)",
-          position: "sticky",
-          top: 0,
-          height: "100vh",
-        }}
-      >
-        <div style={{ padding: "22px 20px 18px" }}>
-          <Link
-            to="/clients"
-            style={{
-              fontWeight: 700,
-              fontSize: 17,
-              color: "var(--text)",
-              fontFamily: "var(--font-display)",
-              letterSpacing: "-0.01em",
-              textDecoration: "none",
-            }}
-          >
-            SEO Audit Tool
-          </Link>
-        </div>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <Link to="/clients" className="brand">
+          <span className="brand-mark" aria-hidden>SA</span>
+          <span className="brand-name">SEO Audit Tool</span>
+        </Link>
 
-        <nav style={{ flex: 1, padding: "4px 12px", display: "flex", flexDirection: "column", gap: 2 }}>
+        <nav className="sidebar-nav">
           {NAV_ITEMS.map((item) => {
             const active = isNavActive(pathname, item.to);
             return (
               <Link
                 key={item.to}
                 to={item.to}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "9px 12px",
-                  borderRadius: 8,
-                  fontSize: 14,
-                  fontWeight: active ? 600 : 500,
-                  color: active ? "var(--accent)" : "var(--text)",
-                  background: active ? "var(--accent-soft)" : "transparent",
-                  textDecoration: "none",
-                }}
+                className={`nav-item${active ? " active" : ""}`}
+                aria-current={active ? "page" : undefined}
               >
-                <span aria-hidden style={{ width: 16, textAlign: "center" }}>{item.icon}</span>
+                {NAV_ICONS[item.icon]}
                 {item.label}
               </Link>
             );
@@ -80,25 +68,23 @@ export default function Layout({ children }: { children: ReactNode }) {
         </nav>
 
         {readiness && (
-          <div style={{ padding: "0 12px" }}>
-            <div className="sidebar-progress">
-              <div className="sidebar-progress-top">
-                <span className="sidebar-progress-label">Report readiness</span>
-                <span className="sidebar-progress-frac">
-                  {readiness.ready} / {readiness.total}
-                </span>
-              </div>
-              <div className="sidebar-progress-track">
-                <div
-                  className="sidebar-progress-fill"
-                  style={{ width: `${readiness.total > 0 ? (readiness.ready / readiness.total) * 100 : 0}%` }}
-                />
-              </div>
+          <div className="sidebar-progress">
+            <div className="sidebar-progress-top">
+              <span className="sidebar-progress-label">Report readiness</span>
+              <span className="sidebar-progress-frac">
+                {readiness.ready} / {readiness.total}
+              </span>
+            </div>
+            <div className="sidebar-progress-track">
+              <div
+                className="sidebar-progress-fill"
+                style={{ width: `${readiness.total > 0 ? (readiness.ready / readiness.total) * 100 : 0}%` }}
+              />
             </div>
           </div>
         )}
 
-        <div style={{ padding: 12, borderTop: "1px solid var(--border)" }}>
+        <div className="sidebar-footer">
           <button className="btn-logout" onClick={logout} aria-label="Log out">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden>
               <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -108,7 +94,10 @@ export default function Layout({ children }: { children: ReactNode }) {
           </button>
         </div>
       </aside>
-      <main style={{ flex: 1, padding: "32px 24px", minWidth: 0 }}>{children}</main>
+      <main className="app-main">
+        <div className="ambient-wash" aria-hidden />
+        <div className="app-main-content">{children}</div>
+      </main>
     </div>
   );
 }
