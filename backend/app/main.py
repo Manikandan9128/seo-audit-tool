@@ -77,6 +77,7 @@ app.include_router(site_audit.router, prefix="/api")
 app.include_router(competitors.router, prefix="/api")
 app.include_router(settings_routes.router, prefix="/api")
 app.include_router(integrations.router, prefix="/api")
+app.include_router(integrations.client_router, prefix="/api")
 
 
 @app.get("/api/health")

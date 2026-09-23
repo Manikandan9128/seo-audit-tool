@@ -17,6 +17,8 @@ import SemrushAnalysis from "../components/SemrushAnalysis";
 import { useToast } from "../components/ToastProvider";
 import { useReportReadiness } from "../components/ReportReadinessProvider";
 import ReportPreviewModal from "../components/ReportPreviewModal";
+import SemrushSourcePicker from "../components/SemrushSourcePicker";
+import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourcePicker";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
 
@@ -189,6 +191,70 @@ export default function ClientDetailPage() {
   const [preferredProvider, setPreferredProvider] = useState("");
   const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
 
+  // Semrush data source for this report: "manual" = the uploaded CSVs,
+  // exactly as before; "mcp" = fetched from the connected Semrush account
+  // on Generate Report and stored server-side as a snapshot that Preview
+  // and Download then reuse. Never combined.
+  const [semrushSource, setSemrushSource] = useState<SemrushSource>("manual");
+  const [semrushDatabase, setSemrushDatabase] = useState("us");
+  const [semrushMcp, setSemrushMcp] = useState<SemrushMcpState>({ status: "idle" });
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(`semrush_source:${clientId}`) || "null");
+      if (saved?.source === "mcp" || saved?.source === "manual") setSemrushSource(saved.source);
+      if (typeof saved?.database === "string") setSemrushDatabase(saved.database);
+    } catch {
+      // per-browser convenience only
+    }
+    setSemrushMcp({ status: "idle" });
+  }, [clientId]);
+
+  function updateSemrushSource(source: SemrushSource, database = semrushDatabase) {
+    setSemrushSource(source);
+    setSemrushDatabase(database);
+    setSemrushMcp({ status: "idle" });
+    try {
+      localStorage.setItem(`semrush_source:${clientId}`, JSON.stringify({ source, database }));
+    } catch {
+      // ignore
+    }
+  }
+
+  async function fetchSemrushMcpData() {
+    setSemrushMcp({ status: "fetching" });
+    try {
+      const res = await api.post(`/clients/${clientId}/semrush-mcp/fetch`, { database: semrushDatabase });
+      const snap = res.data.snapshot;
+      setSemrushMcp({
+        status: "ready",
+        message: `${res.data.reused ? "Using Semrush data fetched" : "Fetched Semrush data"} ${new Date(snap.fetched_at * 1000).toLocaleString()} (${snap.database.toUpperCase()}${snap.competitors.length ? `, vs ${snap.competitors.join(", ")}` : ""})${res.data.reused ? "" : ` — ${snap.api_units} API units`}`,
+      });
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      if (detail?.code === "not_connected") {
+        setSemrushMcp({ status: "not_connected" });
+      } else {
+        setSemrushMcp({
+          status: "error",
+          message: (typeof detail === "string" ? detail : detail?.message) || "Couldn't fetch Semrush data — try again.",
+        });
+      }
+    }
+  }
+
+  function connectSemrushForReport() {
+    try {
+      sessionStorage.setItem("semrush_return_to", window.location.pathname);
+    } catch {
+      // ignore
+    }
+    window.location.href = "/settings";
+  }
+
+  const semrushBody = semrushSource === "mcp" ? { semrush_source: "mcp" } : {};
+  const semrushBlocksReport = semrushSource === "mcp" && semrushMcp.status !== "ready";
+
   useEffect(() => {
     api.get("/settings").then((res) => {
       const opts: { value: string; label: string }[] = [];
@@ -226,6 +292,7 @@ export default function ClientDetailPage() {
       if (selectedSections.includes("analytics") && client?.google_connected) {
         tasks.push(runAnalyticsReport());
       }
+      if (semrushSource === "mcp") tasks.push(fetchSemrushMcpData());
       await Promise.all(tasks);
       setHasGenerated(true);
     } finally {
@@ -427,6 +494,7 @@ export default function ClientDetailPage() {
       const body = {
         ...(overview ? { company_overview_override: overview } : {}),
         ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
+        ...semrushBody,
       };
       const res = await api.post(`/clients/${clientId}/report-preview`, Object.keys(body).length ? body : null);
       setPreviewData(res.data);
@@ -536,6 +604,7 @@ export default function ClientDetailPage() {
       ...(overview ? { company_overview_override: overview } : {}),
       ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
       ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
+      ...semrushBody,
     };
     downloadReportWithBody(Object.keys(body).length ? body : null, false);
   }
@@ -546,6 +615,7 @@ export default function ClientDetailPage() {
       competitor_analysis_override: previewCompetitorAnalysis,
       ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
       ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
+      ...semrushBody,
     };
     downloadReportWithBody(body, true);
   }
@@ -729,15 +799,44 @@ export default function ClientDetailPage() {
                 ))}
               </select>
             )}
+            <SemrushSourcePicker
+              source={semrushSource}
+              onSourceChange={(s) => updateSemrushSource(s)}
+              database={semrushDatabase}
+              onDatabaseChange={(d) => updateSemrushSource(semrushSource, d)}
+              disabled={generating}
+            />
             <button className="btn btn-primary" onClick={generateSelectedReport} disabled={generating || selectedSections.length === 0}>
               {generating ? "Generating..." : "Generate Report"}
             </button>
+            {semrushSource === "mcp" && semrushMcp.status !== "idle" && (
+              <div style={{ fontSize: 12, maxWidth: 360, alignSelf: "center" }}>
+                {semrushMcp.status === "fetching" && <span className="muted">Fetching Semrush data via MCP…</span>}
+                {semrushMcp.status === "ready" && <span style={{ color: "var(--success)" }}>✓ {semrushMcp.message}</span>}
+                {semrushMcp.status === "not_connected" && (
+                  <span>
+                    Connect your Semrush account to continue.{" "}
+                    <button className="btn btn-secondary" onClick={connectSemrushForReport} style={{ marginLeft: 6 }}>
+                      Connect Semrush
+                    </button>
+                  </span>
+                )}
+                {semrushMcp.status === "error" && (
+                  <span style={{ color: "#991b1b" }}>
+                    {semrushMcp.message}{" "}
+                    <button className="btn btn-secondary" onClick={fetchSemrushMcpData} style={{ marginLeft: 6 }}>
+                      Retry
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
             {hasGenerated && (
               <>
-                <button className="btn btn-secondary" onClick={openPreview} disabled={previewLoading}>
+                <button className="btn btn-secondary" onClick={openPreview} disabled={previewLoading || semrushBlocksReport}>
                   {previewLoading ? "Loading..." : "Preview Report"}
                 </button>
-                <button className="btn btn-secondary" onClick={downloadReportDirect} disabled={reportLoading}>
+                <button className="btn btn-secondary" onClick={downloadReportDirect} disabled={reportLoading || semrushBlocksReport}>
                   {reportLoading ? "Generating..." : "Download Report (PPTX)"}
                 </button>
                 {reportLoading && reportStatusMsg && (

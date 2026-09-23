@@ -27,6 +27,7 @@ from app.models.google_connection import GoogleConnection
 from app.models.page_audit_job import PageAuditJob
 from app.models.report_generation_job import ReportGenerationJob
 from app.models.semrush_import import SemrushImport
+from app.services import semrush_mcp_data_service
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import (
@@ -1408,6 +1409,10 @@ def _gather_report_data(
     # while it does.
     progress("Merging keyword data and clustering topics...", 52)
     all_imports = db.query(SemrushImport).filter(SemrushImport.client_id == client_id).all()
+    # Semrush MCP data-source option: no-op for a Manual Upload report; for
+    # a Semrush MCP report, swaps the uploaded Semrush-account imports for
+    # the fetched MCP snapshot (see semrush_mcp_data_service's docstring).
+    all_imports = semrush_mcp_data_service.apply_report_source(all_imports)
 
     def _all_rows(import_type: str, own_only: bool = False) -> list[dict]:
         """Every row from every upload of this type — not just the latest —
@@ -2193,19 +2198,40 @@ def report_preview(
     company_overview_override: dict | None = Body(default=None),
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
+    semrush_source: str | None = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Runs every check and returns the report content as JSON instead of a
     PPTX — the user reviews/edits the text sections, then POSTs the edited
     version back to /generate-report via company_overview_override /
-    competitor_analysis_override so the download matches what they saw."""
+    competitor_analysis_override so the download matches what they saw.
+    semrush_source: None/"manual" (uploaded CSVs, the default) or "mcp"
+    (the client's fetched Semrush MCP snapshot)."""
     client = _get_owned_client(client_id, db, current_user)
-    data = _gather_report_data(
-        client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-        company_overview_override, competitor_analysis_override, ux_notes,
-    )
+    semrush_mcp_data_service.set_active_snapshot(_semrush_snapshot_for(semrush_source, client_id, db))
+    try:
+        data = _gather_report_data(
+            client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
+            company_overview_override, competitor_analysis_override, ux_notes,
+        )
+    finally:
+        semrush_mcp_data_service.set_active_snapshot(None)
     return {"client_name": client.name, "website_url": client.website_url, **data}
+
+
+def _semrush_snapshot_for(semrush_source: str | None, client_id: uuid.UUID, db: Session) -> dict | None:
+    """None for a Manual Upload report. For "mcp", the client's stored
+    Semrush MCP snapshot — required up front, so an MCP report never runs
+    on missing Semrush data."""
+    if semrush_source in (None, "manual"):
+        return None
+    if semrush_source != "mcp":
+        raise HTTPException(status_code=400, detail="semrush_source must be 'manual', 'mcp', or omitted")
+    snapshot = semrush_mcp_data_service.load_snapshot(db, client_id)
+    if not snapshot:
+        raise HTTPException(status_code=400, detail="No Semrush MCP data fetched for this client yet — click Generate Report with Semrush MCP selected first.")
+    return snapshot
 
 
 def _build_pptx_for_client(
@@ -2479,6 +2505,7 @@ def _run_generate_report_job(
     competitor_analysis_override: dict | None,
     ux_notes: str | None,
     preferred_provider: str | None = None,
+    semrush_snapshot: dict | None = None,
 ):
     """Builds the PPTX in a background thread with its own DB session, so a
     slow build (PageSpeed Insights, AI narratives, crawls) never has an HTTP
@@ -2492,6 +2519,7 @@ def _run_generate_report_job(
     # sites in between. Reset in finally since threading.Thread doesn't
     # tear the thread down between jobs on some deployments.
     text_ai_client.set_preferred_provider(preferred_provider)
+    semrush_mcp_data_service.set_active_snapshot(semrush_snapshot)
     try:
         job = db.get(ReportGenerationJob, job_id)
         job.status = "running"
@@ -2534,6 +2562,7 @@ def _run_generate_report_job(
             db.commit()
     finally:
         text_ai_client.set_preferred_provider(None)
+        semrush_mcp_data_service.set_active_snapshot(None)
         db.close()
         progress_db.close()
 
@@ -2548,6 +2577,7 @@ def start_generate_report_job(
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
     preferred_provider: str | None = Body(default=None),
+    semrush_source: str | None = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2563,6 +2593,7 @@ def start_generate_report_job(
     _get_owned_client(client_id, db, current_user)
     if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use", "openrouter"):
         raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', 'openrouter', or omitted")
+    semrush_snapshot = _semrush_snapshot_for(semrush_source, client_id, db)
     job = ReportGenerationJob(client_id=client_id, status="pending")
     db.add(job)
     db.commit()
@@ -2572,6 +2603,7 @@ def start_generate_report_job(
         args=(
             job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
             company_overview_override, competitor_analysis_override, ux_notes, preferred_provider,
+            semrush_snapshot,
         ),
         daemon=True,
     ).start()

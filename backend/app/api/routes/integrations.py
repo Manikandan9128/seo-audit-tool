@@ -1,3 +1,4 @@
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -7,13 +8,20 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
 from app.integrations import semrush_mcp
+from app.models.client import Client
 from app.models.user import User
+from app.services import semrush_mcp_data_service
 
 router = APIRouter(prefix="/integrations/semrush", tags=["integrations"])
 
 
 class CompleteIn(BaseModel):
     callback_url: str
+
+
+class McpFetchIn(BaseModel):
+    database: str = "us"
+    refresh: bool = False
 
 
 class ToolCallIn(BaseModel):
@@ -129,3 +137,41 @@ def semrush_tool_call(payload: ToolCallIn, db: Session = Depends(get_db), curren
         return semrush_mcp.call_semrush_tool(db, payload.name, payload.arguments)
     except semrush_mcp.SemrushError as e:
         raise _http_error(e)
+
+
+# Report data source ("Semrush MCP" option on the client page). Separate
+# router: client-scoped paths, same /api/clients prefix as the rest of the
+# client routes.
+client_router = APIRouter(prefix="/clients", tags=["integrations"])
+
+
+def _owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
+    client = db.get(Client, client_id)
+    if not client or client.owner_user_id != user.id:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return client
+
+
+@client_router.get("/{client_id}/semrush-mcp/snapshot")
+def semrush_mcp_snapshot(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _owned_client(client_id, db, current_user)
+    return {"snapshot": semrush_mcp_data_service.snapshot_summary(semrush_mcp_data_service.load_snapshot(db, client_id))}
+
+
+@client_router.post("/{client_id}/semrush-mcp/fetch")
+def semrush_mcp_fetch(
+    client_id: uuid.UUID, payload: McpFetchIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """Fetches (or reuses, if fresh) this client's Semrush data via MCP.
+    Errors come back as detail {code, message} so the UI can show Connect
+    Semrush for code "not_connected". Nothing is saved unless every call
+    succeeded."""
+    client = _owned_client(client_id, db, current_user)
+    database = payload.database.strip().lower()
+    if not database.replace("-", "").isalnum() or len(database) > 12:
+        raise HTTPException(status_code=400, detail={"code": "bad_request", "message": "Invalid Semrush database code"})
+    try:
+        snapshot, reused = semrush_mcp_data_service.get_or_fetch_snapshot(db, client, database, refresh=payload.refresh)
+    except semrush_mcp.SemrushError as e:
+        raise HTTPException(status_code=_STATUS_BY_CODE.get(e.code, 502), detail={"code": e.code, "message": e.message})
+    return {"reused": reused, "snapshot": semrush_mcp_data_service.snapshot_summary(snapshot)}

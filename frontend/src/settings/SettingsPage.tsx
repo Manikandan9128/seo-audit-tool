@@ -276,6 +276,22 @@ const SEMRUSH_ERROR_MESSAGES: Record<string, string> = {
 };
 
 // Tokens never reach this page — the backend only reports connected/not.
+// Set by the client page's "Connect Semrush" prompt (Semrush MCP report
+// source) so a finished connection returns the user to that report.
+function returnToReportIfRequested() {
+  try {
+    const to = sessionStorage.getItem("semrush_return_to");
+    if (to && to.startsWith("/clients/")) {
+      sessionStorage.removeItem("semrush_return_to");
+      window.location.href = to;
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 function SemrushMcpCard() {
   const [status, setStatus] = useState<{ connected: boolean; connected_at?: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -300,7 +316,10 @@ function SemrushMcpCard() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const errCode = params.get("semrush_error");
-    if (params.get("semrush_connected")) setNotice("Semrush connected.");
+    if (params.get("semrush_connected")) {
+      if (returnToReportIfRequested()) return;
+      setNotice("Semrush connected.");
+    }
     if (errCode) setError(SEMRUSH_ERROR_MESSAGES[errCode] || "Semrush connection failed.");
     if (params.get("semrush_connected") || errCode) {
       params.delete("semrush_connected");
@@ -346,6 +365,7 @@ function SemrushMcpCard() {
       setStatus(res.data);
       setPasteMode(false);
       setCallbackUrl("");
+      if (returnToReportIfRequested()) return;
       setNotice("Semrush connected.");
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Couldn't finish connecting Semrush");
