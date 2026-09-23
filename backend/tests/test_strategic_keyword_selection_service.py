@@ -135,3 +135,15 @@ def test_sub_topic_clusters_sharing_one_word_are_not_treated_as_duplicates():
             rows.append(_row(f"{label.lower()} keyword {i}", label, volume=1000, kd=30))
     clusters_shown = {c["cluster"] for c in select_strategic_clusters(rows)}
     assert clusters_shown == {"Trucks", "Truck Types & Applications", "Truck Price & Buying", "Truck Parts & Components"}
+
+
+def test_manual_keywords_with_kd_50_or_above_are_excluded():
+    rows = [
+        _row("tipper lorry price", "Trucks", volume=1000, kd=20),
+        _row("cng cargo carrier", "Trucks", volume=900, kd=49),
+        _row("heavy haulage trailer", "Trucks", volume=5000, kd=50),
+        _row("mining dumper specs", "Trucks", volume=9000, kd=80),
+        _row("school bus seating", "Trucks", volume=500, kd=None),
+    ]
+    keywords = {k["keyword"] for k in select_strategic_clusters(rows)[0]["keywords"]}
+    assert keywords == {"tipper lorry price", "cng cargo carrier", "school bus seating"}

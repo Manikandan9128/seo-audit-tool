@@ -43,6 +43,11 @@ _CLUSTER_OVERLAP_JACCARD = 0.6
 _KEYWORD_OVERLAP_JACCARD = 0.6
 _TYPO_RATIO = 0.82
 
+# User rule 2026-09-23: from a manual cluster sheet only keywords with
+# KD < 50 are eligible. A row with no KD in the sheet is kept — a missing
+# value isn't evidence it's hard, and dropping it would silently lose data.
+_MAX_KEYWORD_DIFFICULTY = 50
+
 _COMMERCIAL_INTENT_MARKERS = ("commercial", "transactional", "buy", "purchase")
 
 
@@ -272,6 +277,9 @@ def select_strategic_clusters(manual_rows: list[dict]) -> list[dict]:
         cluster = (r.get("cluster") or "").strip()
         keyword = (r.get("keyword") or "").strip()
         if not cluster or not keyword:
+            continue
+        kd = _num(r.get("keyword_difficulty"))
+        if kd is not None and kd >= _MAX_KEYWORD_DIFFICULTY:
             continue
         by_cluster.setdefault(cluster, []).append(r)
 
