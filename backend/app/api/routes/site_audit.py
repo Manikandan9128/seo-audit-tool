@@ -1907,9 +1907,11 @@ def _gather_report_data(
         combined_geopulse_text = "\n\n---\n\n".join(
             r.get("raw_text", "") for r in geopulse_rows if r.get("raw_text")
         )
+        geopulse_error = "the AI returned no usable result"
         try:
             geopulse_analysis_result = generate_aeo_geo_content(combined_geopulse_text) or None
         except Exception as e:
+            geopulse_error = str(e)
             logger.warning("GeoPulse AEO/GEO content generation failed for client %s: %s", client.id, e)
         if not geopulse_analysis_result:
             # A visibility check WAS uploaded but produced nothing usable —
@@ -1917,7 +1919,10 @@ def _gather_report_data(
             # instead of implying the check was never run.
             geopulse_analysis_result = {"uploaded_but_unavailable": True}
             content_issues.append("AEO/GEO slides: the AI visibility-check file couldn't be analysed this run.")
-            content_issues.append(f"AEO/GEO content (GeoPulse): {e}")
+            # `e` only exists inside the except block — an empty (not raised)
+            # result used to crash the whole report here with "cannot access
+            # local variable 'e'" (BharatBenz, 2026-09-23).
+            content_issues.append(f"AEO/GEO content (GeoPulse): {geopulse_error}")
 
     # Competitor Analysis comparison table: prefer Domain Overview rows (own +
     # competitors) when uploaded — they carry DR/backlinks/top-countries/
