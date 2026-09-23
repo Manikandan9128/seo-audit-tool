@@ -69,6 +69,15 @@ logger = logging.getLogger(__name__)
 # 10-12 minutes — well under this. A "running" job whose progress hasn't
 # moved in this long is treated as dead (see get_generate_report_job).
 STALE_JOB_MINUTES = 15
+# While a report job's thread is alive it bumps the row's updated_at every
+# JOB_HEARTBEAT_SECONDS, so STALE_JOB_MINUTES measures "worker gone", not
+# "no stage change". Confirmed real 2026-09-23 (Geopits, a large site):
+# the 52% "Merging keyword data and clustering topics..." stretch — many
+# sequential AI calls with no progress() checkpoint in between — ran past
+# 15 minutes and a still-working job was marked "stalled or crashed".
+# Capped so a genuinely wedged thread still gets caught eventually.
+JOB_HEARTBEAT_SECONDS = 60
+JOB_HEARTBEAT_MAX_MINUTES = 60
 
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
@@ -2509,6 +2518,26 @@ def generate_report(
     )
 
 
+def _report_job_heartbeat(job_id: uuid.UUID, stop: threading.Event) -> None:
+    """Touches the job's updated_at while its build thread runs — see
+    JOB_HEARTBEAT_SECONDS. Only updated_at is written, so it can't clobber
+    the status/progress the build thread commits."""
+    hb_db = SessionLocal()
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=JOB_HEARTBEAT_MAX_MINUTES)
+    try:
+        while not stop.wait(JOB_HEARTBEAT_SECONDS) and datetime.now(timezone.utc) < deadline:
+            job = hb_db.get(ReportGenerationJob, job_id)
+            if not job or job.status != "running":
+                return
+            job.updated_at = datetime.now(timezone.utc)
+            hb_db.commit()
+            hb_db.expire_all()
+    except Exception:
+        logger.exception("Report job heartbeat failed for %s", job_id)
+    finally:
+        hb_db.close()
+
+
 def _run_generate_report_job(
     job_id: uuid.UUID,
     client_id: uuid.UUID,
@@ -2534,6 +2563,7 @@ def _run_generate_report_job(
     # tear the thread down between jobs on some deployments.
     text_ai_client.set_preferred_provider(preferred_provider)
     semrush_mcp_data_service.set_active_snapshot(semrush_snapshot)
+    heartbeat_stop: threading.Event | None = None
     try:
         job = db.get(ReportGenerationJob, job_id)
         job.status = "running"
@@ -2549,6 +2579,9 @@ def _run_generate_report_job(
                 j.progress_stage = stage
                 j.progress_pct = pct
                 progress_db.commit()
+
+        heartbeat_stop = threading.Event()
+        threading.Thread(target=_report_job_heartbeat, args=(job_id, heartbeat_stop), daemon=True).start()
 
         client = db.get(Client, client_id)
         pptx_bytes, filename, content_issues = _build_pptx_for_client(
@@ -2575,6 +2608,8 @@ def _run_generate_report_job(
             job.error = str(e)
             db.commit()
     finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
         text_ai_client.set_preferred_provider(None)
         semrush_mcp_data_service.set_active_snapshot(None)
         db.close()
