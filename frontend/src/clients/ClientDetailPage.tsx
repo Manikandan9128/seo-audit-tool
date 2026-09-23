@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import SiteAuditHistory from "../components/SiteAuditHistory";
+import PageAuditHistory from "../components/PageAuditHistory";
 import PageSpeedReport from "../components/PageSpeedReport";
 import PageAuditTable from "../components/PageAuditTable";
 import SchemaValidationPanel from "../components/SchemaValidationPanel";
@@ -107,6 +108,7 @@ export default function ClientDetailPage() {
   const [pageAuditResult, setPageAuditResult] = useState<any>(null);
   const [pageAuditLoading, setPageAuditLoading] = useState(false);
   const [pageAuditProgress, setPageAuditProgress] = useState<{ checked: number; total: number | null } | null>(null);
+  const [pageAuditHistoryKey, setPageAuditHistoryKey] = useState(0);
 
   const [analyticsResult, setAnalyticsResult] = useState<any>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
@@ -322,6 +324,7 @@ export default function ClientDetailPage() {
     if (job.status === "done") {
       setPageAuditResult(job.result);
       setPageAuditLoading(false);
+      setPageAuditHistoryKey((k) => k + 1);
     } else if (job.status === "failed") {
       setError(job.error || "Page-by-page audit failed");
       setPageAuditLoading(false);
@@ -1268,6 +1271,8 @@ export default function ClientDetailPage() {
           loading={pageAuditLoading}
           hasData={!!pageAuditResult}
         >
+          <PageAuditHistory clientId={clientId!} refreshKey={pageAuditHistoryKey} onSelect={setPageAuditResult} />
+
           {pageAuditLoading && pageAuditProgress && (
             <p style={{ fontSize: 13, marginTop: 8, color: "var(--text-muted)" }}>
               Checked {pageAuditProgress.checked}

@@ -202,6 +202,32 @@ def start_page_audit_job(
     return {"job_id": job.id}
 
 
+@router.get("/{client_id}/site-audit-pages/history")
+def page_audit_history(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Past finished All Pages crawls for this client, newest first — powers
+    the history tabs on the All Pages card. Selects summary columns only;
+    each job's `result` can hold up to 2000 pages, fetched per-run via
+    get_page_audit_job when a tab is opened. Declared before the
+    /{job_id} route so "history" isn't parsed as a job id."""
+    _get_owned_client(client_id, db, current_user)
+    rows = (
+        db.query(PageAuditJob.id, PageAuditJob.created_at, PageAuditJob.pages_checked, PageAuditJob.pages_with_issues)
+        .filter(PageAuditJob.client_id == client_id, PageAuditJob.status == "done")
+        .order_by(PageAuditJob.created_at.desc())
+        .limit(30)
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "created_at": r.created_at.isoformat(),
+            "pages_checked": r.pages_checked,
+            "pages_with_issues": r.pages_with_issues,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{client_id}/site-audit-pages/{job_id}")
 def get_page_audit_job(
     client_id: uuid.UUID,
