@@ -5709,6 +5709,36 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     return slide
 
 
+def _strategic_cluster_insights(keywords: list[dict]) -> list[str]:
+    """Key Insights for one manual-sheet cluster, computed only from the
+    sheet's own values on this slide's visible keywords (never the wider
+    Semrush universe), so every number here is checkable on the table."""
+    out = []
+    vols = [(k, _num(k.get("search_volume"))) for k in keywords if k.get("search_volume") is not None]
+    kds = [_num(k.get("keyword_difficulty")) for k in keywords if k.get("keyword_difficulty") is not None]
+    if vols:
+        out.append(f"{len(keywords)} priority keyword(s), {sum(v for _, v in vols):,.0f} combined monthly searches.")
+        top_kw, top_vol = max(vols, key=lambda kv: kv[1])
+        kd_text = f", KD {int(_num(top_kw['keyword_difficulty']))}" if top_kw.get("keyword_difficulty") is not None else ""
+        out.append(f"Highest demand: \"{top_kw['keyword']}\" — {top_vol:,.0f} searches/month{kd_text}.")
+    easy = [k for k in keywords if k.get("keyword_difficulty") is not None and _num(k["keyword_difficulty"]) < 30
+            and _num(k.get("search_volume")) > 0]
+    if easy:
+        best = max(easy, key=lambda k: _num(k.get("search_volume")))
+        out.append(f"{len(easy)} keyword(s) under KD 30 — quickest wins, led by \"{best['keyword']}\" "
+                   f"({_num(best['search_volume']):,.0f}/mo, KD {int(_num(best['keyword_difficulty']))}).")
+    elif kds:
+        out.append(f"Avg. KD {sum(kds) / len(kds):.0f} — no low-difficulty entry point; needs content depth and links.")
+    commercial = [k for k in keywords if k.get("intent") and any(
+        m in k["intent"].lower() for m in ("commercial", "transactional"))]
+    if commercial and len(commercial) < len(keywords):
+        out.append(f"{len(commercial)} of {len(keywords)} keyword(s) carry commercial/transactional intent — "
+                   "map these to product/landing pages, the rest to guides.")
+    elif commercial:
+        out.append("Every keyword here carries commercial/transactional intent — target with a product/landing page, not a blog post.")
+    return out
+
+
 def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_clusters: list[dict] | None) -> list:
     """SEO Cluster & Keyword Selection for Presentation (2026-09-21 spec):
     one table slide per cluster the client's own manually-uploaded
@@ -5717,8 +5747,8 @@ def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_cl
     relevance/demand/commercial value/SEO opportunity/intent diversity —
     never volume or keyword count alone). Absent entirely when no manual
     cluster file was uploaded or nothing in it clears the selection floor —
-    this is never a fallback for the AI-clustered Target Keywords slides
-    above, which keep running on the full keyword universe regardless.
+    when present it REPLACES the Semrush/AI-clustered Target Keywords
+    slides (2026-09-23 user instruction — see build_report's call site).
 
     Table layout is this deck's own established house style (matches
     add_keyword_research_slide's Keyword/Search Volume/Keyword Difficulty
@@ -5761,8 +5791,9 @@ def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_cl
                 row.append(kw.get("intent") or "—")
             rows.append(tuple(row))
         slides.append(_table_slide(
-            prs, f"SEO Strategy: {c['cluster']}", headers, rows,
+            prs, f"Target Keywords: {c['cluster']}", headers, rows,
             col_widths=col_widths, source="Client-provided keyword cluster sheet",
+            insights=_strategic_cluster_insights(c["keywords"]),
         ))
     return slides
 
@@ -7342,11 +7373,19 @@ def _build_report(
         if high_potential_countries:
             add_search_opportunities_countries_slide(prs, high_potential_countries, gsc_source)
 
-    if competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions or competitor_narratives:
+    if (competitor_rows or keyword_rows or backlink_rows or backlink_summary or competitor_positions
+            or competitor_narratives or strategic_keyword_clusters):
         add_section_slide(prs, client_name, "Competitor & Keyword Research")
-        if keyword_rows:
+        # Two scenarios, never both (2026-09-23 user instruction, replaces
+        # the 2026-09-22 "both always coexist" rule): a manually uploaded
+        # keyword-cluster file IS the Target Keywords section, built by its
+        # own selection spec (strategic_keyword_selection_service). Only
+        # when no manual file exists do the Semrush/GSC + AI-clustered
+        # Target Keywords slides (incl. "Other / Ungrouped") render.
+        if strategic_keyword_clusters:
+            add_strategic_keyword_clusters_slide(prs, strategic_keyword_clusters)
+        elif keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
-        add_strategic_keyword_clusters_slide(prs, strategic_keyword_clusters)
         if competitor_rows:
             # 2026-09-20 user request: the "Open full keyword list" button
             # must appear only on Competitor Keyword Gap Analysis (see

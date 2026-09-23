@@ -3,12 +3,10 @@
 Selects the 5-6 most strategically meaningful clusters — and, within each,
 5-8 representative keywords — from a client's own manually-prepared
 keyword-cluster sheet (manual_keyword_cluster_parser.py), for a dedicated
-client-facing "SEO Strategy: Priority Keyword Clusters" presentation
-section. This is a distinct, additive slide sequence — it does NOT replace
-or feed the existing Target Keywords / Keyword Opportunity Analysis slides
-(those still run the AI Phase 2/3 clustering pipeline on the client's full
-Semrush/GSC keyword universe; this pipeline only ever runs on the manually
-uploaded sheet, and only produces output when one exists).
+client-facing Target Keywords section. When a manual sheet exists its
+output REPLACES the Semrush/GSC + AI-clustered Target Keywords slides
+(2026-09-23 user instruction); with no manual sheet this returns nothing
+and the AI Phase 2/3 pipeline's Target Keywords slides render instead.
 
 Deliberately deterministic, no AI call: the sheet is already the client's
 own curated source of truth, so this is a scoring/ranking/dedup problem
@@ -140,15 +138,21 @@ def _score_clusters(cluster_signals: list[dict]) -> None:
 
 
 def _cluster_labels_overlap(a: set[str], b: set[str]) -> bool:
-    if _jaccard(a, b) >= _CLUSTER_OVERLAP_JACCARD:
-        return True
+    """Same topic only when the shorter label is (fuzzily) contained in the
+    longer one AND that shared part is most of the longer label too.
+    Containment alone was too loose (2026-09-23, BharatBenz manual sheet):
+    "Trucks" sat inside "Truck Types & Applications", "Truck Price &
+    Buying", "Truck Parts & Components"... so every Truck sub-cluster was
+    dropped as a "duplicate" of Trucks and only 2 of the sheet's clusters
+    reached the deck. Fuzzy per-token match still catches "Service" vs
+    "Services" phrasing variants."""
     if not a or not b:
         return False
-    # Fuzzy per-token match too (e.g. "Service" vs "Services") — a plain
-    # exact-token Jaccard alone missed this exact real shape. Checked both
-    # directions since one label can be the near-total superset/subset of
-    # the other's words regardless of which side is smaller.
-    return all(_fuzzy_match(t, b) for t in a) or all(_fuzzy_match(t, a) for t in b)
+    small, large = (a, b) if len(a) <= len(b) else (b, a)
+    if not all(_fuzzy_match(t, large) for t in small):
+        return False
+    shared_in_large = sum(1 for t in large if _fuzzy_match(t, small))
+    return shared_in_large / len(large) >= _CLUSTER_OVERLAP_JACCARD
 
 
 def _select_non_overlapping_clusters(ranked: list[dict], max_n: int) -> list[dict]:

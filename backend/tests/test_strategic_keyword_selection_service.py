@@ -124,3 +124,14 @@ def test_no_keyword_repeated_across_selected_clusters():
     result = select_strategic_clusters(rows)
     all_keywords = [k["keyword"] for c in result for k in c["keywords"]]
     assert all_keywords.count("shared term") <= 1
+
+
+def test_sub_topic_clusters_sharing_one_word_are_not_treated_as_duplicates():
+    # BharatBenz manual sheet, 2026-09-23: "Trucks" was selected first and
+    # every "Truck X" cluster was then dropped as its "duplicate".
+    rows = []
+    for label in ("Trucks", "Truck Types & Applications", "Truck Price & Buying", "Truck Parts & Components"):
+        for i in range(4):
+            rows.append(_row(f"{label.lower()} keyword {i}", label, volume=1000, kd=30))
+    clusters_shown = {c["cluster"] for c in select_strategic_clusters(rows)}
+    assert clusters_shown == {"Trucks", "Truck Types & Applications", "Truck Price & Buying", "Truck Parts & Components"}
