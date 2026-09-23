@@ -52,8 +52,9 @@ For each competitor, if "homepage_text" is present in its data, read it and pull
 tactics that competitor actually uses — page architecture, content formats, subscription/loyalty mechanics, \
 trust-signal placement, companion content like guides or apps. Write these as "best_at": objective bullets \
 stated ABOUT that competitor, not as advice for {client_name} — e.g. "Leads with a 30-day money-back badge \
-above the fold (homepage_url)." Each bullet should name the specific tactic and cite "homepage_url" as the \
-source. If homepage_text is thin or absent for a competitor, fall back to what its metrics alone support \
+above the fold." Each bullet should name the specific tactic. Never write field names from the data \
+(homepage_url, homepage_text, domain_stats, etc.) into any bullet — this text goes to the client as-is. \
+If homepage_text is thin or absent for a competitor, fall back to what its metrics alone support \
 (e.g. a clear traffic or keyword-volume lead) rather than inventing on-site tactics.
 
 Then, separately per competitor, act as a Senior SEO Strategist and identify its ONE genuinely distinct \
@@ -136,6 +137,22 @@ domain listed above, using the EXACT domain string as the key:
 """
 
 _NARRATIVE_KEYS = {"best_at", "headline", "unique_angle", "gap"}
+
+# The model used to be told to cite "homepage_url" as a bullet's source and
+# wrote it into the client-facing text: "... Hindi, Bengali (homepage_url)."
+# — four times on one BharatBenz slide (2026-09-23). The prompt no longer
+# asks for it; this strips any that still appear.
+_FIELD_CITATION_RE = re.compile(r"\s*\(?\s*\b(?:homepage_url|homepage_text|domain_stats)\b[^)\n.]*\)?", re.IGNORECASE)
+
+
+def _strip_field_name_citations(entry: dict) -> dict:
+    def clean(v):
+        if isinstance(v, str):
+            return re.sub(r"\s+([.,;])", r"\1", _FIELD_CITATION_RE.sub("", v)).strip()
+        if isinstance(v, list):
+            return [clean(x) for x in v]
+        return v
+    return {k: clean(v) for k, v in entry.items()}
 
 
 def _parse(raw: str) -> dict | None:
@@ -299,7 +316,7 @@ def _generate_chunk(
         for domain in domains:
             entry = narratives.get(domain)
             if isinstance(entry, dict) and _NARRATIVE_KEYS <= entry.keys():
-                parsed[domain] = entry
+                parsed[domain] = _strip_field_name_citations(entry)
             else:
                 parsed[domain] = {"error": f"Missing or malformed narrative for {domain} in the batched response"}
         return parsed

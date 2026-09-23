@@ -61,7 +61,26 @@ def _parse(raw: str) -> dict | None:
     # would then crash instead of being treated as a bad response.
     if not isinstance(data, dict) or not data.get("thesis"):
         return None
+    for cat in data.get("categories") or []:
+        if isinstance(cat, dict) and isinstance(cat.get("points"), list):
+            cat["points"] = [p for p in cat["points"] if not _leaks_internal_field(p)]
     return data
+
+
+# The findings JSON is keyed by internal field names; the model sometimes
+# narrates a missing one instead of skipping it — confirmed real on a
+# BharatBenz deck (2026-09-23): "backlink_summary returned null — no
+# anchor/text or domain-quality data available". Such a point is about the
+# report's own inputs, not the client's site, so it's dropped.
+_INTERNAL_FIELD_RE = re.compile(r"(?<![/.\-])\b[a-z]+(?:_[a-z]+)+\b(?![/.\-]\w)|\breturned (?:null|none|empty)\b|\bis null\b", re.IGNORECASE)
+
+
+def _leaks_internal_field(point) -> bool:
+    text = str(point or "")
+    return any(m.group(0).lower() not in _ALLOWED_UNDERSCORE_TERMS for m in _INTERNAL_FIELD_RE.finditer(text))
+
+
+_ALLOWED_UNDERSCORE_TERMS: set[str] = set()
 
 
 def generate_core_problem(findings: dict) -> dict:
