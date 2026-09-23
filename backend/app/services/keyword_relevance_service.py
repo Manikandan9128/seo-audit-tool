@@ -24,6 +24,7 @@ import logging
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.services.content_safety import is_adult
 from app.services.keyword_intelligence_service import singularize
 
 logger = logging.getLogger(__name__)
@@ -273,7 +274,7 @@ def _rule_exclude(keyword: str, brand_tokens: set[str]) -> tuple[str, str] | Non
     text = keyword.lower().strip()
     if not text:
         return ("unrelated", "Empty keyword text.")
-    if any(re.search(rf"\b{re.escape(w)}\b", text) for w in _ADULT_CONTENT_WORDS):
+    if is_adult(text) or any(re.search(rf"\b{re.escape(w)}\b", text) for w in _ADULT_CONTENT_WORDS):
         return ("unrelated", "Adult/explicit content — never a legitimate target keyword.")
     for brand in brand_tokens:
         if brand and _is_branded_keyword(text, brand):

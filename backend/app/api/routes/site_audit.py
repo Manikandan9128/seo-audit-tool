@@ -55,6 +55,7 @@ from app.services.brand_citation_service import check_wikipedia_presence, search
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, match_existing_page_for_cluster
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
+from app.services.content_safety import safe_imports, scrub as scrub_adult
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
 from app.services.product_catalogue_service import crawl_product_catalogue
@@ -629,6 +630,17 @@ def _merge_keyword_gap_and_positions(
         existing["gsc_ctr"] = r.get("ctr")
         existing["source"] = f'{existing["source"]}, GSC'
     return [by_keyword[key] for key in order]
+
+
+def _scrub_report_data(data: dict) -> dict:
+    """18+ hard rule (content_safety.py): scrubs every report data key
+    except content_generation_issues, which must stay the SAME list object
+    later steps keep appending to (and holds only our own status text)."""
+    issues = data.get("content_generation_issues")
+    cleaned = scrub_adult({k: v for k, v in data.items() if k != "content_generation_issues"})
+    if "content_generation_issues" in data:
+        cleaned["content_generation_issues"] = issues
+    return cleaned
 
 
 def _keyword_cache_for(client: Client, company_overview: dict | None) -> KeywordIntelligenceCache:
@@ -1522,11 +1534,19 @@ def _gather_report_data(
     # checkpoints don't change what runs, only what the progress bar says
     # while it does.
     progress("Merging keyword data and clustering topics...", 52)
+    # Hard rule (2026-09-23): no 18+ content anywhere in a report. GSC
+    # queries/pages are scrubbed here, before any AI prompt or slide sees
+    # them (content_safety.py, layer 1).
+    if analytics:
+        analytics = scrub_adult(analytics)
     all_imports = db.query(SemrushImport).filter(SemrushImport.client_id == client_id).all()
     # Semrush MCP data-source option: no-op for a Manual Upload report; for
     # a Semrush MCP report, swaps the uploaded Semrush-account imports for
     # the fetched MCP snapshot (see semrush_mcp_data_service's docstring).
     all_imports = semrush_mcp_data_service.apply_report_source(all_imports)
+    # Same hard rule for every Semrush upload — read-only views with adult
+    # rows removed; the stored upload data itself is never modified.
+    all_imports = safe_imports(all_imports)
 
     def _all_rows(import_type: str, own_only: bool = False) -> list[dict]:
         """Every row from every upload of this type — not just the latest —
@@ -2343,6 +2363,7 @@ def report_preview(
         )
     finally:
         semrush_mcp_data_service.set_active_snapshot(None)
+    data = _scrub_report_data(data)
     return {"client_name": client.name, "website_url": client.website_url, **data}
 
 
@@ -2385,6 +2406,7 @@ def _build_pptx_for_client(
         client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
         company_overview_override, competitor_analysis_override, ux_notes, on_progress,
     )
+    data = _scrub_report_data(data)
     # Snapshot BEFORE _filter_competitor_keywords below caps/strips this in
     # place — the competitor keyword Google Sheets are meant to hold
     # EVERYTHING Semrush returned for that domain (per explicit request: "not
@@ -2503,6 +2525,14 @@ def _build_pptx_for_client(
     # Semrush's own export-tier limit on the file, not a truncation here
     # (see create_combined_keyword_sheet's docstring).
     keyword_sheet_link: str | None = None
+    # Hard rule, layer 2: everything AI-written since (competitor
+    # narratives, Next Steps, brand mentions) and everything headed for the
+    # Sheet or the deck is scrubbed of 18+ content one final time.
+    data = _scrub_report_data(data)
+    competitor_narratives = scrub_adult(competitor_narratives)
+    next_steps_ai = scrub_adult(next_steps_ai)
+    brand_citations = scrub_adult(brand_citations)
+    full_competitor_positions = scrub_adult(full_competitor_positions)
     keyword_gap_rows_for_sheet = (data.get("competitor_analysis") or {}).get("keyword_gap_rows") or []
     has_sheet_worthy_data = bool(
         full_competitor_positions or data.get("keyword_rows") or data.get("own_site_positions_rows") or keyword_gap_rows_for_sheet

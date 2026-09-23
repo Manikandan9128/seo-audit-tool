@@ -37,6 +37,7 @@ from app.services.keyword_cluster_pipeline import (
     _NEEDS_REVIEW_CLUSTER_LABEL,
     _UNJUDGED_REASON,
 )
+from app.services.content_safety import redact_presentation
 from app.services.priority_model import compute_priority_score
 
 SLIDE_W = Inches(13.333)
@@ -8023,6 +8024,13 @@ def _build_report(
         # failed AI-insights call or a failed keyword-sheet creation.
         if content_issues is not None:
             content_issues.append(f"Slide layout ({len(geometry_issues)} issue(s)): {'; '.join(geometry_issues)}")
+
+    # Hard rule (2026-09-23): no 18+ content in any report — last safety
+    # net over the finished deck (content_safety.py, layer 3). Data was
+    # already scrubbed upstream, so this normally removes nothing.
+    removed = redact_presentation(prs)
+    if removed:
+        logger.warning("Adult-content safety net removed %d item(s) from the report for %s", removed, client_name)
 
     buf = BytesIO()
     prs.save(buf)
