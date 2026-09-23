@@ -1607,9 +1607,8 @@ def add_seo_issues_slide(
             scope_note = (
                 f"This breakdown covers only the {total_pages_checked or 0} page(s) this tool crawled directly. "
                 f"Semrush's full crawl found {real_totals['with_issues']:,} of {real_totals['total']:,} pages with "
-                f"at least one issue ({total_issue_count:,} issues total) — see Priority Issues - Page Wise for the "
-                "full page-by-page list, or upload Semrush's Site Audit Issues export to see these broken down by "
-                "type here."
+                f"at least one issue ({total_issue_count:,} issues total) — upload Semrush's Site Audit Issues export to see these "
+                "broken down by type here."
             )
 
     if not errors and not warnings:
@@ -7198,7 +7197,10 @@ def _build_report(
         # Critical Issues slide cut 2026-09-18 per user request. Function
         # kept below for fast re-enable.
         # add_critical_issues_slide(prs, site_audit_issues, site_audit_pages_rows)
-        add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
+        # Priority Issues - Page Wise slide cut 2026-09-23 per user request
+        # (repeats what SEO Issues + Next Steps: Technical SEO already say).
+        # Function kept for fast re-enable.
+        # add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
         if schema_validation and schema_validation.get("total_pages"):
             add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
         elif structured_data_rows:
