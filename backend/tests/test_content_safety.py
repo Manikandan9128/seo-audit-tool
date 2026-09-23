@@ -12,6 +12,7 @@ def test_detects_adult_terms_including_concatenated_and_leetspeak_forms():
     for kw in [
         "indian bus xxx", "xnxx bus", "xxxvideo", "pornhub", "desi sex video", "p0rn", "s3x video",
         "call girls near me", "18+ video", "nude photos", "onlyfans leaks", "sexvideos",
+        "school bus bf", "indian bus flash",
     ]:
         assert is_adult(kw), kw
 
@@ -20,6 +21,7 @@ def test_legitimate_business_keywords_are_not_blocked():
     for kw in [
         "sexual harassment policy", "escort vehicle for oversize load", "xxl t shirt", "xxxl hoodie",
         "unisex uniforms", "essex payroll services", "school bus", "construction payroll", "tipper truck",
+        "bf goodrich truck tyres", "flash tipper price",
     ]:
         assert not is_adult(kw), kw
 

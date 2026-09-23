@@ -29,8 +29,11 @@ _ADULT_WORDS = {
     "nude", "nudes", "nudity", "naked", "sex", "sexy", "milf", "camgirl", "camgirls", "chudai",
     "boobs", "tits", "pussy", "fuck", "fucking", "blowjob", "handjob", "cumshot", "erotic", "erotica",
     "hardcore", "bdsm", "fetish", "stripchat", "chaturbate", "livejasmin", "spankbang", "rule34",
-    "eighteenplus",
+    "eighteenplus", "bf",
 }
+# "bf" is Indian search slang for adult video ("school bus bf", seen in a
+# real BharatBenz keyword sheet) — blocked unless it is the tyre brand.
+_BF_SAFE_CONTEXT = {"goodrich", "tyre", "tyres", "tire", "tires"}
 # "sex" alone is blocked unless the query is clearly about a non-adult
 # topic (education/HR/biology/statistics).
 _SEX_SAFE_CONTEXT = {
@@ -42,7 +45,7 @@ _SEX_SAFE_CONTEXT = {
 _ADULT_PHRASES = [
     "call girl", "call girls", "escort service", "escort services", "adult video", "adult videos",
     "adult movie", "adult movies", "adult site", "adult sites", "adult content", "blue film", "blue films",
-    "bf video", "bf videos", "18 video", "18 videos", "18 movie", "desi mms", "mms video", "sex tape",
+    "bf video", "bf videos", "bus flash", "18 video", "18 videos", "18 movie", "desi mms", "mms video", "sex tape",
 ]
 # Concatenated forms with no word boundary ("xxxvideo", "pornvideos").
 _ADULT_SUBSTRINGS = ["porn", "xnxx", "xvideo", "xhamster", "hentai", "onlyfans", "brazzers", "sexvideo", "xxxvideo"]
@@ -82,7 +85,7 @@ _PREFILTER_NEEDLES = (
     "milf", "camgirl", "chudai", "boob", "tits", "pussy", "fuck", "blowjob", "handjob", "cumshot", "erotic",
     "hardcore", "bdsm", "fetish", "stripchat", "chaturbate", "jasmin", "spankbang", "ruie34", "rule34", "redtube",
     "i8+", "i8 +", "i8 plus", "i8plus", "i8 video", "i8 movie", "call girl", "escort", "adult", "blue film",
-    "bf video", "mms",
+    "bf", "flash", "mms",
 )
 
 
@@ -104,6 +107,8 @@ def is_adult(text) -> bool:
     if "sex" in token_set and token_set & _SEX_SAFE_CONTEXT and not (token_set & (_ADULT_WORDS - {"sex"})):
         token_set = token_set - {"sex"}
         tokens = [t for t in tokens if t != "sex"]
+    if "bf" in token_set and token_set & _BF_SAFE_CONTEXT:
+        tokens = [t for t in tokens if t != "bf"]
     if any(t in _ADULT_WORDS for t in tokens):
         return True
     padded = f" {norm} "
