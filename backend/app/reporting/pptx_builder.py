@@ -38,6 +38,7 @@ from app.services.keyword_cluster_pipeline import (
     _UNJUDGED_REASON,
 )
 from app.services.content_safety import redact_presentation
+from app.services.keyword_intelligence_service import _EXCLUDED_RELEVANCE_STATUSES
 from app.services.priority_model import compute_priority_score
 
 SLIDE_W = Inches(13.333)
@@ -5756,12 +5757,17 @@ def _strategic_cluster_insights(keywords: list[dict]) -> list[str]:
     out = []
     vols = [(k, _num(k.get("search_volume"))) for k in keywords if k.get("search_volume") is not None]
     kds = [_num(k.get("keyword_difficulty")) for k in keywords if k.get("keyword_difficulty") is not None]
+    # "Highest demand"/"quickest wins" only ever name a keyword that passed
+    # the relevance check — never a flagged (†) one.
+    verified = [k for k in keywords if k.get("relevance_status") not in _EXCLUDED_RELEVANCE_STATUSES]
+    verified_vols = [(k, v) for k, v in vols if k in verified]
     if vols:
         out.append(f"{len(keywords)} priority keyword(s), {sum(v for _, v in vols):,.0f} combined monthly searches.")
-        top_kw, top_vol = max(vols, key=lambda kv: kv[1])
+    if verified_vols:
+        top_kw, top_vol = max(verified_vols, key=lambda kv: kv[1])
         kd_text = f", KD {int(_num(top_kw['keyword_difficulty']))}" if top_kw.get("keyword_difficulty") is not None else ""
         out.append(f"Highest demand: \"{top_kw['keyword']}\" — {top_vol:,.0f} searches/month{kd_text}.")
-    easy = [k for k in keywords if k.get("keyword_difficulty") is not None and _num(k["keyword_difficulty"]) < 30
+    easy = [k for k in verified if k.get("keyword_difficulty") is not None and _num(k["keyword_difficulty"]) < 30
             and _num(k.get("search_volume")) > 0]
     if easy:
         best = max(easy, key=lambda k: _num(k.get("search_volume")))
@@ -5769,8 +5775,8 @@ def _strategic_cluster_insights(keywords: list[dict]) -> list[str]:
                    f"({_num(best['search_volume']):,.0f}/mo, KD {int(_num(best['keyword_difficulty']))}).")
     elif kds:
         out.append(f"Avg. KD {sum(kds) / len(kds):.0f} — no low-difficulty entry point; needs content depth and links.")
-    commercial = [k for k in keywords if k.get("intent") and any(
-        m in k["intent"].lower() for m in ("commercial", "transactional"))]
+    commercial = [k for k in keywords if (k.get("display_intent") or k.get("intent")) and any(
+        m in (k.get("display_intent") or k["intent"]).lower() for m in ("commercial", "transactional"))]
     if commercial and len(commercial) < len(keywords):
         out.append(f"{len(commercial)} of {len(keywords)} keyword(s) carry commercial/transactional intent — "
                    "map these to product/landing pages, the rest to guides.")
@@ -5812,8 +5818,6 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
     keywords = c["keywords"]
     out: list[str] = []
     base = _strategic_cluster_insights(keywords)
-    if base:
-        out.append(base[0])
     target = c.get("target_url")
     if target:
         target_text = f"existing page {target}"
@@ -5821,10 +5825,17 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
         target_text = f"closest existing page is only a weak match ({c['closest_url']})"
     else:
         target_text = "new page (no existing page covers this)"
+    ranking = c.get("ranking_evidence")
+    if target and ranking:
+        target_text += f" (already ranks #{ranking['position']} for {ranking['keywords']} of these keywords)"
     out.append(
         f"Target: {c.get('recommended_page_type') or 'dedicated page'} — {target_text}. "
         f"Action: {c.get('recommended_action')}. Confidence {c.get('confidence_level')} ({c.get('confidence')}/100)."
     )
+    if c.get("primary_keyword"):
+        # §55/§66-D: the page's one primary keyword and the searcher's need.
+        need = f" · User need: {c['user_need']}" if c.get("user_need") else ""
+        out.append(f'Primary keyword: "{c["primary_keyword"]}"{need}.')
     excluded = c.get("excluded") or []
     if excluded:
         out.append(
@@ -5833,26 +5844,37 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
             + (f" (+{len(excluded) - 3} more)" if len(excluded) > 3 else "") + "."
         )
     flags = c.get("relevance_flags") or []
-    if flags:
+    other_sites = [f["keyword"] for f in flags if (f.get("reason") or "").startswith("Other Website Search")]
+    doubts = [f["keyword"] for f in flags if f["keyword"] not in other_sites]
+    if other_sites or doubts:
+        bits = []
+        if other_sites:
+            bits.append(f"{_quoted_list(other_sites)} are searches for another website")
+        if doubts:
+            bits.append(f"{_quoted_list(doubts)} may not match this business (possible other brand or product)")
         out.append(
-            f"Relevance check: {_quoted_list([f['keyword'] for f in flags])} may not match this business "
-            "(possible other brand or product) — confirm with the client before targeting."
+            "Relevance check (marked † in the table): " + "; ".join(bits)
+            + " — confirm with the client before targeting."
         )
     mismatches = c.get("intent_mismatches") or []
     if mismatches:
         detected = Counter(m["detected"] for m in mismatches).most_common(1)[0][0]
         sheet = mismatches[0].get("sheet")
         out.append(
-            f"Intent check: {_quoted_list([m['keyword'] for m in mismatches])} read as {detected.lower()}, "
-            f"not the sheet's {sheet} — cover these in a guide/spec section, not the main product page."
+            f"Intent corrected: {_quoted_list([m['keyword'] for m in mismatches])} read as {detected.lower()} "
+            f"(sheet said {sheet}) — cover these in a guide/spec section, not the main product page."
         )
-    outliers = c.get("outliers") or []
+    # A keyword already called out by the relevance check isn't repeated as
+    # a split-test outlier (no repeated lines, 2026-09-08 rule).
+    flagged_lower = {f["keyword"].lower() for f in flags}
+    outliers = [o for o in c.get("outliers") or [] if o.lower() not in flagged_lower]
     if len(outliers) >= 2:
         out.append(
             f"Split test: {_quoted_list(outliers)} share no core term with the rest of this cluster — "
             "likely separate search needs; consider separate pages."
         )
-    for line in base[1:]:
+    # Decision lines first; the plain demand lines fill what room is left.
+    for line in base:
         if mismatches and line.startswith("Every keyword here carries commercial"):
             continue  # contradicted by the intent check above
         out.append(line)
@@ -5901,14 +5923,18 @@ def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_cl
     slides = []
     for c in strategic_keyword_clusters:
         rows = []
+        flagged_keywords = {f["keyword"].lower() for f in c.get("relevance_flags") or []}
         for kw in c["keywords"]:
-            row = [kw["keyword"]]
+            # † = flagged by the relevance check (explained in the insights).
+            row = [kw["keyword"] + (" †" if kw["keyword"].lower() in flagged_keywords else "")]
             if any_sub_category:
                 row.append(kw.get("sub_category") or "—")
             row.append(f"{int(kw['search_volume']):,}" if kw.get("search_volume") is not None else "—")
             row.append(str(int(kw["keyword_difficulty"])) if kw.get("keyword_difficulty") is not None else "—")
             if any_intent:
-                row.append(kw.get("intent") or "—")
+                # §8/§34: the engine's corrected intent where the sheet's
+                # label contradicts the keyword's own wording.
+                row.append(kw.get("display_intent") or kw.get("intent") or "—")
             rows.append(tuple(row))
         slides.append(_table_slide(
             prs, f"Target Keywords: {c['cluster']}", headers, rows,
@@ -5990,7 +6016,9 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
             kd = top.get("keyword_difficulty")
             kd_text = f", KD {kd}" if kd not in (None, "") else ""
-            out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month{kd_text}.")
+            # §55/§66-D: the searcher's need behind the primary keyword.
+            need_text = f" User need: {top['user_need']}." if top.get("user_need") else ""
+            out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month{kd_text}.{need_text}")
         else:
             # Search Console-only rows carry no Semrush search volume —
             # never print "0 searches/month, KD n/a" as if that were data

@@ -10,9 +10,10 @@ This module owns everything from Business Theme onward (candidate
 clustering through cannibalization check). Merge/dedup, relevance
 filtering, intent classification, page-category classification, and
 ranking enrichment are unchanged and stay in site_audit.py — this module
-is called after intent + page_category are already set on every row, and
-before ranking enrichment (ranking enrichment doesn't affect clustering
-decisions, only which existing current_position/current_url a row carries).
+is called after intent + page_category AND ranking enrichment are already
+set on every row (since 2026-09-24 — current_position/current_url feed the
+primary-keyword pick, priority score and §23 existing-page matching, where
+the page already ranking for a cluster is its target).
 
 Core design decision: cluster VALIDATION and AUTOMATIC SPLITTING are not a
 separate pass that inspects finished clusters for problems — they're
@@ -57,13 +58,14 @@ from collections import Counter
 import re
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
-from app.services.keyword_relevance_service import build_page_index, match_existing_page_for_cluster
+from app.services.keyword_relevance_service import build_page_index, is_live_target_page, match_existing_page_for_cluster
 from app.services.keyword_semantic_cluster_service import generate_phase2_candidate_clusters, generate_phase3_validated_clusters
 from app.services.keyword_intelligence_service import (
     KeywordIntelligenceCache,
     annotate_keyword_rows,
     apply_cluster_intelligence,
     build_rule_groups,
+    ranking_page_target,
     rule_group_name,
 )
 from app.services.priority_model import compute_priority_score, evidence_confidence_to_score
@@ -557,6 +559,10 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
             clusters.setdefault(label, []).append(r)
 
     page_index = build_page_index(site_audit_pages_rows)
+    dead_urls = {
+        r.get("page_url") for r in site_audit_pages_rows or [] if r.get("page_url") and not is_live_target_page(r)
+    }
+    titles = {(r.get("page_url") or "").rstrip("/"): r.get("page_title") for r in site_audit_pages_rows or []}
     for _label, cluster_rows in clusters.items():
         keywords = [r.get("keyword") for r in cluster_rows if r.get("keyword")]
         # Clusters never mix page formats (a hard clustering boundary), so
@@ -564,7 +570,13 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
         # the matcher can refuse a page whose type contradicts it.
         categories = Counter((r.get("page_category") or "") for r in cluster_rows if r.get("page_category"))
         page_category = categories.most_common(1)[0][0] if categories else None
-        match = match_existing_page_for_cluster(keywords, site_audit_pages_rows, page_category, page_index=page_index)
+        # §23 "existing rankings": the page Google already ranks for these
+        # keywords beats any title/URL word overlap.
+        ranking = ranking_page_target(cluster_rows, None, dead_urls)
+        if ranking:
+            match = {"url": ranking["url"], "title": titles.get(ranking["url"].rstrip("/")), "match_strength": ranking["match_strength"]}
+        else:
+            match = match_existing_page_for_cluster(keywords, site_audit_pages_rows, page_category, page_index=page_index)
         strength = match["match_strength"] if match else "none"
         for r in cluster_rows:
             if match:

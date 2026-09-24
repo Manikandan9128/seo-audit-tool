@@ -54,6 +54,10 @@ _RELEVANCE_STATUSES = {
     "unrelated": "Unrelated",
     "unknown_needs_review": "Unknown / Needs Review",
     "career_recruitment_query": "Career / Recruitment Query",
+    # §8 navigational: a search for a DIFFERENT website/company by name
+    # (a portal, marketplace, fleet operator, publication) — its searcher
+    # wants that site, so no page of the client's can satisfy it.
+    "other_website_search": "Other Website Search",
 }
 
 # The 4 statuses that are specifically about a competitor-brand-mentioning
@@ -94,6 +98,7 @@ _STATUS_TO_COARSE_LABEL = {
     # it, so keyword_cluster_pipeline's routing step has a real row to
     # route into the Jobs/Careers cluster.
     "career_recruitment_query": "exclude",
+    "other_website_search": "exclude",
 }
 
 _NAV_LOGIN_WORDS = [
@@ -353,9 +358,12 @@ industry/business (the competitor serves other markets too) — no strategic val
 - "product_service_mismatch": names a specific product/service {client_name} does not offer.
 - "audience_mismatch": targets a buyer/user type {client_name} does not serve.
 - "industry_mismatch": belongs to a DIFFERENT industry or product category than {client_name}'s entirely.
+- "other_website_search": the searcher wants a DIFFERENT, specific website, portal, marketplace, publication or company by name (not {client_name} and not one of its own brands) — e.g. a listing portal, a directory, a marketplace, another business — so no page on {client_domain} can satisfy it.
 - "unrelated": no strategic value to {client_name} specifically, reads as noise, or an irrelevant informational \
 query with no connection to the business.
 - "unknown_needs_review": not enough evidence in the keyword text + business context to judge confidently either way.
+
+{client_name}'s OWN brand family counts as {client_name} itself, never as another company: its parent company, group/sister brands, sub-brands, and its own product, model, platform and service names (use the business context and the site's own sections/products listed above as evidence). A keyword naming any of these is at least "relevant" when it fits what {client_name} offers — never "competitor_brand_search" or "product_service_mismatch".
 
 A keyword a competitor ranks for is not automatically relevant just because the competitor ranks for it — judge it \
 against {client_name}'s own business, not the competitor's. When genuinely unsure whether a keyword is inside or \
@@ -667,6 +675,8 @@ def match_existing_page(primary_keyword: str, site_audit_pages_rows: list[dict] 
     best = None
     best_score = 0
     for row in site_audit_pages_rows:
+        if not is_live_target_page(row):
+            continue
         url = row.get("page_url") or ""
         title = row.get("page_title") or ""
         path = re.sub(r"[/\-_]", " ", url)
@@ -737,6 +747,75 @@ def normalize_source_url(url: str | None) -> str | None:
     return m.group(1) + re.sub(r"/{2,}", "/", m.group(2))
 
 
+# §23 existing-URL mapping: only a live, indexable page can be a keyword's
+# target. BharatBenz's crawl export listed /404.php (the site's own error
+# template, whose title/URL tokens matched two clusters) and it became the
+# "existing page" on two Target Keywords slides.
+_ERROR_PAGE_RE = re.compile(
+    r"(^|/)(404|410|500|503|error|errors|not-found|notfound|page-not-found)(\.[a-z]{2,5})?(/|$|\?)", re.I,
+)
+_ERROR_TITLE_RE = re.compile(r"\b(404|page not found|not found|error page|page doesn.?t exist|page does not exist)\b", re.I)
+
+
+def is_live_target_page(row: dict) -> bool:
+    """False for a crawled page that can never be a keyword target: a
+    non-2xx HTTP status (when the export carries one), or an error-page
+    URL/title. A row with no status column is judged by URL/title alone."""
+    status = str(row.get("http_status_code") or "").strip()
+    if status:
+        try:
+            if not 200 <= int(float(status)) < 300:
+                return False
+        except ValueError:
+            pass
+    url = row.get("page_url") or row.get("url") or ""
+    path = re.sub(r"^[a-z][a-z0-9+.-]*://[^/]*", "", url.strip(), flags=re.I)
+    if _ERROR_PAGE_RE.search(path):
+        return False
+    return not _ERROR_TITLE_RE.search(row.get("page_title") or "")
+
+
+_SLUG_ID_RE = re.compile(r"[-_]?\d+$")
+
+
+def site_entity_summary(site_audit_pages_rows: list[dict] | None, max_sections: int = 6, max_names: int = 40) -> str | None:
+    """§3 website understanding, deterministic: the site's own sections and
+    the product/model/service names under them, read from the crawled URL
+    structure (a directory with 3+ live child pages is a section; each
+    child's slug is one of its entity names). Fed to the keyword-relevance
+    AI as evidence of what the client itself offers, so its own product and
+    model names are never mistaken for another company's. None when the
+    crawl has no such structure."""
+    children: dict[str, set[str]] = {}
+    for row in site_audit_pages_rows or []:
+        url = row.get("page_url") or ""
+        if not url or not is_live_target_page(row):
+            continue
+        if classify_page_type(url) in ("utility", "blog", "home"):
+            continue
+        path = urlparse(url if "://" in url else f"http://x/{url}").path
+        segments = [s for s in path.split("/") if s]
+        if len(segments) < 2:
+            continue
+        slug = re.sub(r"\.[a-z]{2,5}$", "", segments[-1].lower())
+        name = _SLUG_ID_RE.sub("", slug).replace("-", " ").replace("_", " ").strip()
+        if name and not name.isdigit():
+            children.setdefault(segments[-2].lower(), set()).add(name)
+    sections = sorted(
+        ((sec, names) for sec, names in children.items() if len(names) >= 3),
+        key=lambda kv: -len(kv[1]),
+    )[:max_sections]
+    if not sections:
+        return None
+    budget = max_names
+    parts = []
+    for sec, names in sections:
+        shown = sorted(names)[: max(3, budget // len(sections))]
+        budget -= len(shown)
+        parts.append(f"{sec.replace('-', ' ')} ({len(names)} pages: {', '.join(shown)})")
+    return "Sections and product/service pages on the client's own site: " + "; ".join(parts) + "."
+
+
 def classify_page_type(url: str | None) -> str:
     """"utility" | "comparison" | "blog" | "location" | "commercial" |
     "home" | "other", from the URL path alone."""
@@ -793,7 +872,7 @@ def build_page_index(site_audit_pages_rows: list[dict] | None) -> list[dict]:
     index = []
     for row in site_audit_pages_rows or []:
         url = row.get("page_url") or ""
-        if not url:
+        if not url or not is_live_target_page(row):
             continue
         title = row.get("page_title") or ""
         title_tokens = _match_tokens(title)

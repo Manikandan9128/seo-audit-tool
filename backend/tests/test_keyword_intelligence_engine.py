@@ -283,7 +283,7 @@ def test_manual_cluster_enrichment_flags_intent_mismatch_and_split_without_rewri
 
     slides = add_strategic_keyword_clusters_slide(_prs(), clusters)
     text = _slide_text(slides[0])
-    assert "Intent check:" in text
+    assert "Intent corrected:" in text
     assert "Removed from this cluster:" in text
     assert "Confidence" in text
     assert "Every keyword here carries commercial" not in text
@@ -372,4 +372,127 @@ def test_manual_slide_shows_relevance_flags():
                            flagged=[{"keyword": "brabus price in india", "cluster": "Truck Price", "reason": "Competitor Brand Search"}])
     text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
     assert "brabus price in india" in text  # still shown — never silently dropped
-    assert "Relevance check:" in text and "confirm with the client" in text
+    assert "Relevance check" in text and "confirm with the client" in text
+    assert "brabus price in india †" in text  # flagged row marked in the table
+    assert 'Highest demand: "brabus' not in text  # demand lines never name a flagged keyword
+
+
+# --- 2026-09-24 spec-gap fixes (§3, §8, §19-23, §30, §33, §55) --------------
+
+def test_error_and_non_200_pages_are_never_keyword_targets():
+    from app.services.keyword_relevance_service import is_live_target_page
+    assert not is_live_target_page({"page_url": "https://bb.com/404.php", "http_status_code": "200"})
+    assert not is_live_target_page({"page_url": "https://bb.com/trucks", "http_status_code": "301"})
+    assert not is_live_target_page({"page_url": "https://bb.com/x", "page_title": "Page Not Found"})
+    assert is_live_target_page({"page_url": "https://bb.com/error-codes-guide", "page_title": "Truck Error Codes"})
+    pages = [
+        {"page_url": "https://bb.com/404.php", "page_title": "Trucks Specifications Not Found"},
+        {"page_url": "https://bb.com/about-us", "page_title": "About"},
+    ]
+    assert match_existing_page_for_cluster(["truck specifications"], pages, "Landing Page") is None
+
+
+def test_manual_target_prefers_page_already_ranking():
+    clusters = [{"cluster": "Parts", "keywords": [
+        {"keyword": "truck parts", "search_volume": 880, "intent": "Commercial"},
+        {"keyword": "truck spare parts", "search_volume": 880, "intent": "Commercial"},
+    ]}]
+    pages = [
+        {"page_url": "https://bb.com/truck-parts-news", "page_title": "Truck Parts Truck Spare Parts"},
+        {"page_url": "https://bb.com/genuine-parts", "page_title": "Genuine Parts"},
+    ]
+    enrich_manual_clusters(
+        clusters, pages, [], match_existing_page_for_cluster,
+        keyword_ranking={"truck parts": (6, "https://bb.com/genuine-parts")},
+    )
+    c = clusters[0]
+    assert c["target_url"] == "https://bb.com/genuine-parts"
+    assert c["match_strength"] == "strong" and c["ranking_evidence"]["position"] == 6
+    text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
+    assert "already ranks #6" in text
+
+
+def test_ranking_page_on_dead_url_is_ignored():
+    from app.services.keyword_intelligence_service import ranking_page_target
+    rows = [{"keyword": "a", "current_position": 3, "current_url": "https://www.bb.com/404.php/", "search_volume": 10}]
+    assert ranking_page_target(rows, dead_urls={"https://bb.com/404.php"}) is None
+    assert ranking_page_target([{"keyword": "a", "current_position": 35, "current_url": "https://bb.com/p"}]) is None
+
+
+def test_manual_table_picks_verified_keywords_before_flagged_high_volume():
+    from app.services.strategic_keyword_selection_service import select_strategic_clusters
+    models = ["torres", "prima", "signa", "ultra", "boss", "dost", "partner", "bison"]
+    rows = [{"keyword": f"{m} lorry price", "cluster": "Price", "search_volume": 100 + i} for i, m in enumerate(models)]
+    rows += [
+        {"keyword": "brabus price in india", "cluster": "Price", "search_volume": 2400, "relevance_status": "Competitor Brand Search"},
+        {"keyword": "peterbilt truck price", "cluster": "Price", "search_volume": 390, "relevance_status": "Product/Service Mismatch"},
+    ]
+    chosen = [k["keyword"] for k in select_strategic_clusters(rows)[0]["keywords"]]
+    assert "brabus price in india" not in chosen and len(chosen) == 8
+    # With too few verified keywords, flagged ones fill the table — last.
+    few = rows[:3] + rows[8:]
+    chosen = [k["keyword"] for k in select_strategic_clusters(few)[0]["keywords"]]
+    assert chosen[-2:] == ["brabus price in india", "peterbilt truck price"]
+
+
+def test_manual_table_shows_corrected_intent_and_primary_keyword():
+    clusters = [{"cluster": "Buses", "keywords": [
+        {"keyword": "school bus", "search_volume": 22200, "intent": "Commercial"},
+        {"keyword": "bus mileage", "search_volume": 6600, "intent": "Commercial"},
+        {"keyword": "school bus price", "search_volume": 900, "intent": "Commercial"},
+    ]}]
+    enrich_manual_clusters(clusters, None, [], match_existing_page_for_cluster)
+    c = clusters[0]
+    assert c["primary_keyword"] == "school bus" and c["user_need"]
+    by_kw = {k["keyword"]: k for k in c["keywords"]}
+    assert by_kw["bus mileage"]["display_intent"] == "Informational"
+    assert by_kw["bus mileage"]["intent"] == "Commercial"  # sheet value untouched
+    slide = add_strategic_keyword_clusters_slide(_prs(), clusters)[0]
+    table = next(sh.table for sh in slide.shapes if sh.has_table)
+    cells = {row.cells[0].text: row.cells[len(row.cells) - 1].text for row in table.rows}
+    assert cells["bus mileage"] == "Informational"
+    assert 'Primary keyword: "school bus"' in _slide_text(slide)
+
+
+def test_flagged_keywords_lower_cluster_confidence():
+    from app.services.keyword_intelligence_service import score_cluster
+    clean = [{"keyword": f"k{i}", "intent_family": "Commercial", "relevance_status": "Relevant"} for i in range(8)]
+    doubtful = [dict(r) for r in clean]
+    for r in doubtful[:3]:
+        r["relevance_status"] = "Product/Service Mismatch"
+    assert score_cluster(doubtful, "manual")["score"] < score_cluster(clean, "manual")["score"] - 10
+
+
+def test_other_website_searches_are_called_out_separately():
+    clusters = [{"cluster": "Trucks", "keywords": [
+        {"keyword": "truck", "search_volume": 110000, "intent": "Commercial"},
+        {"keyword": "truckspoint", "search_volume": 2400, "intent": "Commercial"},
+    ]}]
+    enrich_manual_clusters(clusters, None, [], match_existing_page_for_cluster, flagged=[
+        {"keyword": "truckspoint", "cluster": "Trucks", "reason": "Other Website Search: a listing portal"},
+    ])
+    text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
+    assert '"truckspoint" are searches for another website' in text
+
+
+def test_site_entity_summary_reads_own_sections_from_crawl():
+    from app.services.keyword_relevance_service import site_entity_summary
+    pages = [{"page_url": f"https://bb.com/select-my-truck/{n}-{i}", "http_status_code": "200"}
+             for i, n in enumerate(["tipper", "tanker", "cement-mixer", "container"])]
+    pages.append({"page_url": "https://bb.com/404.php"})
+    summary = site_entity_summary(pages)
+    assert "select my truck" in summary and "cement mixer" in summary and "404" not in summary
+    assert site_entity_summary([{"page_url": "https://bb.com/about"}]) is None
+
+
+def test_pipeline_existing_page_uses_ranking_url():
+    from app.services.keyword_cluster_pipeline import _apply_existing_page_matching
+    rows = [
+        {"keyword": "tipper truck", "cluster": "Tippers", "current_position": 8,
+         "current_url": "https://bb.com/select-my-truck/tipper-5", "search_volume": 14800},
+        {"keyword": "tipper truck price", "cluster": "Tippers", "search_volume": 900},
+    ]
+    pages = [{"page_url": "https://bb.com/tipper-truck-news", "page_title": "Tipper Truck Price News"}]
+    _apply_existing_page_matching(rows, pages)
+    assert rows[0]["existing_page_url"] == "https://bb.com/select-my-truck/tipper-5"
+    assert rows[1]["existing_page_match_strength"] == "strong"

@@ -50,6 +50,19 @@ _MAX_KEYWORD_DIFFICULTY = 50
 
 _COMMERCIAL_INTENT_MARKERS = ("commercial", "transactional", "buy", "purchase")
 
+# Relevance-gate statuses (keyword_intelligence_service.gate_manual_rows)
+# that mean "doubtful for this business" — kept on the slide, never
+# preferred over a verified keyword.
+_FLAGGED_RELEVANCE_STATUSES = {
+    "Competitor Brand Search", "Irrelevant Competitor Query", "Geographic Mismatch",
+    "Product/Service Mismatch", "Audience Mismatch", "Industry Mismatch", "Unrelated",
+    "Career / Recruitment Query", "Other Website Search",
+}
+
+
+def _is_flagged(r: dict) -> bool:
+    return r.get("relevance_status") in _FLAGGED_RELEVANCE_STATUSES
+
 
 def _tokens(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2}
@@ -108,6 +121,7 @@ def _cluster_signals(cluster: str, rows: list[dict]) -> dict:
         "sub_category_count": len(sub_categories),
         "intent_count": len(intents),
         "commercial_share": _commercial_share(rows),
+        "clean_share": sum(1 for r in rows if not _is_flagged(r)) / len(rows) if rows else 1.0,
     }
 
 
@@ -139,7 +153,11 @@ def _score_clusters(cluster_signals: list[dict]) -> None:
     for i, c in enumerate(cluster_signals):
         opportunity = 1.0 - kd_norm_by_id[id(c)] if id(c) in kd_norm_by_id else 0.5
         commercial = c["commercial_share"] if c["commercial_share"] is not None else commercial_fallback
-        c["_score"] = (depth.get(i, 0.5) + demand.get(i, 0.5) + opportunity + diversity.get(i, 0.5) + commercial) / 5.0
+        # §21 business relevance: a cluster mostly made of flagged keywords
+        # ranks below one the client can genuinely own.
+        c["_score"] = (
+            depth.get(i, 0.5) + demand.get(i, 0.5) + opportunity + diversity.get(i, 0.5) + commercial + c["clean_share"]
+        ) / 6.0
 
 
 def _cluster_labels_overlap(a: set[str], b: set[str]) -> bool:
@@ -189,7 +207,8 @@ def _dedupe_and_rank_keywords(cluster_label: str, rows: list[dict], used_keyword
         opportunity = (100.0 - kd) if kd is not None else 50.0
         commercial = 20.0 if r.get("intent") and any(m in r["intent"].lower() for m in _COMMERCIAL_INTENT_MARKERS) else 0.0
         sub_bonus = 5.0 if r.get("sub_category") else 0.0
-        return vol * 0.01 + opportunity + commercial + sub_bonus
+        flagged_penalty = 1000.0 if _is_flagged(r) else 0.0  # a verified phrasing always wins its near-duplicate
+        return vol * 0.01 + opportunity + commercial + sub_bonus - flagged_penalty
 
     candidates = [r for r in rows if (r.get("keyword") or "").strip().lower() not in used_keywords]
     candidates.sort(key=_kw_score, reverse=True)
@@ -224,7 +243,14 @@ def _select_representative_keywords(cluster_label: str, rows: list[dict], used_k
     consolidated first (_dedupe_and_rank_keywords); a keyword with no
     volume in the sheet sorts last, never dropped for that alone."""
     deduped = _dedupe_and_rank_keywords(cluster_label, rows, used_keywords)
-    deduped.sort(key=lambda r: _num(r.get("search_volume")) or -1.0, reverse=True)
+    # Universal SEO engine §19/§21/§33 (2026-09-24): WHICH keywords make the
+    # table is decided by relevance first — a keyword the relevance gate
+    # flagged (other brand/product/website, out of market) only fills a
+    # slot no verified keyword can; volume alone let "brabus price in
+    # india" push the client's own "torres lorry price" off the slide.
+    # Display order keeps the SEO team's head-term-first-by-volume layout,
+    # flagged rows last.
+    deduped.sort(key=lambda r: (_is_flagged(r), -(_num(r.get("search_volume")) or -1.0)))
     return deduped[:_MAX_KEYWORDS_PER_CLUSTER]
 
 
@@ -274,7 +300,9 @@ def select_strategic_clusters(manual_rows: list[dict]) -> list[dict]:
             "cluster": c["cluster"],
             "keywords": [
                 {
-                    k: r[k] for k in ("keyword", "search_volume", "keyword_difficulty", "intent", "sub_category")
+                    k: r[k] for k in (
+                        "keyword", "search_volume", "keyword_difficulty", "intent", "sub_category", "relevance_status",
+                    )
                     if k in r
                 }
                 for r in keywords

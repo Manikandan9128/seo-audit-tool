@@ -469,7 +469,12 @@ def score_cluster(rows: list[dict], source: str, cluster_name: str | None = None
     has_ranking = any(r.get("current_position") not in (None, "") for r in rows)
     outliers = distinct_needs(rows, cluster_name) if len(rows) >= 3 else []
 
-    score = base + 15 * intent_share + 10 * relevant_share
+    # §30/§61: doubtful keywords (flagged other brand/product/site, out of
+    # market...) are evidence against the cluster, not neutral — a cluster
+    # where 3 of 8 keywords are doubtful must not read "High".
+    flagged_share = sum(1 for r in rows if r.get("relevance_status") in _EXCLUDED_RELEVANCE_STATUSES) / len(rows) if rows else 0
+
+    score = base + 15 * intent_share + 10 * relevant_share - 25 * flagged_share
     score += {"strong": 10, "partial": 5}.get(strength or "", 0)
     score += 5 if has_ranking else 0
     if len(outliers) >= 2:
@@ -490,6 +495,8 @@ def score_cluster(rows: list[dict], source: str, cluster_name: str | None = None
         reason_bits.append(f"all {len(rows)} keyword(s) share {dominant_family.lower()} intent")
     elif rows:
         reason_bits.append(f"{dom_n} of {len(rows)} keyword(s) share {dominant_family.lower()} intent")
+    if flagged_share:
+        reason_bits.append(f"{round(flagged_share * len(rows))} keyword(s) flagged for relevance review")
     if strength in ("strong", "partial"):
         reason_bits.append(f"{strength} existing-page match")
     reason_bits.append("no SERP data to confirm")
@@ -536,7 +543,10 @@ def apply_cluster_intelligence(rows: list[dict]) -> None:
 # cached verdict is dropped, since relevance was judged against it.
 # ---------------------------------------------------------------------------
 
-_CACHE_VERSION = 1
+# v2 (2026-09-24): relevance prompt gained the client's own brand family,
+# site sections and the "Other Website Search" status — verdicts judged
+# under the old prompt are re-asked once.
+_CACHE_VERSION = 2
 _MAX_CACHED_CLUSTER_RUNS = 6
 _MAX_CACHED_RELEVANCE = 6000
 
@@ -644,13 +654,16 @@ def _split_args(args: tuple, keywords: list[str]) -> tuple:
 # confidence output as the AI path (§53/§55/§30). Flag, never rewrite.
 # ---------------------------------------------------------------------------
 
-_MANUAL_CLASSIFY_PER_CLUSTER = 12
-_MANUAL_CLASSIFY_TOTAL = 90
+# §21/§67 check 1: every keyword a slide can show needs a verdict. The
+# slide shows up to 8 per cluster chosen by relevance first, so each
+# cluster's pool must be deeper than 8. Still ONE AI call, cached after.
+_MANUAL_CLASSIFY_PER_CLUSTER = 25
+_MANUAL_CLASSIFY_TOTAL = 200
 
 _EXCLUDED_RELEVANCE_STATUSES = {
     "Competitor Brand Search", "Irrelevant Competitor Query", "Geographic Mismatch",
     "Product/Service Mismatch", "Audience Mismatch", "Industry Mismatch", "Unrelated",
-    "Career / Recruitment Query",
+    "Career / Recruitment Query", "Other Website Search",
 }
 
 
@@ -721,17 +734,77 @@ _PAGE_CATEGORY_BY_FAMILY = {
 }
 
 
+def _norm_url(url: str | None) -> str:
+    u = re.sub(r"^[a-z][a-z0-9+.-]*://", "", (url or "").strip().lower())
+    return u.removeprefix("www.").rstrip("/")
+
+
+def ranking_page_target(
+    rows: list[dict], keyword_ranking: dict[str, tuple] | None = None, dead_urls: set[str] | None = None,
+) -> dict | None:
+    """§23 "existing rankings": the client page Google ALREADY ranks for a
+    cluster's keywords is the strongest existing-URL evidence there is —
+    stronger than any word overlap between keyword and page title. Reads
+    each row's own current_position/current_url (Keyword Gap own-domain
+    column / Organic Positions), else `keyword_ranking` {keyword lower:
+    (position, url)}. Only top-20 rankings count; each URL is weighted by
+    the demand it already ranks for (top-10 counts double). A URL in
+    `dead_urls` (non-2xx / error page in the crawl) never qualifies.
+    Returns {"url", "position", "match_strength", "keywords"} or None."""
+    dead = {_norm_url(u) for u in dead_urls or ()}
+    by_url: dict[str, dict] = {}
+    for r in rows:
+        pos, url = r.get("current_position"), r.get("current_url")
+        if (pos in (None, "") or not url) and keyword_ranking:
+            pos, url = keyword_ranking.get((r.get("keyword") or "").strip().lower(), (None, None))
+        p = _num(pos)
+        if not url or p <= 0 or p > 20 or _norm_url(url) in dead:
+            continue
+        entry = by_url.setdefault(url, {"url": url, "position": p, "weight": 0.0, "keywords": 0})
+        entry["weight"] += max(_demand(r), 1.0) * (2.0 if p <= 10 else 1.0)
+        entry["position"] = min(entry["position"], p)
+        entry["keywords"] += 1
+    if not by_url:
+        return None
+    best = max(by_url.values(), key=lambda e: (e["weight"], -e["position"]))
+    return {
+        "url": best["url"], "position": int(best["position"]), "keywords": best["keywords"],
+        "match_strength": "strong" if best["position"] <= 10 else "partial",
+    }
+
+
+def select_primary_keyword(rows: list[dict], dominant_family: str | None) -> dict | None:
+    """§19-20: the page's primary keyword is NOT simply the highest-volume
+    one — business relevance (not flagged), intent fit with the cluster's
+    dominant intent, an existing ranking, then demand as the tiebreaker."""
+    if not rows:
+        return None
+
+    def _score(r: dict) -> tuple:
+        not_flagged = 0 if r.get("relevance_status") in _EXCLUDED_RELEVANCE_STATUSES else 1
+        relevant = 1 if r.get("relevance_status") in _RELEVANT_STATUSES else 0
+        intent_fit = 1 if dominant_family and r.get("intent_family") == dominant_family else 0
+        ranking = 1 if r.get("current_position") not in (None, "") else 0
+        return (not_flagged, relevant, intent_fit, ranking, _demand(r))
+
+    return max(rows, key=_score)
+
+
 def enrich_manual_clusters(
     clusters: list[dict], site_audit_pages_rows: list[dict] | None, excluded: list[dict], match_fn, page_index=None,
-    flagged: list[dict] | None = None,
+    flagged: list[dict] | None = None, keyword_ranking: dict[str, tuple] | None = None,
+    dead_urls: set[str] | None = None,
 ) -> None:
     """Adds the §55 cluster output to each selected manual cluster in
     place: target_url / match_strength / recommended_action /
-    recommended_page_type / confidence / confidence_level / reason, plus
-    the validation flags intent_mismatches (sheet says one intent, the
-    keyword's own wording clearly says another), outliers (§42: keywords
-    that share nothing with the cluster's core entity) and excluded (what
-    the gate removed from this cluster). Sheet values themselves are never
+    recommended_page_type / confidence / confidence_level / reason /
+    primary_keyword / user_need, plus the validation flags
+    intent_mismatches (sheet says one intent, the keyword's own wording
+    clearly says another — the keyword's `display_intent` then carries the
+    corrected one, §8/§34), outliers (§42: keywords that share nothing with
+    the cluster's core entity) and excluded (what the gate removed from
+    this cluster). The target URL prefers the page already ranking for the
+    cluster (§23) over word overlap. Sheet values themselves are never
     modified."""
     excluded_by_cluster: dict[str, list[dict]] = {}
     for e in excluded:
@@ -740,15 +813,24 @@ def enrich_manual_clusters(
     for c in clusters:
         rows = [dict(k) for k in c["keywords"]]
         annotate_keyword_rows(rows)
+        for r in rows:
+            if r.get("current_position") in (None, "") and keyword_ranking:
+                pos, url = keyword_ranking.get(r["keyword"].strip().lower(), (None, None))
+                if pos not in (None, ""):
+                    r["current_position"], r["current_url"] = pos, url
         families = Counter(r.get("intent_family") for r in rows if r.get("intent_family"))
         dominant = families.most_common(1)[0][0] if families else "Commercial"
-        # Matched on the cluster's top-3-by-volume keywords: pooling every
-        # keyword's tokens dilutes the match ratio for a broad client
-        # cluster until even its obvious hub page reads as "weak".
-        head = [r["keyword"] for r in sorted(rows, key=lambda r: -_num(r.get("search_volume")))[:3]]
-        match = match_fn(
-            head, site_audit_pages_rows, _PAGE_CATEGORY_BY_FAMILY.get(dominant), page_index=page_index,
-        ) if site_audit_pages_rows else None
+        ranking = ranking_page_target(rows, None, dead_urls)
+        if ranking:
+            match = {"url": ranking["url"], "match_strength": ranking["match_strength"]}
+        else:
+            # Matched on the cluster's top-3-by-volume keywords: pooling every
+            # keyword's tokens dilutes the match ratio for a broad client
+            # cluster until even its obvious hub page reads as "weak".
+            head = [r["keyword"] for r in sorted(rows, key=lambda r: -_num(r.get("search_volume")))[:3]]
+            match = match_fn(
+                head, site_audit_pages_rows, _PAGE_CATEGORY_BY_FAMILY.get(dominant), page_index=page_index,
+            ) if site_audit_pages_rows else None
         strength = match["match_strength"] if match else "none"
         for r in rows:
             r["existing_page_match_strength"] = strength
@@ -761,7 +843,14 @@ def enrich_manual_clusters(
             sheet_family = source_intent_family(r.get("intent"))
             if sheet_family and r.get("intent_confidence", 0) >= 80 and r.get("intent_family") != sheet_family:
                 mismatches.append({"keyword": r["keyword"], "sheet": r.get("intent"), "detected": r.get("detected_intent")})
+        corrected = {m["keyword"]: m["detected"] for m in mismatches}
+        for kw in c["keywords"]:
+            kw["display_intent"] = corrected.get(kw["keyword"]) or kw.get("intent")
 
+        primary = select_primary_keyword(rows, dominant)
+        c["primary_keyword"] = primary["keyword"] if primary else None
+        c["user_need"] = primary.get("user_need") if primary else None
+        c["ranking_evidence"] = ranking
         c["target_url"] = match["url"] if match and strength in ("strong", "partial") else None
         c["closest_url"] = match["url"] if match and strength == "weak" else None
         c["match_strength"] = strength

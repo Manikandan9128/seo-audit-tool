@@ -54,7 +54,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, match_existing_page_for_cluster
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_live_target_page, match_existing_page_for_cluster, site_entity_summary
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
 from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
 from app.services.logo_service import fetch_logo_bytes
@@ -487,7 +487,7 @@ def _filter_competitor_keywords(client: Client, data: dict, cache: KeywordIntell
     if not all_keywords:
         return
 
-    client_description = _company_overview_context(data.get("company_overview"))
+    client_description = _relevance_context(data.get("company_overview"), data.get("site_audit_pages_rows"))
     classifications = classify_with_cache(
         classify_keywords, cache, all_keywords, client.name, client_domain, brand_tokens, client_description,
     )
@@ -660,6 +660,27 @@ def _reclassify_mislabeled_competitor_overviews(imports: list, website_url: str)
     return out
 
 
+def _relevance_context(company_overview: dict | None, site_audit_pages_rows: list[dict] | None = None) -> str | None:
+    """Keyword-relevance grounding (Universal SEO engine §3/§45, 2026-09-24):
+    the company overview + ICP, plus what the client itself offers — its
+    product/service list and the sections/product pages found in its own
+    crawl — so the AI can recognize the client's own products, models and
+    brand family instead of flagging them as another company's (BharatBenz:
+    "mercedes benz bus", "daimler india commercial vehicles" flagged as
+    other brands). Only the keyword-relevance calls use this; the cache key
+    stays on _company_overview_context so a crawl refresh doesn't wipe
+    every cached verdict."""
+    base = _company_overview_context(company_overview)
+    parts = [base] if base else []
+    products = [p for p in ((company_overview or {}).get("products") or []) if p][:25]
+    if products:
+        parts.append("Products/services the client sells: " + "; ".join(products) + ".")
+    entities = site_entity_summary(site_audit_pages_rows)
+    if entities:
+        parts.append(entities)
+    return " ".join(parts) or None
+
+
 def _company_overview_cluster_context(company_overview: dict | None) -> str | None:
     """Clustering context: the relevance context plus the client's own
     product/service list, so Phase 2 clustering can anchor one cluster per
@@ -743,7 +764,7 @@ def _select_validated_manual_clusters(
             # brand" rule exclude — relevance is judged by the AI alone.
             relevance = classify_with_cache(
                 classify_keywords, cache, candidates, client.name, client_domain, set(),
-                _company_overview_context(company_overview),
+                _relevance_context(company_overview, site_audit_pages_rows),
             )
         except Exception as e:
             logger.warning("Manual keyword relevance check failed for client %s: %s", client.id, e)
@@ -765,15 +786,29 @@ def _select_validated_manual_clusters(
             r["relevance_reason"] = verdict.get("reason")
     clusters = select_strategic_clusters(kept)
     if clusters:
+        # §23: where the client already ranks for a sheet keyword (Keyword
+        # Gap own-domain column / Organic Positions, both on keyword_rows),
+        # that ranking page is the cluster's target before any word match.
+        keyword_ranking = {
+            (r.get("keyword") or "").strip().lower(): (r.get("current_position"), r.get("current_url"))
+            for r in keyword_rows or []
+            if r.get("current_position") not in (None, "") and r.get("current_url")
+        }
+        dead_urls = {
+            r.get("page_url") for r in site_audit_pages_rows or []
+            if r.get("page_url") and not is_live_target_page(r)
+        }
         enrich_manual_clusters(
             clusters, site_audit_pages_rows, excluded, match_existing_page_for_cluster,
             page_index=build_page_index(site_audit_pages_rows), flagged=flagged,
+            keyword_ranking=keyword_ranking, dead_urls=dead_urls,
         )
     return clusters
 
 
 def _filter_keyword_rows(
     client: Client, rows: list[dict], company_overview: dict | None, cache: KeywordIntelligenceCache | None = None,
+    site_audit_pages_rows: list[dict] | None = None,
 ) -> list[dict]:
     """Core, side-effect-free relevance filter for the client's OWN Keyword
     Gap rows — pulled out of _filter_own_keyword_rows so it can run INSIDE
@@ -817,7 +852,7 @@ def _filter_keyword_rows(
     if not candidate_keywords:
         return rows
 
-    client_description = _company_overview_context(company_overview)
+    client_description = _relevance_context(company_overview, site_audit_pages_rows)
     classifications = classify_with_cache(
         classify_keywords, cache, candidate_keywords, client.name, client_domain, brand_tokens, client_description,
     )
@@ -897,7 +932,7 @@ def _filter_search_queries(client: Client, data: dict, cache: KeywordIntelligenc
     if not candidate_keywords:
         return
 
-    client_description = _company_overview_context(data.get("company_overview"))
+    client_description = _relevance_context(data.get("company_overview"), data.get("site_audit_pages_rows"))
     classifications = classify_with_cache(
         classify_keywords, cache, candidate_keywords, client.name, client_domain, brand_tokens, client_description,
     )
@@ -1689,7 +1724,9 @@ def _gather_report_data(
     # clusters real BharatBenz-relevant keywords instead of wasting part of
     # its 100-keyword cap on off-topic ones that would've been dropped anyway.
     kw_cache = _keyword_cache_for(client, company_overview_result)
-    keyword_rows_all = _filter_keyword_rows(client, keyword_rows_all, company_overview_result, kw_cache)
+    keyword_rows_all = _filter_keyword_rows(
+        client, keyword_rows_all, company_overview_result, kw_cache, _all_rows("site_audit_pages", own_only=True),
+    )
     # FINAL PIPELINE (lead's spec, 2026-09-19): Merge+Dedupe (above) ->
     # Relevance Filter (above) -> Search Intent -> Page Category -> Business
     # Theme -> Candidate Clustering -> Cluster Validation -> Automatic
@@ -1771,30 +1808,11 @@ def _gather_report_data(
             if category:
                 r["page_category"] = category
 
-        # Business Theme -> Candidate Clustering -> Validation/Auto-Split ->
-        # Primary/Secondary -> Existing Page Matching -> Cannibalization
-        # Check, all in one pass — see keyword_cluster_pipeline.py's module
-        # docstring for why validation/splitting is structural rather than a
-        # separate pass. Only runs when no row already has a real cluster
-        # value (a real Semrush Cluster/Topic column) UNLESS a manual
-        # clustering file exists — manual always overrides even that guard,
-        # since it's the client's own authoritative source of truth.
-        if manual_cluster_map or not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
-            try:
-                build_final_keyword_clusters(
-                    keyword_rows_all,
-                    client.name,
-                    _company_overview_cluster_context(company_overview_result),
-                    _all_rows("site_audit_pages", own_only=True),
-                    manual_cluster_map=manual_cluster_map or None,
-                    cache=kw_cache,
-                )
-            except Exception as e:
-                logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
-                content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
-
-        # Current Ranking / Traffic (lead's reference flow, doc 2) — real
-        # Semrush data when a Keyword Gap export's own-domain column exists
+        # Current Ranking / Traffic (lead's reference flow, doc 2) — runs BEFORE clustering
+        # (2026-09-24): the pipeline's existing-page matching, primary-keyword
+        # pick and priority scoring all read current_position/current_url
+        # (§23 "existing rankings") and got nothing when this ran after it.
+        # Real Semrush data when a Keyword Gap export's own-domain column exists
         # (domain_positions/domain_ranking_urls — same structure
         # semrush_analysis_service already reads for the Keyword Gap
         # Opportunities finding, matched the same way: normalize + find the
@@ -1828,6 +1846,28 @@ def _gather_report_data(
                 r["current_position"] = r["position"]
             if not r.get("current_url") and r.get("url"):
                 r["current_url"] = r["url"]
+
+        # Business Theme -> Candidate Clustering -> Validation/Auto-Split ->
+        # Primary/Secondary -> Existing Page Matching -> Cannibalization
+        # Check, all in one pass — see keyword_cluster_pipeline.py's module
+        # docstring for why validation/splitting is structural rather than a
+        # separate pass. Only runs when no row already has a real cluster
+        # value (a real Semrush Cluster/Topic column) UNLESS a manual
+        # clustering file exists — manual always overrides even that guard,
+        # since it's the client's own authoritative source of truth.
+        if manual_cluster_map or not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
+            try:
+                build_final_keyword_clusters(
+                    keyword_rows_all,
+                    client.name,
+                    _company_overview_cluster_context(company_overview_result),
+                    _all_rows("site_audit_pages", own_only=True),
+                    manual_cluster_map=manual_cluster_map or None,
+                    cache=kw_cache,
+                )
+            except Exception as e:
+                logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
+                content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
 
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
