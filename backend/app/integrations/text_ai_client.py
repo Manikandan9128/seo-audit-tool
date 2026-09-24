@@ -259,7 +259,17 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return "".join(block.text for block in response.content if block.type == "text").strip()
+    text = "".join(block.text for block in response.content if block.type == "text").strip()
+    if not text:
+        # A 200 with no text block (safety stop, or the model stopping
+        # before writing anything) isn't a transport failure, so it never
+        # hit the except branch below — confirmed real on a Geopits Core
+        # Problem slide (2026-09-24): Claude answered, wrote nothing, and
+        # the old code just logged "empty response" with no way to tell
+        # a genuine one-off from a real refusal. stop_reason is the one
+        # field that tells them apart, so surface it instead of guessing.
+        raise RuntimeError(f"empty content, stop_reason={response.stop_reason}")
+    return text
 
 
 # Lets a caller pin one provider first for the lifetime of a single job's
@@ -373,9 +383,18 @@ def _attempt_claude(prompt: str, max_tokens: int, errors: list[str]) -> str | No
         text = _call_with_timeout(_try_claude, CLAUDE_TIMEOUT_SECONDS, prompt, max_tokens)
         if text:
             return text
-        errors.append("Claude returned an empty response")
     except Exception as e:
-        errors.append(f"Claude request failed: {str(e)[:300]}")
+        # One immediate retry before giving up — an empty/refused response
+        # is a per-request roll, not a persistent outage like Groq/Gemini's
+        # quota errors, so a second attempt on the same borderline prompt
+        # often just succeeds (same reasoning as Groq/Gemini's retry above).
+        try:
+            text = _call_with_timeout(_try_claude, CLAUDE_TIMEOUT_SECONDS, prompt, max_tokens)
+            if text:
+                return text
+            errors.append("Claude returned an empty response")
+        except Exception as e2:
+            errors.append(f"Claude request failed (retried once): {str(e2)[:300]}")
     return None
 
 

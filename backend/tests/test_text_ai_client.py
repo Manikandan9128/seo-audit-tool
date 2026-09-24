@@ -89,6 +89,36 @@ def test_first_successful_provider_short_circuits_the_rest():
     mock_gemini.assert_not_called()
 
 
+def test_attempt_claude_retries_once_on_empty_response_then_succeeds():
+    # Regression (confirmed real, Geopits Core Problem slide, 2026-09-24):
+    # a paid Claude key can still answer with a 200 and zero text (safety
+    # stop or stopping before writing anything) — a per-request roll, not
+    # an outage, so one immediate retry on the same prompt should recover.
+    with patch("app.integrations.text_ai_client.settings") as mock_settings:
+        mock_settings.claude_api_key = "sk-ant-test"
+        with patch(
+            "app.integrations.text_ai_client._try_claude",
+            side_effect=[RuntimeError("empty content, stop_reason=end_turn"), "claude answer"],
+        ) as mock_claude:
+            text = text_ai_client._attempt_claude("some prompt", 1024, [])
+    assert text == "claude answer"
+    assert mock_claude.call_count == 2
+
+
+def test_attempt_claude_reports_stop_reason_when_retry_also_comes_back_empty():
+    with patch("app.integrations.text_ai_client.settings") as mock_settings:
+        mock_settings.claude_api_key = "sk-ant-test"
+        with patch(
+            "app.integrations.text_ai_client._try_claude",
+            side_effect=RuntimeError("empty content, stop_reason=refusal"),
+        ):
+            errors: list[str] = []
+            text = text_ai_client._attempt_claude("some prompt", 1024, errors)
+    assert text is None
+    assert "stop_reason=refusal" in errors[0]
+    assert "retried once" in errors[0]
+
+
 def test_gemini_slot_reserved_immediately_when_windows_are_empty():
     assert _reserve_gemini_slot() is True
     assert len(text_ai_client._gemini_minute_window) == 1
