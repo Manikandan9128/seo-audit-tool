@@ -91,6 +91,36 @@ def test_two_small_clusters_share_a_slide_with_separate_merged_cells():
     assert tables[0].cell(1, 0).span_height == 3 and tables[1].cell(1, 0).span_height == 2
 
 
+def test_two_small_clusters_share_a_slide_but_keep_the_decision_line():
+    # Regression (confirmed real, Geopits report, 2026-09-24): a shared
+    # slide's insights used to take each cluster's first 2 lines by flat
+    # position ("N keywords, X searches" + "Top opportunity"), which never
+    # reached the Confidence/Priority line further down the list — both
+    # clusters lost their decision-critical line entirely, even though the
+    # slide had the same 5-line budget as a single-cluster slide.
+    categories = [{"name": "Trucks", "clusters": [
+        {**_cluster("Tippers", 2), "insights": [
+            "2 keywords, 100 combined monthly searches.",
+            'Top opportunity: "tipper price" — 100 searches/month.',
+            "Recommended format: Service Page — new page opportunity. Action: NEW URL REQUIRED.",
+            "Cluster validation: consistent format.",
+            "Confidence: High (80/100) — rule-based grouping. Priority High (opportunity 70/100).",
+        ]},
+        {**_cluster("Tractors", 2), "insights": [
+            "2 keywords, 90 combined monthly searches.",
+            'Top opportunity: "tractor price" — 90 searches/month.',
+            "Confidence: Medium (55/100) — rule-based grouping.",
+        ]},
+    ]}]
+    slides = _render_target_keyword_slides(_prs(), categories)
+    strip_texts = [
+        sh.text_frame.text for sh in slides[0].shapes
+        if sh.has_text_frame and "Confidence:" in sh.text_frame.text
+    ]
+    assert any("High (80/100)" in t for t in strip_texts)
+    assert any("Medium (55/100)" in t for t in strip_texts)
+
+
 def test_small_clusters_never_paired_across_categories_or_without_one():
     categories = [
         {"name": "Trucks", "clusters": [_cluster("Tippers", 2)]},

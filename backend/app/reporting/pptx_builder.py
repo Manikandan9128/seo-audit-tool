@@ -6469,7 +6469,26 @@ def _render_target_keyword_slides(prs: Presentation, categories: list[dict], tra
         if len(clusters_here) == 1:
             insights = list(starts[0].get("insights") or []) if starts else []
         else:
-            insights = [line for c in starts for line in (c.get("insights") or [])[:2]]
+            # A flat first-2-by-position slice always grabbed "N keywords,
+            # X searches" + "Top opportunity" and never reached the
+            # decision-critical line further down _keyword_insights's list
+            # (Confidence/Priority, or the recommended action when no
+            # confidence was scored) — confirmed real on a live Geopits
+            # report (2026-09-24): two small clusters sharing a slide
+            # showed volume + top-opportunity only, with no action or
+            # confidence line at all. Same 2-line-per-cluster budget as
+            # before, just picking the line that actually carries a
+            # decision instead of whatever happened to be second.
+            def _lead_lines(cluster_insights: list[str]) -> list[str]:
+                if not cluster_insights:
+                    return []
+                lead = [cluster_insights[0]]
+                decision = next((l for l in cluster_insights if l.startswith("Confidence:")), None) \
+                    or next((l for l in cluster_insights if l.startswith("Recommended format:") or l.startswith("Target:")), None)
+                if decision:
+                    lead.append(decision)
+                return lead
+            insights = [line for c in starts for line in _lead_lines(c.get("insights") or [])]
         if trailing_insight and idx == len(plan) - 1:
             insights = insights[:4] + [trailing_insight]
         _insights_strip(slide, _TK_LEFT, y + Inches(0.15), _TK_WIDTH, insights, max_items=5, max_y=_TK_BOTTOM)
