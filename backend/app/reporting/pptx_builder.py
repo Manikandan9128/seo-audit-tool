@@ -5572,6 +5572,52 @@ def _prepare_keyword_gap_rows(rows: list[dict], max_kd: float = _KEYWORD_GAP_MAX
     return kd_filtered, ambiguous_rows, kd_unavailable_count, competitor_columns
 
 
+def keyword_gap_by_category(kd_filtered: list[dict]) -> tuple[dict[str, list[dict]], dict[str, int]]:
+    """Single source of truth for Missing/Shared/Untapped grouping and
+    counts (2026-09-24 spec: "Competitor Keyword Gap must have ONE source
+    of truth... calculate once from the final validated dataset, reuse
+    everywhere") — every caller (the slides here, the Sheet export, Core
+    Problem's findings in site_audit.py) must pass the SAME `kd_filtered`
+    (from `_prepare_keyword_gap_rows`) through THIS function rather than
+    grouping/counting it again on its own, so two views of the gap can
+    never silently disagree on Missing/Shared/Untapped counts."""
+    by_category: dict[str, list[dict]] = {"Missing": [], "Shared": [], "Untapped": []}
+    for r in kd_filtered:
+        by_category.setdefault(r.get("gap_category") or "Missing", []).append(r)
+    # kd_filtered is already volume-sorted by _prepare_keyword_gap_rows, so
+    # each by_category bucket inherits that same order.
+    counts = {cat: len(by_category[cat]) for cat in ("Missing", "Shared", "Untapped")}
+    return by_category, counts
+
+
+def build_keyword_gap_summary_finding(kd_filtered: list[dict], counts: dict[str, int], off_topic_count: int) -> dict | None:
+    """The single authoritative keyword-gap "finding" entry — same shape
+    (summary/detail/recommendation/severity/type) as the one
+    `semrush_analysis_service.analyze_semrush_data` builds on its own raw
+    (brand-excluded-only) data, but computed from the SAME validated,
+    fully-filtered `kd_filtered`/`counts` the Keyword Gap slides render
+    (via `_prepare_keyword_gap_rows` + `keyword_gap_by_category`). Callers
+    (site_audit.py's Core Problem findings) drop any existing `"type":
+    "keyword_gap"` entry from `analyze_semrush_data`'s raw issues list and
+    splice this one in instead — never both, never neither when there IS
+    relevant data. Returns None when there's nothing relevant to report,
+    same as the raw entry being simply absent."""
+    total_relevant = len(kd_filtered)
+    if not total_relevant:
+        return None
+    summary_bits = [f"{counts[cat]} {cat.lower()}" for cat in ("Shared", "Missing", "Untapped") if counts[cat]]
+    total_volume = sum(_num(r.get("search_volume")) for r in kd_filtered)
+    top = kd_filtered[0]
+    return {
+        "summary": f"{total_relevant} relevant keyword gap(s) ({', '.join(summary_bits)}), "
+                   f"{int(total_volume):,} combined monthly searches ({off_topic_count} off-topic/competitor-brand excluded)",
+        "detail": f"Highest-volume gap: \"{top.get('keyword')}\" ({int(_num(top.get('search_volume'))):,} monthly searches).",
+        "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
+        "severity": "opportunity",
+        "type": "keyword_gap",
+    }
+
+
 _GAP_SHARED_BLUE = RGBColor(0x3E, 0x6B, 0x99)
 
 
@@ -5770,13 +5816,7 @@ def add_keyword_gap_slides(
     if not kd_filtered:
         return []
 
-    by_category: dict[str, list[dict]] = {"Missing": [], "Shared": [], "Untapped": []}
-    for r in kd_filtered:
-        by_category.setdefault(r.get("gap_category") or "Missing", []).append(r)
-    # kd_filtered already volume-sorted by _prepare_keyword_gap_rows, so
-    # each by_category bucket inherits that same order.
-
-    counts = {cat: len(by_category[cat]) for cat in ("Missing", "Shared", "Untapped")}
+    by_category, counts = keyword_gap_by_category(kd_filtered)
     dedicated_categories = [c for c in ("Missing", "Shared", "Untapped") if counts[c] >= _GAP_DEDICATED_THRESHOLD]
     inline_categories = [c for c in ("Missing", "Shared", "Untapped") if 1 <= counts[c] < _GAP_DEDICATED_THRESHOLD]
 

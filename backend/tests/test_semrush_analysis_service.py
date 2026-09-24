@@ -116,6 +116,27 @@ def test_keyword_gap_sorted_by_search_volume_descending():
     assert [r["keyword"] for r in gap_rows] == ["high volume", "low volume"]
 
 
+def test_keyword_gap_issue_entry_is_marked_for_replacement():
+    # 2026-09-24 single-source-of-truth spec: site_audit.py replaces this
+    # entry with one built from the fully relevance/KD/volume-filtered
+    # dataset before Core Problem ever sees it — it can only find and drop
+    # the right entry if this one carries the marker.
+    rows = [{"keyword": "widget insurance", "search_volume": 1000, "domain_positions": {"client.com": 0, "rival.com": 5}}]
+    result = analyze([_record(rows)], own_domain="client.com")
+    keyword_gap_issues = [i for i in result["issues"] if i.get("type") == "keyword_gap"]
+    assert len(keyword_gap_issues) == 1
+    assert "keyword gap" in keyword_gap_issues[0]["summary"].lower()
+
+
+def test_keyword_gap_fallback_path_issue_entry_is_also_marked():
+    # No own_domain / no domain_positions matrix -> the simple fallback
+    # path (a different code branch, its own issues.append call).
+    rows = [{"keyword": "some keyword", "search_volume": 500}]
+    result = analyze([_record(rows, own_domain=False)], own_domain=None)
+    keyword_gap_issues = [i for i in result["issues"] if i.get("type") == "keyword_gap"]
+    assert len(keyword_gap_issues) == 1
+
+
 def test_keyword_gap_dedupes_same_keyword_across_casing():
     # 2026-09-21 spec rule 11: a raw export repeating the same keyword under
     # different casing must collapse to one row, not two.

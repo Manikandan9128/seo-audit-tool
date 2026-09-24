@@ -269,6 +269,12 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                 ),
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
+                # Marks this entry as replaceable — these counts are only
+                # brand-excluded, not the fuller relevance/KD/volume filter
+                # the actual Keyword Gap slides apply. site_audit.py swaps
+                # this out for the authoritative one before Core Problem
+                # ever sees it (2026-09-24 single-source-of-truth spec).
+                "type": "keyword_gap",
             })
             # Semrush's own export caps at 500 rows per file (semrush_parser.py)
             # — matched here rather than the old 20-row cap, since the report
@@ -310,6 +316,7 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
                 "detail": "Keywords competitors rank for that you don't, with measurable search volume.",
                 "recommendation": "Prioritize the highest-volume, lowest-difficulty keywords from this list for new content.",
                 "severity": "opportunity",
+                "type": "keyword_gap",  # see the matrix-path entry's comment above
             })
             opportunities.sort(key=lambda r: -_num(r.get("search_volume")))
             keyword_gap_result_rows = [

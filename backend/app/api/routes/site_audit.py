@@ -37,6 +37,7 @@ from app.reporting.pptx_builder import (
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
     build_search_opportunity_pages, build_structured_technical_recommendations,
+    _prepare_keyword_gap_rows, keyword_gap_by_category, build_keyword_gap_summary_finding,
 )
 from app.services.recommendation_registry import build_keyword_strategy_recommendations, deduplicate_recommendations
 from app.services import ga4_service, gsc_service
@@ -2441,6 +2442,44 @@ def _gather_report_data(
         else None
     )
 
+    # Competitor Keyword Gap — single source of truth (2026-09-24 spec):
+    # Core Problem must read the SAME validated dataset the Keyword Gap
+    # slides render, never `analyze_semrush_data`'s own raw "issues" count
+    # (brand-excluded only — not the fuller relevance/KD/volume filter the
+    # slides apply). Runs _filter_competitor_keywords here, before Core
+    # Problem is built, instead of only later in _build_pptx_for_client —
+    # mutates the same dict objects in place, so nothing downstream (the
+    # slides, the Sheet export) is affected; that later call becomes a
+    # harmless no-op re-filter of already-clean rows (cache-hit on the AI
+    # classification). Bonus: also fixes report_preview's keyword-gap data,
+    # which never filtered it at all before.
+    _filter_competitor_keywords(
+        client,
+        {
+            "competitor_positions": competitor_positions, "competitor_analysis": competitor_analysis_result,
+            "company_overview": company_overview_result, "site_audit_pages_rows": site_audit_pages_rows,
+        },
+        kw_cache,
+    )
+    keyword_gap_rows_authoritative = (competitor_analysis_result or {}).get("keyword_gap_rows") or []
+    gap_kd_filtered, _gap_ambiguous, _gap_kd_unavailable, _gap_competitor_columns = _prepare_keyword_gap_rows(keyword_gap_rows_authoritative)
+    gap_by_category, gap_counts = keyword_gap_by_category(gap_kd_filtered)
+    # Same arithmetic invariant the spec's own cross-slide validation names
+    # ("Missing + Shared + Untapped = Total Relevant") — trivially true by
+    # construction here (keyword_gap_by_category buckets every kd_filtered
+    # row into exactly one of the three), kept as a guard against a future
+    # change to either function silently breaking it.
+    if sum(gap_counts.values()) != len(gap_kd_filtered):
+        logger.error(
+            "Keyword gap category counts don't sum to total for client %s: %s != %d",
+            client.id, gap_counts, len(gap_kd_filtered),
+        )
+    gap_off_topic_count = (competitor_analysis_result or {}).get("keyword_gap_off_topic_count") or 0
+    competitor_gap_findings = [i for i in (competitor_analysis_result or {}).get("issues", []) if i.get("type") != "keyword_gap"]
+    gap_finding = build_keyword_gap_summary_finding(gap_kd_filtered, gap_counts, gap_off_topic_count)
+    if gap_finding:
+        competitor_gap_findings.append(gap_finding)
+
     core_problem_result = None
     if settings.gemini_api_key or settings.claude_api_key:
         progress("Diagnosing core problem...", 75)
@@ -2455,7 +2494,7 @@ def _gather_report_data(
             ][:15],
             "backlink_summary": backlink_summary,
             "own_backlink_row_count": own_backlink_row_count,
-            "competitor_gap_findings": (competitor_analysis_result or {}).get("issues", []),
+            "competitor_gap_findings": competitor_gap_findings,
             "target_keyword_count": len(keyword_rows_all) if keyword_rows_all else 0,
             # Full-site schema coverage (the same numbers the Structured
             # Data slide and SEO Goals use). Without it the model only saw
