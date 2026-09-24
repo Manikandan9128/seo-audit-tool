@@ -139,6 +139,32 @@ def test_audit_catches_changed_or_missing_rows():
     assert any("differ from source" in p for p in _audit_target_keyword_slides(slides, tampered))
 
 
+def test_top_opportunity_is_always_the_highest_volume_keyword():
+    # Regression (confirmed real, Geopits report, 2026-09-24): "Top
+    # opportunity" preferred the pipeline's primary_or_secondary pick
+    # (which deliberately weighs relevance/intent-fit/ranking ahead of
+    # raw demand for the cluster's actual TARGET keyword decision
+    # elsewhere) over the highest-volume keyword — but the table's own
+    # first row (and the flat-table path's Role column, assigned purely
+    # by volume-sorted position) still showed the real highest-volume
+    # one. Slide 23 showed "Top opportunity" at 140 searches/month while
+    # its own table's first row read 260.
+    rows = [
+        {"keyword": "database support services", "cluster": "Database Support Services",
+         "search_volume": 260, "keyword_difficulty": 5, "detected_intent": "Commercial"},
+        {"keyword": "remote database support", "cluster": "Database Support Services",
+         "search_volume": 140, "keyword_difficulty": 7, "detected_intent": "Commercial",
+         "primary_or_secondary": "Primary"},
+    ]
+    prs = _prs()
+    slides = add_keyword_research_slide(prs, rows)
+    insight_text = " ".join(
+        sh.text_frame.text for s in slides for sh in s.shapes if sh.has_text_frame
+    )
+    assert 'Top opportunity: "database support services"' in insight_text
+    assert "260" in insight_text
+
+
 def test_ai_path_uses_business_theme_as_category_and_new_columns():
     rows = [
         {"keyword": "payroll software", "cluster": "Payroll Software", "search_volume": 900, "keyword_difficulty": 40,

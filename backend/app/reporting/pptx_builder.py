@@ -6757,11 +6757,21 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         # Prefer the upstream pipeline's own Primary keyword selection (which
         # weighs commercial intent and ranking opportunity, not just volume)
         # when present, so "Top opportunity" always names the same keyword
-        # the Role column marks Primary — falls back to highest-volume when
-        # no primary_or_secondary field was set (e.g. a real Semrush Cluster
-        # column was uploaded and the pipeline never ran).
-        top = next((r for r in rows_for_group if r.get("primary_or_secondary") == "Primary"), None) \
-            or max(rows_for_group, key=lambda r: _num(r.get("search_volume")))
+        # the Role column marks Primary. That Role column is itself
+        # assigned by POSITION after a volume-descending sort (i == 0),
+        # never by primary_or_secondary — so preferring the pipeline's
+        # Primary pick here actually broke the very agreement this
+        # comment describes: select_primary_keyword deliberately weighs
+        # relevance/intent-fit/ranking ahead of raw demand (§19-20, the
+        # right choice for the cluster's actual TARGET keyword elsewhere
+        # in this report), but for "Top opportunity" — a label that
+        # promises the biggest number — that produced a lower-volume
+        # keyword while the table's own first row (and the Role column,
+        # on the flat-table path) showed the real highest-volume one.
+        # Confirmed real on a live Geopits report (2026-09-24): slide 23
+        # showed "Top opportunity" at 140 searches/month while its own
+        # table's first row read 260. Always the highest-volume keyword.
+        top = max(rows_for_group, key=lambda r: _num(r.get("search_volume")))
         easy_wins = [r for r in rows_for_group if _num(r.get("keyword_difficulty"), default=100) < 20 and _num(r.get("search_volume")) > 0]
         if total_volume > 0:
             out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
