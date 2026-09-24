@@ -621,6 +621,37 @@ def test_native_semrush_cluster_routes_junk_and_competitor_rows_like_any_report(
     assert by_kw["job openings dba"]["cluster"] == _CAREER_ROUTE_CLUSTER_LABEL
 
 
+def test_native_semrush_clusters_merge_into_one_when_they_share_a_target_page():
+    # Regression (confirmed real, Geopits report, 2026-09-24, reported
+    # alongside the confidence-missing bug): "Database Support Services"
+    # and "Remote DBA Services" both resolved to the same existing page
+    # (/service/remote-support-dba-services) but stayed two separate
+    # clusters — they were one cluster in an earlier regen of the same
+    # report. _merge_same_page_clusters and the abbreviation-aware
+    # _same_topic check ("dba" <-> "database") were already correct and
+    # tested in isolation; the gate fix is what lets them actually run
+    # for a native-Semrush-Cluster-column report end to end.
+    rows = [
+        {"keyword": "database support services", "cluster": "Database Support Services", "search_volume": 260},
+        {"keyword": "remote dba services", "cluster": "Remote DBA Services", "search_volume": 260},
+    ]
+
+    def fake_match(keywords, pages, page_category=None, **_kwargs):
+        return {"url": "https://example.com/service/remote-support-dba-services", "title": "Remote DBA Support",
+                "match_strength": "strong"}
+
+    with patch(_PHASE2_PATH) as mock_p2, patch(_PHASE3_PATH) as mock_p3, \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", side_effect=fake_match):
+        build_final_keyword_clusters(
+            rows, "Acme", None, [{"page_url": "https://example.com/service/remote-support-dba-services",
+                                   "page_title": "Remote DBA Support"}],
+        )
+
+    mock_p2.assert_not_called()
+    mock_p3.assert_not_called()
+    assert len({r["cluster"] for r in rows}) == 1
+
+
 def test_manual_cluster_map_is_used_and_ai_pipeline_never_runs():
     # User's explicit instruction (2026-09-21): manual clustering is first
     # preference — when a manual_cluster_map is supplied, the AI Phase 2/3
