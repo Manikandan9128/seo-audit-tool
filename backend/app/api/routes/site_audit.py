@@ -553,6 +553,53 @@ def _filter_competitor_keywords(client: Client, data: dict, cache: KeywordIntell
         )
 
 
+def _filter_search_opportunity_queries(
+    client: Client, page_query_rows: list[dict] | None, company_overview: dict | None,
+    site_audit_pages_rows: list[dict] | None, brand_tokens: set, cache: KeywordIntelligenceCache | None,
+) -> None:
+    """Search Opportunities — Pages (2026-09-24 spec, "Page/Query Relevance
+    Fix"): "only include a keyword/query as a Search Opportunity when it is
+    genuinely relevant to the target page and business... exclude
+    irrelevant/noise queries even if they have high impressions." Stamps
+    each candidate row's AI relevance label onto it in place — the exact
+    same classify_keywords/_relevance_context pattern
+    _filter_competitor_keywords already uses for the Keyword Gap slides —
+    so build_search_opportunity_pages's _sop_driving_query can exclude a
+    "exclude"-labeled query from ever being picked as a recommendation's
+    basis, however high its impressions or how well it sits in the
+    position band.
+
+    Only NON-BRAND rows are candidates (a branded query is already never
+    picked as a driving query regardless of topic relevance), capped to
+    the top _CLASSIFY_CANDIDATE_CAP by impressions — the same bounded-
+    candidate-pool discipline every AI classification call in this file
+    uses, so this never balloons into classifying a client's entire GSC
+    query list. A row outside that pool keeps no "relevance" key at all —
+    treated as relevant (fail-open), never silently dropped."""
+    if not page_query_rows:
+        return
+    non_brand_rows = [
+        r for r in page_query_rows if r.get("query") and not is_branded_or_near_brand(r.get("query") or "", brand_tokens)
+    ]
+    if not non_brand_rows:
+        return
+    top_rows = sorted(non_brand_rows, key=lambda r: _num_for_sort(r.get("impressions")), reverse=True)[:_CLASSIFY_CANDIDATE_CAP]
+    queries = sorted({r["query"] for r in top_rows})
+    if not queries:
+        return
+    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    client_description = _relevance_context(company_overview, site_audit_pages_rows)
+    classifications = classify_with_cache(
+        classify_keywords, cache, queries, client.name, client_domain, brand_tokens, client_description,
+    )
+    if not classifications:
+        return
+    for r in page_query_rows:
+        entry = classifications.get((r.get("query") or "").lower())
+        if entry:
+            r["relevance"] = entry.get("label")
+
+
 def _merge_keyword_gap_and_positions(
     keyword_gap_rows: list[dict], organic_positions_rows: list[dict], gsc_query_rows: list[dict] | None = None,
 ) -> list[dict]:
@@ -2403,6 +2450,9 @@ def _gather_report_data(
         # (used only as a place-name lookup for the URL slug, never as a
         # per-page traffic claim).
         page_query_rows = (analytics.get("page_query_clicks") or {}).get("rows") or []
+        _filter_search_opportunity_queries(
+            client, page_query_rows, company_overview_result, site_audit_pages_rows, brand_tokens, kw_cache,
+        )
         search_opportunity_pages = build_search_opportunity_pages(
             page_clicks_rows, (page_audit_result or {}).get("pages") or [],
             page_query_rows=page_query_rows, brand_tokens=brand_tokens,

@@ -341,6 +341,50 @@ def test_search_opportunity_pages_excludes_page_driven_only_by_branded_query():
     assert flagged == []
 
 
+def test_search_opportunity_pages_never_uses_an_off_topic_query_as_driving_query():
+    # 2026-09-24 spec ("Page/Query Relevance Fix"): a query labeled
+    # "exclude" by the AI relevance pass is never picked as the driving
+    # query, however high its impressions or how well it sits in the
+    # position band — falls back to the same honest evidence-gap sentence
+    # as having no query data at all, rather than forcing a recommendation
+    # on a noise query.
+    pages = [{"page": "https://x.com/hydraulic-lifts", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    page_query_rows = [
+        {"page": "https://x.com/hydraulic-lifts", "query": "unrelated celebrity gossip", "impressions": 900,
+         "clicks": 9, "ctr": 0.01, "position": 5.0, "relevance": "exclude"},
+    ]
+    flagged = build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens={"acme"})
+    assert len(flagged) == 1
+    assert flagged[0]["driving_query"] is None
+    assert flagged[0]["recommended_action"] == "Insufficient query-level GSC evidence."
+    assert flagged[0]["evidence_confidence"] == "low"
+
+
+def test_search_opportunity_pages_falls_back_to_a_relevant_query_when_the_top_one_is_excluded():
+    pages = [{"page": "https://x.com/hydraulic-lifts", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    page_query_rows = [
+        {"page": "https://x.com/hydraulic-lifts", "query": "unrelated celebrity gossip", "impressions": 900,
+         "clicks": 9, "ctr": 0.01, "position": 5.0, "relevance": "exclude"},
+        {"page": "https://x.com/hydraulic-lifts", "query": "hydraulic lifts", "impressions": 500, "clicks": 5,
+         "ctr": 0.01, "position": 5.5, "relevance": "highly_relevant"},
+    ]
+    flagged = build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens={"acme"})
+    assert flagged[0]["driving_query"] == "hydraulic lifts"
+
+
+def test_search_opportunity_pages_keeps_a_query_that_was_never_classified():
+    # Outside the AI candidate pool (no "relevance" key at all) — fail-open,
+    # kept and still usable as a driving query, same as every other
+    # relevance filter in this codebase.
+    pages = [{"page": "https://x.com/hydraulic-lifts", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    page_query_rows = [
+        {"page": "https://x.com/hydraulic-lifts", "query": "hydraulic lifts", "impressions": 800, "clicks": 8,
+         "ctr": 0.01, "position": 5.5},
+    ]
+    flagged = build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens={"acme"})
+    assert flagged[0]["driving_query"] == "hydraulic lifts"
+
+
 def test_search_opportunity_pages_keeps_page_with_mixed_brand_and_nonbrand_queries():
     pages = [{"page": "https://x.com/about", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
     page_query_rows = [

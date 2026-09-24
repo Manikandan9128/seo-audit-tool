@@ -4027,6 +4027,14 @@ def _sop_page_query_index(page_query_rows: list[dict] | None, brand_tokens) -> d
             "ctr": float(r.get("ctr", 0) or 0) * 100,
             "position": float(r.get("position", 0) or 0),
             "query_type": _sop_query_type(query, brand_tokens),
+            # 2026-09-24 spec: "exclude irrelevant/noise queries even if
+            # they have high impressions" — stamped upstream (site_audit.py
+            # _filter_search_opportunity_queries) the same AI relevance
+            # classification the Keyword Gap slides use. No key at all
+            # means "not sent to the AI" (outside the candidate pool),
+            # never treated as excluded — same fail-open discipline as
+            # every other relevance filter in this codebase.
+            "relevance": r.get("relevance"),
         })
     return index
 
@@ -4038,11 +4046,19 @@ def _sop_driving_query(queries: list[dict]) -> dict | None:
     impressions. Branded queries are never used to justify an incremental
     SEO recommendation — a branded query's low CTR often reflects
     navigational intent, not a fixable SERP problem, even when it's the
-    page's biggest query by volume."""
+    page's biggest query by volume.
+
+    2026-09-24 spec ("Page/Query Relevance Fix"): a query the AI relevance
+    pass labeled "exclude" (off-topic/noise, not genuinely relevant to the
+    business) is never picked either, however high its impressions or how
+    well it sits in the position band — "do not recommend optimization
+    based on impressions or ranking alone." A query never sent to the AI
+    (no "relevance" key) is kept, same fail-open rule as everywhere else."""
     candidates = [
         q for q in queries
         if q["query_type"] == "non_brand" and q["impressions"] >= _SOP_QUERY_MIN_IMPRESSIONS
         and _SOP_POSITION_LO <= q["position"] <= _SOP_POSITION_HI
+        and q.get("relevance") != "exclude"
     ]
     return max(candidates, key=lambda q: q["impressions"]) if candidates else None
 
@@ -4100,7 +4116,10 @@ def build_search_opportunity_pages(
     (branded demand isn't a clear incremental non-brand SEO opportunity); a
     page with no query breakdown at all still qualifies, just with the
     fixed "Insufficient query-level GSC evidence." action instead of a
-    guessed one.
+    guessed one. Same fallback for a page whose only qualifying queries
+    were AI-labeled off-topic/irrelevant (2026-09-24 spec) — the page can
+    still be a real opportunity, it just never gets a recommendation
+    forced onto an irrelevant query (_sop_driving_query skips them).
 
     Priority is impressions-only (a real, observed signal, not a modeled
     CTR-gap x impressions score — that formula was the exact "universal
