@@ -18,6 +18,7 @@ from app.services.keyword_intelligence_service import (
     smart_title,
 )
 from app.services.keyword_relevance_service import classify_page_type
+from app.services.keyword_semantic_signals import combined_similarity
 from app.services.keyword_site_model import geo_served, keyword_audience_from_site
 
 # ---------------------------------------------------------------------------
@@ -178,9 +179,22 @@ def intent_similarity(a: list[dict], b: list[dict]) -> float:
     return round(dot / (na * nb), 2) if na and nb else 0.0
 
 
-def deepen_topics(topics: list[dict], summaries: list[dict]) -> None:
-    """§18 subtopic + intent levels, §14 intent-similar sibling pairs, and
-    §38 topical-authority breakdown, added onto each topic in place."""
+def _representative_row(summary: dict) -> dict | None:
+    """The cluster's own primary keyword's row when set, else its first
+    row — used wherever a cluster-level zero-API similarity check
+    (keyword_semantic_signals.combined_similarity) needs ONE row to stand
+    in for the whole cluster rather than comparing every row pair."""
+    rows = summary.get("rows") or []
+    if not rows:
+        return None
+    primary = summary.get("primary_keyword")
+    return next((r for r in rows if r.get("keyword") == primary), rows[0])
+
+
+def deepen_topics(topics: list[dict], summaries: list[dict], idf: dict[str, float] | None = None) -> None:
+    """§18 subtopic + intent levels, §14 intent-similar sibling pairs,
+    §12/§15 zero-API same-need sibling pairs, and §38 topical-authority
+    breakdown, added onto each topic in place."""
     by_name = {s["name"]: s for s in summaries}
     for t in topics:
         members = [by_name[n] for n in t["clusters"] if n in by_name]
@@ -191,13 +205,31 @@ def deepen_topics(topics: list[dict], summaries: list[dict]) -> None:
             sub = smart_title(" ".join(words)) or "Core"
             hierarchy.setdefault(sub, {}).setdefault(s.get("dominant_family") or "Commercial", []).append(s["name"])
         t["hierarchy"] = hierarchy
-        pairs = []
+        pairs, semantic_pairs = [], []
         for i, a in enumerate(members):
             for b in members[i + 1:]:
                 sim = intent_similarity(a["rows"], b["rows"])
                 if sim >= 0.9:
                     pairs.append({"a": a["name"], "b": b["name"], "intent_similarity": sim})
+                if idf:
+                    ra, rb = _representative_row(a), _representative_row(b)
+                    if ra and rb:
+                        score = combined_similarity(ra, rb, idf)
+                        # 0.65 — empirically, a genuine same-need pair with
+                        # zero literal word overlap (the exact case only the
+                        # AI grouping step used to catch) scores ~0.65; a
+                        # coincidentally-same-category pair with a real
+                        # different need scores ~0.60. Close enough that
+                        # false positives WILL happen — acceptable only
+                        # because this surfaces a REVIEW QUEUE item, never
+                        # an automatic merge (a wrongly-merged cluster is
+                        # much costlier than one dismissed review line). See
+                        # keyword_semantic_signals.py and the regression
+                        # this caused when tried in the actual merge test.
+                        if score >= 0.65:
+                            semantic_pairs.append({"a": a["name"], "b": b["name"], "combined_similarity": score})
         t["intent_similar_pairs"] = pairs[:5]
+        t["semantic_similar_pairs"] = semantic_pairs[:3]
         covered = [s for s in members if s.get("match_strength") in ("strong", "partial")]
         t["entity_coverage"] = sorted({r.get("entity_type") for s in covered for r in s["rows"] if r.get("entity_type")})
         t["audience_coverage"] = sorted({r.get("audience") for s in covered for r in s["rows"] if r.get("audience")})
@@ -470,6 +502,11 @@ def extra_review_items(summaries: list[dict], patterns: list[dict], topics: list
             items.append({"type": "Possible same-need clusters", "item": f"{pair['a']} / {pair['b']}",
                           "detail": f"{int(pair['intent_similarity'] * 100)}% intent overlap — confirm whether these answer "
                                     "the same need and should share one page."})
+        for pair in t.get("semantic_similar_pairs") or []:
+            items.append({"type": "Possible same-need clusters (zero-API signal)", "item": f"{pair['a']} / {pair['b']}",
+                          "detail": f"{int(pair['combined_similarity'] * 100)}% combined similarity (semantic + intent + "
+                                    "entity + user need + audience + modifier — see SERP_API_Alternatives_for_SEO_"
+                                    "Keyword_Clustering.docx) — confirm whether these answer the same need."})
     for s in sorted(summaries, key=lambda s: -(s.get("opportunity") or 0)):
         if s.get("roadmap_priority") not in ("High", "Medium"):
             continue

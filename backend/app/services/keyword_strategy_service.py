@@ -31,6 +31,7 @@ from app.services.keyword_intelligence_service import (
     singularize,
     smart_title,
 )
+from app.services.keyword_semantic_signals import build_corpus_idf
 
 # §31 starting model. The spec says these "must be configurable" and are
 # "not universal SEO laws" — change them here, nowhere else. SERP
@@ -948,7 +949,8 @@ def build_full_keyword_strategy(summaries: list[dict], context: dict | None = No
     depth.primary_keyword_scores(summaries, site_model)
     depth.target_evidence(summaries, site_model)
     depth.extra_links(topics, summaries)
-    depth.deepen_topics(topics, summaries)
+    idf = build_corpus_idf([r.get("keyword") or "" for s in summaries for r in s["rows"]])
+    depth.deepen_topics(topics, summaries, idf)
     depth.cluster_outputs(summaries)
     cannibalization = depth.cannibalization_similarity(detect_cannibalization(ctx.get("page_query_rows")), site_model)
     patterns = depth.programmatic_patterns(summaries)

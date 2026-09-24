@@ -1,6 +1,8 @@
 # Universal SEO Keyword Intelligence — spec coverage
 
-Source prompt: `UNIVERSAL SEO KEYWORD INTELLIGENCE, CLUSTERING & TARGETING ENGINE.docx` (given 2026-09-23).
+Source prompt: `UNIVERSAL SEO KEYWORD INTELLIGENCE, CLUSTERING & TARGETING ENGINE.docx` (given 2026-09-23), plus
+`SERP_API_Alternatives_for_SEO_Keyword_Clustering.docx` (given 2026-09-24, after the user ruled out a paid SERP
+API — 17 zero-cost signals to approximate what SERP data would have told the engine).
 
 This file is the single place that says what of the prompt is built. **Update it in the same commit as any
 keyword-engine change.** "Done" means: in the code, reaching the report (slide and/or Sheet), and covered by
@@ -9,17 +11,22 @@ a test. Anything left out is listed with its reason — never dropped silently.
 Status: **Done** · **Partial** (what's missing is named) · **Blocked** (needs a data source, not code)
 
 Main files: `app/services/keyword_intelligence_service.py` (per keyword), `keyword_cluster_pipeline.py`
-(automatic clustering), `keyword_strategy_service.py` (cluster/strategy layer), `keyword_relevance_service.py`
-(relevance, brands, junk, page matching), `strategic_keyword_selection_service.py` (client cluster sheet),
-`google_sheets_service.py` (Sheet), `app/reporting/pptx_builder.py` (slides), `app/api/routes/site_audit.py` (wiring).
+(automatic clustering), `keyword_strategy_service.py` (cluster/strategy layer), `keyword_strategy_depth.py`
+(website-model-aware strategy signals), `keyword_site_model.py` (crawl-derived site model), `keyword_semantic_signals.py`
+(zero-API TF-IDF/combined-score/graph-clustering signals), `keyword_history_service.py` (§31/§63 decision history),
+`keyword_relevance_service.py` (relevance, brands, junk, page matching), `strategic_keyword_selection_service.py`
+(client cluster sheet), `google_sheets_service.py` (Sheet), `app/reporting/pptx_builder.py` (slides),
+`app/api/routes/site_audit.py` (wiring).
 
 Tests: `tests/test_keyword_intelligence_engine.py`, `test_keyword_strategy_service.py`,
-`test_keyword_engine_quality_fixes.py`, `test_keyword_spec_coverage.py`.
+`test_keyword_engine_quality_fixes.py`, `test_keyword_spec_coverage.py`, `test_keyword_engine_depth.py`,
+`test_keyword_semantic_signals.py`, `test_keyword_history_service.py`.
 
-**Strict count (every point inside a section must be built for Done): 41 Done · 24 Partial · 4 Blocked — of 69.** Of
+**Strict count (every point inside a section must be built for Done): 42 Done · 24 Partial · 3 Blocked — of 69.** Of
 the Partial ones, all now need either SERP data (Semrush API, ruled out 2026-09-24), the AI grouping step (beyond
-the curated abbreviation list), or a review-queue UI (§63's `outcome` flag) — none are code-only anymore as of the
-2026-09-24 depth pass (`keyword_site_model.py`, `keyword_strategy_depth.py`, `keyword_history_service.py`).
+the curated abbreviation list and the zero-API review-queue signal), or a review-queue UI (§63's `outcome` flag) —
+none are code-only anymore as of the 2026-09-24 depth pass (`keyword_site_model.py`, `keyword_strategy_depth.py`,
+`keyword_history_service.py`, `keyword_semantic_signals.py`).
 
 | § | Section | Status | What's missing | Needs |
 |---|---|---|---|---|
@@ -35,11 +42,11 @@ the curated abbreviation list), or a review-queue UI (§63's `outcome` flag) —
 | 10 | Funnel stage | Done | — | — |
 | 11 | Audience | Done | `keyword_audience_from_site` — audience/industry the site itself serves, read from its pages | — |
 | 12 | Geographic intent | Done | `geo_served` — listed location / country-level / not listed, read from crawl + overview | — |
-| 13 | Semantic relationship (embeddings) | Blocked | no similarity score | AI grouping step working |
+| 13 | Semantic relationship (embeddings) | Done | `keyword_semantic_signals.semantic_similarity` — TF-IDF cosine over this report's own keyword corpus, no pretrained model/paid API (the spec's own "or equivalent language understanding" alternative); real limitation: can't bridge two keywords with zero literal token overlap (e.g. "dba"/"database" — abbreviation expansion already handles that specific case) | — |
 | 14 | Search intent relationship (intent similarity) | Done | `intent_similarity` cosine score; sibling pairs >=0.9 surfaced as a "Possible same-need clusters" review item | — |
 | 15 | SERP analysis / overlap | Blocked | no SERP data | SERP data (Semrush API) |
 | 16 | Page cohesion score | Blocked | needs SERP overlap | SERP data (Semrush API) |
-| 17 | Same page vs separate page | Partial | curated-abbreviation merges now work without AI (dba/hr/it/...); a real synonym pair outside that list, or the SERP criterion, still needs AI/SERP | AI grouping step working |
+| 17 | Same page vs separate page | Partial | curated-abbreviation merges work without AI; a zero-API combined-signal score (SERP-alternatives doc item 15) flags likely-same-need pairs for the REVIEW QUEUE (not auto-merge — tried as an automatic merge once, regressed a guardrail test, reverted); the SERP criterion itself still needs SERP | SERP data (Semrush API) |
 | 18 | Topic hierarchy (root->entity->parent->subtopic->intent->cluster) | Done | `deepen_topics` hierarchy dict — Sheet "Topic Hierarchy" tab | — |
 | 19 | Primary keyword selection | Done | `primary_keyword_scores` — 7-factor score picks the primary in non-AI clusters | — |
 | 20 | Primary keyword score (normalized components) | Done | 0-100 `primary_score` per keyword — Sheet column | — |
@@ -50,7 +57,7 @@ the curated abbreviation list), or a review-queue UI (§63's `outcome` flag) —
 | 25 | Content gap detection | Done | — | — |
 | 26 | Competitor gap analysis | Done | — | — |
 | 27 | Programmatic SEO detection | Partial | entity x dimension patterns built (`programmatic_patterns`); 'search engines would rank each page' still needs SERP | SERP data (Semrush API) |
-| 28 | Clustering algorithm (10 signals) | Partial | no SERP / semantic similarity in scoring | SERP data (Semrush API) |
+| 28 | Clustering algorithm (10 signals) | Partial | `combined_similarity` now scores semantic/intent/entity/user-need/audience/modifier/architecture/keyword-page (8 of 10), used for the review queue; not woven into the core clustering decision itself (regression risk, see §17); still no SERP | SERP data (Semrush API) |
 | 29 | Cluster types | Done | — | — |
 | 30 | Cluster confidence | Done | — | — |
 | 31 | Opportunity score (+ recalibration) | Done | `keyword_history_service` — per-cluster decisions stored on `clients.keyword_decision_history`, `recalibrate()` nudges opportunity by (cluster_type, business_rule) accept-rate once a group has 5+ judged outcomes; neutral (no effect) until `outcome` is set (see §63) | — |
@@ -63,9 +70,9 @@ the curated abbreviation list), or a review-queue UI (§63's `outcome` flag) —
 | 38 | Topical authority model | Done | entity/audience/commercial-vs-informational coverage feeds each topic's `authority_level` — Sheet column | — |
 | 39 | Near-duplicate intent | Done | — | — |
 | 40 | Do not over-cluster | Done | — | — |
-| 41 | Do not over-split | Partial | curated-abbreviation pairs no longer split without AI; other synonym clusters still do | AI grouping step working |
+| 41 | Do not over-split | Partial | curated-abbreviation pairs no longer split without AI; a zero-API-signal review item flags other likely-same-need splits for a human to merge manually; nothing auto-merges without AI | AI grouping step working |
 | 42 | Cluster split test | Partial | SERP questions unanswered | SERP data (Semrush API) |
-| 43 | Cluster merge test | Partial | same-entity by wording + curated abbreviations; SERP question unanswered | AI grouping step working |
+| 43 | Cluster merge test | Partial | same-entity by wording + curated abbreviations, auto-merged; zero-API combined-signal matches surfaced as a review item, not auto-merged (see §17); SERP question unanswered | SERP data (Semrush API) |
 | 44 | Temporal analysis | Done | — | — |
 | 45 | Brand vs non-brand | Done | — | — |
 | 46 | Competitor / alternative intent checks | Done | `apply_business_rules` §46 — a named-competitor comparison without a matching own offer goes to REVIEW | — |
@@ -84,7 +91,7 @@ the curated abbreviation list), or a review-queue UI (§63's `outcome` flag) —
 | 59 | Programmatic output (11 fields) | Partial | dimensions/example queries/demand/relevance/uniqueness/content requirements/risk/recommendation built; SERP validation explicitly marked unavailable | SERP data (Semrush API) |
 | 60 | Explainability | Done | — | — |
 | 61 | Confidence model | Done | — | — |
-| 62 | Human-in-the-loop review queue (10 types) | Done | added Programmatic opportunity, Conflicting signals, and Possible same-need clusters (§14) review types | — |
+| 62 | Human-in-the-loop review queue (10 types) | Done | added Programmatic opportunity, Conflicting signals, Possible same-need clusters (§14 intent-similarity), and Possible same-need clusters (zero-API signal) (SERP-alternatives combined score) review types | — |
 | 63 | Learning system | Partial | approvals/outcomes now stored (`keyword_decision_history`, one row per cluster, upserted every report run) and feed §31's recalibration; `outcome` itself is a manual DB flag — there's no review-queue UI yet to set accepted/rejected from the report | Review-queue UI |
 | 64 | Anti-bias rules | Done | — | — |
 | 65 | Final decision framework | Partial | SERP step | SERP data (Semrush API) |
@@ -126,8 +133,26 @@ regression cases:
   merge known-limit without needing the AI grouping step or the (ruled-out) Semrush API: §17, §41, §43.
 - 2026-09-24 `db59704` per-page authority (`_target_page_authority`) grouped from the Backlinks export already
   parsed, by target URL — no new data source. Closes the last code-buildable piece of §23.
-- 2026-09-24 (this change) `keyword_history_service.py` (new): per-cluster decision history stored on
+- 2026-09-24 `b475ab7` `keyword_history_service.py` (new): per-cluster decision history stored on
   `clients.keyword_decision_history` (migration `a4c8e2f61d90`), upserted every report run; `recalibrate()` nudges
   §31 opportunity scoring once a (cluster_type, business_rule) group has 5+ manually-judged outcomes. No review UI
   this pass (user's call) — `outcome` is a manual DB flag, so this is inert until someone sets one. §31 -> Done,
   §63 Blocked -> Partial. 537 tests pass (5 new).
+- 2026-09-24 (this change) `keyword_semantic_signals.py` (new), built from `SERP_API_Alternatives_for_SEO_Keyword_
+  Clustering.docx` (given after the user ruled out a paid SERP API): TF-IDF cosine similarity over this report's
+  own keyword corpus stands in for embeddings (§13 -> Done); combined with the engine's existing intent/entity/
+  user-need/audience/modifier/keyword-page/architecture signals into one configurable weighted score
+  (`combined_similarity`, doc item 15); a dependency-free union-find `graph_cluster` stands in for HDBSCAN (doc
+  items 12/13, built and tested, not yet wired into the clustering pipeline itself). Wired into
+  `keyword_strategy_depth.deepen_topics` as a NEW "Possible same-need clusters (zero-API signal)" review-queue
+  item only — **not** into automatic merging: a first attempt to fold `combined_similarity` into
+  `keyword_cluster_pipeline._merge_same_page_clusters`'s merge test regressed two guardrail tests (over-merged
+  "sql index"/"sql backup", which only share a site-wide head word) because `current_url`/`intent_family` are
+  already pre-equalized by that caller, making those two signal components worthless discriminators there and
+  inflating the score — reverted. Threshold (0.65) picked from real measured scores, not guessed: a genuine
+  same-need pair with zero literal overlap ("remote dba services"/"database support services") scores ~0.65; a
+  same-category-different-need pair scores ~0.60 — close, but acceptable because this only ever surfaces a review
+  line, never a silent merge. §13 Blocked -> Done; §17/§28/§41/§43 narrowed further. Not built this round: doc
+  item 10 (competitor website crawl — needs new crawl infrastructure, separate scope) and weaving
+  `combined_similarity` into the core clustering decision itself (the regression above). 563 tests pass (12 new:
+  `test_keyword_semantic_signals.py` + 3 in `test_keyword_engine_depth.py`).

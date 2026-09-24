@@ -7,8 +7,10 @@ from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _audit_slide_geometry, 
 from app.services.google_sheets_service import keyword_strategy_tabs
 from app.services.keyword_intelligence_service import annotate_keyword_rows
 from app.services.keyword_site_model import _target_page_authority, build_site_model, geo_served, keyword_audience_from_site
+from app.services.keyword_semantic_signals import build_corpus_idf
 from app.services.keyword_strategy_depth import (
-    cannibalization_similarity, content_gaps, entity_relationship, extra_review_items, programmatic_patterns,
+    cannibalization_similarity, content_gaps, deepen_topics, entity_relationship, extra_review_items,
+    programmatic_patterns,
 )
 from app.services.keyword_strategy_service import build_full_keyword_strategy
 from pptx import Presentation
@@ -201,3 +203,40 @@ def test_keyword_master_fallback_slide_when_no_sheet():
     assert slide is not None
     assert _audit_slide_geometry(prs) == []
     assert add_keyword_master_slide(prs, None) is None
+
+
+# §12/§15 zero-API same-need review signal (SERP_API_Alternatives doc, 2026-09-24) -----
+def test_deepen_topics_flags_a_genuine_zero_overlap_same_need_pair():
+    a = _summary("Remote DBA", [("remote dba services", 900)], url=None, strength="none")
+    b = _summary("Database Support", [("database support services", 700)], url=None, strength="none")
+    for s in (a, b):
+        for r in s["rows"]:
+            r["entity_type"] = "Service"
+            r["user_need"] = "hire a database administrator"
+    topic = {"parent": "database", "clusters": ["Remote DBA", "Database Support"], "covered": 0, "total": 2, "links": []}
+    idf = build_corpus_idf([r["keyword"] for s in (a, b) for r in s["rows"]])
+    deepen_topics([topic], [a, b], idf)
+    assert topic["semantic_similar_pairs"]
+    assert {topic["semantic_similar_pairs"][0]["a"], topic["semantic_similar_pairs"][0]["b"]} == {"Remote DBA", "Database Support"}
+    items = extra_review_items([a, b], [], [topic])
+    assert any(i["type"] == "Possible same-need clusters (zero-API signal)" for i in items)
+
+
+def test_deepen_topics_does_not_flag_unrelated_clusters_in_the_same_topic():
+    a = _summary("Payroll Pricing", [("payroll pricing", 900)], family="Transactional")
+    b = _summary("Payroll Careers", [("payroll company careers", 200)], family="Navigational")
+    for s in (a, b):
+        for r in s["rows"]:
+            r["entity_type"] = None
+            r["user_need"] = None
+    topic = {"parent": "payroll", "clusters": ["Payroll Pricing", "Payroll Careers"], "covered": 0, "total": 2, "links": []}
+    idf = build_corpus_idf([r["keyword"] for s in (a, b) for r in s["rows"]])
+    deepen_topics([topic], [a, b], idf)
+    assert topic["semantic_similar_pairs"] == []
+
+
+def test_deepen_topics_is_a_noop_without_idf():
+    a = _summary("Remote DBA", [("remote dba services", 900)])
+    topic = {"parent": "database", "clusters": ["Remote DBA"], "covered": 0, "total": 1, "links": []}
+    deepen_topics([topic], [a])  # no idf passed
+    assert topic["semantic_similar_pairs"] == []
