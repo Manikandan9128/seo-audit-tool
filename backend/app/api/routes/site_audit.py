@@ -733,6 +733,25 @@ def _save_keyword_cache(client: Client, cache: KeywordIntelligenceCache | None, 
         db.rollback()
 
 
+def _save_keyword_decision_history(client: Client, keyword_strategy: dict | None, db: Session) -> None:
+    """§31/§63 — records this run's cluster decisions for future
+    recalibration. Best-effort, same as the AI cache: a failed save only
+    costs the next report a fresh (still-neutral) recalibration read."""
+    if not keyword_strategy:
+        return
+    from datetime import datetime, timezone
+
+    from app.services.keyword_history_service import record_run
+    try:
+        client.keyword_decision_history = record_run(
+            client.keyword_decision_history, keyword_strategy, datetime.now(timezone.utc).isoformat(),
+        )
+        db.commit()
+    except Exception as e:
+        logger.warning("Saving keyword decision history failed for client %s: %s", client.id, e)
+        db.rollback()
+
+
 def _competitor_brand_tokens(client: Client, gap_domains: set, domain_overview_rows: list[dict]) -> set[str]:
     competitor_domains = set(gap_domains or set()) | {
         r.get("domain") for r in (domain_overview_rows or []) if r.get("domain")
@@ -753,6 +772,7 @@ def _keyword_strategy_context(
     page x query rows for §24/§58 cannibalization, brand lists for §45,
     dead crawled URLs for §53 REDIRECT, routed-out keyword counts for the
     §62 review queue."""
+    from app.services.keyword_history_service import recalibrate as _recalibrate_history
     own = _own_brand_tokens(client)
     authority = own_domain_rating
     if authority in (None, ""):
@@ -780,6 +800,9 @@ def _keyword_strategy_context(
         # §3/§4/§11/§12/§23/§24/§57 website model (keyword_site_model).
         "page_clicks": page_clicks,
         "site_model": build_site_model(site_audit_pages_rows, company_overview, page_clicks, backlink_rows),
+        # §31/§63 — neutral (1.0) for every group until outcomes are
+        # manually recorded on client.keyword_decision_history.
+        "history_multipliers": _recalibrate_history(client.keyword_decision_history),
     }
 
 
@@ -2532,6 +2555,7 @@ def _gather_report_data(
     else:
         keyword_strategy = build_full_keyword_strategy(summaries_from_keyword_rows(keyword_rows_all or []), strategy_context)
     _save_keyword_cache(client, kw_cache, db)
+    _save_keyword_decision_history(client, keyword_strategy, db)
 
     return {
         "site_audit": site_audit_result,

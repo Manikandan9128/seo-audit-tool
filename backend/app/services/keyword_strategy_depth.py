@@ -437,6 +437,25 @@ def programmatic_patterns(summaries: list[dict]) -> list[dict]:
     return out[:15]
 
 
+def apply_history_recalibration(summaries: list[dict], multipliers: dict[tuple, float] | None) -> None:
+    """§31 — nudges each cluster's opportunity score (and its keywords'
+    opportunity_score) by its (cluster_type, business_rule) group's
+    historical accept-rate multiplier. Every multiplier defaults to 1.0
+    (no data yet, see keyword_history_service.recalibrate), so this is a
+    no-op until real outcomes accumulate."""
+    if not multipliers:
+        return
+    from app.services.keyword_history_service import multiplier_for
+    for s in summaries:
+        m = multiplier_for(s, multipliers)
+        if m == 1.0:
+            continue
+        s["opportunity"] = round((s.get("opportunity") or 0) * m)
+        for r in s["rows"]:
+            r["opportunity_score"] = round((r.get("opportunity_score") or 0) * m)
+            r["cluster_opportunity"] = s["opportunity"]
+
+
 def extra_review_items(summaries: list[dict], patterns: list[dict], topics: list[dict] | None = None) -> list[dict]:
     """§62 — the review types the first queue didn't produce: programmatic
     opportunities, conflicting signals (Google ranks a page whose type

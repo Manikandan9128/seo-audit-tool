@@ -944,6 +944,7 @@ def build_full_keyword_strategy(summaries: list[dict], context: dict | None = No
     assign_cluster_types(summaries, topics, business_model)
     assign_decisions(summaries, ctx.get("dead_urls"))
     depth.apply_business_rules(summaries, site_model, business_model, brands.get("competitor"))
+    depth.apply_history_recalibration(summaries, ctx.get("history_multipliers"))
     depth.primary_keyword_scores(summaries, site_model)
     depth.target_evidence(summaries, site_model)
     depth.extra_links(topics, summaries)

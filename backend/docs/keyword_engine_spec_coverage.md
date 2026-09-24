@@ -16,10 +16,10 @@ Main files: `app/services/keyword_intelligence_service.py` (per keyword), `keywo
 Tests: `tests/test_keyword_intelligence_engine.py`, `test_keyword_strategy_service.py`,
 `test_keyword_engine_quality_fixes.py`, `test_keyword_spec_coverage.py`.
 
-**Strict count (every point inside a section must be built for Done): 40 Done · 24 Partial · 5 Blocked — of 69.** Of
-the Partial ones, all now need either SERP data (Semrush API, still deferred), the AI grouping step, stored history,
-or a data source the crawl/Sheets export doesn't carry (e.g. per-page backlink authority) — none are code-only
-anymore as of the 2026-09-24 depth pass (`keyword_site_model.py` + `keyword_strategy_depth.py`).
+**Strict count (every point inside a section must be built for Done): 41 Done · 24 Partial · 4 Blocked — of 69.** Of
+the Partial ones, all now need either SERP data (Semrush API, ruled out 2026-09-24), the AI grouping step (beyond
+the curated abbreviation list), or a review-queue UI (§63's `outcome` flag) — none are code-only anymore as of the
+2026-09-24 depth pass (`keyword_site_model.py`, `keyword_strategy_depth.py`, `keyword_history_service.py`).
 
 | § | Section | Status | What's missing | Needs |
 |---|---|---|---|---|
@@ -53,7 +53,7 @@ anymore as of the 2026-09-24 depth pass (`keyword_site_model.py` + `keyword_stra
 | 28 | Clustering algorithm (10 signals) | Partial | no SERP / semantic similarity in scoring | SERP data (Semrush API) |
 | 29 | Cluster types | Done | — | — |
 | 30 | Cluster confidence | Done | — | — |
-| 31 | Opportunity score (+ recalibration) | Partial | weights configurable; recalibration from history not possible | Stored history |
+| 31 | Opportunity score (+ recalibration) | Done | `keyword_history_service` — per-cluster decisions stored on `clients.keyword_decision_history`, `recalibrate()` nudges opportunity by (cluster_type, business_rule) accept-rate once a group has 5+ judged outcomes; neutral (no effect) until `outcome` is set (see §63) | — |
 | 32 | Difficulty interpretation | Done | KD read against own DR AND own topical authority (pages already covering the topic) | — |
 | 33 | Search volume interpretation | Done | — | — |
 | 34 | SERP intent validation | Blocked | no SERP data | SERP data (Semrush API) |
@@ -85,7 +85,7 @@ anymore as of the 2026-09-24 depth pass (`keyword_site_model.py` + `keyword_stra
 | 60 | Explainability | Done | — | — |
 | 61 | Confidence model | Done | — | — |
 | 62 | Human-in-the-loop review queue (10 types) | Done | added Programmatic opportunity, Conflicting signals, and Possible same-need clusters (§14) review types | — |
-| 63 | Learning system | Blocked | needs stored approvals + outcomes | Stored history |
+| 63 | Learning system | Partial | approvals/outcomes now stored (`keyword_decision_history`, one row per cluster, upserted every report run) and feed §31's recalibration; `outcome` itself is a manual DB flag — there's no review-queue UI yet to set accepted/rejected from the report | Review-queue UI |
 | 64 | Anti-bias rules | Done | — | — |
 | 65 | Final decision framework | Partial | SERP step | SERP data (Semrush API) |
 | 66 | Required final report A-K | Done | B now always reaches the report (Sheet tab, or a fallback slide when Sheets isn't connected); C has subtopic/intent levels | — |
@@ -124,10 +124,10 @@ regression cases:
   §20, §32, §36, §37, §38, §46-§52, §66 -> Done; code-buildable part of §23, §24, §27, §54, §55, §58, §59 finished.
 - 2026-09-24 curated abbreviation dictionary (`expand_abbreviations`) fixes the documented "dba" / "database"
   merge known-limit without needing the AI grouping step or the (ruled-out) Semrush API: §17, §41, §43.
-- 2026-09-24 (this change) per-page authority (`_target_page_authority`) grouped from the Backlinks export already
+- 2026-09-24 `db59704` per-page authority (`_target_page_authority`) grouped from the Backlinks export already
   parsed, by target URL — no new data source. Closes the last code-buildable piece of §23.
-- 2026-09-24 (this change) `keyword_site_model.py` (new) + `keyword_strategy_depth.py` (new): §3, §4, §6, §11, §12,
-  §14, §18, §19, §20, §32, §36, §37, §38, §46-§52, §66 moved Partial -> Done; §23, §24, §27, §54, §55, §58, §59 had
-  their code-buildable part finished (SERP-only piece remains). 10 new tests (`test_keyword_engine_depth.py`), 530
-  total pass. Strict count: 24 Done -> 40 Done of 69; 40 Partial -> 24 Partial (all now genuinely blocked on SERP
-  data, the AI grouping step, stored history, or per-page backlink data — none code-only).
+- 2026-09-24 (this change) `keyword_history_service.py` (new): per-cluster decision history stored on
+  `clients.keyword_decision_history` (migration `a4c8e2f61d90`), upserted every report run; `recalibrate()` nudges
+  §31 opportunity scoring once a (cluster_type, business_rule) group has 5+ manually-judged outcomes. No review UI
+  this pass (user's call) — `outcome` is a manual DB flag, so this is inert until someone sets one. §31 -> Done,
+  §63 Blocked -> Partial. 537 tests pass (5 new).
