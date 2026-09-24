@@ -2257,6 +2257,25 @@ def build_schema_report_parts(schema_validation: dict) -> dict:
             "coverage_is_traffic_weighted": False, "site_level": False,
         })
 
+    # Schema the site already HAS but that no row above covers (e.g.
+    # FAQPage on BharatBenz's /trucks and /buses pages): previously only
+    # recommended types got a row, so a deck said nothing about schema that
+    # actually exists — and Core Problem could then claim "every page lacks
+    # JSON-LD" while SEO Goals counted 26 pages carrying it (2026-09-23).
+    # Reported as detected-only: Present/Valid are real counts; Applicable/
+    # Missing/Coverage are "—" because no page-type rule says where it
+    # should be.
+    listed = {r["schema_type"] for r in part2}
+    for t, n in sorted(type_coverage.items(), key=lambda kv: -kv[1]):
+        if not n or t in listed or t in ("WebSite", "Organization", "BreadcrumbList"):
+            continue
+        invalid = min(missing_props_by_type.get(t, 0), n)
+        part2.append({
+            "schema_type": f"{t} (detected)", "applicable": "—", "present": n, "valid": n - invalid,
+            "invalid": invalid, "missing": "—", "coverage_pct": None,
+            "coverage_is_traffic_weighted": False, "site_level": False, "detected_only": True,
+        })
+
     # Other Pages always last (spec rule 1/11) — never a schema gap, never
     # counted toward content_pages_total, no Part 2 row at all (it has no
     # applicable schema to validate).
@@ -2362,7 +2381,7 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
         ]
         y = _draw_table(
             slide, ["Schema Type", "Applicable", "Present", "Valid", "Invalid", "Missing", "Coverage %"], rows2, y,
-            col_widths=[2.2, 1.6, 1.4, 1.4, 1.4, 1.4, 2.7], left=left, width=width, row_cap=6, row_height=ROW_H,
+            col_widths=[2.2, 1.6, 1.4, 1.4, 1.4, 1.4, 2.7], left=left, width=width, row_cap=8, row_height=ROW_H,
         ) + Inches(0.15)
         # Transparency note (2026-09-16 spec: never present a page-count %
         # as if it were traffic-weighted) — only shown when at least one row
