@@ -573,6 +573,54 @@ def test_geographic_mismatch_row_routes_to_out_of_market_cluster():
     assert by_kw["heavy truck dealer near me"]["cluster"] != _GEO_ROUTE_CLUSTER_LABEL
 
 
+def test_native_semrush_cluster_column_still_gets_full_enrichment():
+    # Regression (confirmed real, Geopits report, 2026-09-24): a Semrush
+    # export that already carries a Cluster/Topic column used to skip this
+    # whole function at the site_audit.py call site — every row kept its
+    # native cluster label, but with no cluster_confidence, no primary-
+    # keyword scoring, and no existing-page matching, because the guard
+    # predated everything this pipeline does beyond clustering itself.
+    # Semrush's own grouping should still be trusted (no AI re-clustering,
+    # same as before), but every enrichment step below it must still run.
+    rows = [
+        {"keyword": "database support services", "cluster": "Database Support Services",
+         "search_volume": 260, "intent": "Commercial Investigation", "page_category": "Service Page"},
+        {"keyword": "remote database support", "cluster": "Database Support Services",
+         "search_volume": 140, "intent": "Commercial", "page_category": "Service Page"},
+    ]
+    with patch(_PHASE2_PATH) as mock_p2, \
+         patch(_PHASE3_PATH) as mock_p3, \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    # No AI re-clustering — Semrush's own grouping is kept as-is.
+    mock_p2.assert_not_called()
+    mock_p3.assert_not_called()
+    assert {r["cluster"] for r in rows} == {"Database Support Services"}
+    # But every downstream enrichment step still ran, unlike before the fix.
+    assert all(r.get("cluster_confidence") is not None for r in rows)
+    assert all(r.get("primary_or_secondary") for r in rows)
+    assert all(r.get("detected_intent") for r in rows)
+
+
+def test_native_semrush_cluster_routes_junk_and_competitor_rows_like_any_report():
+    rows = [
+        {"keyword": "database support services", "cluster": "Database Support Services",
+         "search_volume": 260, "intent": "Commercial", "page_category": "Service Page"},
+        {"keyword": "job openings dba", "cluster": "Database Support Services", "search_volume": 40,
+         "intent": "Informational", "page_category": "Blog / Guide", "relevance_status": "Career / Recruitment Query"},
+    ]
+    with patch(_PHASE2_PATH) as mock_p2, patch(_PHASE3_PATH) as mock_p3, \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    mock_p2.assert_not_called()
+    mock_p3.assert_not_called()
+    by_kw = {r["keyword"]: r for r in rows}
+    assert by_kw["database support services"]["cluster"] == "Database Support Services"
+    assert by_kw["job openings dba"]["cluster"] == _CAREER_ROUTE_CLUSTER_LABEL
+
+
 def test_manual_cluster_map_is_used_and_ai_pipeline_never_runs():
     # User's explicit instruction (2026-09-21): manual clustering is first
     # preference — when a manual_cluster_map is supplied, the AI Phase 2/3

@@ -2045,45 +2045,35 @@ def _gather_report_data(
         # Primary/Secondary -> Existing Page Matching -> Cannibalization
         # Check, all in one pass — see keyword_cluster_pipeline.py's module
         # docstring for why validation/splitting is structural rather than a
-        # separate pass. Only runs when no row already has a real cluster
-        # value (a real Semrush Cluster/Topic column) UNLESS a manual
-        # clustering file exists — manual always overrides even that guard,
-        # since it's the client's own authoritative source of truth.
+        # separate pass. Always runs now (2026-09-24) — this used to skip
+        # entirely whenever any row already carried a real Semrush Cluster/
+        # Topic column, back when the only question was "does this need AI
+        # clustering." Confirmed real on a live Geopits report: that guard
+        # was also skipping intent detection, primary-keyword scoring,
+        # existing-page matching, same-page merging and confidence scoring
+        # — none of which have anything to do with where the cluster label
+        # came from. build_final_keyword_clusters itself now decides,
+        # per-report, whether to trust an already-present native cluster
+        # label (skip re-clustering, keep every enrichment step) or build
+        # clusters from scratch — see its native-cluster branch.
         native_cluster_rows = sum(1 for r in keyword_rows_all if (r.get("cluster") or "").strip())
-        if manual_cluster_map or not native_cluster_rows:
-            logger.info(
-                "Keyword clustering pipeline RUNNING for client %s (manual_cluster_map=%s, "
-                "native_cluster_rows=%d of %d)",
-                client_id, bool(manual_cluster_map), native_cluster_rows, len(keyword_rows_all),
+        logger.info(
+            "Keyword clustering pipeline running for client %s (manual_cluster_map=%s, "
+            "native_cluster_rows=%d of %d)",
+            client_id, bool(manual_cluster_map), native_cluster_rows, len(keyword_rows_all),
+        )
+        try:
+            build_final_keyword_clusters(
+                keyword_rows_all,
+                client.name,
+                _company_overview_cluster_context(company_overview_result),
+                _all_rows("site_audit_pages", own_only=True),
+                manual_cluster_map=manual_cluster_map or None,
+                cache=kw_cache,
             )
-            try:
-                build_final_keyword_clusters(
-                    keyword_rows_all,
-                    client.name,
-                    _company_overview_cluster_context(company_overview_result),
-                    _all_rows("site_audit_pages", own_only=True),
-                    manual_cluster_map=manual_cluster_map or None,
-                    cache=kw_cache,
-                )
-            except Exception as e:
-                logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
-                content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
-        else:
-            # Diagnostic (2026-09-24): confirmed real on a Geopits report —
-            # some Target Keywords slides showed a Confidence/Priority line
-            # and others didn't, with no obvious reason from the deck
-            # alone. This is the one gate that decides whether the whole
-            # clustering pipeline (and therefore apply_cluster_intelligence,
-            # which stamps cluster_confidence) runs at all — logging the
-            # skip explicitly so the next real regen shows definitively
-            # whether it's skipped outright, rather than guessing from
-            # slide output.
-            logger.info(
-                "Keyword clustering pipeline SKIPPED for client %s — %d of %d rows already carry a native "
-                "Cluster value and no manual_cluster_map was uploaded; these rows keep their native cluster "
-                "label with no cluster_confidence/priority/existing-page scoring applied",
-                client_id, native_cluster_rows, len(keyword_rows_all),
-            )
+        except Exception as e:
+            logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
+            content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
 
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total

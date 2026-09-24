@@ -1030,6 +1030,31 @@ def build_final_keyword_clusters(
     annotate_keyword_rows(rows)
     if manual_cluster_map:
         _apply_manual_clusters(rows, manual_cluster_map)
+    elif any((r.get("cluster") or "").strip() for r in rows):
+        # A Semrush export that already carries a Cluster/Topic column
+        # (e.g. Keyword Magic Tool) used to skip this whole function
+        # entirely at the site_audit.py call site — that guard predates
+        # nearly everything this pipeline now does (it was written when
+        # the only question was "does this need AI clustering," before
+        # intent detection, primary-keyword scoring, existing-page
+        # matching, same-page merging and confidence scoring lived here).
+        # Confirmed real on a live Geopits report (2026-09-24): every one
+        # of those enrichment steps was silently skipped, leaving
+        # Semrush's own (unvalidated) intent tags on screen, near-
+        # duplicate clusters that should have merged ("database support
+        # services" / "remote dba services" — one cluster in an earlier
+        # regen, two after this skip), and no confidence/existing-page
+        # data at all. Semrush's own grouping is still trusted as the
+        # candidate clusters (no AI re-clustering) — only re-classifying
+        # jobs/junk/competitor/geo-mismatch rows is skipped, and everything
+        # downstream of clustering runs exactly as it does for a manual or
+        # AI-clustered report.
+        for r in rows:
+            if (r.get("cluster") or "").strip() and not r.get("cluster_source"):
+                r["cluster_source"] = "rule"
+                r["cluster_status"] = "From Semrush export"
+        clusterable_rows = _route_non_clusterable_rows(rows)
+        _assign_business_themes(clusterable_rows, client_name, client_description)
     else:
         clusterable_rows = _route_non_clusterable_rows(rows)
         _assign_business_themes(clusterable_rows, client_name, client_description)
