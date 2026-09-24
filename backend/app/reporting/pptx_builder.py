@@ -2400,7 +2400,7 @@ def add_structured_data_slide(
 _SCHEMA_GOOGLE_ELIGIBILITY: dict[str, str | None] = {
     "Article": None, "BlogPosting": None, "NewsArticle": None, "Product": None,
     "Review": None, "LocalBusiness": None, "Event": None, "BreadcrumbList": None,
-    "Recipe": None, "VideoObject": None,
+    "Recipe": None, "VideoObject": None, "ImageObject": None,
     "Organization": None, "WebSite": None,
     "HowTo": "Google restricted HowTo rich results to a small set of approved sites in 2023 — no longer generally available.",
     "FAQPage": "Google retired the classic FAQ rich-result SERP dropdown in May 2026 — this is content/AI-citation value only, not a SERP visual.",

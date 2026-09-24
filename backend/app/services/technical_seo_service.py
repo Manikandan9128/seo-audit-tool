@@ -84,6 +84,11 @@ _SCHEMA_FIELD_RULES: dict[str, dict[str, list[str]]] = {
     "VideoObject": {"required": ["name", "description", "thumbnailUrl", "uploadDate"], "recommended": []},
     "HowTo": {"required": ["name", "step"], "recommended": ["image", "totalTime"]},
     "WebSite": {"required": ["name", "url"], "recommended": ["potentialAction"]},
+    # Google Images' licensable-image metadata. No required fields here on
+    # purpose: most ImageObjects are just an Article's/Organization's image
+    # and are valid with only "url", so a missing contentUrl or license
+    # field is a recommended gap, never an Invalid page.
+    "ImageObject": {"required": [], "recommended": ["contentUrl", "creator", "license", "creditText", "copyrightNotice"]},
 }
 
 
@@ -106,6 +111,28 @@ def _extract_schema_entities(html_source: str) -> list[dict]:
                 entities.extend(e for e in entity["@graph"] if isinstance(e, dict))
             elif isinstance(entity, dict):
                 entities.append(entity)
+
+    # ImageObject usually sits nested inside another entity (Article.image,
+    # Organization.logo, WebPage.primaryImageOfPage) rather than at the top
+    # level, so the flattening above never saw it. Only ImageObject is pulled
+    # up: doing the same for every nested type would start counting e.g. an
+    # Article's nested publisher as the site's Organization schema.
+    def _nested_images(node) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _nested_images(item)
+        elif isinstance(node, dict):
+            node_type = node.get("@type")
+            if "ImageObject" in (node_type if isinstance(node_type, list) else [node_type]):
+                nested_images.append(node)
+            for value in node.values():
+                _nested_images(value)
+
+    nested_images: list[dict] = []
+    for entity in entities:
+        for value in entity.values():
+            _nested_images(value)
+    entities.extend(nested_images)
     return entities
 
 
