@@ -157,8 +157,6 @@ export default function ClientDetailPage() {
   const [techStackLoading, setTechStackLoading] = useState(false);
   const [techStackMsg, setTechStackMsg] = useState("");
 
-  const [uxNotes, setUxNotes] = useState("");
-
   type TabKey = "overview" | "datasources" | "analytics" | "keywordclusters";
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   function goToTab(tab: TabKey) {
@@ -503,7 +501,6 @@ export default function ClientDetailPage() {
     try {
       const body = {
         ...(overview ? { company_overview_override: overview } : {}),
-        ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
         ...semrushBody,
       };
       const res = await api.post(`/clients/${clientId}/report-preview`, Object.keys(body).length ? body : null);
@@ -612,7 +609,6 @@ export default function ClientDetailPage() {
   function downloadReportDirect() {
     const body = {
       ...(overview ? { company_overview_override: overview } : {}),
-      ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
       ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
       ...semrushBody,
     };
@@ -623,7 +619,6 @@ export default function ClientDetailPage() {
     const body = {
       company_overview_override: previewOverview,
       competitor_analysis_override: previewCompetitorAnalysis,
-      ...(uxNotes.trim() ? { ux_notes: uxNotes.trim() } : {}),
       ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
       ...semrushBody,
     };
@@ -1238,31 +1233,6 @@ export default function ClientDetailPage() {
           {error}
         </div>
       )}
-
-      <div className="card">
-        <div className="card-title-row">
-          <div className="card-icon violet">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </div>
-          <div className="card-title-text">
-            <p className="card-title">Manual UX / QA Notes</p>
-            <p className="card-desc">
-              Optional — paste notes from a manual walkthrough (broken checkout, dead CTAs, missing trust signals,
-              etc.). Included in Preview/Download as UI-Level Fixes and Conversion Opportunities. Left blank, the
-              report states plainly that a manual UX pass hasn't been done yet.
-            </p>
-          </div>
-        </div>
-        <div className="card-body">
-          <textarea
-            value={uxNotes}
-            onChange={(e) => setUxNotes(e.target.value)}
-            placeholder="e.g. Checkout page's 'Apply Coupon' button does nothing on click. No customer reviews shown on product pages. ..."
-            rows={4}
-            style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
-          />
-        </div>
-      </div>
 
       {(selectedSections.includes("overview") ||
         selectedSections.includes("site_audit") ||
