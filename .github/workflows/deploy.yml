@@ -19,4 +19,38 @@ jobs:
       - uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      # Report builds and All Pages crawls run as threads inside the app
+      # container, so deploy.sh's restart kills any that are mid-run (the
+      # startup hook then marks them "interrupted by a server restart").
+      # Wait for them to finish first. A job counts as live only if its row
+      # was touched in the last 15 minutes (report jobs heartbeat, see
+      # STALE_JOB_MINUTES), so a dead "running" row never blocks a deploy.
+      # Gives up after 30 minutes and deploys anyway. If the container is
+      # missing or the check errors, it deploys right away.
+      - name: Wait for running jobs
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new root@${{ secrets.DEPLOY_HOST }} bash -s <<'EOF'
+          for i in $(seq 1 60); do
+            n=$(docker exec -i seo-audit-app python - <<'PY' 2>/dev/null
+          from datetime import datetime, timedelta, timezone
+          from app.db.session import SessionLocal
+          from app.models.page_audit_job import PageAuditJob
+          from app.models.report_generation_job import ReportGenerationJob
+          cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+          db = SessionLocal()
+          print(sum(
+              db.query(m).filter(m.status.in_(("pending", "running")), m.updated_at > cutoff).count()
+              for m in (ReportGenerationJob, PageAuditJob)
+          ))
+          PY
+            )
+            case "$n" in
+              ''|*[!0-9]*) echo "Job check unavailable, deploying"; exit 0 ;;
+              0) echo "No running jobs"; exit 0 ;;
+            esac
+            echo "$n job(s) running, waiting 30s ($i/60)"
+            sleep 30
+          done
+          echo "Jobs still running after 30 minutes, deploying anyway"
+          EOF
       - run: ssh -o StrictHostKeyChecking=accept-new root@${{ secrets.DEPLOY_HOST }} '/opt/seo-audit-tool/deploy.sh'
