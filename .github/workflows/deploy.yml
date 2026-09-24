@@ -19,7 +19,7 @@ jobs:
       - uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-      # Report builds and All Pages crawls run as threads inside the app
+      # Report builds, Generate Report runs and All Pages crawls run as threads in the app
       # container, so deploy.sh's restart kills any that are mid-run (the
       # startup hook then marks them "interrupted by a server restart").
       # Wait for them to finish first. A job counts as live only if its row
@@ -36,11 +36,17 @@ jobs:
           from app.db.session import SessionLocal
           from app.models.page_audit_job import PageAuditJob
           from app.models.report_generation_job import ReportGenerationJob
+          models = [ReportGenerationJob, PageAuditJob]
+          try:  # absent from images built before it existed
+              from app.models.report_prep_job import ReportPrepJob
+              models.append(ReportPrepJob)
+          except ImportError:
+              pass
           cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
           db = SessionLocal()
           print(sum(
               db.query(m).filter(m.status.in_(("pending", "running")), m.updated_at > cutoff).count()
-              for m in (ReportGenerationJob, PageAuditJob)
+              for m in models
           ))
           PY
             )

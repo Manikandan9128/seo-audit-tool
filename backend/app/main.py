@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from google.auth.exceptions import RefreshError
 
-from app.api.routes import auth, clients, competitors, google_oauth, integrations, settings as settings_routes, site_audit
+from app.api.routes import auth, clients, competitors, google_oauth, integrations, report_prep, settings as settings_routes, site_audit
 from app.db.session import SessionLocal
 from app.services.app_settings_service import load_overrides_into_settings
 
@@ -41,10 +41,13 @@ def _fail_jobs_orphaned_by_restart():
     # failed right away with the real cause.
     from app.models.page_audit_job import PageAuditJob
     from app.models.report_generation_job import ReportGenerationJob
+    from app.models.report_prep_job import ReportPrepJob
 
     db = SessionLocal()
     try:
-        for model, what in ((ReportGenerationJob, "Report generation"), (PageAuditJob, "The All Pages crawl")):
+        for model, what in (
+            (ReportGenerationJob, "Report generation"), (ReportPrepJob, "Generate Report"), (PageAuditJob, "The All Pages crawl"),
+        ):
             db.query(model).filter(model.status.in_(("pending", "running"))).update(
                 {"status": "failed", "error": f"{what} was interrupted by a server restart (usually a deploy) — please run it again."},
                 synchronize_session=False,
@@ -77,6 +80,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(clients.router, prefix="/api")
 app.include_router(google_oauth.router, prefix="/api")
 app.include_router(site_audit.router, prefix="/api")
+app.include_router(report_prep.router, prefix="/api")
 app.include_router(competitors.router, prefix="/api")
 app.include_router(settings_routes.router, prefix="/api")
 app.include_router(integrations.router, prefix="/api")

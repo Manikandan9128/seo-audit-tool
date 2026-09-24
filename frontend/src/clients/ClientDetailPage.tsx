@@ -19,7 +19,8 @@ import { useReportReadiness } from "../components/ReportReadinessProvider";
 import ReportPreviewModal from "../components/ReportPreviewModal";
 import SemrushSourceModal from "../components/SemrushSourceModal";
 import { SEMRUSH_MCP_ENABLED } from "../features";
-import { downloadReadyReport, resumeReportJob, startDownload, startGenerate, useReportJobState } from "../reportJobs";
+import { downloadReadyReport, resumeGenerate, resumeReportJob, startDownload, startGenerate, useReportJobState } from "../reportJobs";
+import type { PrepSection } from "../reportJobs";
 import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourceModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
@@ -185,19 +186,40 @@ export default function ClientDetailPage() {
   );
   const [sectionDropdownOpen, setSectionDropdownOpen] = useState(false);
   const generating = reportJob.generating;
-  // A running or finished build also counts: after a refresh the preview
-  // fetches are gone, but the Download buttons must still show its state.
+  // hasGenerated comes from the server's latest Generate Report run, so it
+  // survives a refresh; a running or finished PPTX build also counts.
   const hasGenerated = reportJob.hasGenerated || dl.status !== "idle" || !!dl.readyJob;
   const hasDownloaded = dl.downloadedSeq > 0;
   const closePreviewAfterDownload = useRef(false);
 
   useEffect(() => {
     resumeReportJob(clientId!);
+    resumeGenerate(clientId!);
   }, [clientId]);
 
   useEffect(() => {
     if (dl.error) setError(dl.error);
   }, [dl.errorSeq]);
+
+  useEffect(() => {
+    if (reportJob.generate.error) setError(reportJob.generate.error);
+  }, [reportJob.generate.errorSeq]);
+
+  // Generate Report runs server-side (report_prep.py); each section's result
+  // arrives on the job. Applied once per job + section + status, so polling
+  // doesn't overwrite edits, and again after a remount/refresh to restore
+  // the section previews this page instance never received.
+  const appliedPrepSections = useRef(new Set<string>());
+  useEffect(() => {
+    const { jobId, sections } = reportJob.generate;
+    if (!jobId) return;
+    for (const [key, sec] of Object.entries(sections)) {
+      const mark = `${jobId}:${key}:${sec.status}`;
+      if (appliedPrepSections.current.has(mark)) continue;
+      appliedPrepSections.current.add(mark);
+      applyPrepSection(key, sec);
+    }
+  }, [reportJob.generate]);
 
   useEffect(() => {
     if (dl.downloadedSeq && closePreviewAfterDownload.current) {
@@ -307,26 +329,101 @@ export default function ClientDetailPage() {
 
   async function generateSelectedReport(source: SemrushSource = semrushSource, database: string = semrushDatabase) {
     if (generating) return;
+    // Analytics only runs with a connected Google account, as before.
+    const sections = selectedSections.filter((k) => k !== "analytics" || client?.google_connected);
     showToast("Report generation started — this can take a minute.");
     setError("");
     setCollapsedSections((prev) => prev.filter((k) => !selectedSections.includes(k)));
-    await startGenerate(clientId!, async () => {
-      const tasks: Promise<any>[] = [];
-      if (selectedSections.includes("overview")) tasks.push(loadOverview());
-      if (selectedSections.includes("site_audit")) tasks.push(runSiteAudit());
-      // Full-site crawl (up to 200000 pages) runs in the background and is not
-      // awaited here — the PPTX build reuses the latest *completed* page-audit
-      // job regardless, so gating "Generate Report" on a fresh multi-thousand-
-      // page crawl only stalls the button for no benefit.
-      if (selectedSections.includes("all_pages")) runPageAudit();
-      if (selectedSections.includes("pagespeed")) tasks.push(runPageSpeed());
-      if (selectedSections.includes("tech_stack")) tasks.push(loadTechStack());
-      if (selectedSections.includes("analytics") && client?.google_connected) {
-        tasks.push(runAnalyticsReport());
-      }
-      if (source === "mcp") tasks.push(fetchSemrushMcpData(database));
-      await Promise.all(tasks);
+    // Semrush MCP (behind SEMRUSH_MCP_ENABLED, off) still fetches from the page.
+    if (source === "mcp") fetchSemrushMcpData(database);
+    if (sections.length) {
+      await startGenerate(clientId!, { sections, analytics_start: analyticsStart, analytics_end: analyticsEnd });
+    }
+  }
+
+  function applyOverviewData(data: any, catalogueNames: string[]) {
+    setOverview({
+      company_name: data.company_name ?? null,
+      description: data.description ?? null,
+      products: data.products?.length ? data.products : catalogueNames,
+      solutions: data.solutions ?? [],
+      industries: data.industries ?? [],
+      kpis: data.kpis ?? [],
+      registration_info: data.registration_info ?? null,
+      contact: data.contact ?? null,
+      products_by_category: data.products_by_category ?? {},
+      target_country: data.target_country ?? null,
+      primary_buyers: data.primary_buyers ?? [],
+      daily_users: data.daily_users ?? [],
+      beneficiaries: data.beneficiaries ?? [],
+      target_market: data.target_market ?? null,
     });
+  }
+
+  // One Generate Report section's server-side result, shown the same way
+  // the page's own requests used to show it.
+  function applyPrepSection(key: string, sec: PrepSection) {
+    const busy = sec.status === "pending" || sec.status === "running";
+    const failed = sec.status === "failed";
+    switch (key) {
+      case "overview":
+        setOverviewLoading(busy);
+        if (busy) setOverviewMsg("");
+        if (sec.status === "done") {
+          applyOverviewData(sec.data.overview, (sec.data.catalogue?.products || []).map((p: any) => p.name));
+        }
+        if (failed) setOverviewMsg(sec.error || "Couldn't load company overview");
+        break;
+      case "site_audit":
+        setAuditLoading(busy);
+        if (sec.status === "done") setAuditHistoryKey((k) => k + 1);
+        if (failed) setError(sec.error || "Site audit failed");
+        break;
+      case "all_pages":
+        // The crawl is its own background job; follow it as before.
+        if (busy) {
+          setPageAuditLoading(true);
+          setPageAuditResult(null);
+          setPageAuditProgress(null);
+        }
+        if (sec.status === "done") pollPageAuditJob(sec.data.job_id);
+        if (failed) {
+          setError(sec.error || "Page-by-page audit failed");
+          setPageAuditLoading(false);
+        }
+        break;
+      case "pagespeed":
+        setPsiLoading(busy);
+        if (busy) setPsiPreviewNote("");
+        if (sec.status === "done") {
+          setPsiMobile(sec.data.mobile);
+          setPsiDesktop(sec.data.desktop);
+        }
+        // A timeout here is this quick preview check's own tight budget, not
+        // a real failure — the actual report generation has a longer budget
+        // with retries and fetches PSI data correctly regardless. Any other
+        // failure (e.g. missing API key) is a real problem worth the red
+        // banner.
+        if (failed && /timed out|timeout/i.test(sec.error || "")) {
+          setPsiPreviewNote(
+            "PageSpeed preview check timed out — this is common on larger sites and won't affect the downloaded report, which uses a longer timeout with retries."
+          );
+        } else if (failed) {
+          setError(sec.error || "PageSpeed Insights failed");
+        }
+        break;
+      case "tech_stack":
+        setTechStackLoading(busy);
+        if (busy) setTechStackMsg("");
+        if (sec.status === "done") setTechStack(sec.data);
+        if (failed) setTechStackMsg(sec.error || "Couldn't detect tech stack");
+        break;
+      case "analytics":
+        setAnalyticsLoading(busy);
+        if (sec.status === "done") setAnalyticsResult(sec.data);
+        if (failed) setError(sec.error || "Analytics report failed");
+        break;
+    }
   }
 
   async function loadClient() {
@@ -381,49 +478,6 @@ export default function ClientDetailPage() {
     loadClient();
   }
 
-  async function runSiteAudit() {
-    setAuditLoading(true);
-    setError("");
-    try {
-      await api.post(`/clients/${clientId}/site-audit`);
-      setAuditHistoryKey((k) => k + 1);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Site audit failed");
-    } finally {
-      setAuditLoading(false);
-    }
-  }
-
-  async function runAnalyticsReport() {
-    setAnalyticsLoading(true);
-    setError("");
-    try {
-      const res = await api.get(`/clients/${clientId}/analytics-report`, {
-        params: { start_date: analyticsStart, end_date: analyticsEnd },
-      });
-      setAnalyticsResult(res.data);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Analytics report failed");
-    } finally {
-      setAnalyticsLoading(false);
-    }
-  }
-
-  async function runPageAudit() {
-    setPageAuditLoading(true);
-    setPageAuditResult(null);
-    setPageAuditProgress(null);
-    setError("");
-    try {
-      const startRes = await api.post(`/clients/${clientId}/site-audit-pages/start`, null, { params: { limit: 200000 } });
-      const jobId = startRes.data.job_id;
-      await pollPageAuditJob(jobId);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Page-by-page audit failed");
-      setPageAuditLoading(false);
-    }
-  }
-
   async function pollPageAuditJob(jobId: string) {
     const res = await api.get(`/clients/${clientId}/site-audit-pages/${jobId}`);
     const job = res.data;
@@ -440,36 +494,6 @@ export default function ClientDetailPage() {
     }
   }
 
-  async function runPageSpeed() {
-    setPsiLoading(true);
-    setError("");
-    setPsiPreviewNote("");
-    try {
-      const [mobileRes, desktopRes] = await Promise.all([
-        api.post(`/clients/${clientId}/pagespeed`, null, { params: { strategy: "mobile" } }),
-        api.post(`/clients/${clientId}/pagespeed`, null, { params: { strategy: "desktop" } }),
-      ]);
-      setPsiMobile(mobileRes.data);
-      setPsiDesktop(desktopRes.data);
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail || "";
-      // A timeout here is this quick preview check's own tight budget, not
-      // a real failure — the actual report generation has a longer budget
-      // with retries and fetches PSI data correctly regardless. Any other
-      // failure (e.g. missing API key) is a real problem worth the red
-      // banner.
-      if (/timed out|timeout/i.test(detail)) {
-        setPsiPreviewNote(
-          "PageSpeed preview check timed out — this is common on larger sites and won't affect the downloaded report, which uses a longer timeout with retries."
-        );
-      } else {
-        setError(detail || "PageSpeed Insights failed");
-      }
-    } finally {
-      setPsiLoading(false);
-    }
-  }
-
   async function loadOverview(force = false) {
     setOverviewLoading(true);
     setOverviewMsg("");
@@ -479,40 +503,11 @@ export default function ClientDetailPage() {
         api.get(`/clients/${clientId}/product-catalogue`).catch(() => ({ data: { products: [] } })),
       ]);
       const catalogueNames: string[] = (catalogueRes.data.products || []).map((p: any) => p.name);
-      const data = overviewRes.data;
-      setOverview({
-        company_name: data.company_name ?? null,
-        description: data.description ?? null,
-        products: data.products?.length ? data.products : catalogueNames,
-        solutions: data.solutions ?? [],
-        industries: data.industries ?? [],
-        kpis: data.kpis ?? [],
-        registration_info: data.registration_info ?? null,
-        contact: data.contact ?? null,
-        products_by_category: data.products_by_category ?? {},
-        target_country: data.target_country ?? null,
-        primary_buyers: data.primary_buyers ?? [],
-        daily_users: data.daily_users ?? [],
-        beneficiaries: data.beneficiaries ?? [],
-        target_market: data.target_market ?? null,
-      });
+      applyOverviewData(overviewRes.data, catalogueNames);
     } catch (err: any) {
       setOverviewMsg(err?.response?.data?.detail || "Couldn't load company overview");
     } finally {
       setOverviewLoading(false);
-    }
-  }
-
-  async function loadTechStack() {
-    setTechStackLoading(true);
-    setTechStackMsg("");
-    try {
-      const res = await api.get(`/clients/${clientId}/tech-stack`);
-      setTechStack(res.data);
-    } catch (err: any) {
-      setTechStackMsg(err?.response?.data?.detail || "Couldn't detect tech stack");
-    } finally {
-      setTechStackLoading(false);
     }
   }
 

@@ -13,16 +13,29 @@ import { api } from "./api/client";
 // a browser refresh is picked back up. The server also refuses to start a
 // second build while one is active and hands back the existing job id.
 //
-// Generate: these are the page's own preview fetches (site audit,
-// PageSpeed, overview...), run from the browser. This store keeps the
-// flag through navigation and ignores repeat clicks; a browser refresh
-// cancels those browser-side requests, so there is nothing to resume then.
+// Generate: same pattern against the server's ReportPrepJob
+// (/report-prep/*). The section checks run server-side and each section's
+// result is kept on the job, so the page restores both the button and the
+// section previews after navigation or a refresh.
 
 export type DownloadStatus = "idle" | "building" | "downloading" | "failed";
+
+export interface PrepSection {
+  status: "pending" | "running" | "done" | "failed";
+  data: any;
+  error: string | null;
+}
 
 export interface ReportJobState {
   generating: boolean;
   hasGenerated: boolean;
+  generate: {
+    jobId: string | null;
+    sections: Record<string, PrepSection>;
+    pct: number | null;
+    error: string | null;
+    errorSeq: number;
+  };
   download: {
     status: DownloadStatus;
     jobId: string | null;
@@ -42,6 +55,7 @@ export interface ReportJobState {
 const EMPTY: ReportJobState = {
   generating: false,
   hasGenerated: false,
+  generate: { jobId: null, sections: {}, pct: null, error: null, errorSeq: 0 },
   download: {
     status: "idle", jobId: null, stage: "", pct: null, error: null, errorSeq: 0,
     issues: null, readyJob: null, downloadedSeq: 0,
@@ -54,6 +68,8 @@ const listeners = new Set<() => void>();
 // matter how many times the page mounts.
 const polling = new Set<string>();
 const resumed = new Set<string>();
+const genPolling = new Set<string>();
+const genResumed = new Set<string>();
 
 function get(clientId: string): ReportJobState {
   return states.get(clientId) ?? EMPTY;
@@ -62,6 +78,12 @@ function get(clientId: string): ReportJobState {
 function set(clientId: string, patch: Partial<Omit<ReportJobState, "download">>, dl?: Partial<ReportJobState["download"]>) {
   const prev = get(clientId);
   states.set(clientId, { ...prev, ...patch, download: { ...prev.download, ...dl } });
+  listeners.forEach((l) => l());
+}
+
+function setGen(clientId: string, patch: Partial<Omit<ReportJobState, "generate" | "download">>, gen: Partial<ReportJobState["generate"]>) {
+  const prev = get(clientId);
+  states.set(clientId, { ...prev, ...patch, generate: { ...prev.generate, ...gen } });
   listeners.forEach((l) => l());
 }
 
@@ -85,14 +107,81 @@ function fail(clientId: string, error: string) {
 
 // ---------- Generate ----------
 
-export async function startGenerate(clientId: string, run: () => Promise<void>) {
-  if (get(clientId).generating) return;
-  set(clientId, { generating: true });
+// quietFail: a run that failed before this page load (e.g. yesterday)
+// restores the idle button without re-raising its old error banner.
+function applyPrepJob(clientId: string, job: any, quietFail = false) {
+  const base = { jobId: job.id, sections: job.sections || {}, pct: job.progress_pct ?? null };
+  if (job.status === "done") {
+    setGen(clientId, { generating: false, hasGenerated: true }, base);
+  } else if (job.status === "failed" && quietFail) {
+    setGen(clientId, { generating: false }, base);
+  } else if (job.status === "failed") {
+    setGen(clientId, { generating: false }, {
+      ...base, error: job.error || "Generate Report failed", errorSeq: get(clientId).generate.errorSeq + 1,
+    });
+  } else {
+    setGen(clientId, { generating: true }, base);
+  }
+}
+
+async function pollGenerate(clientId: string, jobId: string) {
+  if (genPolling.has(clientId)) return;
+  genPolling.add(clientId);
+  let failCount = 0;
   try {
-    await run();
-    set(clientId, { hasGenerated: true });
+    for (;;) {
+      let job;
+      try {
+        job = (await api.get(`/clients/${clientId}/report-prep/${jobId}`)).data;
+        failCount = 0;
+      } catch (err: any) {
+        if (failCount++ < 5) {
+          await new Promise((r) => setTimeout(r, 3000));
+          continue;
+        }
+        setGen(clientId, { generating: false }, {
+          error: err?.response?.data?.detail || "Lost connection while checking Generate Report — please try again",
+          errorSeq: get(clientId).generate.errorSeq + 1,
+        });
+        return;
+      }
+      applyPrepJob(clientId, job);
+      if (job.status === "done" || job.status === "failed") return;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   } finally {
-    set(clientId, { generating: false });
+    genPolling.delete(clientId);
+  }
+}
+
+export async function startGenerate(clientId: string, body: { sections: string[]; analytics_start: string; analytics_end: string }) {
+  if (get(clientId).generating) return;
+  setGen(clientId, { generating: true }, { error: null });
+  try {
+    // The server returns the run already in progress (reused: true)
+    // instead of starting a second one.
+    const res = await api.post(`/clients/${clientId}/report-prep/start`, body);
+    await pollGenerate(clientId, res.data.job_id);
+  } catch (err: any) {
+    setGen(clientId, { generating: false }, {
+      error: err?.response?.data?.detail || "Generate Report failed",
+      errorSeq: get(clientId).generate.errorSeq + 1,
+    });
+  }
+}
+
+// Called when the page mounts; asks the server once per page load (so after
+// a refresh), while in-app navigation reuses the store and its poll loop.
+export async function resumeGenerate(clientId: string) {
+  if (genResumed.has(clientId) || get(clientId).generating) return;
+  genResumed.add(clientId);
+  try {
+    const job = (await api.get(`/clients/${clientId}/report-prep/latest`)).data;
+    if (!job || get(clientId).generating) return;
+    applyPrepJob(clientId, job, true);
+    if (job.status === "pending" || job.status === "running") pollGenerate(clientId, job.id);
+  } catch {
+    genResumed.delete(clientId);
   }
 }
 
