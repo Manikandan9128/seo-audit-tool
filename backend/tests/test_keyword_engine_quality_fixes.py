@@ -141,9 +141,8 @@ def test_target_keyword_slides_follow_roadmap_priority():
     prs = Presentation()
     prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
     add_keyword_research_slide(prs, rows)
-    titles = [next(sh.text_frame.text for sh in s.shapes if sh.has_text_frame and sh.text_frame.text.strip())
-              for s in prs.slides]
-    assert titles == ["Target Keywords: High One", "Target Keywords: Medium One", "Target Keywords: Low One"]
+    subheads = [sh.text_frame.text for s in prs.slides for sh in s.shapes if sh.name == "TK Cluster"]
+    assert subheads == ["High One", "Medium One", "Low One"]
 
 
 # 8 — §21 another company's product pricing --------------------------------------

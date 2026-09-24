@@ -373,7 +373,7 @@ def test_manual_slide_shows_relevance_flags():
     text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
     assert "brabus price in india" in text  # still shown — never silently dropped
     assert "Relevance check" in text and "confirm with the client" in text
-    assert "brabus price in india †" in text  # flagged row marked in the table
+    assert "brabus price in india †" not in text  # keyword cell stays exactly as the sheet has it
     assert 'Highest demand: "brabus' not in text  # demand lines never name a flagged keyword
 
 
@@ -449,8 +449,9 @@ def test_manual_table_shows_corrected_intent_and_primary_keyword():
     assert by_kw["bus mileage"]["intent"] == "Commercial"  # sheet value untouched
     slide = add_strategic_keyword_clusters_slide(_prs(), clusters)[0]
     table = next(sh.table for sh in slide.shapes if sh.has_table)
-    cells = {row.cells[0].text: row.cells[len(row.cells) - 1].text for row in table.rows}
-    assert cells["bus mileage"] == "Informational"
+    cells = {row.cells[1].text: row.cells[4].text for row in table.rows}
+    assert cells["bus mileage"] == "Commercial"  # table shows the sheet's intent; correction is an insight
+    assert "Intent corrected:" in _slide_text(slide)
     assert 'Primary keyword: "school bus"' in _slide_text(slide)
 
 

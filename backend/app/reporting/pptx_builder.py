@@ -6284,7 +6284,7 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
         if doubts:
             bits.append(f"{_quoted_list(doubts)} may not match this business (possible other brand or product)")
         out.append(
-            "Relevance check (marked † in the table): " + "; ".join(bits)
+            "Relevance check: " + "; ".join(bits)
             + " — confirm with the client before targeting."
         )
     mismatches = c.get("intent_mismatches") or []
@@ -6315,67 +6315,267 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
     return out[:5]
 
 
+# Target Keywords layout (2026-09-24 spec), shared by the manual-sheet and
+# AI-clustered paths: "Target Keywords" heading, "(Category)" only on a
+# category's first slide, then per cluster a subheading + a table whose
+# Clusters cell is a real vertical merge over that cluster's keyword rows.
+TARGET_KEYWORDS_HEADERS = ["Clusters", "Keywords", "Volume", "KD", "Intent"]
+_TK_COL_WIDTHS = [2.7, 4.9, 1.5, 1.0, 2.0]  # sums to 12.1in like every other table
+_TK_LEFT, _TK_WIDTH = Inches(0.6), Inches(12.1)
+_TK_FONT_PT = 10.5
+_TK_ROW_H = Inches(0.3)
+_TK_LINE_H = Inches(0.19)
+_TK_TOP = Inches(1.05)
+_TK_CATEGORY_H = Inches(0.4)
+_TK_SUBHEAD_H = Inches(0.34)
+_TK_SECTION_GAP = Inches(0.16)
+_TK_INSIGHTS_RESERVE = Inches(1.2)
+_TK_BOTTOM = SLIDE_H - Inches(0.5)
+_TK_SMALL_CLUSTER = 4  # keyword rows; two such clusters of one category may share a slide
+_TK_SHAPE_CATEGORY, _TK_SHAPE_CLUSTER = "TK Category", "TK Cluster"
+
+
+def _tk_row_height(row: tuple) -> int:
+    lines = _wrap_lines(str(row[0]), Inches(_TK_COL_WIDTHS[1] - 0.2), size_pt=_TK_FONT_PT)
+    return max(_TK_ROW_H, _TK_LINE_H * lines + Inches(0.1))
+
+
+def _tk_row_heights(cluster_name: str, rows: list[tuple]) -> list[int]:
+    """Per-row heights for one cluster section, tall enough that neither a
+    wrapped keyword nor the merged Clusters cell (the full, never-truncated
+    cluster name) makes PowerPoint grow the table past what we lay out."""
+    heights = [_tk_row_height(r) for r in rows]
+    name_lines = _wrap_lines(cluster_name, Inches(_TK_COL_WIDTHS[0] - 0.2), size_pt=_TK_FONT_PT)
+    needed = _TK_LINE_H * name_lines + Inches(0.1)
+    if sum(heights) < needed:
+        extra = -(-(needed - sum(heights)) // len(heights))
+        heights = [h + extra for h in heights]
+    return heights
+
+
+def _tk_section_height(cluster_name: str, rows: list[tuple]) -> int:
+    return _TK_SUBHEAD_H + _TK_ROW_H + sum(_tk_row_heights(cluster_name, rows))
+
+
+def _plan_target_keyword_slides(categories: list[dict]) -> list[dict]:
+    """Splits categories -> clusters -> keyword rows into slides without
+    changing any of it: one cluster per slide; a cluster too long for one
+    slide continues on the next (same cluster name, its own merged cell);
+    two small clusters of the same named category may share a slide. Each plan
+    entry: {"category": name|None, "show_category": bool,
+    "sections": [(cluster_index, cluster_name, rows)]}."""
+    plan: list[dict] = []
+    for cat in categories:
+        first = True
+        clusters = [c for c in cat["clusters"] if c["rows"]]
+        i = 0
+        while i < len(clusters):
+            top = _TK_TOP + (_TK_CATEGORY_H if first and cat["name"] else 0)
+            limit = _TK_BOTTOM - _TK_INSIGHTS_RESERVE - top
+            c = clusters[i]
+            nxt = clusters[i + 1] if i + 1 < len(clusters) else None
+            # Pairing needs a real shared category — without one there is
+            # no evidence the two clusters are related.
+            if (
+                cat["name"] and nxt is not None and len(c["rows"]) <= _TK_SMALL_CLUSTER and len(nxt["rows"]) <= _TK_SMALL_CLUSTER
+                and _tk_section_height(c["name"], c["rows"]) + _TK_SECTION_GAP + _tk_section_height(nxt["name"], nxt["rows"]) <= limit
+            ):
+                plan.append({"category": cat["name"], "show_category": first,
+                             "sections": [(c, c["name"], c["rows"]), (nxt, nxt["name"], nxt["rows"])]})
+                first = False
+                i += 2
+                continue
+            remaining = list(c["rows"])
+            while remaining:
+                top = _TK_TOP + (_TK_CATEGORY_H if first and cat["name"] else 0)
+                limit = _TK_BOTTOM - _TK_INSIGHTS_RESERVE - top
+                take = 1
+                while take < len(remaining) and _tk_section_height(c["name"], remaining[:take + 1]) <= limit:
+                    take += 1
+                plan.append({"category": cat["name"], "show_category": first,
+                             "sections": [(c, c["name"], remaining[:take])]})
+                first = False
+                remaining = remaining[take:]
+            i += 1
+    return plan
+
+
+def _draw_target_keyword_section(slide, y, cluster_name: str, rows: list[tuple]) -> int:
+    sub = _textbox(slide, _TK_LEFT, y, _TK_WIDTH, _TK_SUBHEAD_H, cluster_name, size=14, bold=True, color=TEXT_DARK)
+    sub.name = _TK_SHAPE_CLUSTER
+    y += _TK_SUBHEAD_H
+    heights = [_TK_ROW_H] + _tk_row_heights(cluster_name, rows)
+    gframe = slide.shapes.add_table(len(rows) + 1, len(TARGET_KEYWORDS_HEADERS), _TK_LEFT, y, _TK_WIDTH, sum(heights, Emu(0)))
+    table = gframe.table
+    table.first_row = False
+    for j, w in enumerate(_TK_COL_WIDTHS):
+        table.columns[j].width = Inches(w)
+    for i, h in enumerate(heights):
+        table.rows[i].height = h
+
+    def _style(cell, text, bold=False, bg=WHITE, color=TEXT_DARK, align=None):
+        cell.text = text
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = bg
+        cell.text_frame.word_wrap = True
+        para = cell.text_frame.paragraphs[0]
+        para.font.size = Pt(_TK_FONT_PT)
+        para.font.bold = bold
+        para.font.color.rgb = color
+        if align is not None:
+            para.alignment = align
+
+    for j, h in enumerate(TARGET_KEYWORDS_HEADERS):
+        _style(table.cell(0, j), h, bold=True, bg=HEADER_ROW_BG, color=HEADER_ROW_TEXT,
+               align=PP_ALIGN.RIGHT if j in (2, 3) else None)
+    for i, row in enumerate(rows, start=1):
+        for j, val in enumerate(row, start=1):
+            _style(table.cell(i, j), str(val), bg=ROW_ALT if i % 2 == 0 else WHITE,
+                   align=PP_ALIGN.RIGHT if j in (2, 3) else None)
+    # The Clusters column: one real merged cell spanning every keyword row.
+    origin = table.cell(1, 0)
+    if len(rows) > 1:
+        origin.merge(table.cell(len(rows), 0))
+    _style(origin, cluster_name, bold=True)
+    origin.vertical_anchor = MSO_ANCHOR.MIDDLE
+    return y + sum(heights, Emu(0))
+
+
+def _render_target_keyword_slides(prs: Presentation, categories: list[dict], trailing_insight: str | None = None) -> list:
+    """categories: [{"name": str|None, "clusters": [{"name": str,
+    "rows": [(keyword, volume, kd, intent), ...], "insights": [...],
+    "source": str}]}] — rows are already display strings taken straight
+    from the source; this only lays them out."""
+    plan = _plan_target_keyword_slides(categories)
+    slides = []
+    for idx, entry in enumerate(plan):
+        slide = _blank_slide(prs)
+        _content_header(slide, "Target Keywords")
+        first_cluster = entry["sections"][0][0]
+        _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {first_cluster['source']}", size=11, color=TEXT_MUTED)
+        y = _TK_TOP
+        if entry["show_category"] and entry["category"]:
+            box = _textbox(slide, _TK_LEFT, y, _TK_WIDTH, _TK_CATEGORY_H, f"({entry['category']})", size=16, bold=True, color=_accent())
+            box.name = _TK_SHAPE_CATEGORY
+            y += _TK_CATEGORY_H
+        for n, (_cluster, name, rows) in enumerate(entry["sections"]):
+            if n:
+                y += _TK_SECTION_GAP
+            y = _draw_target_keyword_section(slide, y, name, rows)
+        # Insights ride on a cluster's first slide only; a shared slide
+        # carries each cluster's lead line.
+        clusters_here = [s[0] for s in entry["sections"]]
+        starts = [c for c in clusters_here if not any(c is p[0] for e in plan[:idx] for p in e["sections"])]
+        if len(clusters_here) == 1:
+            insights = list(starts[0].get("insights") or []) if starts else []
+        else:
+            insights = [line for c in starts for line in (c.get("insights") or [])[:2]]
+        if trailing_insight and idx == len(plan) - 1:
+            insights = insights[:4] + [trailing_insight]
+        _insights_strip(slide, _TK_LEFT, y + Inches(0.15), _TK_WIDTH, insights, max_items=5, max_y=_TK_BOTTOM)
+        slides.append(slide)
+    problems = _audit_target_keyword_slides(slides, categories)
+    for p in problems:
+        logger.warning("Target Keywords slide check: %s", p)
+    return slides
+
+
+def _audit_target_keyword_slides(slides: list, categories: list[dict]) -> list[str]:
+    """Read-only QA over rendered Target Keywords slides (2026-09-24 spec
+    §11): heading, category line placement, subheading == merged Clusters
+    cell, real vertical merge, exact column set, and every source row
+    rendered once, unchanged, under its own cluster. Returns problems;
+    empty means the slides match the source."""
+    problems: list[str] = []
+    category_of = {}
+    expected: list[tuple] = []
+    for cat in categories:
+        for c in cat["clusters"]:
+            category_of[c["name"]] = cat["name"]
+            expected += [(c["name"], *map(str, r)) for r in c["rows"]]
+    rendered: list[tuple] = []
+    seen_categories: set = set()
+    for s_idx, slide in enumerate(slides, 1):
+        texts = [sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text.strip()]
+        if not texts or texts[0].text_frame.text != "Target Keywords":
+            problems.append(f"slide {s_idx}: heading is not 'Target Keywords'")
+        cat_boxes = [sh.text_frame.text for sh in slide.shapes if sh.name == _TK_SHAPE_CATEGORY]
+        subheads = [sh.text_frame.text for sh in slide.shapes if sh.name == _TK_SHAPE_CLUSTER]
+        tables = [sh.table for sh in slide.shapes if sh.has_table]
+        if len(subheads) != len(tables):
+            problems.append(f"slide {s_idx}: {len(subheads)} cluster subheadings for {len(tables)} tables")
+        slide_cats = {category_of.get(name) for name in subheads}
+        if len(slide_cats) > 1:
+            problems.append(f"slide {s_idx}: clusters from different categories share a slide")
+        cat = next(iter(slide_cats), None)
+        if cat and cat not in seen_categories:
+            if cat_boxes != [f"({cat})"]:
+                problems.append(f"slide {s_idx}: first slide of category {cat!r} lacks '({cat})'")
+            seen_categories.add(cat)
+        elif cat_boxes:
+            problems.append(f"slide {s_idx}: category line repeated ({cat_boxes})")
+        for name, table in zip(subheads, tables):
+            headers = [table.cell(0, j).text for j in range(len(table.columns))]
+            if headers != TARGET_KEYWORDS_HEADERS:
+                problems.append(f"slide {s_idx}: table columns are {headers}")
+                continue
+            n = len(table.rows) - 1
+            origin = table.cell(1, 0)
+            if origin.text != name:
+                problems.append(f"slide {s_idx}: Clusters cell {origin.text!r} != subheading {name!r}")
+            if n > 1 and not (origin.is_merge_origin and origin.span_height == n):
+                problems.append(f"slide {s_idx}: Clusters cell for {name!r} is not one merged cell over {n} rows")
+            for i in range(2, n + 1):
+                if not table.cell(i, 0).is_spanned:
+                    problems.append(f"slide {s_idx}: row {i} of {name!r} has its own Clusters cell")
+            for i in range(1, n + 1):
+                rendered.append((name, *(table.cell(i, j).text for j in range(1, 5))))
+    if rendered != expected:
+        missing = [r for r in expected if r not in rendered]
+        extra = [r for r in rendered if r not in expected]
+        problems.append(f"rendered rows differ from source (missing {missing[:3]}, extra {extra[:3]})")
+    return problems
+
+
 def add_strategic_keyword_clusters_slide(prs: Presentation, strategic_keyword_clusters: list[dict] | None) -> list:
     """SEO Cluster & Keyword Selection for Presentation (2026-09-21 spec):
-    one table slide per cluster the client's own manually-uploaded
-    keyword-cluster sheet supports, already pre-selected and ranked by
-    strategic_keyword_selection_service.select_strategic_clusters (business
-    relevance/demand/commercial value/SEO opportunity/intent diversity —
-    never volume or keyword count alone). Absent entirely when no manual
-    cluster file was uploaded or nothing in it clears the selection floor —
-    when present it REPLACES the Semrush/AI-clustered Target Keywords
-    slides (2026-09-23 user instruction — see build_report's call site).
+    the clusters the client's own manually-uploaded keyword-cluster sheet
+    supports, already pre-selected and ranked by
+    strategic_keyword_selection_service.select_strategic_clusters. Absent
+    entirely when no manual cluster file was uploaded or nothing in it
+    clears the selection floor — when present it REPLACES the
+    Semrush/AI-clustered Target Keywords slides (2026-09-23 user
+    instruction — see build_report's call site).
 
-    Table layout is this deck's own established house style (matches
-    add_keyword_research_slide's Keyword/Search Volume/Keyword Difficulty
-    columns) pending the client's ClearTouch reference deck for a final
-    visual pass — the column set and per-cluster grouping already follow
-    the spec's structural ask (cluster name, sub-category where available,
-    keyword + real metrics, one section per cluster), so this renders a
-    real, usable slide today rather than a placeholder."""
+    Layout (2026-09-24 spec, _render_target_keyword_slides): the sheet's
+    Cluster column is the "(Category)" line and its Sub-category column the
+    cluster subheading + merged Clusters cell; a keyword with no
+    sub-category sits under its sheet Cluster name. Keyword, volume, KD and
+    intent are the sheet's own values — never the engine's corrected
+    intent (that correction stays in the insights)."""
     if not strategic_keyword_clusters:
         return []
 
-    any_sub_category = any(kw.get("sub_category") for c in strategic_keyword_clusters for kw in c["keywords"])
-    any_intent = any(kw.get("intent") for c in strategic_keyword_clusters for kw in c["keywords"])
-
-    headers = ["Keyword"]
-    col_widths = [4.6]
-    if any_sub_category:
-        headers.append("Sub-Category")
-        col_widths.append(2.6)
-    headers += ["Search Volume", "KD"]
-    col_widths += [2.4, 1.3]
-    if any_intent:
-        headers.append("Intent")
-        col_widths.append(1.2)
-    # Pad/trim so widths always sum to the same 12.1in every other table in
-    # this file uses, regardless of which optional columns are present.
-    scale = 12.1 / sum(col_widths)
-    col_widths = [round(w * scale, 2) for w in col_widths]
-
-    slides = []
+    categories = []
     for c in strategic_keyword_clusters:
-        rows = []
-        flagged_keywords = {f["keyword"].lower() for f in c.get("relevance_flags") or []}
+        clusters: dict[str, dict] = {}
         for kw in c["keywords"]:
-            # † = flagged by the relevance check (explained in the insights).
-            row = [kw["keyword"] + (" †" if kw["keyword"].lower() in flagged_keywords else "")]
-            if any_sub_category:
-                row.append(kw.get("sub_category") or "—")
-            row.append(f"{int(kw['search_volume']):,}" if kw.get("search_volume") is not None else "—")
-            row.append(str(int(kw["keyword_difficulty"])) if kw.get("keyword_difficulty") is not None else "—")
-            if any_intent:
-                # §8/§34: the engine's corrected intent where the sheet's
-                # label contradicts the keyword's own wording.
-                row.append(kw.get("display_intent") or kw.get("intent") or "—")
-            rows.append(tuple(row))
-        slides.append(_table_slide(
-            prs, f"Target Keywords: {c['cluster']}", headers, rows,
-            col_widths=col_widths, source="Client-provided keyword cluster sheet",
-            insights=_validated_strategic_cluster_insights(c) if "confidence" in c else _strategic_cluster_insights(c["keywords"]),
-        ))
-    return slides
+            name = kw.get("sub_category") or c["cluster"]
+            cluster = clusters.setdefault(name, {
+                "name": name, "rows": [], "insights": [], "source": "Client-provided keyword cluster sheet",
+            })
+            cluster["rows"].append((
+                kw["keyword"],
+                f"{int(kw['search_volume']):,}" if kw.get("search_volume") is not None else "—",
+                str(int(kw["keyword_difficulty"])) if kw.get("keyword_difficulty") is not None else "—",
+                kw.get("intent") or "—",
+            ))
+        if clusters:
+            next(iter(clusters.values()))["insights"] = (
+                _validated_strategic_cluster_insights(c) if "confidence" in c else _strategic_cluster_insights(c["keywords"])
+            )
+        categories.append({"name": c["cluster"], "clusters": list(clusters.values())})
+    return _render_target_keyword_slides(prs, categories)
 
 
 _TARGET_KEYWORDS_EXCLUDED_CLUSTERS = {
@@ -6669,9 +6869,12 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
     multi = [kv for kv in ranked if len({r.get("keyword") for r in kv[1]}) > 1 or not kv[0]]
     single = [kv for kv in ranked if kv not in multi]
     ranked = multi + single
-    slides = []
     shown = ranked[:max_clusters]
-    for idx, (label, rows_for_cluster) in enumerate(shown):
+    # 2026-09-24 layout (_render_target_keyword_slides): the pipeline's
+    # business_theme is the "(Category)" line; clusters keep their ranked
+    # order, grouped under the category of the first cluster that has it.
+    categories: dict[str, dict] = {}
+    for label, rows_for_cluster in shown:
         sorted_rows = sorted(rows_for_cluster, key=lambda r: _num(r.get("search_volume")), reverse=True)
         seen = set()
         deduped = []
@@ -6681,47 +6884,35 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 continue
             seen.add(kw)
             deduped.append(r)
-        if show_intent:
-            rows = [
-                (
-                    r.get("keyword", ""),
-                    r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
-                    r.get("detected_intent") or r.get("intent") or "—",
-                    _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")),
-                )
-                for i, r in enumerate(deduped)
-            ]
-        else:
-            rows = [
-                (
-                    r.get("keyword", ""),
-                    r.get("primary_or_secondary") or ("Primary" if i == 0 else "Secondary"),
-                    _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")),
-                )
-                for i, r in enumerate(deduped)
-            ]
         # An empty label here means real clustering DID run (this loop only
         # runs when `clusters` has at least one non-"" key — the fully-flat
         # no-clustering-at-all case returns early above) but these specific
         # keywords couldn't be confidently grouped with anything — confirmed
-        # live 2026-09-19: rendering that bucket as a bare "Target Keywords"
-        # title made it look identical to (and get confused with) the
-        # separate no-clustering-ran-at-all fallback, when every OTHER slide
-        # in the same deck clearly has a real cluster subheading. "Other /
-        # Ungrouped Keywords" makes the distinction explicit instead.
-        title = f"Target Keywords: {label}" if label else "Target Keywords: Other / Ungrouped Keywords"
-        insights = _keyword_insights(deduped) if deduped else []
-        if idx == len(shown) - 1 and excluded_counts:
-            # §62 review queue / exclusions, stated once on the last slide
-            # (kept within the 5-line insight cap).
-            parts = ", ".join(
-                f"{n} {_EXCLUDED_CLUSTER_NOUN.get(lbl, lbl.lower())}" for lbl, n in excluded_counts.most_common()
-            )
-            insights = insights[:4] + [f"Not targeted: {parts} — kept in the full keyword list for review, not on any target page."]
+        # live 2026-09-19: an unnamed bucket got confused with the separate
+        # no-clustering-ran-at-all fallback. "Other / Ungrouped Keywords"
+        # makes the distinction explicit instead.
         has_volume = any(_num(r.get("search_volume")) > 0 for r in deduped)
-        source = "Semrush export" if has_volume else "Google Search Console queries"
-        slides.append(_table_slide(prs, title, headers, rows, col_widths=col_widths, source=source, insights=insights))
-    return slides
+        theme = (rows_for_cluster[0].get("business_theme") or "").strip()
+        categories.setdefault(theme, {"name": theme or None, "clusters": []})["clusters"].append({
+            "name": label or "Other / Ungrouped Keywords",
+            "rows": [
+                (
+                    r.get("keyword", ""), _metric_cell(r.get("search_volume")), _metric_cell(r.get("keyword_difficulty")),
+                    r.get("detected_intent") or r.get("intent") or "—",
+                )
+                for r in deduped
+            ],
+            "insights": _keyword_insights(deduped) if deduped else [],
+            "source": "Semrush export" if has_volume else "Google Search Console queries",
+        })
+    trailing = None
+    if excluded_counts:
+        # §62 review queue / exclusions, stated once on the last slide.
+        parts = ", ".join(
+            f"{n} {_EXCLUDED_CLUSTER_NOUN.get(lbl, lbl.lower())}" for lbl, n in excluded_counts.most_common()
+        )
+        trailing = f"Not targeted: {parts} — kept in the full keyword list for review, not on any target page."
+    return _render_target_keyword_slides(prs, list(categories.values()), trailing_insight=trailing)
 
 
 # Industry-average organic CTR by SERP position — NOT this client's measured

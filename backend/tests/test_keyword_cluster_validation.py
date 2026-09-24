@@ -98,5 +98,5 @@ def test_unclustered_bucket_gets_a_distinguishing_subheading_not_bare_title():
     slides = add_keyword_research_slide(_prs(), rows)
     all_text = [_slide_text(s) for s in slides]
     unclustered_slide_text = next(t for t in all_text if "leftover kw one" in t)
-    assert "Target Keywords: Other / Ungrouped Keywords" in unclustered_slide_text
-    assert unclustered_slide_text.split("\n")[0] != "Target Keywords"
+    assert "Other / Ungrouped Keywords" in unclustered_slide_text
+    assert "Real Cluster" not in unclustered_slide_text
