@@ -82,6 +82,24 @@ def test_long_cluster_continues_without_losing_rows():
     assert _audit_slide_geometry(prs) == []
 
 
+def test_split_clusters_small_leftover_tail_shares_a_slide_with_the_next_cluster():
+    # Regression (confirmed real, Geopits report, 2026-09-24): a 15-keyword
+    # cluster split across slides as 12+3 rows left an entire slide holding
+    # only 3 rows, when the next cluster (2 rows) could have shared it —
+    # same reasoning already applied to two whole small clusters, just
+    # never applied to a big cluster's own leftover tail.
+    categories = [{"name": "Trucks", "clusters": [_cluster("Heavy Duty Trucks", 15), _cluster("Tippers", 2)]}]
+    prs = _prs()
+    slides = _render_target_keyword_slides(prs, categories)
+    last = slides[-1]
+    tables = _tables(last)
+    assert len(tables) == 2
+    assert {t.cell(1, 0).text for t in tables} == {"Heavy Duty Trucks", "Tippers"}
+    assert sum(len(t.rows) - 1 for s in slides for t in _tables(s)) == 17
+    assert _audit_target_keyword_slides(slides, categories) == []
+    assert _audit_slide_geometry(prs) == []
+
+
 def test_two_small_clusters_share_a_slide_with_separate_merged_cells():
     categories = [{"name": "Trucks", "clusters": [_cluster("Tippers", 3), _cluster("Tractors", 2)]}]
     slides = _render_target_keyword_slides(_prs(), categories)

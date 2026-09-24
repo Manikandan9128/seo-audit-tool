@@ -6397,17 +6397,39 @@ def _plan_target_keyword_slides(categories: list[dict]) -> list[dict]:
                 i += 2
                 continue
             remaining = list(c["rows"])
+            chunks: list[list[tuple]] = []
+            chunk_first_flags: list[bool] = []
             while remaining:
                 top = _TK_TOP + (_TK_CATEGORY_H if first and cat["name"] else 0)
                 limit = _TK_BOTTOM - _TK_INSIGHTS_RESERVE - top
                 take = 1
                 while take < len(remaining) and _tk_section_height(c["name"], remaining[:take + 1]) <= limit:
                     take += 1
-                plan.append({"category": cat["name"], "show_category": first,
-                             "sections": [(c, c["name"], remaining[:take])]})
+                chunks.append(remaining[:take])
+                chunk_first_flags.append(first)
                 first = False
                 remaining = remaining[take:]
-            i += 1
+
+            # A small leftover tail (a real continuation, never the whole
+            # cluster) got its own slide even with almost nothing on it —
+            # confirmed real on a Geopits report (2026-09-24): a 15-keyword
+            # cluster split 12+3 left a slide holding only 3 rows. Share
+            # that last slide with the next cluster instead, same reasoning
+            # as pairing two whole small clusters above, just applied to a
+            # split cluster's remainder. A continuation chunk is never the
+            # category's first slide, so it never reserves _TK_CATEGORY_H.
+            merge_next = (
+                len(chunks) > 1 and len(chunks[-1]) <= _TK_SMALL_CLUSTER and cat["name"]
+                and nxt is not None and len(nxt["rows"]) <= _TK_SMALL_CLUSTER
+                and _tk_section_height(c["name"], chunks[-1]) + _TK_SECTION_GAP
+                + _tk_section_height(nxt["name"], nxt["rows"]) <= _TK_BOTTOM - _TK_INSIGHTS_RESERVE - _TK_TOP
+            )
+            for idx, chunk in enumerate(chunks):
+                sections = [(c, c["name"], chunk)]
+                if merge_next and idx == len(chunks) - 1:
+                    sections.append((nxt, nxt["name"], nxt["rows"]))
+                plan.append({"category": cat["name"], "show_category": chunk_first_flags[idx], "sections": sections})
+            i += 2 if merge_next else 1
     return plan
 
 
