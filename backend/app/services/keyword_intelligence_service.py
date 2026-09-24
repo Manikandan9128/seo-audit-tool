@@ -205,15 +205,21 @@ def detect_intent(keyword: str, source_intent: str | None = None) -> dict:
     intent (Semrush) when one exists, else product/service discovery at
     medium confidence — never presented as certain."""
     text = " ".join(_words(keyword))
-    core = normalize_keyword(keyword)["core_phrase"] or text
+    norm = normalize_keyword(keyword)
+    core = norm["core_phrase"] or text
+    # For a "learn" need the modifiers ARE the topic ("truck sizes", "bus
+    # mileage"), so keep them — only question/stop/geo words are dropped.
+    topic = " ".join(
+        w for w in text.split() if w not in _STOP_WORDS and w not in _GEO_WORDS and w not in _QUESTION_MARKERS
+    ) or core
     checks = [
         ("Navigational", _NAVIGATIONAL_MARKERS, 85, f"Reach a specific site or account page for {core}"),
         ("Comparison", _COMPARISON_MARKERS, 90, f"Compare {core} options before choosing"),
         ("Transactional", ["how much"], 85, f"Check price or buy {core}"),
-        ("Informational", _QUESTION_MARKERS, 85, f"Learn about {core}"),
+        ("Informational", _QUESTION_MARKERS, 85, f"Learn about {topic}"),
         ("Local", _LOCAL_MARKERS, 85, f"Find a nearby {core} provider or dealer"),
         ("Transactional", _TRANSACTIONAL_MARKERS, 85, f"Check price or buy {core}"),
-        ("Informational", _INFORMATIONAL_MARKERS, 80, f"Learn about {core}"),
+        ("Informational", _INFORMATIONAL_MARKERS, 80, f"Learn about {topic}"),
         ("Commercial Investigation", _INVESTIGATION_MARKERS, 75, f"Evaluate {core} options"),
     ]
     for intent, markers, confidence, need in checks:
@@ -254,11 +260,90 @@ def source_intent_family(source_intent: str | None) -> str | None:
     return None
 
 
+def secondary_intent(keyword: str, primary: str | None) -> str | None:
+    """§8 "Secondary Intent" — a second intent the keyword's own wording
+    also carries ("best truck price": Commercial Investigation +
+    Transactional). None when only one intent is evidenced."""
+    text = " ".join(_words(keyword))
+    for intent, markers in (
+        ("Comparison", _COMPARISON_MARKERS), ("Local", _LOCAL_MARKERS),
+        ("Transactional", _TRANSACTIONAL_MARKERS), ("Commercial Investigation", _INVESTIGATION_MARKERS),
+        ("Informational", _INFORMATIONAL_MARKERS),
+    ):
+        if intent != primary and _has_marker(text, markers):
+            return intent
+    return None
+
+
+_PROBLEM_MARKERS = [
+    "problem", "problems", "issue", "issues", "not working", "fix", "repair", "troubleshoot", "error", "fault",
+    "failure", "breakdown", "noise", "leak", "overheating",
+]
+_SUPPORT_MARKERS = [
+    "login", "log in", "sign in", "customer care", "customer service", "helpline", "contact number", "support",
+    "manual", "warranty", "service schedule", "user guide", "track order", "tracking", "renewal", "claim status",
+]
+
+
+def funnel_stage(keyword: str, intent: str | None) -> str:
+    """§10 search journey stage, from the keyword's own wording and its
+    detected intent. Problem/support wording wins over the intent default
+    (a "truck overheating fix" searcher has a problem, whatever the page)."""
+    text = " ".join(_words(keyword))
+    if _has_marker(text, _SUPPORT_MARKERS):
+        return "Retention / Support"
+    if _has_marker(text, _PROBLEM_MARKERS):
+        return "Problem Discovery"
+    return {
+        "Informational": "Education",
+        "Comparison": "Comparison",
+        "Commercial Investigation": "Commercial Investigation",
+        "Transactional": "Transaction",
+        "Local": "Transaction",
+        "Navigational": "Retention / Support",
+    }.get(intent or "", "Solution Discovery")
+
+
+# §11 audience — only from explicit wording in the keyword. No marker means
+# the audience is simply unknown from the keyword alone, never guessed.
+_AUDIENCE_MARKERS = [
+    ("Business / Enterprise", ["for business", "for businesses", "for small business", "for enterprise", "enterprise",
+                               "b2b", "for companies", "for company", "fleet", "for contractors", "commercial use"]),
+    ("Beginner", ["for beginners", "beginner", "beginners", "for dummies", "basics"]),
+    ("Student", ["for students", "student", "students", "exam", "syllabus"]),
+    ("Parent / Child", ["for kids", "for children", "kids", "children", "toddler", "toddlers", "baby", "for boys",
+                        "for girls", "year old", "year olds"]),
+    ("Job Seeker", ["jobs", "job", "vacancy", "vacancies", "salary", "career", "careers", "hiring", "recruitment"]),
+    ("Developer", ["api", "sdk", "developer", "developers", "github", "documentation"]),
+    ("Professional", ["for professionals", "professional", "for doctors", "for lawyers", "for accountants",
+                      "for engineers"]),
+    ("Senior", ["for seniors", "for elderly", "senior citizen", "senior citizens", "retirement"]),
+]
+
+
+def keyword_audience(keyword: str) -> str | None:
+    text = " ".join(_words(keyword))
+    for audience, markers in _AUDIENCE_MARKERS:
+        if _has_marker(text, markers):
+            return audience
+    return None
+
+
+_TEMPORAL_MARKERS = ["latest", "upcoming", "new launch", "this year", "next year", "current"]
+
+
+def is_temporal(keyword: str) -> bool:
+    """§44 — a time-sensitive search: a year, or latest/upcoming wording."""
+    words = _words(keyword)
+    return any(_YEAR_RE.match(w) for w in words) or bool(_has_marker(" ".join(words), _TEMPORAL_MARKERS))
+
+
 def annotate_keyword_rows(rows: list[dict]) -> None:
     """Stamps the spec's per-keyword fields (§54 master dataset) on every
     row in place: canonical_keyword, core_entity, detected_intent,
-    intent_confidence, intent_family, user_need, modifier_type geo.
-    Never overwrites a row's own `intent` (upstream Semrush/sheet value)."""
+    secondary_intent, intent_confidence, intent_family, user_need,
+    funnel_stage, audience, temporal, geography. Never overwrites a row's
+    own `intent` (upstream Semrush/sheet value)."""
     for r in rows:
         kw = (r.get("keyword") or "").strip()
         if not kw:
@@ -270,9 +355,13 @@ def annotate_keyword_rows(rows: list[dict]) -> None:
         r["_core_key"] = norm["core_key"]
         r["_core_tokens"] = norm["core_tokens"]
         r["detected_intent"] = intent["intent"]
+        r["secondary_intent"] = secondary_intent(kw, intent["intent"])
         r["intent_family"] = intent["family"]
         r["intent_confidence"] = intent["confidence"]
         r["user_need"] = intent["user_need"]
+        r["funnel_stage"] = funnel_stage(kw, intent["intent"])
+        r["audience"] = keyword_audience(kw)
+        r["temporal"] = is_temporal(kw)
         r["geography"] = ", ".join(norm["geo"]) if norm["geo"] else None
 
 

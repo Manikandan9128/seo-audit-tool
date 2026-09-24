@@ -38,7 +38,7 @@ from app.services.keyword_cluster_pipeline import (
     _UNJUDGED_REASON,
 )
 from app.services.content_safety import redact_presentation
-from app.services.keyword_intelligence_service import _EXCLUDED_RELEVANCE_STATUSES
+from app.services.keyword_intelligence_service import _EXCLUDED_RELEVANCE_STATUSES, is_temporal
 from app.services.priority_model import compute_priority_score
 
 SLIDE_W = Inches(13.333)
@@ -5806,6 +5806,16 @@ def _quoted_list(items: list[str], limit: int = 3) -> str:
     return f"{shown} (+{more} more)" if more > 0 else shown
 
 
+def _temporal_keywords_line(keywords: list[str]) -> str | None:
+    """§44: year/latest searches get one evergreen page refreshed each
+    year, never a new page per year."""
+    temporal = [k for k in keywords if is_temporal(k)]
+    if not temporal:
+        return None
+    return (f"Time-sensitive: {_quoted_list(temporal, 2)} — keep one evergreen page and refresh its year/latest "
+            "details annually; don't create a new page per year.")
+
+
 def _validated_strategic_cluster_insights(c: dict) -> list[str]:
     """Universal SEO Keyword engine (2026-09-23) insights for one client-
     sheet cluster: the sheet's grouping is kept, and these lines report
@@ -5828,9 +5838,13 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
     ranking = c.get("ranking_evidence")
     if target and ranking:
         target_text += f" (already ranks #{ranking['position']} for {ranking['keywords']} of these keywords)"
+    priority_text = (
+        f" Priority {c['roadmap_priority']} (opportunity {c.get('opportunity')}/100)." if c.get("roadmap_priority") else ""
+    )
     out.append(
         f"Target: {c.get('recommended_page_type') or 'dedicated page'} — {target_text}. "
         f"Action: {c.get('recommended_action')}. Confidence {c.get('confidence_level')} ({c.get('confidence')}/100)."
+        f"{priority_text}"
     )
     if c.get("primary_keyword"):
         # §55/§66-D: the page's one primary keyword and the searcher's need.
@@ -5873,6 +5887,9 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
             f"Split test: {_quoted_list(outliers)} share no core term with the rest of this cluster — "
             "likely separate search needs; consider separate pages."
         )
+    temporal_line = _temporal_keywords_line([k["keyword"] for k in keywords])
+    if temporal_line:
+        out.append(temporal_line)
     # Decision lines first; the plain demand lines fill what room is left.
     for line in base:
         if mismatches and line.startswith("Every keyword here carries commercial"):
@@ -5965,6 +5982,55 @@ def _metric_cell(value) -> str:
     except (TypeError, ValueError):
         return str(value)
     return f"{int(f):,}" if f.is_integer() else f"{f:,.1f}"
+
+
+def _short_page(label: str) -> str:
+    """A target page for an insight line: its path for an existing URL
+    (the domain is the client's own, already in the footer), or "(new
+    page)" — the cluster name is already on the line."""
+    if label.startswith("new page:"):
+        return "(new page)"
+    path = re.sub(r"^[a-z][a-z0-9+.-]*://[^/]+", "", label, flags=re.I)
+    return path or "/"
+
+
+def add_keyword_topic_map_slide(prs: Presentation, keyword_strategy: dict | None):
+    """Universal SEO engine §18 (topic hierarchy), §38 (topical coverage)
+    and §37 (internal linking) on ONE slide, built from the same clusters
+    and target pages as the Target Keywords slides before it — one row per
+    parent topic: its pages (clusters), how many already have a real page,
+    and which search intents have no page yet. Insights carry the internal
+    links. Skipped when there is no strategy (no clusters)."""
+    topics = (keyword_strategy or {}).get("topics") or []
+    if not topics:
+        return None
+    headers = ["Parent Topic", "Pages in this Topic (clusters)", "Coverage", "Intent with no page yet"]
+    rows = []
+    for t in topics:
+        rows.append((
+            t["parent"],
+            ", ".join(t["clusters"]),
+            f"{t['coverage']} ({t['covered']} of {t['total']} have a page)",
+            ", ".join(t["intents_without_page"]) or "—",
+        ))
+    insights = []
+    links = [l for t in topics for l in t["links"]]
+    for l in links[:3]:
+        insights.append(
+            f"Internal link ({l['relation']}): \"{l['from_cluster']}\" {_short_page(l['from'])} → "
+            f"\"{l['to_cluster']}\" {_short_page(l['to'])}."
+        )
+    if len(links) > 3:
+        insights.append(f"{len(links) - 3} more internal link(s) follow the same topic → hub pattern.")
+    weak = [t for t in topics if t["coverage"] in ("Weak", "Missing")]
+    if weak:
+        w = weak[0]
+        have = f"only {w['covered']} of its {w['total']} page(s) exist" if w["covered"] else             f"none of its {w['total']} page(s) exist yet"
+        insights.append(f"Weakest topic: {w['parent']} — {have}; build these before expanding stronger topics.")
+    return _table_slide(
+        prs, "Keyword Topic Map", headers, rows, col_widths=[2.2, 5.2, 2.6, 2.1],
+        source="Keyword clusters + crawled pages", insights=insights[:5], wrap_cols={1},
+    )
 
 
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
@@ -6065,10 +6131,17 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         # ahead of the KD/CPC colour lines so the 5-line insight cap never
         # drops it.
         if top.get("cluster_confidence") is not None:
+            priority_text = (
+                f" Priority {top['roadmap_priority']} (opportunity {top.get('cluster_opportunity')}/100)."
+                if top.get("roadmap_priority") else ""
+            )
             out.append(
                 f"Confidence: {top.get('cluster_confidence_level')} ({top.get('cluster_confidence')}/100) — "
-                f"{top.get('cluster_reason') or 'grouped by shared entity and intent'}."
+                f"{top.get('cluster_reason') or 'grouped by shared entity and intent'}.{priority_text}"
             )
+        temporal_line = _temporal_keywords_line([r.get("keyword") or "" for r in rows_for_group])
+        if temporal_line:
+            out.append(temporal_line)
         if kds:
             out.append(f"Avg. keyword difficulty {sum(kds) / len(kds):.0f} — {'competitive cluster, prioritize content depth over volume' if sum(kds) / len(kds) > 40 else 'low-competition cluster, faster to rank in'}.")
         if easy_wins:
@@ -7337,7 +7410,18 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
         def _cluster_volume(label: str) -> float:
             return sum(_num(r.get("search_volume")) for r in cluster_rows[label])
 
-        for label in sorted(cluster_rows, key=lambda c: -_cluster_volume(c)):
+        # §66-K priority roadmap / §33: topics in High -> Medium -> Low ->
+        # Human Review order by the §31 opportunity score, never by volume
+        # alone (volume only breaks a tie for rows scored before the
+        # strategy layer existed).
+        _tier_order = {"High": 0, "Medium": 1, "Low": 2, "Human Review": 3}
+
+        def _roadmap_key(label: str) -> tuple:
+            sample = cluster_rows[label][0]
+            return (_tier_order.get(sample.get("roadmap_priority"), 4),
+                    -_num(sample.get("cluster_opportunity")), -_cluster_volume(label))
+
+        for label in sorted(cluster_rows, key=_roadmap_key):
             crow = cluster_rows[label]
             evidence = _content_seo_cluster_evidence(crow)
             if not evidence:
@@ -7355,7 +7439,12 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
                 action = pipeline_action[0].lower() + pipeline_action[1:]
             else:
                 action = "create a new page — no existing page covers this topic closely enough"
-            items.append(f"\"{label}\" topic — {len(crow)} keyword(s), {evidence}; {action}.")
+            tier = sample.get("roadmap_priority")
+            tier_label = "Needs human review" if tier == "Human Review" else f"{tier} priority"
+            tier_text = f"[{tier_label}, opportunity {sample.get('cluster_opportunity')}/100] " if tier else ""
+            primary = next((r.get("keyword") for r in crow if r.get("primary_or_secondary") == "Primary"), None)
+            primary_text = f" (primary keyword \"{primary}\")" if primary else ""
+            items.append(f"{tier_text}\"{label}\" topic{primary_text} — {len(crow)} keyword(s), {evidence}; {action}.")
 
         # Cannibalization notes — already computed upstream per cluster
         # (cannibalization_status), one bullet per affected existing URL
@@ -7673,6 +7762,7 @@ def build_report(
     competitor_top_opportunities: list[str] | None = None,
     content_issues: list[str] | None = None,
     strategic_keyword_clusters: list[dict] | None = None,
+    keyword_strategy: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -7700,6 +7790,7 @@ def build_report(
             competitor_top_opportunities=competitor_top_opportunities,
             content_issues=content_issues,
             strategic_keyword_clusters=strategic_keyword_clusters,
+            keyword_strategy=keyword_strategy,
         )
     finally:
         _theme["footer"] = ""
@@ -7751,6 +7842,7 @@ def _build_report(
     competitor_top_opportunities: list[str] | None = None,
     content_issues: list[str] | None = None,
     strategic_keyword_clusters: list[dict] | None = None,
+    keyword_strategy: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -7978,6 +8070,8 @@ def _build_report(
             add_strategic_keyword_clusters_slide(prs, strategic_keyword_clusters)
         elif keyword_rows:
             add_keyword_research_slide(prs, keyword_rows)
+        # §18/§37/§38 — one topic map for whichever path rendered above.
+        add_keyword_topic_map_slide(prs, keyword_strategy)
         if competitor_rows:
             # 2026-09-20 user request: the "Open full keyword list" button
             # must appear only on Competitor Keyword Gap Analysis (see

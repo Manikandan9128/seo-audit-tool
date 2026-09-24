@@ -53,7 +53,29 @@ def _test_connection(db) -> None:
     drive.files().delete(fileId=spreadsheet_id).execute()
 
 
-_CLIENT_HEADER = ["Keyword", "Cluster", "Search Volume", "KD", "Intent"]
+# Universal SEO engine §54 master keyword dataset (2026-09-24): the first
+# five columns are the original ones, unchanged; the engine's per-keyword
+# fields follow, blank wherever a row has no value.
+_CLIENT_COLUMNS = [
+    ("Keyword", "keyword"), ("Cluster", "cluster"), ("Search Volume", "search_volume"), ("KD", "keyword_difficulty"),
+    ("Intent", "intent"), ("Role", "primary_or_secondary"), ("Detected Intent", "detected_intent"),
+    ("Secondary Intent", "secondary_intent"), ("Funnel Stage", "funnel_stage"), ("Audience", "audience"),
+    ("User Need", "user_need"), ("Geography", "geography"), ("Time-Sensitive", "temporal"),
+    ("Relevance", "relevance_status"), ("Current Position", "current_position"), ("Ranking URL", "current_url"),
+    ("Matched Existing Page", "existing_page_url"), ("Recommended Action", "recommended_action"),
+    ("Page Type", "recommended_page_type"), ("Cluster Confidence", "cluster_confidence"),
+    ("Opportunity Score", "opportunity_score"), ("Roadmap Priority", "roadmap_priority"),
+    ("Cannibalization", "cannibalization_status"),
+]
+_CLIENT_HEADER = [label for label, _key in _CLIENT_COLUMNS]
+
+
+def _client_cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else ""
+    return value if isinstance(value, (int, float, str)) else str(value)
 
 
 def _sanitize_tab_title(name: str) -> str:
@@ -151,7 +173,7 @@ def _create_combined_keyword_sheet_inner(
     tabs: list[tuple[str, list[list]]] = []
     if client_keyword_rows:
         values = [_CLIENT_HEADER] + [
-            [r.get("keyword", ""), r.get("cluster", ""), r.get("search_volume", ""), r.get("keyword_difficulty", ""), r.get("intent", "")]
+            [_client_cell(r.get(key)) for _label, key in _CLIENT_COLUMNS]
             for r in client_keyword_rows
         ]
         tabs.append((_sanitize_tab_title(client_name or "Client"), values))

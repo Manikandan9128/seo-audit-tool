@@ -55,6 +55,7 @@ from app.services.ux_findings_service import generate_onboarding_breakdown, gene
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_live_target_page, match_existing_page_for_cluster, site_entity_summary
+from app.services.keyword_strategy_service import apply_strategy_to_manual_clusters, build_keyword_strategy, summaries_from_keyword_rows
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
 from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
 from app.services.logo_service import fetch_logo_bytes
@@ -803,6 +804,10 @@ def _select_validated_manual_clusters(
             page_index=build_page_index(site_audit_pages_rows), flagged=flagged,
             keyword_ranking=keyword_ranking, dead_urls=dead_urls,
         )
+        # §31/§66-K/§18/§37/§38/§56 on the sheet's selected clusters.
+        strategy = apply_strategy_to_manual_clusters(clusters, keyword_ranking)
+        if strategy:
+            clusters[0]["_strategy"] = strategy
     return clusters
 
 
@@ -2415,6 +2420,13 @@ def _gather_report_data(
         client, list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,
         domain_overview_rows, site_audit_pages_rows, kw_cache, keyword_rows_all,
     )
+    # Keyword strategy (topic map, page map, roadmap) from whichever path
+    # renders the Target Keywords section — the client's sheet when
+    # uploaded, else the automatic clusters.
+    if strategic_keyword_clusters:
+        keyword_strategy = strategic_keyword_clusters[0].pop("_strategy", None)
+    else:
+        keyword_strategy = build_keyword_strategy(summaries_from_keyword_rows(keyword_rows_all or []))
     _save_keyword_cache(client, kw_cache, db)
 
     return {
@@ -2440,6 +2452,7 @@ def _gather_report_data(
         "high_potential_pages": search_opportunity_pages,
         "high_potential_countries": high_potential_countries,
         "strategic_keyword_clusters": strategic_keyword_clusters or None,
+        "keyword_strategy": keyword_strategy,
         "psi_mobile": psi_mobile,
         "psi_desktop": psi_desktop,
         "analytics": analytics,

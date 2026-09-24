@@ -68,6 +68,7 @@ from app.services.keyword_intelligence_service import (
     ranking_page_target,
     rule_group_name,
 )
+from app.services.keyword_strategy_service import score_summaries, summaries_from_keyword_rows
 from app.services.priority_model import compute_priority_score, evidence_confidence_to_score
 
 logger = logging.getLogger(__name__)
@@ -921,6 +922,9 @@ def build_final_keyword_clusters(
     _assign_evidence_confidence(rows)
     _assign_priority_score(rows)
     apply_cluster_intelligence(rows)
+    # §31/§66-K: opportunity score + roadmap tier per keyword and cluster,
+    # for the Content SEO / page-map / roadmap consumers downstream.
+    score_summaries(summaries_from_keyword_rows(rows))
     for r in rows:
         # Internal grouping keys — never part of the row data handed on.
         r.pop("_core_key", None)
