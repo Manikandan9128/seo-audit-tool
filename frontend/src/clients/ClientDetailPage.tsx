@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import SiteAuditHistory from "../components/SiteAuditHistory";
@@ -19,6 +19,7 @@ import { useReportReadiness } from "../components/ReportReadinessProvider";
 import ReportPreviewModal from "../components/ReportPreviewModal";
 import SemrushSourceModal from "../components/SemrushSourceModal";
 import { SEMRUSH_MCP_ENABLED } from "../features";
+import { downloadReadyReport, resumeReportJob, startDownload, startGenerate, useReportJobState } from "../reportJobs";
 import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourceModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
@@ -140,10 +141,15 @@ export default function ClientDetailPage() {
   // without prop-drilling that component's own internal state.
   const [domainRatings, setDomainRatings] = useState<DomainRatingSummary[]>([]);
 
-  const [reportLoading, setReportLoading] = useState(false);
-  const [reportStatusMsg, setReportStatusMsg] = useState("");
-  const [reportProgressPct, setReportProgressPct] = useState<number | null>(null);
-  const [contentGenerationIssues, setContentGenerationIssues] = useState<string[] | null>(null);
+  // Generate/Download state lives in reportJobs.ts, not here — this page
+  // unmounts on navigation, and local state used to reset the buttons while
+  // the work was still running (see that file's header).
+  const reportJob = useReportJobState(clientId!);
+  const dl = reportJob.download;
+  const reportLoading = dl.status === "building" || dl.status === "downloading";
+  const reportStatusMsg = dl.stage;
+  const reportProgressPct = dl.pct;
+  const contentGenerationIssues = dl.issues;
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewData, setPreviewData] = useState<ReportPreviewData | null>(null);
   const [previewOverview, setPreviewOverview] = useState<CompanyOverview | null>(null);
@@ -178,9 +184,27 @@ export default function ClientDetailPage() {
     SECTION_OPTIONS.map((s) => s.key)
   );
   const [sectionDropdownOpen, setSectionDropdownOpen] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [hasGenerated, setHasGenerated] = useState(false);
-  const [hasDownloaded, setHasDownloaded] = useState(false);
+  const generating = reportJob.generating;
+  // A running or finished build also counts: after a refresh the preview
+  // fetches are gone, but the Download buttons must still show its state.
+  const hasGenerated = reportJob.hasGenerated || dl.status !== "idle" || !!dl.readyJob;
+  const hasDownloaded = dl.downloadedSeq > 0;
+  const closePreviewAfterDownload = useRef(false);
+
+  useEffect(() => {
+    resumeReportJob(clientId!);
+  }, [clientId]);
+
+  useEffect(() => {
+    if (dl.error) setError(dl.error);
+  }, [dl.errorSeq]);
+
+  useEffect(() => {
+    if (dl.downloadedSeq && closePreviewAfterDownload.current) {
+      closePreviewAfterDownload.current = false;
+      setPreviewData(null);
+    }
+  }, [dl.downloadedSeq]);
 
   // "" = default automatic order (Groq, then Gemini, then Claude — see
   // text_ai_client.py). Picking one here pins it first for this report's
@@ -282,11 +306,11 @@ export default function ClientDetailPage() {
   }
 
   async function generateSelectedReport(source: SemrushSource = semrushSource, database: string = semrushDatabase) {
+    if (generating) return;
     showToast("Report generation started — this can take a minute.");
-    setGenerating(true);
     setError("");
     setCollapsedSections((prev) => prev.filter((k) => !selectedSections.includes(k)));
-    try {
+    await startGenerate(clientId!, async () => {
       const tasks: Promise<any>[] = [];
       if (selectedSections.includes("overview")) tasks.push(loadOverview());
       if (selectedSections.includes("site_audit")) tasks.push(runSiteAudit());
@@ -302,10 +326,7 @@ export default function ClientDetailPage() {
       }
       if (source === "mcp") tasks.push(fetchSemrushMcpData(database));
       await Promise.all(tasks);
-      setHasGenerated(true);
-    } finally {
-      setGenerating(false);
-    }
+    });
   }
 
   async function loadClient() {
@@ -514,96 +535,11 @@ export default function ClientDetailPage() {
     }
   }
 
-  async function downloadReportWithBody(body: any, closePreviewAfter: boolean) {
-    setReportLoading(true);
-    setReportStatusMsg("Starting report build…");
-    setReportProgressPct(0);
-    setContentGenerationIssues(null);
+  function downloadReportWithBody(body: any, closePreviewAfter: boolean) {
+    if (reportLoading) return;
     setError("");
-    try {
-      const startRes = await api.post(`/clients/${clientId}/generate-report/start`, body);
-      const jobId = startRes.data.job_id;
-      await pollGenerateReportJob(jobId, closePreviewAfter);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Report generation failed");
-      setReportLoading(false);
-      setReportStatusMsg("");
-    }
-  }
-
-  async function pollGenerateReportJob(jobId: string, closePreviewAfter: boolean, failCount = 0) {
-    let res;
-    try {
-      res = await api.get(`/clients/${clientId}/generate-report/${jobId}`);
-    } catch (err: any) {
-      // A transient gateway error (502/504 — a deploy restarting the
-      // backend, or a brief hiccup) previously threw here uncaught, which
-      // silently killed the entire polling loop: no retry, no error shown,
-      // the button just stuck on "Generating..." forever even if the
-      // report had actually finished or failed server-side. Retry a few
-      // times with the same interval before giving up.
-      if (failCount < 5) {
-        setReportStatusMsg("Reconnecting…");
-        setTimeout(() => pollGenerateReportJob(jobId, closePreviewAfter, failCount + 1), 3000);
-        return;
-      }
-      setError(err?.response?.data?.detail || "Lost connection while checking report status — please try again");
-      setReportLoading(false);
-      setReportStatusMsg("");
-      setReportProgressPct(null);
-      return;
-    }
-    const job = res.data;
-    if (job.status === "done") {
-      setReportStatusMsg("Downloading…");
-      setReportProgressPct(100);
-      // Real per-section AI failures (rate limit, quota, etc.) this run —
-      // deliberately never inside the PPTX itself (not something a client
-      // should see), shown here instead so it's visible before the file
-      // gets sent anywhere.
-      setContentGenerationIssues(
-        Array.isArray(job.content_generation_issues) && job.content_generation_issues.length > 0
-          ? job.content_generation_issues
-          : null
-      );
-      try {
-        const fileRes = await api.get(`/clients/${clientId}/generate-report/${jobId}/download`, { responseType: "blob" });
-        const url = window.URL.createObjectURL(new Blob([fileRes.data]));
-        const link = document.createElement("a");
-        link.href = url;
-        link.setAttribute("download", `${client?.name || "client"}-seo-audit.pptx`);
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.URL.revokeObjectURL(url);
-        setHasDownloaded(true);
-        if (closePreviewAfter) setPreviewData(null);
-      } catch (err: any) {
-        setError(err?.response?.data?.detail || "Report download failed");
-      } finally {
-        setReportLoading(false);
-        setReportStatusMsg("");
-        setReportProgressPct(null);
-      }
-    } else if (job.status === "failed") {
-      setError(job.error || "Report generation failed");
-      setReportLoading(false);
-      setReportStatusMsg("");
-      setReportProgressPct(null);
-    } else {
-      setReportStatusMsg(
-        job.status === "running"
-          ? job.progress_stage || "Building report… PageSpeed/AI steps can take a couple minutes"
-          : "Queued…"
-      );
-      // job.progress_pct is a rough, hand-assigned estimate per stage (see
-      // report_generation_job.py) — stage durations vary too much (a
-      // PageSpeed call vs. a per-competitor AI call) for an exact number,
-      // but it's still a real, monotonically increasing signal of how much
-      // is left, not a fake animation.
-      setReportProgressPct(typeof job.progress_pct === "number" ? job.progress_pct : reportProgressPct);
-      setTimeout(() => pollGenerateReportJob(jobId, closePreviewAfter), 2000);
-    }
+    closePreviewAfterDownload.current = closePreviewAfter;
+    startDownload(clientId!, body);
   }
 
   function downloadReportDirect() {
@@ -855,8 +791,17 @@ export default function ClientDetailPage() {
                   {previewLoading ? "Loading..." : "Preview Report"}
                 </button>
                 <button className="btn btn-secondary" onClick={downloadReportDirect} disabled={reportLoading || semrushBlocksReport}>
-                  {reportLoading ? "Generating..." : "Download Report (PPTX)"}
+                  {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
                 </button>
+                {!reportLoading && dl.readyJob && (
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => downloadReadyReport(clientId!)}
+                    title="Downloads the report already built, without building it again"
+                  >
+                    Download last report ({new Date(dl.readyJob.createdAt).toLocaleString()})
+                  </button>
+                )}
                 {reportLoading && reportStatusMsg && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
                     <span className="muted" style={{ fontSize: 12 }}>

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.api.deps import get_current_user, get_db
 from app.config import settings
@@ -3162,6 +3162,16 @@ def start_generate_report_job(
     _get_owned_client(client_id, db, current_user)
     if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use", "openrouter"):
         raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', 'openrouter', or omitted")
+    # One build per client at a time: a double click, a second tab, or a
+    # page that lost track of its job after navigation/refresh gets the
+    # build already in progress instead of starting a duplicate. The client
+    # row lock makes two simultaneous requests take turns here, so both
+    # can't see "no active job" and each create one.
+    db.query(Client).filter(Client.id == client_id).with_for_update().one()
+    active = _active_report_job(db, client_id)
+    if active:
+        db.commit()
+        return {"job_id": active.id, "reused": True}
     semrush_snapshot = _semrush_snapshot_for(semrush_source, client_id, db)
     job = ReportGenerationJob(client_id=client_id, status="pending")
     db.add(job)
@@ -3176,7 +3186,78 @@ def start_generate_report_job(
         ),
         daemon=True,
     ).start()
-    return {"job_id": job.id}
+    return {"job_id": job.id, "reused": False}
+
+
+def _fail_if_stale(job: ReportGenerationJob, db: Session, commit: bool = True) -> None:
+    """A background job's worker process can die mid-build (deploy restart,
+    OOM, crash) with nothing left alive to ever mark the row "done" or
+    "failed" — confirmed real: a job frozen at "Analyzing competitor 2 of
+    4" / 65% for 30+ minutes, far past any realistic worst-case for that
+    one step (Groq's own call+retry tops out around 2-3 minutes). Treat a
+    pending/running job whose row hasn't moved in STALE_JOB_MINUTES as
+    dead rather than let the frontend poll a frozen percentage forever."""
+    if job.status in ("pending", "running") and datetime.now(timezone.utc) - job.updated_at > timedelta(minutes=STALE_JOB_MINUTES):
+        job.status = "failed"
+        job.error = (
+            "Report generation appears to have stalled or crashed server-side "
+            f"(no progress for over {STALE_JOB_MINUTES} minutes) — please try again."
+        )
+        # start_generate_report_job flushes only: committing there would
+        # release its client row lock before it creates the new job.
+        db.commit() if commit else db.flush()
+
+
+def _report_job_status(job: ReportGenerationJob) -> dict:
+    return {
+        "id": job.id,
+        "status": job.status,
+        "error": job.error,
+        "progress_stage": job.progress_stage,
+        "progress_pct": job.progress_pct,
+        "content_generation_issues": job.content_generation_issues,
+        "created_at": job.created_at,
+    }
+
+
+def _latest_report_job(db: Session, client_id: uuid.UUID) -> ReportGenerationJob | None:
+    # pptx_bytes deferred: status checks never need the file itself.
+    return (
+        db.query(ReportGenerationJob)
+        .options(defer(ReportGenerationJob.pptx_bytes))
+        .filter(ReportGenerationJob.client_id == client_id)
+        .order_by(ReportGenerationJob.created_at.desc())
+        .first()
+    )
+
+
+def _active_report_job(db: Session, client_id: uuid.UUID) -> ReportGenerationJob | None:
+    """The client's in-progress build, if any (a stale one is failed first,
+    so a dead job never blocks a new build). Doesn't commit — the caller
+    holds the client row lock until its own commit."""
+    job = _latest_report_job(db, client_id)
+    if job:
+        _fail_if_stale(job, db, commit=False)
+    return job if job and job.status in ("pending", "running") else None
+
+
+@router.get("/{client_id}/generate-report/latest")
+def get_latest_generate_report_job(
+    client_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The client's most recent report build, or null — lets the page pick
+    a running build back up (and keep its button disabled) after the user
+    navigates away or refreshes, or offer a finished one for download
+    instead of building it again. Declared before /{job_id} so "latest"
+    isn't parsed as a job id."""
+    _get_owned_client(client_id, db, current_user)
+    job = _latest_report_job(db, client_id)
+    if not job:
+        return None
+    _fail_if_stale(job, db)
+    return _report_job_status(job)
 
 
 @router.get("/{client_id}/generate-report/{job_id}")
@@ -3190,28 +3271,8 @@ def get_generate_report_job(
     job = db.get(ReportGenerationJob, job_id)
     if not job or job.client_id != client_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    # A background job's worker process can die mid-build (deploy restart,
-    # OOM, crash) with nothing left alive to ever mark the row "done" or
-    # "failed" — confirmed real: a job frozen at "Analyzing competitor 2 of
-    # 4" / 65% for 30+ minutes, far past any realistic worst-case for that
-    # one step (Groq's own call+retry tops out around 2-3 minutes). Treat a
-    # "running" job whose progress hasn't moved in STALE_JOB_MINUTES as
-    # dead rather than let the frontend poll a frozen percentage forever.
-    if job.status == "running" and datetime.now(timezone.utc) - job.updated_at > timedelta(minutes=STALE_JOB_MINUTES):
-        job.status = "failed"
-        job.error = (
-            "Report generation appears to have stalled or crashed server-side "
-            f"(no progress for over {STALE_JOB_MINUTES} minutes) — please try again."
-        )
-        db.commit()
-    return {
-        "id": job.id,
-        "status": job.status,
-        "error": job.error,
-        "progress_stage": job.progress_stage,
-        "progress_pct": job.progress_pct,
-        "content_generation_issues": job.content_generation_issues,
-    }
+    _fail_if_stale(job, db)
+    return _report_job_status(job)
 
 
 @router.get("/{client_id}/generate-report/{job_id}/download")
