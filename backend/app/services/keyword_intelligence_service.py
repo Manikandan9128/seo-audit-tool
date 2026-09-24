@@ -1029,6 +1029,12 @@ _PAGE_CATEGORY_BY_FAMILY = {
 }
 
 
+_RANKING_INCOMPATIBLE = {
+    "Commercial": ("blog", "comparison"), "Local": ("blog", "comparison"), "Comparison": ("home",),
+    "Informational": ("commercial", "home"),
+}
+
+
 def _norm_url(url: str | None) -> str:
     u = re.sub(r"^[a-z][a-z0-9+.-]*://", "", (url or "").strip().lower())
     return u.removeprefix("www.").rstrip("/")
@@ -1036,6 +1042,7 @@ def _norm_url(url: str | None) -> str:
 
 def ranking_page_target(
     rows: list[dict], keyword_ranking: dict[str, tuple] | None = None, dead_urls: set[str] | None = None,
+    page_type_fn=None, family: str | None = None,
 ) -> dict | None:
     """§23 "existing rankings": the client page Google ALREADY ranks for a
     cluster's keywords is the strongest existing-URL evidence there is —
@@ -1054,6 +1061,12 @@ def ranking_page_target(
             pos, url = keyword_ranking.get((r.get("keyword") or "").strip().lower(), (None, None))
         p = _num(pos)
         if not url or p <= 0 or p > 20 or _norm_url(url) in dead:
+            continue
+        # §23 Step 2 "intent match": a page ranking for the cluster only
+        # counts as its target when its page type fits the cluster's intent
+        # — a blog post ranking for "database administration services"
+        # is supporting evidence, not the service page (Geopits, 2026-09-24).
+        if page_type_fn and family and page_type_fn(url) in _RANKING_INCOMPATIBLE.get(family, ()):
             continue
         entry = by_url.setdefault(url, {"url": url, "position": p, "weight": 0.0, "keywords": 0})
         entry["weight"] += max(_demand(r), 1.0) * (2.0 if p <= 10 else 1.0)
@@ -1088,7 +1101,7 @@ def select_primary_keyword(rows: list[dict], dominant_family: str | None) -> dic
 def enrich_manual_clusters(
     clusters: list[dict], site_audit_pages_rows: list[dict] | None, excluded: list[dict], match_fn, page_index=None,
     flagged: list[dict] | None = None, keyword_ranking: dict[str, tuple] | None = None,
-    dead_urls: set[str] | None = None,
+    dead_urls: set[str] | None = None, page_type_fn=None,
 ) -> None:
     """Adds the §55 cluster output to each selected manual cluster in
     place: target_url / match_strength / recommended_action /
@@ -1115,7 +1128,7 @@ def enrich_manual_clusters(
                     r["current_position"], r["current_url"] = pos, url
         families = Counter(r.get("intent_family") for r in rows if r.get("intent_family"))
         dominant = families.most_common(1)[0][0] if families else "Commercial"
-        ranking = ranking_page_target(rows, None, dead_urls)
+        ranking = ranking_page_target(rows, None, dead_urls, page_type_fn, dominant)
         if ranking:
             match = {"url": ranking["url"], "match_strength": ranking["match_strength"]}
         else:

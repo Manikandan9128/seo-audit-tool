@@ -453,7 +453,11 @@ def _family_share(rows: list[dict]) -> tuple[str, float]:
 
 _MODEL_SIGNALS = [
     ("SaaS / Subscription", _re.compile(r"/(pricing|plans|signup|sign-up|free-trial|trial|demo|request-a-demo|login|app)(/|$)")),
-    ("E-commerce", _re.compile(r"/(cart|checkout|shop|store|collections?|products?/[^/]+)(/|$)")),
+    # E-commerce needs real shop mechanics. A /products/<name> page alone
+    # is a company presenting its own products (Geopits: /products/geoops,
+    # its own software) — that's "Product", not an online store.
+    ("E-commerce", _re.compile(r"/(cart|basket|checkout|shop|store|collections?|add-to-cart|my-cart)(/|$)")),
+    ("Product", _re.compile(r"/(products?|product-range|models?)/[^/]+")),
     ("Service", _re.compile(r"/(services?|solutions?|consulting|what-we-do)(/|$)")),
     ("Local / Multi-location", _re.compile(r"/(locations?|branches|dealers?|dealer-locator|stores?|near-me|service-cent(er|re)s?)(/|$)")),
     ("Marketplace", _re.compile(r"/(marketplace|sellers?|vendors?|listings?)(/|$)")),
@@ -504,7 +508,29 @@ def _share(rows: list[dict], pattern) -> float:
     return sum(1 for r in rows if pattern.search((r.get("keyword") or "").lower())) / len(rows) if rows else 0.0
 
 
-def assign_cluster_types(summaries: list[dict], topics: list[dict]) -> None:
+_COMMERCIAL_EVIDENCE_TYPES = {"Service", "Product"}
+
+
+def _has_commercial_evidence(s: dict) -> bool:
+    """A cluster can be a topic's CORE page only when its keywords say the
+    searcher wants to buy/hire something (a service/product word or a
+    price/buy modifier) — not when an upstream tool merely labelled a bare
+    concept "Commercial" ("stored procedures" on Geopits)."""
+    rows = s["rows"]
+    if not rows:
+        return False
+    # A bare product noun ("truck" for a truck maker) carries no modifier,
+    # so the business-relevance verdict and the target page's own type
+    # count as evidence too.
+    if s.get("target_url") and classify_page_type(s["target_url"]) == "commercial":
+        return True
+    evidenced = sum(1 for r in rows if r.get("entity_type") in _COMMERCIAL_EVIDENCE_TYPES
+                    or "Intent" in (r.get("modifier_type") or "")
+                    or r.get("relevance_status") == "Core Relevant")
+    return evidenced / len(rows) >= 0.5
+
+
+def assign_cluster_types(summaries: list[dict], topics: list[dict], business_model: dict | None = None) -> None:
     """§29 cluster_type, §22 page_type and §25 content_gap_type per cluster
     summary, in place. Core/Supporting come from the topic model: the
     commercial page a topic is built on is its Core topic; guides and
@@ -515,9 +541,11 @@ def assign_cluster_types(summaries: list[dict], topics: list[dict]) -> None:
     for s in summaries:
         by_parent.setdefault(parent_of.get(s["name"], s["name"]), []).append(s)
     for members in by_parent.values():
-        commercial = [s for s in members if (s.get("dominant_family") or "Commercial") == "Commercial"]
+        commercial = [s for s in members if (s.get("dominant_family") or "Commercial") == "Commercial"
+                      and _has_commercial_evidence(s)]
         if commercial:
             core_names.add(max(commercial, key=lambda s: (s.get("opportunity") or 0, s["name"]))["name"])
+    models = set((business_model or {}).get("models") or [])
 
     for s in summaries:
         rows, family = s["rows"], s.get("dominant_family") or "Commercial"
@@ -573,7 +601,14 @@ def assign_cluster_types(summaries: list[dict], topics: list[dict]) -> None:
         elif ctype == "Audience Topic":
             ptype = "Industry / Audience Page"
         elif ctype == "Core Topic":
-            ptype = "Category Page"
+            # §22/§48/§49: the pillar page's format follows the business —
+            # a category page for products, a service page for services.
+            if _majority(rows, "entity_type", "Service") or ("Service" in models and not models & {"E-commerce", "Product"}):
+                ptype = "Service Page"
+            elif _majority(rows, "entity_type", "Product") or models & {"E-commerce", "Product"}:
+                ptype = "Category Page"
+            else:
+                ptype = "Landing Page"
         elif _majority(rows, "entity_type", "Service"):
             ptype = "Service Page"
         elif _majority(rows, "entity_type", "Product"):
@@ -618,15 +653,17 @@ def assign_decisions(summaries: list[dict], dead_urls: set[str] | None = None) -
         url = (s.get("target_url") or "").rstrip("/").lower()
         base = s.get("recommended_action") or ""
         ranking_dead = next((r.get("current_url") for r in s["rows"]
-                             if (r.get("current_url") or "").rstrip("/").lower() in dead), None)
+                             if (r.get("current_url") or "").rstrip("/").lower() in dead
+                             and (r.get("current_url") or "").rstrip("/").lower() != url), None)
         best_pos = min((_num(r.get("current_position")) for r in s["rows"] if _num(r.get("current_position")) > 0), default=0)
         if s.get("roadmap_priority") == "Human Review":
             decision, reason = "REVIEW", "Low confidence or mostly doubtful keywords — confirm before building."
         elif ranking_dead:
             decision = "REDIRECT"
-            reason = f"Google still ranks {ranking_dead}, which now returns an error/redirect — 301 it to the target page."
+            reason = f"Google still ranks {ranking_dead}, which now returns an error — 301 it to the target page."
         elif url and url in owner and owner[url] is not s:
             decision = "EXISTING URL — SECONDARY TARGET"
+            s["_owner_family"] = owner[url].get("dominant_family")
             reason = f"Same page already serves \"{owner[url]['name']}\" — add this as a section, not a new page."
         elif url:
             owner.setdefault(url, s)
@@ -705,10 +742,21 @@ def detect_cannibalization(page_query_rows: list[dict] | None, min_impressions: 
 
 # §62 review queue / §67 quality control -------------------------------------
 
+_REVIEW_CAP_PER_TYPE = 10
+
+
 def build_review_queue(summaries: list[dict], cannibalization: list[dict], routed_counts: dict | None = None) -> list[dict]:
-    """§62 — every decision a person should check, with the reason type."""
+    """§62 — the decisions a person should check, with the reason type.
+    Only clusters on the roadmap's High/Medium tiers (or already sent to
+    Human Review) are listed — a 50-searches/month Low cluster's page
+    mapping isn't a decision anyone needs to make now — and at most
+    _REVIEW_CAP_PER_TYPE items per type, highest opportunity first
+    (Geopits listed 497 items, which nobody can review)."""
     queue = []
-    for s in summaries:
+    ranked = sorted(summaries, key=lambda s: -(s.get("opportunity") or 0))
+    for s in ranked:
+        if s.get("roadmap_priority") not in ("High", "Medium", "Human Review"):
+            continue
         rows = s["rows"]
         _family, share = _family_share(rows)
         flagged = [r["keyword"] for r in rows if r.get("relevance_status") in _EXCLUDED_RELEVANCE_STATUSES]
@@ -729,7 +777,7 @@ def build_review_queue(summaries: list[dict], cannibalization: list[dict], route
         if len(s.get("outliers") or []) >= 2:
             queue.append({"type": "Borderline cluster separation", "item": s["name"],
                           "detail": ", ".join((s.get("outliers") or [])[:3])})
-        if s.get("decision") == "EXISTING URL — SECONDARY TARGET":
+        if s.get("decision") == "EXISTING URL — SECONDARY TARGET" and s.get("_owner_family") in (None, s.get("dominant_family")):
             queue.append({"type": "Potential cannibalization", "item": s["name"], "detail": s.get("decision_reason") or ""})
         # Only where the answer changes what gets built: a High-priority
         # cluster that needs a NEW page and whose wording doesn't say
@@ -738,6 +786,12 @@ def build_review_queue(summaries: list[dict], cannibalization: list[dict], route
                 and not s.get("target_url")):
             queue.append({"type": "Uncertain entity relationship", "item": s["name"],
                           "detail": "keywords don't say whether this is a product or a service"})
+    capped, per_type = [], Counter()
+    for q in queue:
+        per_type[q["type"]] += 1
+        if per_type[q["type"]] <= _REVIEW_CAP_PER_TYPE:
+            capped.append(q)
+    queue = capped
     for c in cannibalization:
         if c["risk"] != "Low":
             queue.append({"type": "Potential cannibalization", "item": c["query"],
@@ -868,10 +922,10 @@ def build_full_keyword_strategy(summaries: list[dict], context: dict | None = No
                                                  brands.get("vendor"))
     score_summaries(summaries, ctx.get("site_authority"))
     topics = build_topic_model(summaries, max_parents=None)
-    assign_cluster_types(summaries, topics)
+    business_model = infer_business_model(ctx.get("site_audit_pages_rows"), ctx.get("company_overview"))
+    assign_cluster_types(summaries, topics, business_model)
     assign_decisions(summaries, ctx.get("dead_urls"))
     cannibalization = detect_cannibalization(ctx.get("page_query_rows"))
-    business_model = infer_business_model(ctx.get("site_audit_pages_rows"), ctx.get("company_overview"))
     review_queue = build_review_queue(summaries, cannibalization, ctx.get("routed_counts"))
     quality = run_quality_checks(summaries, cannibalization, business_model)
     ordered = sorted(summaries, key=lambda s: (_TIER_ORDER.get(s.get("roadmap_priority"), 9), -(s.get("opportunity") or 0), s["name"]))

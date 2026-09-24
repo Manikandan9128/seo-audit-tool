@@ -85,7 +85,9 @@ def test_cluster_page_and_gap_types():
     topics = [{"parent": "Truck", "clusters": ["Trucks", "Truck Guides", "Dealers"]}]
     for s in summaries:
         s["opportunity"] = 50
-    assign_cluster_types(summaries, topics)
+    for r in summaries[0]["rows"]:
+        r["relevance_status"] = "Core Relevant"  # a bare product noun is core only with this evidence
+    assign_cluster_types(summaries, topics, {"models": ["Product"]})
     by = {s["name"]: s for s in summaries}
     assert by["Trucks"]["cluster_type"] == "Core Topic" and by["Trucks"]["page_type"] == "Category Page"
     assert by["Trucks"]["content_gap_type"] == "Missing Core Page"
@@ -215,3 +217,61 @@ def test_programmatic_lines_carry_pattern_risk_and_content_needs():
     slide = add_programmatic_seo_slide(_prs(), rows)
     text = _text(slide)
     assert "pattern: Payroll Software ×" in text and "thin-page risk" in text and "each page needs" in text
+
+
+def test_bare_concept_is_not_a_core_topic_and_service_business_gets_service_page():
+    concept = _summary("Stored Procedures", [("stored procedures", 1000), ("sql stored procedure", 880)])
+    service = _summary("DBA Services", [("remote dba services", 260), ("dba support services", 140)])
+    for s in (concept, service):
+        s["opportunity"] = 60
+    assign_cluster_types([concept, service], [{"parent": "Sql", "clusters": ["Stored Procedures", "DBA Services"]}],
+                         {"models": ["Service", "B2B"]})
+    assert concept["cluster_type"] != "Core Topic"
+    assert service["cluster_type"] == "Core Topic" and service["page_type"] == "Service Page"
+
+
+def test_own_product_pages_are_not_e_commerce():
+    pages = [{"page_url": f"https://www.geopits.com{p}"} for p in (
+        "/products/geodatamon", "/products/geoops", "/products/migrationiq", "/service/remote-support-dba-services")]
+    models = infer_business_model(pages, None)["models"]
+    assert "E-commerce" not in models and "Product" in models and "Service" in models
+    shop = [{"page_url": f"https://x.com{p}"} for p in ("/cart", "/checkout", "/products/red-shoe")]
+    assert "E-commerce" in infer_business_model(shop, None)["models"]
+
+
+def test_redirect_only_for_error_pages_never_for_existing_301s():
+    from app.services.keyword_relevance_service import is_error_page
+    assert is_error_page({"page_url": "https://x.com/old", "http_status_code": "404"})
+    assert not is_error_page({"page_url": "https://x.com/old", "http_status_code": "301"})
+    assert not is_error_page({"page_url": "https://x.com/remote-support-dba-services", "http_status_code": "200"})
+    s = _summary("A", [("alpha service", 900)], url="https://x.com/service/a", strength="strong",
+                 roadmap_priority="High", opportunity=80)
+    s["rows"][0]["current_url"] = "https://x.com/service/a"  # ranks on the target itself
+    assign_decisions([s], dead_urls={"https://x.com/service/a"})
+    assert s["decision"] != "REDIRECT"
+
+
+def test_service_cluster_never_targets_a_blog_just_because_it_ranks():
+    from app.services.keyword_intelligence_service import ranking_page_target
+    from app.services.keyword_relevance_service import classify_page_type
+    rows = [{"keyword": "database administration services", "current_position": 1, "search_volume": 170,
+             "current_url": "https://x.com/blog/outsourcing-database-administration"}]
+    assert ranking_page_target(rows, page_type_fn=classify_page_type, family="Commercial") is None
+    assert ranking_page_target(rows, page_type_fn=classify_page_type, family="Informational")["url"].endswith("administration")
+
+
+def test_one_shared_word_does_not_merge_clusters():
+    from app.services.keyword_cluster_pipeline import _same_topic
+    assert not _same_topic({"sql", "dba", "support"}, {"top", "rated", "managed", "data", "pipeline", "support"})
+    assert _same_topic({"index", "sql"}, {"index", "database"})
+
+
+def test_review_queue_skips_low_priority_and_caps_each_type():
+    many = []
+    for i in range(30):
+        s = _summary(f"C{i}", [(f"widget{i} thing", 100)], match_strength="weak")
+        s.update(roadmap_priority="High" if i < 20 else "Low", opportunity=90 - i)
+        many.append(s)
+    queue = build_review_queue(many, [])
+    unclear = [q for q in queue if q["type"] == "Unclear page mapping"]
+    assert len(unclear) == 10 and all(int(q["item"][1:]) < 20 for q in unclear)

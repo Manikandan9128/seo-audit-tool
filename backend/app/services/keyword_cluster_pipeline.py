@@ -58,7 +58,7 @@ from collections import Counter
 import re
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
-from app.services.keyword_relevance_service import build_page_index, is_junk_keyword, is_live_target_page, match_existing_page_for_cluster
+from app.services.keyword_relevance_service import build_page_index, classify_page_type, is_junk_keyword, is_live_target_page, match_existing_page_for_cluster
 from app.services.keyword_semantic_cluster_service import generate_phase2_candidate_clusters, generate_phase3_validated_clusters
 from app.services.keyword_intelligence_service import (
     KeywordIntelligenceCache,
@@ -584,7 +584,15 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
         page_category = categories.most_common(1)[0][0] if categories else None
         # §23 "existing rankings": the page Google already ranks for these
         # keywords beats any title/URL word overlap.
-        ranking = ranking_page_target(cluster_rows, None, dead_urls)
+        families = Counter(r.get("intent_family") for r in cluster_rows if r.get("intent_family"))
+        family = families.most_common(1)[0][0] if families else None
+        ranking = ranking_page_target(cluster_rows, None, dead_urls, classify_page_type, family)
+        if not page_category:
+            # No format signal on the keywords: fall back to the intent
+            # family's own format, so the word-match below still refuses a
+            # blog post for a buyer cluster (§23 intent match).
+            page_category = {"Commercial": "Landing Page", "Local": "Landing Page",
+                             "Informational": "Blog / Guide", "Comparison": "Comparison / Alternative"}.get(family or "")
         if ranking:
             match = {"url": ranking["url"], "title": titles.get(ranking["url"].rstrip("/")), "match_strength": ranking["match_strength"]}
         else:
@@ -606,6 +614,15 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
 # site-wide head term ("sql" on a database agency) — sharing it is not
 # evidence two clusters are the same need.
 _GENERIC_TOKEN_SHARE = 0.2
+
+
+def _same_topic(a: set[str], b: set[str]) -> bool:
+    """§43 "same entity": at least half of the smaller cluster's real topic
+    words are shared — one common word is not enough (Geopits: "managed
+    mysql" joined "Oracle DBA Support" through "managed" alone)."""
+    if not a or not b:
+        return False
+    return len(a & b) / min(len(a), len(b)) >= 0.5
 
 
 def _merge_same_page_clusters(rows: list[dict]) -> None:
@@ -669,7 +686,7 @@ def _merge_same_page_clusters(rows: list[dict]) -> None:
         for label in labels:
             target = next(
                 (m for m in merged
-                 if (tokens[m] & tokens[label]) - generic
+                 if _same_topic(tokens[m] - generic, tokens[label] - generic)
                  and "rule" in {clusters[m][0].get("cluster_source"), clusters[label][0].get("cluster_source")}),
                 None,
             )

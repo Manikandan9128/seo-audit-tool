@@ -758,7 +758,7 @@ _COMMERCIAL_PAGE_RE = re.compile(
 # check alone — unknown is not the same as mismatched.
 _INCOMPATIBLE_PAGE_TYPES = {
     "Blog / Guide": {"commercial", "comparison", "location", "home"},
-    "Landing Page": {"blog"},
+    "Landing Page": {"blog", "comparison"},  # a buyer page is never a vs-article
     "Comparison / Alternative": {"blog", "location", "home", "commercial"},
 }
 
@@ -802,6 +802,21 @@ def is_live_target_page(row: dict) -> bool:
     if _ERROR_PAGE_RE.search(path):
         return False
     return not _ERROR_TITLE_RE.search(row.get("page_title") or "")
+
+
+def is_error_page(row: dict) -> bool:
+    """True only for a page that is actually broken: a 4xx/5xx status, or
+    (when the export has no status) an error-page URL/title. A 3xx is NOT
+    an error — that redirect already exists."""
+    status = str(row.get("http_status_code") or "").strip()
+    if status:
+        try:
+            return int(float(status)) >= 400
+        except ValueError:
+            pass
+    url = row.get("page_url") or row.get("url") or ""
+    path = re.sub(r"^[a-z][a-z0-9+.-]*://[^/]*", "", url.strip(), flags=re.I)
+    return bool(_ERROR_PAGE_RE.search(path) or _ERROR_TITLE_RE.search(row.get("page_title") or ""))
 
 
 _SLUG_ID_RE = re.compile(r"[-_]?\d+$")

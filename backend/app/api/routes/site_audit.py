@@ -55,7 +55,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_live_target_page, match_existing_page_for_cluster, site_entity_summary, vendor_product_pricing_reason, vendor_tokens
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, classify_page_type, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_error_page, is_live_target_page, match_existing_page_for_cluster, site_entity_summary, vendor_product_pricing_reason, vendor_tokens
 from app.services.keyword_strategy_service import apply_strategy_to_manual_clusters, build_full_keyword_strategy, summaries_from_keyword_rows
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
 from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
@@ -766,7 +766,10 @@ def _keyword_strategy_context(
         "page_query_rows": page_query_rows or [],
         "site_audit_pages_rows": site_audit_pages_rows,
         "company_overview": company_overview,
-        "dead_urls": {r.get("page_url") for r in site_audit_pages_rows or [] if r.get("page_url") and not is_live_target_page(r)},
+        # §53 REDIRECT only for pages that ERROR (4xx/5xx). A URL that
+        # already 3xx-redirects is fixed (Geopits' /remote-support-dba-
+        # services -> /service/... got "add a 301" on 6 slides).
+        "dead_urls": {r.get("page_url") for r in site_audit_pages_rows or [] if r.get("page_url") and is_error_page(r)},
         "brands": {
             "own": own, "competitor": _competitor_brand_tokens(client, gap_domains, domain_overview_rows),
             "vendor": vendor_tokens(site_audit_pages_rows, own),
@@ -855,7 +858,7 @@ def _select_validated_manual_clusters(
         enrich_manual_clusters(
             clusters, site_audit_pages_rows, excluded, match_existing_page_for_cluster,
             page_index=build_page_index(site_audit_pages_rows), flagged=flagged,
-            keyword_ranking=keyword_ranking, dead_urls=dead_urls,
+            keyword_ranking=keyword_ranking, dead_urls=dead_urls, page_type_fn=classify_page_type,
         )
         # §31/§66-K/§18/§37/§38/§56 on the sheet's selected clusters.
         strategy = apply_strategy_to_manual_clusters(clusters, keyword_ranking, strategy_context)
