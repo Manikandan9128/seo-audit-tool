@@ -66,6 +66,13 @@ _CLIENT_COLUMNS = [
     ("Page Type", "recommended_page_type"), ("Cluster Confidence", "cluster_confidence"),
     ("Opportunity Score", "opportunity_score"), ("Roadmap Priority", "roadmap_priority"),
     ("Cannibalization", "cannibalization_status"),
+    # 2026-09-24 spec-coverage additions (§54 master dataset).
+    ("Cluster ID", "cluster_id"), ("Cluster Type", "cluster_type"), ("Parent Topic", "parent_topic"),
+    ("Entity Type", "entity_type"), ("Brand Type", "brand_type"), ("Modifier Type", "modifier_type"),
+    ("Mixed Intent", "mixed_intent"), ("CPC", "cpc"), ("Trend", "trend"),
+    ("Business Relevance (0-1)", "business_relevance"), ("Conversion Potential (0-1)", "conversion_potential"),
+    ("Competitor Gap (0-1)", "competitor_gap"), ("Content Gap", "content_gap_flag"),
+    ("Content Gap Type", "content_gap_type"), ("Decision (§53)", "decision"), ("Reason", "decision_reason"),
 ]
 _CLIENT_HEADER = [label for label, _key in _CLIENT_COLUMNS]
 
@@ -133,9 +140,59 @@ def _keyword_gap_tabs(keyword_gap_rows: list[dict]) -> list[tuple[str, list[list
     ]
 
 
+def _join(values) -> str:
+    return ", ".join(str(v) for v in values or [] if v)
+
+
+def keyword_strategy_tabs(strategy: dict | None) -> list[tuple[str, list[list]]]:
+    """Universal SEO keyword engine outputs as their own tabs: §56 page map
+    (with §36 page purpose), §58 cannibalization, §57 content gaps, §62
+    review queue, §67 quality checks. A section with nothing in it adds no
+    tab."""
+    if not strategy:
+        return []
+    tabs = []
+    pages = strategy.get("page_map") or []
+    if pages:
+        tabs.append(("Page Map", [[
+            "Priority", "URL", "Page Type", "Topic", "Primary Keyword", "Secondary Keywords", "Primary Intent",
+            "Secondary Intents", "Audience", "Page Purpose", "Business Goal", "Current Status", "Decision (§53)",
+            "Action", "Content Gap", "Cannibalization Risk", "Internal Links In", "Internal Links Out", "Clusters",
+            "Opportunity",
+        ]] + [[
+            p.get("priority") or "", p.get("url") or "(new page)", p.get("page_type") or "", p.get("topic") or "",
+            p.get("primary_keyword") or "", _join(p.get("secondary_keywords")), p.get("primary_intent") or "",
+            _join(p.get("secondary_intents")), p.get("audience") or "", p.get("purpose") or "",
+            p.get("business_goal") or "", p.get("current_status") or "", p.get("decision") or "", p.get("action") or "",
+            p.get("content_gap") or "", "Yes" if p.get("cannibalization_risk") else "", _join(p.get("links_in")),
+            _join(p.get("links_out")), _join(p.get("clusters")), p.get("opportunity") or "",
+        ] for p in pages]))
+    canni = strategy.get("cannibalization") or []
+    if canni:
+        tabs.append(("Cannibalization", [["Query", "Preferred URL", "Other URLs", "Risk", "Recommended Action", "Evidence"]]
+                     + [[c["query"], c["preferred_url"], _join(c["other_urls"]), c["risk"], c["action"], c["evidence"]]
+                        for c in canni]))
+    gaps = [c for c in strategy.get("clusters") or [] if c.get("content_gap_type")]
+    if gaps:
+        tabs.append(("Content Gaps", [["Gap Type", "Cluster", "Topic", "Primary Keyword", "Page Type", "Priority",
+                                        "Opportunity"]]
+                     + [[c["content_gap_type"], c["name"], c.get("parent_topic") or "", c.get("primary_keyword") or "",
+                         c.get("page_type") or "", c.get("priority") or "", c.get("opportunity") or ""] for c in gaps]))
+    queue = strategy.get("review_queue") or []
+    if queue:
+        tabs.append(("Review Queue", [["Review Type", "Item", "Detail"]]
+                     + [[q["type"], q["item"], q.get("detail") or ""] for q in queue]))
+    checks = strategy.get("quality_checks") or []
+    if checks:
+        tabs.append(("Quality Checks", [["#", "Check", "Status", "Detail"]]
+                     + [[c["check"], c["name"], c["status"], c["detail"]] for c in checks]))
+    return tabs
+
+
 def _create_combined_keyword_sheet_inner(
     client_name: str, client_keyword_rows: list[dict], competitor_positions: dict[str, list[dict]], db,
     client_positions_rows: list[dict] | None = None, keyword_gap_rows: list[dict] | None = None,
+    keyword_strategy: dict | None = None,
 ) -> str | None:
     """ONE spreadsheet, multiple tabs — Tab 1 the client's own tracked
     (curated/clustered) target-keyword list, Tab 2 the client's own FULL
@@ -194,6 +251,8 @@ def _create_combined_keyword_sheet_inner(
     if keyword_gap_rows:
         for tab_title, gap_values in _keyword_gap_tabs(keyword_gap_rows):
             tabs.append((_sanitize_tab_title(tab_title), gap_values))
+    for tab_title, values in keyword_strategy_tabs(keyword_strategy):
+        tabs.append((_sanitize_tab_title(tab_title), values))
     if not tabs:
         return None
 
@@ -236,6 +295,7 @@ def _create_combined_keyword_sheet_inner(
 def create_combined_keyword_sheet(
     client_name: str, client_keyword_rows: list[dict], competitor_positions: dict[str, list[dict]], db,
     client_positions_rows: list[dict] | None = None, keyword_gap_rows: list[dict] | None = None,
+    keyword_strategy: dict | None = None,
 ) -> str | None:
     """Thin wrapper around _create_combined_keyword_sheet_inner that catches
     a dead refresh token at the point it actually fails. Confirmed live
@@ -258,6 +318,7 @@ def create_combined_keyword_sheet(
     try:
         return _create_combined_keyword_sheet_inner(
             client_name, client_keyword_rows, competitor_positions, db, client_positions_rows, keyword_gap_rows,
+            keyword_strategy,
         )
     except RefreshError as e:
         if db is not None:

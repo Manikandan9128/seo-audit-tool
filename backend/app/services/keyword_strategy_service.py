@@ -93,7 +93,19 @@ def _existing_authority(r: dict) -> float:
     return 0.4 if pos <= 50 else 0.2
 
 
-def keyword_opportunity(r: dict, max_demand: float, strategic: float | None = None) -> dict:
+def _feasibility(kd, site_authority) -> float | None:
+    """§32: KD is not an absolute barrier — it's read against the site's
+    own authority (DR/Authority Score, 0-100) when known: a DR-60 site
+    finds KD 50 far easier than a DR-20 site does."""
+    if kd in (None, ""):
+        return None
+    base = (100 - _num(kd)) / 100
+    if site_authority in (None, "") or _num(site_authority) <= 0:
+        return base
+    return max(0.0, min(1.0, base + (_num(site_authority) - _num(kd)) / 200))
+
+
+def keyword_opportunity(r: dict, max_demand: float, strategic: float | None = None, site_authority=None) -> dict:
     """§31 Opportunity Score (0-100) for one keyword, with its per-factor
     breakdown. A factor with no evidence (SERP always; competitor gap when
     no gap data; strategic importance when no core-category signal) is
@@ -105,7 +117,7 @@ def keyword_opportunity(r: dict, max_demand: float, strategic: float | None = No
         # log scale: a 100/mo keyword isn't worth 1/1000th of a 100k one
         "search_demand": (math.log10(1 + _demand(r)) / math.log10(1 + max_demand)) if max_demand > 0 else 0.0,
         "serp_opportunity": None,
-        "ranking_feasibility": (100 - _num(kd)) / 100 if kd not in (None, "") else None,
+        "ranking_feasibility": _feasibility(kd, site_authority),
         "competitor_gap": _competitor_gap(r),
         "existing_authority": _existing_authority(r),
         "strategic_importance": strategic,
@@ -116,11 +128,11 @@ def keyword_opportunity(r: dict, max_demand: float, strategic: float | None = No
     return {"score": round(score * 100), "factors": factors}
 
 
-def cluster_opportunity(rows: list[dict], max_demand: float, strategic: float | None = None) -> int:
+def cluster_opportunity(rows: list[dict], max_demand: float, strategic: float | None = None, site_authority=None) -> int:
     """A cluster's opportunity = the mean of its best five keywords (a page
     is judged by the searches it can realistically win, not diluted by a
     long tail of weak variants)."""
-    scores = sorted((keyword_opportunity(r, max_demand, strategic)["score"] for r in rows), reverse=True)[:5]
+    scores = sorted((keyword_opportunity(r, max_demand, strategic, site_authority)["score"] for r in rows), reverse=True)[:5]
     return round(sum(scores) / len(scores)) if scores else 0
 
 
@@ -140,14 +152,14 @@ def roadmap_priority(
     return "Medium" if opportunity >= _MEDIUM_OPPORTUNITY else "Low"
 
 
-def score_summaries(summaries: list[dict]) -> None:
+def score_summaries(summaries: list[dict], site_authority=None) -> None:
     """Stamps opportunity (0-100) + roadmap_priority on every summary, and
     opportunity_score on every keyword row, in place."""
     max_demand = max((_demand(r) for s in summaries for r in s["rows"]), default=0.0)
     for s in summaries:
         for r in s["rows"]:
-            r["opportunity_score"] = keyword_opportunity(r, max_demand, s.get("strategic"))["score"]
-        s["opportunity"] = cluster_opportunity(s["rows"], max_demand, s.get("strategic"))
+            r["opportunity_score"] = keyword_opportunity(r, max_demand, s.get("strategic"), site_authority)["score"]
+        s["opportunity"] = cluster_opportunity(s["rows"], max_demand, s.get("strategic"), site_authority)
     # "High" = above the absolute floor AND in this client's top third.
     ranked = sorted((s["opportunity"] for s in summaries), reverse=True)
     top_third_cutoff = ranked[max(0, math.ceil(len(ranked) / 3) - 1)] if ranked else _HIGH_OPPORTUNITY
@@ -208,7 +220,7 @@ _LINK_RELATION = {
 }
 
 
-def build_topic_model(summaries: list[dict], max_parents: int = 8) -> list[dict]:
+def build_topic_model(summaries: list[dict], max_parents: int | None = 8) -> list[dict]:
     """§18 hierarchy + §38 coverage + §37 internal links. Returns parents
     sorted by total opportunity:
       {"parent", "clusters": [summary names], "coverage": Strong|Partial|
@@ -356,6 +368,7 @@ def summaries_from_keyword_rows(rows: list[dict]) -> list[dict]:
             "primary_keyword": primary.get("keyword"),
             "dominant_family": families.most_common(1)[0][0] if families else "Commercial",
             "recommended_action": sample.get("recommended_action"),
+            "outliers": sample.get("cluster_outliers") or [],
             # Core-category rank from the pipeline (1 = the client's core
             # commercial topic) is the only strategic signal we have.
             "strategic": (1.0 if priority_rank <= 3 else 0.5) if isinstance(priority_rank, int) else None,
@@ -388,19 +401,507 @@ def summaries_from_manual_clusters(clusters: list[dict], keyword_ranking: dict[s
             "primary_keyword": c.get("primary_keyword"),
             "dominant_family": families.most_common(1)[0][0] if families else "Commercial",
             "recommended_action": c.get("recommended_action"),
+            "outliers": c.get("outliers") or [],
             "strategic": None,
             "_cluster": c,
         })
     return summaries
 
 
-def apply_strategy_to_manual_clusters(clusters: list[dict], keyword_ranking: dict[str, tuple] | None = None) -> dict | None:
-    """Builds the strategy for the manual path and writes each cluster's
-    opportunity + roadmap_priority back onto it (for its slide)."""
+def apply_strategy_to_manual_clusters(
+    clusters: list[dict], keyword_ranking: dict[str, tuple] | None = None, context: dict | None = None,
+) -> dict | None:
+    """Builds the full strategy for the manual path and writes each
+    cluster's opportunity, roadmap priority, cluster/page type, content-gap
+    type and §53 decision back onto it (for its slide)."""
     summaries = summaries_from_manual_clusters(clusters, keyword_ranking)
-    strategy = build_keyword_strategy(summaries)
+    strategy = build_full_keyword_strategy(summaries, context)
     for s in summaries:
         c = s.pop("_cluster")
-        c["opportunity"] = s.get("opportunity")
-        c["roadmap_priority"] = s.get("roadmap_priority")
+        for key in ("opportunity", "roadmap_priority", "cluster_type", "page_type", "content_gap_type",
+                    "decision", "decision_reason", "parent_topic", "cluster_id"):
+            c[key] = s.get(key)
+        if s.get("page_type"):
+            c["recommended_page_type"] = s["page_type"]
     return strategy
+
+
+# ===========================================================================
+# 2026-09-24 spec-coverage additions — see docs/keyword_engine_spec_coverage.md
+# ===========================================================================
+
+import re as _re
+
+from app.services.keyword_relevance_service import classify_page_type, is_live_target_page, keyword_brand_type
+
+_TIER_ORDER = {"High": 0, "Medium": 1, "Low": 2, "Human Review": 3}
+
+
+def _majority(rows: list[dict], key: str, value) -> bool:
+    return bool(rows) and sum(1 for r in rows if r.get(key) == value) / len(rows) > 0.5
+
+
+def _family_share(rows: list[dict]) -> tuple[str, float]:
+    families = Counter(r.get("intent_family") or "Commercial" for r in rows)
+    if not families:
+        return "Commercial", 1.0
+    family, n = families.most_common(1)[0]
+    return family, n / len(rows)
+
+
+# §3 / §66-A website model ---------------------------------------------------
+
+_MODEL_SIGNALS = [
+    ("SaaS / Subscription", _re.compile(r"/(pricing|plans|signup|sign-up|free-trial|trial|demo|request-a-demo|login|app)(/|$)")),
+    ("E-commerce", _re.compile(r"/(cart|checkout|shop|store|collections?|products?/[^/]+)(/|$)")),
+    ("Service", _re.compile(r"/(services?|solutions?|consulting|what-we-do)(/|$)")),
+    ("Local / Multi-location", _re.compile(r"/(locations?|branches|dealers?|dealer-locator|stores?|near-me|service-cent(er|re)s?)(/|$)")),
+    ("Marketplace", _re.compile(r"/(marketplace|sellers?|vendors?|listings?)(/|$)")),
+    ("B2B", _re.compile(r"/(industries|industry|enterprise|partners?|case-studies|customers)(/|$)")),
+]
+
+
+def infer_business_model(site_audit_pages_rows: list[dict] | None, company_overview: dict | None = None) -> dict:
+    """§3 business model(s), inferred from the site's own URL structure
+    (plus the company overview's target market) — never forced into one
+    category. Returns {"models": [...], "evidence": [...]}."""
+    paths = []
+    for row in site_audit_pages_rows or []:
+        url = (row.get("page_url") or "").lower()
+        if url and is_live_target_page(row):
+            paths.append(_re.sub(r"^[a-z][a-z0-9+.-]*://[^/]+", "", url) or "/")
+    models, evidence = [], []
+    for label, pattern in _MODEL_SIGNALS:
+        hits = [p for p in paths if pattern.search(p)]
+        if hits:
+            models.append(label)
+            evidence.append(f"{label}: {len(hits)} page(s) like {hits[0]}")
+    blog = [p for p in paths if classify_page_type("https://x" + p) == "blog"]
+    if paths and len(blog) / len(paths) >= 0.5:
+        models.append("Publisher / Content-led")
+        evidence.append(f"Publisher: {len(blog)} of {len(paths)} crawled pages are articles")
+    market = " ".join(str(v) for v in [(company_overview or {}).get("target_market"),
+                                       *((company_overview or {}).get("primary_buyers") or [])] if v).lower()
+    if _re.search(r"\b(enterprise|business|b2b|mid-market|smb|companies|cto|cio|procurement)\b", market) and "B2B" not in models:
+        models.append("B2B")
+        evidence.append(f"B2B: target market/buyers — {market[:80]}")
+    if _re.search(r"\b(consumer|consumers|individual|b2c|families|parents|students)\b", market):
+        models.append("B2C")
+        evidence.append(f"B2C: target market/buyers — {market[:80]}")
+    return {"models": models or ["Undetermined"], "evidence": evidence}
+
+
+# §29 cluster type / §22 page type / §25 content-gap type --------------------
+
+_TOOL_RE = _re.compile(r"\b(calculator|calculators|checker|generator|estimator|converter|calculate)\b")
+_TEMPLATE_RE = _re.compile(r"\b(template|templates|checklist|checklists|sample|samples|format)\b")
+_GLOSSARY_RE = _re.compile(r"\b(meaning|definition|define|stands for|full form)\b")
+_CASE_RE = _re.compile(r"\b(case study|case studies|success stories)\b")
+_ALTERNATIVE_RE = _re.compile(r"\b(alternative|alternatives|competitors)\b")
+
+
+def _share(rows: list[dict], pattern) -> float:
+    return sum(1 for r in rows if pattern.search((r.get("keyword") or "").lower())) / len(rows) if rows else 0.0
+
+
+def assign_cluster_types(summaries: list[dict], topics: list[dict]) -> None:
+    """§29 cluster_type, §22 page_type and §25 content_gap_type per cluster
+    summary, in place. Core/Supporting come from the topic model: the
+    commercial page a topic is built on is its Core topic; guides and
+    subtopics around it are Supporting."""
+    parent_of = {name: t["parent"] for t in topics for name in t["clusters"]}
+    core_names = set()
+    by_parent: dict[str, list[dict]] = {}
+    for s in summaries:
+        by_parent.setdefault(parent_of.get(s["name"], s["name"]), []).append(s)
+    for members in by_parent.values():
+        commercial = [s for s in members if (s.get("dominant_family") or "Commercial") == "Commercial"]
+        if commercial:
+            core_names.add(max(commercial, key=lambda s: (s.get("opportunity") or 0, s["name"]))["name"])
+
+    for s in summaries:
+        rows, family = s["rows"], s.get("dominant_family") or "Commercial"
+        s["parent_topic"] = parent_of.get(s["name"])
+        siblings = by_parent.get(s["parent_topic"] or s["name"], [s])
+        has_commercial_sibling = any((m.get("dominant_family") or "Commercial") == "Commercial" and m is not s for m in siblings)
+        brand = sum(1 for r in rows if r.get("brand_type") in ("Brand", "Mixed Brand")) / len(rows) > 0.5
+        if brand:
+            ctype = "Brand Topic"
+        elif family == "Comparison":
+            ctype = "Comparison Topic"
+        elif family == "Local":
+            ctype = "Local Topic"
+        elif _majority(rows, "entity_type", "Problem"):
+            ctype = "Problem/Solution Topic"
+        elif sum(1 for r in rows if r.get("audience")) / len(rows) > 0.5:
+            ctype = "Audience Topic"
+        elif family == "Informational":
+            ctype = "Supporting Topic" if has_commercial_sibling else "Informational Topic"
+        elif s["name"] in core_names and len(siblings) > 1:
+            ctype = "Core Topic"
+        elif _majority(rows, "detected_intent", "Transactional"):
+            ctype = "Transactional Topic"
+        elif _majority(rows, "entity_type", "Service"):
+            ctype = "Service Topic"
+        elif _majority(rows, "entity_type", "Product"):
+            ctype = "Product Topic"
+        else:
+            ctype = "Commercial Topic"
+        s["cluster_type"] = ctype
+
+        # §22 page type — the format the searches expect.
+        if _share(rows, _TOOL_RE) > 0.3:
+            ptype = "Tool / Calculator"
+        elif _share(rows, _TEMPLATE_RE) > 0.3:
+            ptype = "Template"
+        elif _share(rows, _CASE_RE) > 0.3:
+            ptype = "Case Study"
+        elif family == "Comparison":
+            ptype = "Alternative Page" if _share(rows, _ALTERNATIVE_RE) > 0.5 else "Comparison Page"
+        elif family == "Local":
+            ptype = "Location Page"
+        elif family == "Navigational" or ctype == "Brand Topic":
+            ptype = "Homepage / Brand Page"
+        elif family == "Informational":
+            words = [len((r.get("core_entity") or r.get("keyword") or "").split()) for r in rows]
+            if _share(rows, _GLOSSARY_RE) > 0.4 and words and sum(words) / len(words) <= 3:
+                ptype = "Glossary"
+            elif sum(1 for r in rows if len((r.get("keyword") or "").split()) >= 6) / len(rows) > 0.5:
+                ptype = "FAQ"
+            else:
+                ptype = "Guide / Blog Article"
+        elif ctype == "Audience Topic":
+            ptype = "Industry / Audience Page"
+        elif ctype == "Core Topic":
+            ptype = "Category Page"
+        elif _majority(rows, "entity_type", "Service"):
+            ptype = "Service Page"
+        elif _majority(rows, "entity_type", "Product"):
+            ptype = "Product Page"
+        else:
+            ptype = "Product / Service Page"
+        s["page_type"] = ptype
+
+        # §25 content-gap type — only for a cluster with no page yet.
+        if s.get("target_url"):
+            s["content_gap_type"] = None
+        elif ctype == "Core Topic":
+            s["content_gap_type"] = "Missing Core Page"
+        elif family == "Comparison":
+            s["content_gap_type"] = "Missing Comparison Page"
+        elif family == "Local":
+            s["content_gap_type"] = "Missing Location Page"
+        elif ctype == "Audience Topic":
+            s["content_gap_type"] = "Missing Audience Page"
+        elif ctype == "Supporting Topic":
+            s["content_gap_type"] = "Missing Supporting Content"
+        elif family == "Informational":
+            s["content_gap_type"] = "Missing Informational Content"
+        elif has_commercial_sibling:
+            s["content_gap_type"] = "Missing Subtopic"
+        elif ctype in ("Service Topic", "Product Topic"):
+            s["content_gap_type"] = "Missing Product/Service Page"
+        else:
+            s["content_gap_type"] = "Missing Commercial Content"
+
+
+# §53 decision ------------------------------------------------------------------
+
+def assign_decisions(summaries: list[dict], dead_urls: set[str] | None = None) -> None:
+    """§53 — exactly one decision per cluster from the spec's eight:
+    EXISTING URL — PRIMARY TARGET / EXISTING URL — SECONDARY TARGET /
+    NEW URL REQUIRED / MERGE EXISTING URLS / RESTRUCTURE / REDIRECT /
+    NO TARGET / REVIEW, with its reason."""
+    dead = {(u or "").rstrip("/").lower() for u in dead_urls or ()}
+    owner: dict[str, dict] = {}
+    for s in sorted(summaries, key=lambda s: (_TIER_ORDER.get(s.get("roadmap_priority"), 9), -(s.get("opportunity") or 0))):
+        url = (s.get("target_url") or "").rstrip("/").lower()
+        base = s.get("recommended_action") or ""
+        ranking_dead = next((r.get("current_url") for r in s["rows"]
+                             if (r.get("current_url") or "").rstrip("/").lower() in dead), None)
+        best_pos = min((_num(r.get("current_position")) for r in s["rows"] if _num(r.get("current_position")) > 0), default=0)
+        if s.get("roadmap_priority") == "Human Review":
+            decision, reason = "REVIEW", "Low confidence or mostly doubtful keywords — confirm before building."
+        elif ranking_dead:
+            decision = "REDIRECT"
+            reason = f"Google still ranks {ranking_dead}, which now returns an error/redirect — 301 it to the target page."
+        elif url and url in owner and owner[url] is not s:
+            decision = "EXISTING URL — SECONDARY TARGET"
+            reason = f"Same page already serves \"{owner[url]['name']}\" — add this as a section, not a new page."
+        elif url:
+            owner.setdefault(url, s)
+            if base.startswith("Merge"):
+                decision, reason = "MERGE EXISTING URLS", "Several pages compete for this need — make this the one primary page."
+            elif base.startswith("Restructure"):
+                decision, reason = "RESTRUCTURE", "The page overlaps another cluster's page — differentiate or merge."
+            elif 0 < best_pos <= 3 and s.get("match_strength") == "strong":
+                decision, reason = "NO TARGET", f"Already ranks #{int(best_pos)} on the right page — monitor, no change needed."
+            else:
+                decision, reason = "EXISTING URL — PRIMARY TARGET", "This existing page is the closest real match."
+        else:
+            decision, reason = "NEW URL REQUIRED", "No existing page covers this search need."
+        s["decision"], s["decision_reason"] = decision, reason
+
+
+# §24 / §58 cannibalization from Search Console ---------------------------------
+
+def _url_key(url: str) -> str:
+    u = _re.sub(r"^[a-z][a-z0-9+.-]*://", "", (url or "").lower())
+    return u.split("?")[0].split("#")[0].removeprefix("www.").rstrip("/")
+
+
+def detect_cannibalization(page_query_rows: list[dict] | None, min_impressions: int = 50, limit: int = 15) -> list[dict]:
+    """§24/§58 — a query where 2+ of the client's own pages both earn real
+    impressions in Search Console (the spec's "multiple URLs ranking for
+    the same query / traffic distributed across multiple pages"). Returns
+    {"query", "preferred_url", "other_urls", "risk", "action", "evidence"},
+    most impressions first. Actions follow §58: Canonicalize (same page,
+    different URL form), Merge (same page type, weaker page barely
+    earns), Differentiate (same type, both earn), Retarget (different page
+    types — each should own its own intent), Keep Both (different types,
+    both already top-10)."""
+    by_query: dict[str, dict[str, dict]] = {}
+    for r in page_query_rows or []:
+        q = (r.get("query") or "").strip().lower()
+        page = r.get("page") or ""
+        if not q or not page:
+            continue
+        agg = by_query.setdefault(q, {}).setdefault(page, {"clicks": 0.0, "impressions": 0.0, "position": None})
+        agg["clicks"] += _num(r.get("clicks"))
+        agg["impressions"] += _num(r.get("impressions"))
+        pos = _num(r.get("position"))
+        if pos > 0:
+            agg["position"] = pos if agg["position"] is None else min(agg["position"], pos)
+    out = []
+    for q, pages in by_query.items():
+        real = {p: v for p, v in pages.items() if v["impressions"] >= 10}
+        total = sum(v["impressions"] for v in real.values())
+        if len(real) < 2 or total < min_impressions:
+            continue
+        ranked = sorted(real.items(), key=lambda kv: (-kv[1]["clicks"], -kv[1]["impressions"], kv[0]))
+        (pref, pv), (other, ov) = ranked[0], ranked[1]
+        same_type = classify_page_type(pref) == classify_page_type(other)
+        if _url_key(pref) == _url_key(other):
+            action = "Canonicalize"
+        elif same_type and ov["impressions"] < 0.15 * pv["impressions"]:
+            action = "Merge"
+        elif same_type:
+            action = "Differentiate"
+        elif (pv["position"] or 99) <= 10 and (ov["position"] or 99) <= 10:
+            action = "Keep Both"
+        else:
+            action = "Retarget"
+        split = ov["impressions"] / total
+        risk = "High" if split >= 0.25 and (ov["position"] or 99) <= 20 else "Medium" if split >= 0.1 else "Low"
+        out.append({
+            "query": q, "preferred_url": pref, "other_urls": [p for p, _v in ranked[1:]], "risk": risk,
+            "action": action, "impressions": total,
+            "evidence": (f"{len(real)} pages share {int(total):,} impressions; preferred has {int(pv['clicks'])} "
+                         f"clicks at #{(pv['position'] or 0):.0f}, next has {int(ov['clicks'])} at #{(ov['position'] or 0):.0f}."),
+        })
+    out.sort(key=lambda c: ({"High": 0, "Medium": 1, "Low": 2}[c["risk"]], -c["impressions"]))
+    return out[:limit]
+
+
+# §62 review queue / §67 quality control -------------------------------------
+
+def build_review_queue(summaries: list[dict], cannibalization: list[dict], routed_counts: dict | None = None) -> list[dict]:
+    """§62 — every decision a person should check, with the reason type."""
+    queue = []
+    for s in summaries:
+        rows = s["rows"]
+        _family, share = _family_share(rows)
+        flagged = [r["keyword"] for r in rows if r.get("relevance_status") in _EXCLUDED_RELEVANCE_STATUSES]
+        # Ambiguous = no intent evidence at all: no modifier in the wording
+        # AND no upstream (Semrush/sheet) intent label to fall back on.
+        low_conf_intent = sum(1 for r in rows if (r.get("intent_confidence") or 100) <= 55
+                              and not (r.get("intent") or "").strip()) / len(rows)
+        if s.get("roadmap_priority") == "Human Review":
+            queue.append({"type": "Low confidence cluster", "item": s["name"], "detail": s.get("decision_reason") or ""})
+        if share < 0.6:
+            queue.append({"type": "Mixed intent", "item": s["name"], "detail": f"only {share:.0%} of keywords share one intent"})
+        if low_conf_intent > 0.5:
+            queue.append({"type": "Ambiguous intent", "item": s["name"], "detail": "intent read from the bare term only (no modifier)"})
+        if flagged:
+            queue.append({"type": "Low business relevance", "item": s["name"], "detail": ", ".join(flagged[:3])})
+        if s.get("match_strength") == "weak":
+            queue.append({"type": "Unclear page mapping", "item": s["name"], "detail": "closest page is only a weak match"})
+        if len(s.get("outliers") or []) >= 2:
+            queue.append({"type": "Borderline cluster separation", "item": s["name"],
+                          "detail": ", ".join((s.get("outliers") or [])[:3])})
+        if s.get("decision") == "EXISTING URL — SECONDARY TARGET":
+            queue.append({"type": "Potential cannibalization", "item": s["name"], "detail": s.get("decision_reason") or ""})
+        # Only where the answer changes what gets built: a High-priority
+        # cluster that needs a NEW page and whose wording doesn't say
+        # whether it's a product or a service page.
+        if (_majority(rows, "entity_type", "Product or Service") and s.get("roadmap_priority") == "High"
+                and not s.get("target_url")):
+            queue.append({"type": "Uncertain entity relationship", "item": s["name"],
+                          "detail": "keywords don't say whether this is a product or a service"})
+    for c in cannibalization:
+        if c["risk"] != "Low":
+            queue.append({"type": "Potential cannibalization", "item": c["query"],
+                          "detail": f"{c['action']}: keep {c['preferred_url']}"})
+    for label, n in (routed_counts or {}).items():
+        if n:
+            queue.append({"type": label, "item": f"{n} keyword(s)", "detail": "kept out of target pages, listed for review"})
+    return queue
+
+
+_INCOMPATIBLE = {"Informational": {"commercial", "home"}, "Comparison": {"home"}, "Commercial": {"blog"}}
+
+
+def run_quality_checks(summaries: list[dict], cannibalization: list[dict], business_model: dict) -> list[dict]:
+    """§67 — the 14 checks, each Pass / Warn / Not checked (with why)."""
+    checks = []
+
+    def add(n, name, problems, not_checked=None):
+        if not_checked:
+            checks.append({"check": n, "name": name, "status": "Not checked", "detail": not_checked})
+        else:
+            checks.append({"check": n, "name": name, "status": "Warn" if problems else "Pass",
+                           "detail": "; ".join(problems[:4]) if problems else "OK"})
+
+    active = [s for s in summaries if s.get("roadmap_priority") != "Human Review"]
+    add(1, "Business relevance", [s["name"] for s in active
+        if any(r.get("relevance_status") in _EXCLUDED_RELEVANCE_STATUSES for r in s["rows"])])
+    add(2, "Intent coherence", [s["name"] for s in summaries if _family_share(s["rows"])[1] < 0.6])
+    add(3, "SERP agreement", [], not_checked="no SERP data source yet (Semrush API deferred)")
+    add(4, "Page satisfaction", [
+        s["name"] for s in summaries if s.get("target_url")
+        and classify_page_type(s["target_url"]) in _INCOMPATIBLE.get(s.get("dominant_family") or "", set())])
+    add(5, "Over-clustering", [s["name"] for s in summaries if len(s["rows"]) > 25 and len(s.get("outliers") or []) >= 2])
+    pages = Counter(((s.get("target_url") or "").rstrip("/").lower(), s.get("dominant_family")) for s in summaries if s.get("target_url"))
+    add(6, "Over-splitting", [f"{n} clusters on {u}" for (u, _f), n in pages.items() if n > 1])
+    add(7, "Cannibalization", [c["query"] for c in cannibalization if c["risk"] == "High"])
+    add(8, "Architecture", [s["name"] for s in summaries if s.get("target_url")
+                            and classify_page_type(s["target_url"]) in ("home", "utility") and s.get("cluster_type") != "Brand Topic"])
+    models = set(business_model.get("models") or [])
+    add(9, "Business model fit", [s["name"] for s in summaries
+                                  if s.get("page_type") == "Product Page" and models == {"Service"}]
+        + [s["name"] for s in summaries if s.get("page_type") == "Service Page" and models == {"E-commerce"}])
+    add(10, "Search demand", [s["name"] for s in summaries if sum(_demand(r) for r in s["rows"]) <= 0])
+    add(11, "SERP reality (page type ranks)", [], not_checked="no SERP data source yet")
+    add(12, "Programmatic quality", [], not_checked="checked by the Programmatic SEO slide's own rules")
+    add(13, "Explainability", [s["name"] for s in summaries if not s.get("decision_reason")])
+    add(14, "Uncertainty flagged", [s["name"] for s in summaries
+                                    if s.get("confidence_level") == "Low" and s.get("roadmap_priority") != "Human Review"])
+    return checks
+
+
+# §36 / §56 page map -------------------------------------------------------------
+
+_BUSINESS_GOAL = {
+    "Commercial": "Leads / sales from buyers ready to act",
+    "Comparison": "Win buyers who are comparing options",
+    "Local": "Local enquiries and visits",
+    "Informational": "Awareness and trust — pass readers to the product/service page",
+    "Navigational": "Serve existing customers",
+}
+
+
+def build_page_map_v2(summaries: list[dict], topics: list[dict], cannibalization: list[dict]) -> list[dict]:
+    """§56 page map with §36 page purpose: one entry per target page (an
+    existing URL, or a new page per cluster)."""
+    links_in: dict[str, list[str]] = {}
+    links_out: dict[str, list[str]] = {}
+    for t in topics:
+        for l in t["links"]:
+            links_out.setdefault(l["from_cluster"], []).append(l["to_cluster"])
+            links_in.setdefault(l["to_cluster"], []).append(l["from_cluster"])
+    gsc_risk = {_url_key(c["preferred_url"]) for c in cannibalization} | {_url_key(u) for c in cannibalization for u in c["other_urls"]}
+    by_url: dict[str, list[dict]] = {}
+    for s in summaries:
+        by_url.setdefault(s["target_url"] or f"new:{s['name']}", []).append(s)
+    pages = []
+    for key, members in by_url.items():
+        best = min(members, key=lambda s: (_TIER_ORDER.get(s.get("roadmap_priority"), 9), -(s.get("opportunity") or 0)))
+        family = best.get("dominant_family") or "Commercial"
+        primary = next((r for r in best["rows"] if r.get("keyword") == best.get("primary_keyword")), best["rows"][0])
+        positions = [_num(r.get("current_position")) for s in members for r in s["rows"] if _num(r.get("current_position")) > 0]
+        url = None if key.startswith("new:") else key
+        if url is None:
+            status = "New page needed"
+        elif positions:
+            status = f"Existing page — ranks #{int(min(positions))} at best"
+        else:
+            status = "Existing page — not ranking for these keywords"
+        pages.append({
+            "url": url, "clusters": [s["name"] for s in members],
+            "topic": best.get("parent_topic"),
+            "primary_keyword": best.get("primary_keyword"),
+            "secondary_keywords": [r["keyword"] for s in members for r in s["rows"] if r.get("keyword") != best.get("primary_keyword")][:8],
+            "primary_intent": family,
+            "secondary_intents": sorted({s.get("dominant_family") or "Commercial" for s in members} - {family}),
+            "page_type": best.get("page_type"),
+            "purpose": f"{best.get('page_type') or 'Page'} answering: {primary.get('user_need') or best.get('primary_keyword')}",
+            "business_goal": _BUSINESS_GOAL.get(family, _BUSINESS_GOAL["Commercial"]),
+            "audience": next((r.get("audience") for s in members for r in s["rows"] if r.get("audience")), None),
+            "links_in": sorted({c for s in members for c in links_in.get(s["name"], [])}),
+            "links_out": sorted({c for s in members for c in links_out.get(s["name"], [])}),
+            "current_status": status,
+            "decision": best.get("decision"),
+            "action": best.get("decision_reason"),
+            "content_gap": best.get("content_gap_type"),
+            "cannibalization_risk": len(members) > 1 or (url is not None and _url_key(url) in gsc_risk),
+            "priority": best.get("roadmap_priority"),
+            "opportunity": best.get("opportunity") or 0,
+        })
+    pages.sort(key=lambda p: (_TIER_ORDER.get(p["priority"], 9), -p["opportunity"]))
+    return pages
+
+
+def build_full_keyword_strategy(summaries: list[dict], context: dict | None = None) -> dict | None:
+    """Everything above in one pass, plus the §54 per-keyword fields
+    stamped onto every row. `context` (all optional): site_authority (own
+    DR), page_query_rows (GSC page x query), site_audit_pages_rows,
+    company_overview, dead_urls, brands {"own","competitor","vendor"},
+    routed_counts {label: n}."""
+    ctx = context or {}
+    summaries = [s for s in summaries if s.get("rows")]
+    if not summaries:
+        return None
+    brands = ctx.get("brands") or {}
+    for s in summaries:
+        for r in s["rows"]:
+            r["brand_type"] = keyword_brand_type(r.get("keyword") or "", brands.get("own"), brands.get("competitor"),
+                                                 brands.get("vendor"))
+    score_summaries(summaries, ctx.get("site_authority"))
+    topics = build_topic_model(summaries, max_parents=None)
+    assign_cluster_types(summaries, topics)
+    assign_decisions(summaries, ctx.get("dead_urls"))
+    cannibalization = detect_cannibalization(ctx.get("page_query_rows"))
+    business_model = infer_business_model(ctx.get("site_audit_pages_rows"), ctx.get("company_overview"))
+    review_queue = build_review_queue(summaries, cannibalization, ctx.get("routed_counts"))
+    quality = run_quality_checks(summaries, cannibalization, business_model)
+    ordered = sorted(summaries, key=lambda s: (_TIER_ORDER.get(s.get("roadmap_priority"), 9), -(s.get("opportunity") or 0), s["name"]))
+    for i, s in enumerate(ordered, 1):
+        s["cluster_id"] = f"C{i:02d}"
+        for r in s["rows"]:
+            factors = keyword_opportunity(r, 1.0)["factors"]
+            r.update({
+                "cluster_id": s["cluster_id"], "cluster_type": s["cluster_type"], "parent_topic": s.get("parent_topic"),
+                "recommended_page_type": s["page_type"], "content_gap_type": s.get("content_gap_type"),
+                "decision": s["decision"], "decision_reason": s["decision_reason"],
+                "business_relevance": round(factors["business_relevance"], 2),
+                "conversion_potential": round(factors["intent_value"], 2),
+                "competitor_gap": None if factors["competitor_gap"] is None else round(factors["competitor_gap"], 2),
+                "content_gap_flag": not s.get("target_url"),
+            })
+    return {
+        "topics": topics,
+        "page_map": build_page_map_v2(summaries, topics, cannibalization),
+        "roadmap": {tier: [s["name"] for s in ordered if s["roadmap_priority"] == tier]
+                    for tier in ("High", "Medium", "Low", "Human Review")},
+        "clusters": [{
+            "cluster_id": s["cluster_id"], "name": s["name"], "parent_topic": s.get("parent_topic"),
+            "cluster_type": s["cluster_type"], "page_type": s["page_type"], "content_gap_type": s.get("content_gap_type"),
+            "decision": s["decision"], "decision_reason": s["decision_reason"], "priority": s["roadmap_priority"],
+            "opportunity": s.get("opportunity"), "target_url": s.get("target_url"), "primary_keyword": s.get("primary_keyword"),
+        } for s in ordered],
+        "cannibalization": cannibalization,
+        "review_queue": review_queue,
+        "quality_checks": quality,
+        "business_model": business_model,
+        "weights": dict(OPPORTUNITY_WEIGHTS),
+    }

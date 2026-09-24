@@ -3,6 +3,7 @@ import logging
 import re
 import threading
 import traceback
+from collections import Counter
 import uuid
 from types import SimpleNamespace
 from collections.abc import Callable
@@ -55,7 +56,7 @@ from app.services.ux_findings_service import generate_onboarding_breakdown, gene
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_live_target_page, match_existing_page_for_cluster, site_entity_summary, vendor_product_pricing_reason, vendor_tokens
-from app.services.keyword_strategy_service import apply_strategy_to_manual_clusters, build_keyword_strategy, summaries_from_keyword_rows
+from app.services.keyword_strategy_service import apply_strategy_to_manual_clusters, build_full_keyword_strategy, summaries_from_keyword_rows
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
 from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
 from app.services.logo_service import fetch_logo_bytes
@@ -731,10 +732,54 @@ def _save_keyword_cache(client: Client, cache: KeywordIntelligenceCache | None, 
         db.rollback()
 
 
+def _competitor_brand_tokens(client: Client, gap_domains: set, domain_overview_rows: list[dict]) -> set[str]:
+    competitor_domains = set(gap_domains or set()) | {
+        r.get("domain") for r in (domain_overview_rows or []) if r.get("domain")
+    }
+    brands: set[str] = set()
+    for d in competitor_domains:
+        brands |= brand_token_variants(d)
+    return brands - _own_brand_tokens(client)
+
+
+def _keyword_strategy_context(
+    client: Client, company_overview: dict | None, site_audit_pages_rows: list[dict] | None,
+    gap_domains: set, domain_overview_rows: list[dict], own_domain_rating, page_query_rows: list[dict] | None,
+    keyword_rows: list[dict] | None,
+) -> dict:
+    """Evidence the keyword strategy layer reads (keyword_strategy_service.
+    build_full_keyword_strategy): own authority for §32, Search Console
+    page x query rows for §24/§58 cannibalization, brand lists for §45,
+    dead crawled URLs for §53 REDIRECT, routed-out keyword counts for the
+    §62 review queue."""
+    own = _own_brand_tokens(client)
+    authority = own_domain_rating
+    if authority in (None, ""):
+        own_domain = _normalize_domain(client.website_url or "")
+        authority = next((r.get("authority_score") for r in domain_overview_rows or []
+                          if _normalize_domain(r.get("domain") or "") == own_domain and r.get("authority_score")), None)
+    routed = Counter(
+        r.get("cluster") for r in keyword_rows or [] if r.get("cluster_source") == "routing" and r.get("cluster")
+    )
+    return {
+        "site_authority": authority,
+        "page_query_rows": page_query_rows or [],
+        "site_audit_pages_rows": site_audit_pages_rows,
+        "company_overview": company_overview,
+        "dead_urls": {r.get("page_url") for r in site_audit_pages_rows or [] if r.get("page_url") and not is_live_target_page(r)},
+        "brands": {
+            "own": own, "competitor": _competitor_brand_tokens(client, gap_domains, domain_overview_rows),
+            "vendor": vendor_tokens(site_audit_pages_rows, own),
+        },
+        "routed_counts": dict(routed),
+    }
+
+
 def _select_validated_manual_clusters(
     client: Client, manual_rows: list[dict], company_overview: dict | None, gap_domains: set,
     domain_overview_rows: list[dict], site_audit_pages_rows: list[dict] | None,
     cache: KeywordIntelligenceCache | None, keyword_rows: list[dict] | None = None,
+    strategy_context: dict | None = None,
 ) -> list[dict]:
     """Scenario A of the Universal SEO Keyword engine (2026-09-23): the
     client's own cluster sheet stays the source of truth for grouping, but
@@ -813,7 +858,7 @@ def _select_validated_manual_clusters(
             keyword_ranking=keyword_ranking, dead_urls=dead_urls,
         )
         # §31/§66-K/§18/§37/§38/§56 on the sheet's selected clusters.
-        strategy = apply_strategy_to_manual_clusters(clusters, keyword_ranking)
+        strategy = apply_strategy_to_manual_clusters(clusters, keyword_ranking, strategy_context)
         # §66-K: slides in roadmap order (High -> Medium -> Low -> Review).
         tier_rank = {"High": 0, "Medium": 1, "Low": 2, "Human Review": 3}
         clusters.sort(key=lambda c: (tier_rank.get(c.get("roadmap_priority"), 4), -(c.get("opportunity") or 0)))
@@ -2450,9 +2495,13 @@ def _gather_report_data(
     # own source of truth), independent of keyword_rows_all/the AI Phase
     # 2/3 pipeline above — empty list (never rendered) when no such sheet
     # was uploaded for this client.
+    strategy_context = _keyword_strategy_context(
+        client, company_overview_result, site_audit_pages_rows, _gap_domains, domain_overview_rows,
+        own_domain_rating, ((analytics or {}).get("page_query_clicks") or {}).get("rows"), keyword_rows_all,
+    )
     strategic_keyword_clusters = _select_validated_manual_clusters(
         client, list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,
-        domain_overview_rows, site_audit_pages_rows, kw_cache, keyword_rows_all,
+        domain_overview_rows, site_audit_pages_rows, kw_cache, keyword_rows_all, strategy_context,
     )
     # Keyword strategy (topic map, page map, roadmap) from whichever path
     # renders the Target Keywords section — the client's sheet when
@@ -2460,7 +2509,7 @@ def _gather_report_data(
     if strategic_keyword_clusters:
         keyword_strategy = strategic_keyword_clusters[0].pop("_strategy", None)
     else:
-        keyword_strategy = build_keyword_strategy(summaries_from_keyword_rows(keyword_rows_all or []))
+        keyword_strategy = build_full_keyword_strategy(summaries_from_keyword_rows(keyword_rows_all or []), strategy_context)
     _save_keyword_cache(client, kw_cache, db)
 
     return {
@@ -2744,6 +2793,7 @@ def _build_pptx_for_client(
                 client.name, data.get("keyword_rows") or [], full_competitor_positions, db=db,
                 client_positions_rows=data.get("own_site_positions_rows") or [],
                 keyword_gap_rows=keyword_gap_rows_for_sheet,
+                keyword_strategy=data.get("keyword_strategy"),
             )
         except Exception as e:
             logger.warning("Combined keyword sheet creation failed for client %s: %s", client.id, e)

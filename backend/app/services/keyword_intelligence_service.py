@@ -122,6 +122,27 @@ _NO_SINGULAR = {
 }
 
 
+# §5 spelling variations: British/US forms of the same word share one
+# canonical spelling, so "database optimisation" and "database
+# optimization" are one keyword entity. Only unambiguous pairs.
+_SPELLING_VARIANTS = {
+    "colour": "color", "colours": "colors", "centre": "center", "centres": "centers", "metre": "meter",
+    "metres": "meters", "litre": "liter", "litres": "liters", "tyre": "tire", "tyres": "tires",
+    "licence": "license", "licences": "licenses", "analyse": "analyze", "analysing": "analyzing",
+    "catalogue": "catalog", "catalogues": "catalogs", "programme": "program", "programmes": "programs",
+    "behaviour": "behavior", "favourite": "favorite", "jewellery": "jewelry", "aluminium": "aluminum",
+    "defence": "defense", "modelling": "modeling", "travelling": "traveling", "cheque": "check",
+    "enrolment": "enrollment", "fulfilment": "fulfillment", "labour": "labor", "neighbourhood": "neighborhood",
+}
+
+
+def canonical_spelling(word: str) -> str:
+    w = _SPELLING_VARIANTS.get(word, word)
+    if w.endswith("isation") or w.endswith("isations"):
+        w = w.replace("isation", "ization")
+    return w
+
+
 def singularize(word: str) -> str:
     w = word.lower()
     if w in _NO_SINGULAR or len(w) <= 3 or w.endswith(("ss", "us", "is")):
@@ -176,9 +197,9 @@ def normalize_keyword(keyword: str) -> dict:
         # keyword's own content words so it never collapses into an
         # unrelated all-modifier keyword's group.
         core_words = [w for w in text.split() if w not in _STOP_WORDS] or text.split()
-    singular = [singularize(w) for w in core_words]
+    singular = [canonical_spelling(singularize(w)) for w in core_words]
     return {
-        "canonical": " ".join(sorted(singularize(w) for w in text.split() if w not in _STOP_WORDS)),
+        "canonical": " ".join(sorted(canonical_spelling(singularize(w)) for w in text.split() if w not in _STOP_WORDS)),
         "core_phrase": " ".join(core_words),
         "core_key": " ".join(sorted(set(singular))),
         "core_tokens": frozenset(singular),
@@ -361,6 +382,87 @@ def is_temporal(keyword: str) -> bool:
     return any(_YEAR_RE.match(w) for w in words) or bool(_has_marker(" ".join(words), _TEMPORAL_MARKERS))
 
 
+_SERVICE_WORDS = [
+    "service", "services", "consulting", "consultant", "consultants", "agency", "agencies", "company", "companies",
+    "provider", "providers", "support", "management", "maintenance", "repair", "installation", "outsourcing",
+    "outsourced", "hire", "contractor", "contractors", "expert", "experts", "implementation", "migration",
+    "training", "audit", "cleaning", "delivery", "rental",
+]
+_PRODUCT_WORDS = [
+    "software", "app", "apps", "tool", "tools", "platform", "device", "machine", "kit", "model", "models",
+    "system", "equipment", "product", "products", "template", "templates", "plugin", "extension", "hardware",
+]
+
+
+def entity_type(keyword: str, family: str | None, geo: list | None = None) -> str:
+    """§6 main entity type of a keyword, from its own wording only:
+    Problem / Service / Product / Location / Concept, or "Product or
+    Service" when the wording doesn't say which (never guessed further).
+    Brand types are decided separately (§45) with the brand lists."""
+    text = " ".join(_words(keyword))
+    if _has_marker(text, _PROBLEM_MARKERS):
+        return "Problem"
+    if _has_marker(text, _SERVICE_WORDS):
+        return "Service"
+    if _has_marker(text, _PRODUCT_WORDS):
+        return "Product"
+    words = [w for w in text.split() if w not in _STOP_WORDS]
+    if geo and len(words) == len(geo):
+        return "Location"
+    if family == "Informational":
+        return "Concept / Topic"
+    return "Product or Service"
+
+
+_ATTRIBUTE_WORDS = [
+    "size", "sizes", "type", "types", "model", "models", "feature", "features", "specification", "specifications",
+    "specs", "capacity", "weight", "dimensions", "material", "color", "colour", "duration", "plan", "plans",
+    "package", "packages", "category", "version",
+]
+
+
+def modifier_types(keyword: str) -> list[str]:
+    """§7 which KINDS of modifier a keyword carries (intent, informational,
+    commercial investigation, audience, geographic, temporal, problem,
+    product/attribute)."""
+    text = " ".join(_words(keyword))
+    words = text.split()
+    kinds = []
+    for label, markers in (
+        ("Intent", _TRANSACTIONAL_MARKERS + _LOCAL_MARKERS),
+        ("Informational", _INFORMATIONAL_MARKERS),
+        ("Commercial Investigation", _INVESTIGATION_MARKERS + _COMPARISON_MARKERS),
+        ("Problem", _PROBLEM_MARKERS),
+        ("Product / Attribute", _ATTRIBUTE_WORDS),
+    ):
+        if _has_marker(text, markers):
+            kinds.append(label)
+    if keyword_audience(keyword):
+        kinds.append("Audience")
+    if any(w in _GEO_WORDS for w in words) or _has_marker(text, ["near me", "nearby"]):
+        kinds.append("Geographic")
+    if is_temporal(keyword):
+        kinds.append("Temporal")
+    return kinds
+
+
+def _intent_families_present(keyword: str) -> set[str]:
+    """Every page family the keyword's own wording evidences (question
+    words count as Informational; "how much" is a price question, so it
+    counts as Commercial only)."""
+    text = " ".join(_words(keyword))
+    families = set()
+    if _has_marker(text, _TRANSACTIONAL_MARKERS) or _has_marker(text, _INVESTIGATION_MARKERS):
+        families.add("Commercial")
+    if _has_marker(text, _COMPARISON_MARKERS):
+        families.add("Comparison")
+    if _has_marker(text, _LOCAL_MARKERS):
+        families.add("Local")
+    if _has_marker(text.replace("how much", ""), _INFORMATIONAL_MARKERS):
+        families.add("Informational")
+    return families
+
+
 def annotate_keyword_rows(rows: list[dict]) -> None:
     """Stamps the spec's per-keyword fields (§54 master dataset) on every
     row in place: canonical_keyword, core_entity, detected_intent,
@@ -385,6 +487,11 @@ def annotate_keyword_rows(rows: list[dict]) -> None:
         r["funnel_stage"] = funnel_stage(kw, intent["intent"])
         r["audience"] = keyword_audience(kw)
         r["temporal"] = is_temporal(kw)
+        r["entity_type"] = entity_type(kw, intent["family"], norm["geo"])
+        r["modifier_type"] = ", ".join(modifier_types(kw)) or None
+        # §8 "Mixed intent": a second intent from a DIFFERENT page family
+        # materially coexists ("how much does X cost": learn + buy).
+        r["mixed_intent"] = len(_intent_families_present(kw) | {intent["family"]}) > 1
         r["geography"] = ", ".join(norm["geo"]) if norm["geo"] else None
 
 

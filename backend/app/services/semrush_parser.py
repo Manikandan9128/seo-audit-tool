@@ -45,6 +45,8 @@ KEYWORD_GAP_COLUMN_ALIASES = {
     "keyword_difficulty": ["keyword difficulty", "kd", "kd%", "keyword_difficulty"],
     "cpc": ["cpc"],
     "intent": ["intents", "intent"],
+    # §54 "trend" — Semrush's 12-month relative trend, when the export has it.
+    "trend": ["trend", "trends"],
 }
 
 # Semrush's real Keyword Gap tool export compares several domains (your own
@@ -59,7 +61,7 @@ KEYWORD_GAP_COLUMN_ALIASES = {
 # list — _detect_keyword_gap_domain_columns recovers them.
 _KEYWORD_GAP_NON_DOMAIN_COLS = {
     "keyword", "intents", "volume", "search volume", "keyword difficulty", "kd", "kd%",
-    "cpc", "competition density", "results", "cluster", "topic", "group",
+    "cpc", "competition density", "results", "cluster", "topic", "group", "trend", "trends",
 }
 _DOMAIN_LIKE = re.compile(r"^[a-z0-9][a-z0-9-]*(\.[a-z0-9-]+)+$", re.IGNORECASE)
 
@@ -85,6 +87,8 @@ ORGANIC_POSITIONS_COLUMN_ALIASES = {
     "position": ["position"],
     "previous_position": ["previous position", "previous_position"],
     "url": ["url"],
+    "cpc": ["cpc"],
+    "trend": ["trend", "trends"],
 }
 
 DOMAIN_OVERVIEW_COLUMN_ALIASES = {

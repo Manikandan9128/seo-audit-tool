@@ -38,7 +38,7 @@ from app.services.keyword_cluster_pipeline import (
     _UNJUDGED_REASON,
 )
 from app.services.content_safety import redact_presentation
-from app.services.keyword_intelligence_service import _EXCLUDED_RELEVANCE_STATUSES, is_temporal
+from app.services.keyword_intelligence_service import _EXCLUDED_RELEVANCE_STATUSES, is_temporal, modifier_types
 from app.services.priority_model import compute_priority_score
 
 SLIDE_W = Inches(13.333)
@@ -5841,10 +5841,14 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
     priority_text = (
         f" Priority {c['roadmap_priority']} (opportunity {c.get('opportunity')}/100)." if c.get("roadmap_priority") else ""
     )
+    page_type = c.get("recommended_page_type") or "dedicated page"
+    if c.get("cluster_type"):
+        page_type = f"{page_type} ({c['cluster_type']})"
+    gap_text = f" Gap: {c['content_gap_type']}." if c.get("content_gap_type") and not target else ""
     out.append(
-        f"Target: {c.get('recommended_page_type') or 'dedicated page'} — {target_text}. "
-        f"Action: {c.get('recommended_action')}. Confidence {c.get('confidence_level')} ({c.get('confidence')}/100)."
-        f"{priority_text}"
+        f"Target: {page_type} — {target_text}. "
+        f"Action: {c.get('decision') or c.get('recommended_action')}.{gap_text} "
+        f"Confidence {c.get('confidence_level')} ({c.get('confidence')}/100).{priority_text}"
     )
     if c.get("primary_keyword"):
         # §55/§66-D: the page's one primary keyword and the searcher's need.
@@ -6020,13 +6024,16 @@ def add_keyword_topic_map_slide(prs: Presentation, keyword_strategy: dict | None
         ))
     insights = []
     links = [l for t in topics for l in t["links"]]
-    for l in links[:3]:
+    for l in links[:2]:
         insights.append(
             f"Internal link ({l['relation']}): \"{l['from_cluster']}\" {_short_page(l['from'])} → "
             f"\"{l['to_cluster']}\" {_short_page(l['to'])}."
         )
-    if len(links) > 3:
-        insights.append(f"{len(links) - 3} more internal link(s) follow the same topic → hub pattern.")
+    if len(links) > 2:
+        insights.append(f"{len(links) - 2} more internal link(s) follow the same topic → hub pattern (full list in the keyword Sheet's Page Map).")
+    model = (keyword_strategy or {}).get("business_model") or {}
+    if model.get("models") and model["models"] != ["Undetermined"]:
+        insights.insert(0, f"Website model: {', '.join(model['models'])} — read from the site's own sections and target market.")
     weak = [t for t in topics if t["coverage"] in ("Weak", "Missing")]
     if weak:
         w = weak[0]
@@ -6099,12 +6106,19 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                    + (f" — {impressions:,.0f} impressions in the report window." if impressions else ".")
                    + " No Semrush search volume uploaded for these."]
             out.append(f"Top keyword: \"{top.get('keyword')}\".")
-        page_category = top.get("page_category")
+        # §22 page type (strategy layer) when computed, else the pipeline's
+        # coarse page category; §29 cluster type alongside it.
+        page_category = top.get("recommended_page_type") or top.get("page_category")
+        if page_category and top.get("cluster_type"):
+            page_category = f"{page_category} ({top['cluster_type']})"
         existing_url = top.get("existing_page_url")
         # Universal SEO Keyword engine (2026-09-23) §53/§55: the cluster's
         # own target decision — only added when the pipeline computed it.
-        action = top.get("recommended_action")
+        # The §53 decision label wins once the strategy layer set it.
+        action = top.get("decision") or top.get("recommended_action")
         action_text = f" Action: {action}." if action else ""
+        if top.get("content_gap_type") and not (existing_url and top.get("existing_page_match_strength") in ("strong", "partial")):
+            action_text += f" Gap: {top['content_gap_type']}."
         if page_category and existing_url and top.get("existing_page_match_strength") == "weak":
             out.append(f"Recommended format: {page_category} — closest existing page is only a weak match ({existing_url}).{action_text}")
         elif page_category and existing_url:
@@ -6779,6 +6793,17 @@ def _fuzzy_token_match(token: str, other_tokens: set[str]) -> bool:
     return any(difflib.SequenceMatcher(None, token, t).ratio() >= _PROGRAMMATIC_TYPO_RATIO for t in other_tokens)
 
 
+# §59 "Content Requirements" per programmatic dimension kind.
+_PROGRAMMATIC_CONTENT_NEEDS = {
+    "Audience": "audience-specific use cases, examples and pricing",
+    "Geographic": "real local details (address, service area, local proof)",
+    "Product / Attribute": "a specs/comparison table unique to that variant",
+    "Problem": "the specific problem's causes and fix steps",
+    "Commercial Investigation": "real evaluation criteria and proof for that option",
+    "Temporal": "one evergreen page refreshed yearly, not a page per year",
+}
+
+
 def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | None):
     """Hub + sub-page content-architecture recommendations — matches the
     manual reference deck's "Programmatic SEO Opportunities" slide (one main
@@ -6888,10 +6913,20 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
         # sub-keywords (spec section 8) — never an invented dimension.
         modifiers = sorted({t for toks in sub_token_sets for t in toks})[:6]
         hub_text = f"existing hub page {existing_hub}" if existing_hub else "no existing hub page yet"
+        # §59 programmatic output: pattern (Entity × dimension kind), page
+        # uniqueness potential, thin-page risk and what each page needs.
+        kinds = Counter(k for kw in sub_keywords for k in modifier_types(kw) if k not in ("Intent", "Informational"))
+        dimension = kinds.most_common(1)[0][0] if kinds else "Variant"
+        sub_volumes = [_num(r.get("search_volume")) for r in rows_for_cluster if r.get("keyword") in sub_keywords]
+        avg_sub = sum(sub_volumes) / len(sub_volumes) if sub_volumes else 0
+        risk = "low" if avg_sub >= 100 else "medium" if avg_sub >= 30 else "high"
+        needs = _PROGRAMMATIC_CONTENT_NEEDS.get(dimension, "a genuinely different section per variant")
         why = (
-            f"{label}: {len(sub_keywords)} distinct sub-intents varying by {', '.join(modifiers)}, "
-            f"{int(cluster_volume):,} combined monthly searches; {hub_text}"
-            + ("; near-duplicate variants folded in rather than given their own page." if consolidated_any else ".")
+            f"{label}: {len(sub_keywords)} distinct sub-intents varying by {', '.join(modifiers)} "
+            f"(pattern: {label} × {dimension.lower()}), "
+            f"{int(cluster_volume):,} combined monthly searches; {hub_text}; thin-page risk {risk}; each page needs {needs}"
+            + ("; near-duplicate variants folded in." if consolidated_any else ".")
+            + " SERP not validated — review before building."
         )
         candidates.append({
             "label": label, "volume": cluster_volume,
@@ -7367,7 +7402,7 @@ def _content_seo_cluster_evidence(rows: list[dict]) -> str | None:
     return ", ".join(parts) or None
 
 
-def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict] | None):
+def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict] | None, keyword_strategy: dict | None = None):
     """Content SEO Next Steps (spec 2026-09-23). Every bullet is traceable:
     validated-relevant keywords only -> their real cluster -> the upstream
     existing-page decision (keyword_cluster_pipeline, which already refuses
@@ -7406,6 +7441,7 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
                 f"(e.g. {example_text}) — {category_action[label]}."
             )
 
+        n_category = len(items)
         cluster_rows: dict[str, list[dict]] = {}
         for r in rows:
             label = (r.get("cluster") or "").strip()
@@ -7452,6 +7488,12 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
                 action = pipeline_action[0].lower() + pipeline_action[1:]
             else:
                 action = "create a new page — no existing page covers this topic closely enough"
+            if sample.get("decision") and sample.get("decision_reason"):
+                # §53 decision from the strategy layer (REDIRECT / SECONDARY
+                # TARGET / NO TARGET...) replaces the plain match-strength text.
+                action = f"{sample['decision'].lower()} — {sample['decision_reason'][0].lower()}{sample['decision_reason'][1:].rstrip('.')}"
+                if sample.get("content_gap_type"):
+                    action += f" ({sample['content_gap_type']})"
             tier = sample.get("roadmap_priority")
             tier_label = "Needs human review" if tier == "Human Review" else f"{tier} priority"
             tier_text = f"[{tier_label}, opportunity {sample.get('cluster_opportunity')}/100] " if tier else ""
@@ -7470,7 +7512,35 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
             url = sample.get("existing_page_url")
             if note and url and url not in cannibal_notes_by_url:
                 cannibal_notes_by_url[url] = note
+        n_clusters = len(items)
         items.extend(cannibal_notes_by_url.values())
+    else:
+        n_category = n_clusters = len(items)
+    strategy = keyword_strategy or {}
+    extra: list[str] = []
+    # §24/§58: real Search Console evidence of two own pages splitting one
+    # query — preferred URL + the spec's action, highest risk first.
+    for c in [c for c in strategy.get("cannibalization") or [] if c.get("risk") in ("High", "Medium")][:2]:
+        extra.append(
+            f"Cannibalization ({c['risk']} risk): \"{c['query']}\" is split across {len(c['other_urls']) + 1} pages — "
+            f"{c['action'].lower()}, keeping {c['preferred_url']} as the preferred page. {c['evidence']}"
+        )
+    # §62: one line summarising what needs a person's decision.
+    queue = strategy.get("review_queue") or []
+    if queue and items:
+        by_type = Counter(q["type"] for q in queue)
+        extra.append(
+            f"Human review queue: {len(queue)} item(s) — "
+            + ", ".join(f"{n} {t.lower()}" for t, n in by_type.most_common(4))
+            + " — full list in the keyword Sheet's Review Queue tab."
+        )
+    if extra:
+        # The slide shows as many items as fit, so the order decides what a
+        # reader sees: the biggest format line, the top two roadmap topics, then
+        # the cannibalization evidence and the review-queue summary, then
+        # everything else.
+        category, clusters, notes = items[:n_category], items[n_category:n_clusters], items[n_clusters:]
+        items = category[:1] + clusters[:2] + extra + clusters[2:] + category[1:] + notes
     intro = "Where to focus content production, based on the keyword research and clustering above."
     return _next_steps_category_slide(prs, "Next Steps: Content SEO", intro, items)
 
@@ -8174,7 +8244,7 @@ def _build_report(
     # the AI path — this needs an EXACT, guaranteed-consistent rule applied
     # every time (comparison-shaped vs. blog-shaped vs. landing-page-shaped
     # keywords), not an AI's variable phrasing of the same idea.
-    add_content_seo_next_steps_slide(prs, keyword_rows)
+    add_content_seo_next_steps_slide(prs, keyword_rows, keyword_strategy)
     add_programmatic_seo_slide(prs, keyword_rows)
     # Always deterministic, never the AI category — Evidence -> Opportunity
     # -> Action from GA4 key events (Conversion SEO spec 2026-09-23).

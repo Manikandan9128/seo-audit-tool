@@ -899,6 +899,33 @@ def vendor_product_pricing_reason(keyword: str, vendors: set[str]) -> str | None
             "technology) — that vendor answers it, not this business; review before targeting.")
 
 
+def keyword_brand_type(
+    keyword: str, own_brands: set[str] | None, competitor_brands: set[str] | None, vendors: set[str] | None,
+) -> str:
+    """§45 Brand / Non-brand / Competitor brand / Product brand / Mixed
+    brand for one keyword. "Product brand" = another company's product the
+    client works with (a partner/technology vendor on its own site).
+    "Mixed brand" = the client's brand together with another brand
+    ("acme vs rival", "acme aws integration")."""
+    text = (keyword or "").lower()
+
+    def _has(tokens):
+        return any(t and len(t) > 2 and re.search(rf"\b{re.escape(t)}\b", text) for t in tokens or ())
+
+    own = _has(own_brands)
+    other = _has(competitor_brands)
+    product = _has(vendors)
+    if own and (other or product):
+        return "Mixed Brand"
+    if own:
+        return "Brand"
+    if other:
+        return "Competitor Brand"
+    if product:
+        return "Product Brand"
+    return "Non-brand"
+
+
 def classify_page_type(url: str | None) -> str:
     """"utility" | "comparison" | "blog" | "location" | "commercial" |
     "home" | "other", from the URL path alone."""
