@@ -83,4 +83,4 @@ Tests: `tests/test_keyword_intelligence_engine.py`, `test_keyword_strategy_servi
 - 2026-09-24 `d51d6a8` ranking-first targets, relevance-first tables, own-brand family, other-website intent.
 - 2026-09-24 `401bea0` topic map, opportunity roadmap, funnel/audience, Sheet master columns.
 - 2026-09-24 `289e50a` same-page merge, category split, junk filter, names, vendor pricing.
-- 2026-09-24 (this change) §3, §5, §6, §7, §8 mixed, §22, §24/§58, §25/§57, §29, §32, §36, §45, §53, §54 fields, §56 shown, §59, §62, §67.
+- 2026-09-24 `d2df10b` §3, §5, §6, §7, §8 mixed, §22, §24/§58, §25/§57, §29, §32, §36, §45, §53, §54 fields, §56 shown, §59, §62, §67.
