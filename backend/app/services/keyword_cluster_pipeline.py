@@ -65,6 +65,7 @@ from app.services.keyword_intelligence_service import (
     annotate_keyword_rows,
     apply_cluster_intelligence,
     build_rule_groups,
+    expand_abbreviations,
     normalize_keyword,
     ranking_page_target,
     rule_group_name,
@@ -619,10 +620,15 @@ _GENERIC_TOKEN_SHARE = 0.2
 def _same_topic(a: set[str], b: set[str]) -> bool:
     """§43 "same entity": at least half of the smaller cluster's real topic
     words are shared — one common word is not enough (Geopits: "managed
-    mysql" joined "Oracle DBA Support" through "managed" alone)."""
+    mysql" joined "Oracle DBA Support" through "managed" alone). Each side
+    is expanded with its abbreviations' spelled-out words first (§13/§41)
+    so "remote dba services" and "database support services" — the exact
+    no-AI known limit this pipeline used to leave split — share "database"
+    without needing the AI grouping step."""
     if not a or not b:
         return False
-    return len(a & b) / min(len(a), len(b)) >= 0.5
+    ea, eb = expand_abbreviations(a), expand_abbreviations(b)
+    return len(ea & eb) / min(len(ea), len(eb)) >= 0.5
 
 
 def _merge_same_page_clusters(rows: list[dict]) -> None:

@@ -266,6 +266,16 @@ def test_one_shared_word_does_not_merge_clusters():
     assert _same_topic({"index", "sql"}, {"index", "database"})
 
 
+# §13/§41/§43 abbreviation-aware merge — no longer needs the AI grouping step
+# for the documented known limit ("remote dba services" / "database support
+# services" share no literal words without it).
+def test_abbreviation_expansion_catches_the_documented_known_limit():
+    from app.services.keyword_cluster_pipeline import _same_topic
+    from app.services.keyword_intelligence_service import expand_abbreviations
+    assert expand_abbreviations({"dba"}) == {"dba", "database", "administrator"}
+    assert _same_topic({"database", "support"}, {"dba", "remote"})
+
+
 def test_review_queue_skips_low_priority_and_caps_each_type():
     many = []
     for i in range(30):

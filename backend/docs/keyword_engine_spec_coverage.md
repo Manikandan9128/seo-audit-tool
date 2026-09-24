@@ -39,7 +39,7 @@ anymore as of the 2026-09-24 depth pass (`keyword_site_model.py` + `keyword_stra
 | 14 | Search intent relationship (intent similarity) | Done | `intent_similarity` cosine score; sibling pairs >=0.9 surfaced as a "Possible same-need clusters" review item | — |
 | 15 | SERP analysis / overlap | Blocked | no SERP data | SERP data (Semrush API) |
 | 16 | Page cohesion score | Blocked | needs SERP overlap | SERP data (Semrush API) |
-| 17 | Same page vs separate page | Partial | synonym-only clusters not merged when AI grouping fails; SERP criterion missing | AI grouping step working |
+| 17 | Same page vs separate page | Partial | curated-abbreviation merges now work without AI (dba/hr/it/...); a real synonym pair outside that list, or the SERP criterion, still needs AI/SERP | AI grouping step working |
 | 18 | Topic hierarchy (root->entity->parent->subtopic->intent->cluster) | Done | `deepen_topics` hierarchy dict — Sheet "Topic Hierarchy" tab | — |
 | 19 | Primary keyword selection | Done | `primary_keyword_scores` — 7-factor score picks the primary in non-AI clusters | — |
 | 20 | Primary keyword score (normalized components) | Done | 0-100 `primary_score` per keyword — Sheet column | — |
@@ -63,9 +63,9 @@ anymore as of the 2026-09-24 depth pass (`keyword_site_model.py` + `keyword_stra
 | 38 | Topical authority model | Done | entity/audience/commercial-vs-informational coverage feeds each topic's `authority_level` — Sheet column | — |
 | 39 | Near-duplicate intent | Done | — | — |
 | 40 | Do not over-cluster | Done | — | — |
-| 41 | Do not over-split | Partial | synonym clusters on one page stay separate without AI | AI grouping step working |
+| 41 | Do not over-split | Partial | curated-abbreviation pairs no longer split without AI; other synonym clusters still do | AI grouping step working |
 | 42 | Cluster split test | Partial | SERP questions unanswered | SERP data (Semrush API) |
-| 43 | Cluster merge test | Partial | same-entity by wording only; SERP question unanswered | AI grouping step working |
+| 43 | Cluster merge test | Partial | same-entity by wording + curated abbreviations; SERP question unanswered | AI grouping step working |
 | 44 | Temporal analysis | Done | — | — |
 | 45 | Brand vs non-brand | Done | — | — |
 | 46 | Competitor / alternative intent checks | Done | `apply_business_rules` §46 — a named-competitor comparison without a matching own offer goes to REVIEW | — |
@@ -107,9 +107,12 @@ regression cases:
   `test_service_cluster_never_targets_a_blog_just_because_it_ranks`, `test_one_shared_word_does_not_merge_clusters`,
   `test_review_queue_skips_low_priority_and_caps_each_type`,
   `test_bare_concept_is_not_a_core_topic_and_service_business_gets_service_page`).
-- Known limit on the same replay: with the AI grouping step not running, same-need clusters that share no
-  words ("database support services" / "remote dba services") stay separate and are marked
-  EXISTING URL — SECONDARY TARGET on one page instead of merged. The AI step is what merges those.
+- **Fixed 2026-09-24 (abbreviation-aware merge):** the exact case above — "database support services" /
+  "remote dba services" now merges without the AI grouping step, via a small curated abbreviation dictionary
+  (`keyword_intelligence_service.expand_abbreviations`: dba/hr/it/crm/erp/cms/seo/ppc/qa/ux/ui/b2b/b2c/saas/pos/hvac)
+  read into `_same_topic`'s token overlap. Narrower than real synonym/embedding matching — a genuine synonym pair
+  outside this curated list (e.g. "cheap" / "affordable") still needs the AI step. Test:
+  `test_abbreviation_expansion_catches_the_documented_known_limit`.
 
 ## Change log
 - 2026-09-24 `d51d6a8` ranking-first targets, relevance-first tables, own-brand family, other-website intent.
@@ -117,6 +120,10 @@ regression cases:
 - 2026-09-24 `289e50a` same-page merge, category split, junk filter, names, vendor pricing.
 - 2026-09-24 `d2df10b` §3, §5, §6, §7, §8 mixed, §22, §24/§58, §25/§57, §29, §32, §36, §45, §53, §54 fields, §56 shown, §59, §62, §67.
 - 2026-09-24 `4e8ec8c` real-report fixes from Geopits (1): §3, §22, §23, §43, §53, §62.
+- 2026-09-24 `20e7cc8` `keyword_site_model.py` + `keyword_strategy_depth.py`: §3, §4, §6, §11, §12, §14, §18, §19,
+  §20, §32, §36, §37, §38, §46-§52, §66 -> Done; code-buildable part of §23, §24, §27, §54, §55, §58, §59 finished.
+- 2026-09-24 (this change) curated abbreviation dictionary (`expand_abbreviations`) fixes the documented "dba" /
+  "database" merge known-limit without needing the AI grouping step or the (ruled-out) Semrush API: §17, §41, §43.
 - 2026-09-24 (this change) `keyword_site_model.py` (new) + `keyword_strategy_depth.py` (new): §3, §4, §6, §11, §12,
   §14, §18, §19, §20, §32, §36, §37, §38, §46-§52, §66 moved Partial -> Done; §23, §24, §27, §54, §55, §58, §59 had
   their code-buildable part finished (SERP-only piece remains). 10 new tests (`test_keyword_engine_depth.py`), 530

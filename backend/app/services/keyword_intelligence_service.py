@@ -156,6 +156,45 @@ def singularize(word: str) -> str:
     return w
 
 
+# §13/§41/§43 — common business/technical abbreviations that mean the same
+# entity as their spelled-out form ("dba" == "database administrator"),
+# so a rule-based (no-AI) cluster merge test can catch them by token
+# overlap alone instead of needing the AI grouping step. Deliberately
+# small and curated (never a general synonym dictionary — see the "one
+# shared word" over-merge incidents in keyword_cluster_pipeline.py) —
+# each entry is a genuine same-entity abbreviation, not a loose synonym.
+_ABBREVIATION_EXPANSIONS: dict[str, frozenset[str]] = {
+    "dba": frozenset({"database", "administrator"}),
+    "hr": frozenset({"human", "resource"}),
+    "it": frozenset({"information", "technology"}),
+    "crm": frozenset({"customer", "relationship", "management"}),
+    "erp": frozenset({"enterprise", "resource", "planning"}),
+    "cms": frozenset({"content", "management"}),
+    "seo": frozenset({"search", "engine", "optimization"}),
+    "ppc": frozenset({"pay", "click"}),
+    "qa": frozenset({"quality", "assurance"}),
+    "ux": frozenset({"user", "experience"}),
+    "ui": frozenset({"user", "interface"}),
+    "b2b": frozenset({"business"}),
+    "b2c": frozenset({"business", "consumer"}),
+    "saas": frozenset({"software"}),
+    "pos": frozenset({"point", "sale"}),
+    "hvac": frozenset({"heating", "ventilation", "air", "conditioning"}),
+}
+
+
+def expand_abbreviations(tokens: frozenset[str] | set[str]) -> frozenset[str]:
+    """§13/§41/§43 — adds each abbreviation token's spelled-out words to the
+    set (one-directional is enough: "dba" gains {database, administrator},
+    so it now overlaps a cluster whose keywords say "database
+    administrator" even though neither side literally contains the
+    other's exact words)."""
+    extra: set[str] = set()
+    for t in tokens:
+        extra |= _ABBREVIATION_EXPANSIONS.get(t.lower(), frozenset())
+    return frozenset(tokens) | extra
+
+
 def _words(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+(?:[-'][a-z0-9]+)?", (text or "").lower())
 
