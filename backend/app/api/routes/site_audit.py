@@ -6,6 +6,7 @@ import traceback
 from collections import Counter
 import uuid
 from types import SimpleNamespace
+from urllib.parse import urlparse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
@@ -1458,6 +1459,29 @@ def _build_next_steps_findings(data: dict, competitor_narratives: dict[str, dict
     }
 
 
+_POSITIONS_FILENAME_DOMAIN = re.compile(r"^([a-z0-9-]+(?:\.[a-z0-9-]+)+)-organic\.positions", re.IGNORECASE)
+
+
+def _positions_file_domain(filename: str | None, rows: list[dict]) -> str | None:
+    """The competitor domain an Organic Positions upload is actually for,
+    read from the uploaded file itself rather than the label typed into the
+    upload form (2026-09-24 user request: a typed label is how a domain the
+    file never mentions ended up on a "Competitor Keywords" slide).
+    Semrush's default export name leads with the queried domain (e.g.
+    "tatamotors.com-organic.Positions-in-20260901.csv"), so that wins; a
+    renamed file falls back to the most common host in its URL column.
+    None when neither is present — caller then falls back to the label."""
+    match = _POSITIONS_FILENAME_DOMAIN.match(filename or "")
+    if match:
+        return match.group(1).lower()
+    hosts = Counter(
+        host.lower()
+        for row in rows
+        if (host := urlparse(str(row.get("url") or "")).hostname)
+    )
+    return hosts.most_common(1)[0][0] if hosts else None
+
+
 def _gather_report_data(
     client: Client,
     db: Session,
@@ -2266,8 +2290,9 @@ def _gather_report_data(
         if r.is_own_site:
             own_site_positions_rows.extend(r.parsed_data.get("rows", []))
             continue
-        label = r.domain_label or "competitor"
-        competitor_positions.setdefault(label, []).extend(r.parsed_data.get("rows", []))
+        rows = r.parsed_data.get("rows", [])
+        label = _positions_file_domain(r.original_filename, rows) or r.domain_label or "competitor"
+        competitor_positions.setdefault(label, []).extend(rows)
     own_backlink_row_count = sum(
         r.parsed_data.get("row_count", 0) for r in all_imports if r.import_type == "backlinks" and r.is_own_site
     )
