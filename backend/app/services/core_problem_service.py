@@ -22,7 +22,10 @@ plus 2-4 short findings under each of these three categories, grounded only in w
 - Content & Keyword Strategy
 
 If a category genuinely has nothing to flag in the data, return an empty "points" array for it rather than padding \
-with generic advice not backed by the findings.
+with generic advice not backed by the findings. "sample_page_level_issues" covers only a small sample of pages (pages_checked) — never generalize \
+it to "every page" or "all pages". For any site-wide structured data / schema claim use \
+"structured_data_full_crawl" when present (e.g. "26 of 823 crawled pages carry schema; FAQPage only"), and if it \
+shows schema on some pages, never say the site has none.
 
 Return ONLY valid JSON, no markdown fences, no commentary:
 {

@@ -2395,10 +2395,38 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
             _textbox(slide, left, y, width, Inches(0.22), note, size=9.5, color=TEXT_MUTED)
             y += Inches(0.26)
 
-    insights = list((schema_ai_insights or {}).get("insights") or [])[:5]
+    insights = _drop_contradicting_schema_insights(
+        list((schema_ai_insights or {}).get("insights") or []), part2,
+    )[:5]
     if insights:
         _insights_strip(slide, left, y, width, insights)
     return slide
+
+
+_SCHEMA_POSITIVE_CLAIM_RE = re.compile(
+    r"valid win|present:?\s*yes|valid:?\s*yes|no action needed|already (?:in place|implemented|present)|is (?:present|implemented|valid)|correctly implemented",
+    re.IGNORECASE,
+)
+
+
+def _drop_contradicting_schema_insights(insights: list, part2: list[dict]) -> list:
+    """The Key Insights are AI-written from the same table, but nothing
+    checked them against it — a BharatBenz deck (2026-09-23) showed
+    WebSite/Organization as Present "No" in the table and, on the same
+    slide, "WebSite/Organization schema – Valid win. Present Yes, Valid
+    Yes. No action needed." An insight that names a schema type the table
+    shows as absent AND claims it's present/valid is dropped."""
+    absent = [
+        r["schema_type"].replace(" (detected)", "") for r in part2
+        if r.get("present") in ("No", 0)
+    ]
+    kept = []
+    for text in insights:
+        t = str(text)
+        if any(a.lower() in t.lower() for a in absent) and _SCHEMA_POSITIVE_CLAIM_RE.search(t):
+            continue
+        kept.append(text)
+    return kept
 
 
 # Canned fix per page-level issue string from technical_seo_service.py's

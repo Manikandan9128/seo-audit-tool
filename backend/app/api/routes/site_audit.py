@@ -2391,6 +2391,21 @@ def _gather_report_data(
     # deliberately NOT cached (unlike Company Overview): this reflects
     # current metrics/issues, and a stale cached diagnosis would be
     # actively wrong once a client fixes something.
+    # Whole-site schema coverage, from whatever full-site Page Audit job the
+    # user last ran (if any) — not the fresh 20-page page_audit_result above,
+    # which is too small a sample for a sitewide schema claim.
+    latest_page_audit_job = (
+        db.query(PageAuditJob)
+        .filter(PageAuditJob.client_id == client_id, PageAuditJob.status == "done")
+        .order_by(PageAuditJob.created_at.desc())
+        .first()
+    )
+    schema_validation_result = (
+        aggregate_schema_validation(latest_page_audit_job.result.get("pages", []), analytics)
+        if latest_page_audit_job and latest_page_audit_job.result
+        else None
+    )
+
     core_problem_result = None
     if settings.gemini_api_key or settings.claude_api_key:
         progress("Diagnosing core problem...", 75)
@@ -2407,6 +2422,17 @@ def _gather_report_data(
             "own_backlink_row_count": own_backlink_row_count,
             "competitor_gap_findings": (competitor_analysis_result or {}).get("issues", []),
             "target_keyword_count": len(keyword_rows_all) if keyword_rows_all else 0,
+            # Full-site schema coverage (the same numbers the Structured
+            # Data slide and SEO Goals use). Without it the model only saw
+            # the 20-page sample's "Missing structured data" issues and
+            # wrote "Every page lacks JSON-LD" while the site had FAQPage on
+            # 26 pages (BharatBenz, 2026-09-23). The prompt tells it to use
+            # this for any sitewide schema claim.
+            "structured_data_full_crawl": {
+                "pages_crawled": schema_validation_result.get("total_pages"),
+                "pages_with_any_schema": schema_validation_result.get("pages_with_schema"),
+                "schema_types_found": {c["type"]: c["pages_with_it"] for c in (schema_validation_result.get("type_coverage") or [])},
+            } if schema_validation_result else None,
         }
         core_problem_candidate = generate_core_problem(core_problem_findings)
         if "error" not in core_problem_candidate:
@@ -2415,20 +2441,6 @@ def _gather_report_data(
             logger.warning("Core Problem generation failed for client %s: %s", client.id, core_problem_candidate["error"])
             content_issues.append(f"Core Problem slide: {core_problem_candidate['error']}")
 
-    # Whole-site schema coverage, from whatever full-site Page Audit job the
-    # user last ran (if any) — not the fresh 20-page page_audit_result above,
-    # which is too small a sample for a sitewide schema claim.
-    latest_page_audit_job = (
-        db.query(PageAuditJob)
-        .filter(PageAuditJob.client_id == client_id, PageAuditJob.status == "done")
-        .order_by(PageAuditJob.created_at.desc())
-        .first()
-    )
-    schema_validation_result = (
-        aggregate_schema_validation(latest_page_audit_job.result.get("pages", []), analytics)
-        if latest_page_audit_job and latest_page_audit_job.result
-        else None
-    )
 
     # Cross-check the Schema Validator's local rule replica against Google's
     # own real rich-result verdict via Search Console's URL Inspection API —
