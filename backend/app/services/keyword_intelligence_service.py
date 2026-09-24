@@ -80,6 +80,13 @@ _INFORMATIONAL_MARKERS = _QUESTION_MARKERS + [
     "history", "explained", "mileage", "specification", "specifications", "specs", "size", "sizes",
     "dimensions", "capacity", "weight", "features", "process", "steps",
     "license", "licence", "certification", "course", "salary", "statistics", "trends",
+    # "types of X" already covered above; a client's own keyword set often
+    # has the same enumeration the other way round ("trigger types",
+    # "truck types") — confirmed real on a Geopits report (2026-09-24):
+    # "trigger types" and "list triggers" both classified Commercial with
+    # no marker at all to catch them, so a bare reference/enumeration term
+    # picked up the default "Commercial" fallback instead.
+    "types", "list",
 ]
 
 # Modifier words stripped when finding a keyword's core entity. Intent

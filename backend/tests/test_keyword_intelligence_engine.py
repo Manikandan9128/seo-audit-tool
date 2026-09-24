@@ -75,6 +75,19 @@ def test_intent_detection_uses_the_keywords_own_modifiers():
     assert bare["family"] == "Commercial" and bare["confidence"] < 70
 
 
+def test_enumeration_shaped_keywords_are_informational_not_commercial():
+    # Regression (confirmed real, Geopits report, 2026-09-24): "trigger
+    # types" and "list triggers" both classified Commercial with no marker
+    # to catch them — a bare reference/enumeration term fell through to
+    # the default "Commercial" fallback meant for product-shaped bare
+    # entities ("tipper truck"), not concept enumerations.
+    assert detect_intent("trigger types")["family"] == "Informational"
+    assert detect_intent("truck types")["family"] == "Informational"
+    assert detect_intent("list triggers")["family"] == "Informational"
+    # "types"/"list" must not override an earlier, more specific marker.
+    assert detect_intent("price list")["intent"] == "Transactional"
+
+
 # --- rule-based grouping (§17, §40, §41) ------------------------------------
 
 def _grouped(keywords):
