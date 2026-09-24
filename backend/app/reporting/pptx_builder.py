@@ -1644,7 +1644,18 @@ def add_company_overview_extracted_slide(prs: Presentation, client_name: str, ov
     contact = overview.get("contact")
     footer_bits = [b for b in [reg, contact] if b]
     if footer_bits:
-        _textbox(slide, Inches(0.6), top + height + Inches(0.12), Inches(12.1), Inches(0.3), "  |  ".join(footer_bits), size=10.5, color=TEXT_MUTED)
+        # `height` is a fixed estimate the card was drawn at, not a
+        # measurement of the real content — a longer description, more
+        # KPIs, or industries wrapping onto a second chip row (like this
+        # one) can all push the left column's actual content below that
+        # fixed line. The footer used to draw at top+height regardless,
+        # landing on top of the last content row instead of under it —
+        # confirmed real on a live Geopits report (2026-09-24): the
+        # footer overlapped the wrapped "E-Learning / EdTech" / "Retail"
+        # industry chips. Now floors on whichever column's real content
+        # ran longest.
+        footer_y = max(top + height, y, ry) + Inches(0.12)
+        _textbox(slide, Inches(0.6), footer_y, Inches(12.1), Inches(0.3), "  |  ".join(footer_bits), size=10.5, color=TEXT_MUTED)
     return slide
 
 
