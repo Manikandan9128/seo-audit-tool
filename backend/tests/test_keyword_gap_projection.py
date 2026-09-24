@@ -302,14 +302,14 @@ def test_one_to_five_keywords_never_gets_a_dedicated_slide():
 def test_six_keywords_gets_its_own_dedicated_slide_not_in_summary_table():
     analysis = {"keyword_gap_rows": _make_rows("Missing", 6)}
     slides = add_keyword_gap_slides(_prs(), analysis)
-    assert len(slides) == 4  # executive summary + detail summary + dedicated Missing + consolidated insights
-    summary_table_text = "\n".join(
-        c.text_frame.text for sh in slides[1].shapes if sh.has_table for row in sh.table.rows for c in row.cells
-    )
-    assert "missing kw" not in summary_table_text  # moved entirely to the dedicated slide
-    dedicated_title = next(sh.text_frame.text for sh in slides[2].shapes if sh.has_text_frame and sh.text_frame.text)
-    assert dedicated_title == "Competitor Keyword Gap — Missing"
-    dedicated_text = _slide_text(slides[2])
+    # executive summary + dedicated Missing + consolidated insights. No
+    # detail-summary slide: every status went to its own slide, so it would
+    # hold only the legend (the empty Geopits slide, 2026-09-24).
+    assert len(slides) == 3
+    titles = [next(sh.text_frame.text for sh in s.shapes if sh.has_text_frame and sh.text_frame.text) for s in slides]
+    assert "Competitor Keyword Gap Analysis" not in titles
+    assert titles[1] == "Competitor Keyword Gap — Missing"
+    dedicated_text = _slide_text(slides[1])
     assert "missing kw 0" in dedicated_text
 
 
@@ -370,7 +370,7 @@ def test_dedicated_slide_insights_only_reference_its_own_status():
 def test_dedicated_slide_discloses_truncation_beyond_row_cap():
     analysis = {"keyword_gap_rows": _make_rows("Missing", 15)}
     slides = add_keyword_gap_slides(_prs(), analysis, keyword_gap_sheet_link="https://sheets.google.com/x")
-    missing_slide = slides[2]
+    missing_slide = slides[1]
     assert "Open full keyword list" in _slide_text(missing_slide)
     insights_text = _slide_text(slides[-1])
     assert "Showing top" in insights_text

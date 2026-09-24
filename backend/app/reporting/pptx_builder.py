@@ -5458,27 +5458,27 @@ def add_keyword_gap_slides(
     if exec_summary_slide:
         slides.append(exec_summary_slide)
 
-    # ---- Summary slide: overall distribution + whichever statuses have
-    # 1-5 keywords shown inline. A status that got its own dedicated slide
-    # contributes no table rows here, only to the distribution count. ----
-    summary_slide = _blank_slide(prs)
-    _content_header(summary_slide, "Competitor Keyword Gap Analysis")
-    _textbox(summary_slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
-    _draw_gap_legend(summary_slide)
-
-    top_y = Inches(1.32)
+    # ---- Summary slide: whichever statuses have 1-5 keywords, shown
+    # inline. A status that got its own dedicated slide contributes no
+    # table rows here. When EVERY status went to its own slide there is
+    # nothing left to show, so the slide is skipped (Geopits 2026-09-24:
+    # 300 Missing + 11 Shared, 0 Untapped rendered a slide with only the
+    # legend and the Sheet button) — the Executive Summary already gives
+    # the distribution, and every dedicated slide carries the button. ----
     inline_rows = [r for cat in inline_categories for r in by_category[cat]]
     if inline_rows:
-        top_y, _table = _render_gap_table(summary_slide, top_y, inline_rows, competitor_columns, headers, col_widths)
-
-    # Table-only from here — no Key Insights card on this slide (2026-09-23
-    # user request: insights competed for space with the table and one
-    # long line overlapped it on a large Missing table). Every insight this
-    # slide used to show now lives on add_keyword_gap_insights_slide
-    # instead, appended after every table slide below.
-    if keyword_gap_sheet_link:
-        _add_gap_sheet_link_button(summary_slide, keyword_gap_sheet_link)
-    slides.append(summary_slide)
+        summary_slide = _blank_slide(prs)
+        _content_header(summary_slide, "Competitor Keyword Gap Analysis")
+        _textbox(summary_slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush Keyword Gap export", size=11, color=TEXT_MUTED)
+        _draw_gap_legend(summary_slide)
+        _render_gap_table(summary_slide, Inches(1.32), inline_rows, competitor_columns, headers, col_widths)
+        # Table-only — no Key Insights card on this slide (2026-09-23 user
+        # request: insights competed for space with the table and one long
+        # line overlapped it on a large Missing table). Every insight lives
+        # on add_keyword_gap_insights_slide, appended after the tables.
+        if keyword_gap_sheet_link:
+            _add_gap_sheet_link_button(summary_slide, keyword_gap_sheet_link)
+        slides.append(summary_slide)
 
     # ---- One dedicated slide per status with 6+ keywords, never merged.
     # Table-only, same reasoning as the summary slide above. ----
