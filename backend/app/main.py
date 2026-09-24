@@ -68,6 +68,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Lets the frontend (a different origin in dev) read the server-chosen
+    # filename on file downloads, e.g. "<name> (rebuilt).csv".
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(auth.router, prefix="/api")

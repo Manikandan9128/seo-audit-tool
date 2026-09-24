@@ -4,6 +4,7 @@ import { SEMRUSH_MCP_ENABLED } from "../features";
 import Dropzone from "./Dropzone";
 import { fileTypeChip } from "./fileTypeChip";
 import ConfirmDeleteButton from "./ConfirmDeleteButton";
+import DownloadImportButton from "./DownloadImportButton";
 import { useToast } from "./ToastProvider";
 
 interface SemrushImportSummary {
@@ -26,7 +27,8 @@ function normalizeDomain(d: string) {
   return d.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "").toLowerCase();
 }
 
-function FileTable({ rows, deleteImport }: {
+function FileTable({ clientId, rows, deleteImport }: {
+  clientId: string;
   rows: SemrushImportSummary[];
   deleteImport: (id: string) => void;
 }) {
@@ -82,6 +84,7 @@ function FileTable({ rows, deleteImport }: {
                   </td>
                   <td className="num">{imp.row_count}</td>
                   <td style={{ textAlign: "right" }}>
+                    <DownloadImportButton clientId={clientId} importId={imp.id} filename={imp.original_filename} />
                     <ConfirmDeleteButton label={imp.original_filename} onConfirm={() => deleteImport(imp.id)} />
                   </td>
                 </tr>
@@ -281,7 +284,7 @@ export default function SemrushImportCard({
 
       {isOwnSite && rows.length > 0 && (
         <div style={{ marginTop: 16 }}>
-          <FileTable rows={rows} deleteImport={deleteImport} />
+          <FileTable clientId={clientId} rows={rows} deleteImport={deleteImport} />
         </div>
       )}
 
@@ -306,7 +309,7 @@ export default function SemrushImportCard({
                 </div>
                 {open && (
                   <div className="competitor-body">
-                    <FileTable rows={domainRows} deleteImport={deleteImport} />
+                    <FileTable clientId={clientId} rows={domainRows} deleteImport={deleteImport} />
                   </div>
                 )}
               </div>

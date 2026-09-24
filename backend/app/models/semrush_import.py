@@ -1,9 +1,9 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, ForeignKey, func
+from sqlalchemy import String, DateTime, ForeignKey, LargeBinary, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, deferred, mapped_column
 
 from app.db.base import Base
 
@@ -21,4 +21,9 @@ class SemrushImport(Base):
     is_own_site: Mapped[bool] = mapped_column(nullable=False, default=True)
     domain_label: Mapped[str | None] = mapped_column(String, nullable=True)  # e.g. a competitor's domain, when is_own_site is False
     parsed_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # The uploaded file's exact bytes, for the Download button. Deferred so
+    # the report pipeline and list endpoints, which load every import, never
+    # pull these in. NULL for files uploaded before this column existed; the
+    # download endpoint rebuilds a CSV from parsed_data for those.
+    original_file: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

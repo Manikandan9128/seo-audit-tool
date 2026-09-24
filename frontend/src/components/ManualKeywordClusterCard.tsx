@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import Dropzone from "./Dropzone";
 import { fileTypeChip } from "./fileTypeChip";
 import ConfirmDeleteButton from "./ConfirmDeleteButton";
+import DownloadImportButton from "./DownloadImportButton";
 import { useToast } from "./ToastProvider";
 
 interface ManualKeywordClusterImportSummary {
@@ -135,6 +136,7 @@ export default function ManualKeywordClusterCard({
                     </td>
                     <td className="num">{imp.row_count}</td>
                     <td style={{ textAlign: "right" }}>
+                      <DownloadImportButton clientId={clientId} importId={imp.id} filename={imp.original_filename} />
                       <ConfirmDeleteButton label={imp.original_filename} onConfirm={() => deleteImport(imp.id)} />
                     </td>
                   </tr>

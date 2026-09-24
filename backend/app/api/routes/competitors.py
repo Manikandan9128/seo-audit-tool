@@ -1,6 +1,11 @@
+import csv
+import io
+import json
 import uuid
+from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
@@ -89,6 +94,7 @@ async def upload_semrush_file(
         is_own_site=is_own_site,
         domain_label=domain_label or None,
         parsed_data=parsed_data,
+        original_file=content,
     )
     db.add(record)
     db.commit()
@@ -139,6 +145,7 @@ async def upload_geopulse_file(
         import_type="geopulse",
         is_own_site=True,
         parsed_data=parsed_data,
+        original_file=content,
     )
     db.add(record)
     db.commit()
@@ -184,6 +191,7 @@ async def upload_manual_keyword_cluster_file(
         import_type="keyword_cluster_manual",
         is_own_site=True,
         parsed_data=parsed_data,
+        original_file=content,
     )
     db.add(record)
     db.commit()
@@ -284,6 +292,53 @@ def get_semrush_import(
         "original_filename": record.original_filename,
         "parsed_data": record.parsed_data,
     }
+
+
+def _rows_to_csv(rows: list) -> bytes:
+    """parsed_data rows back to a CSV, for imports uploaded before the
+    original file was kept. Header is every key seen across the rows, in
+    first-seen order; nested values (e.g. keyword_gap's domain_positions)
+    are written as JSON."""
+    header: list[str] = []
+    for row in rows:
+        if isinstance(row, dict):
+            header.extend(k for k in row if k not in header)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(header)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        writer.writerow([
+            json.dumps(v) if isinstance(v, (dict, list)) else ("" if v is None else v)
+            for v in (row.get(k) for k in header)
+        ])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+@router.get("/{client_id}/semrush-imports/{import_id}/download")
+def download_semrush_import(
+    client_id: uuid.UUID, import_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    """The uploaded file exactly as it was uploaded. Imports from before
+    original_file existed come back as a CSV rebuilt from parsed_data, named
+    "<name> (rebuilt).csv" so nobody mistakes it for the original export."""
+    _get_owned_client(client_id, db, current_user)
+    record = db.get(SemrushImport, import_id)
+    if not record or record.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Import not found")
+    if record.original_file is not None:
+        content, filename = record.original_file, record.original_filename
+    else:
+        rows = (record.parsed_data or {}).get("rows") or []
+        if not any(isinstance(r, dict) for r in rows):
+            raise HTTPException(status_code=404, detail="This file was uploaded before downloads were supported and has no rows to rebuild.")
+        content, filename = _rows_to_csv(rows), f"{Path(record.original_filename).stem} (rebuilt).csv"
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.delete("/{client_id}/semrush-imports/{import_id}")
