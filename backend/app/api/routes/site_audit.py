@@ -1655,6 +1655,13 @@ def _gather_report_data(
                 jobs["conversion_evidence"] = pool.submit(
                     ga4_service.get_conversion_evidence, creds, client.ga4_property_id, ga4_start, ga4_end
                 )
+                # Mobile vs desktop bounce/engagement/key-event evidence for
+                # the Website Performance "What Will We Fix & What Is the
+                # Impact?" slide (spec 2026-09-24). Same window as everything
+                # else in this batch.
+                jobs["device_performance"] = pool.submit(
+                    ga4_service.get_device_performance_breakdown, creds, client.ga4_property_id, ga4_start, ga4_end
+                )
             if client.gsc_site_url:
                 jobs["search_queries"] = pool.submit(
                     # 20 was too thin once split into Branded/Non-Branded —

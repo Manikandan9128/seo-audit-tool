@@ -489,6 +489,46 @@ def get_traffic_channel_breakdown(
     return {"rows": rows, "months": round(months, 1)}
 
 
+def get_device_performance_breakdown(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
+    """Mobile vs desktop user-behaviour evidence for the Website Performance
+    'What Will We Fix & What Is the Impact?' slide (spec 2026-09-24): real
+    sessions/bounce/engagement/key-event numbers from GA4, never derived
+    from anything else. sessionKeyEventRate is GA4's own computed rate (same
+    pattern as get_conversion_evidence) — never hand-divided from a
+    mismatched numerator/denominator. Tablet is queried but not surfaced by
+    the slide; kept here only to make total_sessions/device share accurate."""
+    client = _data_client(creds)
+    body = {
+        "dimensions": [{"name": "deviceCategory"}],
+        "metrics": [
+            {"name": "sessions"}, {"name": "bounceRate"}, {"name": "engagementRate"},
+            {"name": "keyEvents"}, {"name": "sessionKeyEventRate"},
+        ],
+        "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+        "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
+    }
+    response = client.properties().runReport(property=property_id, body=body).execute()
+    by_device = {}
+    total_sessions = 0
+    for row in response.get("rows", []):
+        device = row["dimensionValues"][0]["value"].strip().lower()
+        mv = row["metricValues"]
+        sessions = int(float(mv[0]["value"] or 0))
+        total_sessions += sessions
+        by_device[device] = {
+            "sessions": sessions,
+            # GA4's rate metrics are 0-1 fractions — stored as 0-100 here,
+            # same convention get_traffic_channel_breakdown already uses.
+            "bounce_rate_pct": round(float(mv[1]["value"] or 0) * 100, 1),
+            "engagement_rate_pct": round(float(mv[2]["value"] or 0) * 100, 1),
+            "key_events": round(float(mv[3]["value"] or 0)),
+            "key_event_rate_pct": round(float(mv[4]["value"] or 0) * 100, 2),
+        }
+    for device, data in by_device.items():
+        data["pct_share"] = round(100 * data["sessions"] / total_sessions, 1) if total_sessions else 0
+    return {"by_device": by_device, "total_sessions": total_sessions}
+
+
 def _traffic_sources_query(creds: Credentials, property_id: str, start_date: str, end_date: str) -> dict:
     client = _data_client(creds)
     body = {

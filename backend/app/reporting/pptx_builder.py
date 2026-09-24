@@ -717,6 +717,312 @@ def _add_pagespeed_opportunities_slide(prs: Presentation, primary_label: str, pr
     return slide
 
 
+# Website Performance — 2026-09-24 spec: slides 2-5 (Score Breakdown, PSI
+# Opportunities & Diagnostics, JavaScript Bundle Breakdown, Script Weight
+# Breakdown) collapse into exactly two — "Why Is Performance Low?" and
+# "What Will We Fix & What Is the Impact?" — built from the SAME extracted
+# PSI fields those four slides already used (pagespeed_client.py's
+# diagnostics/opportunities/metric_table/script_weight), never a new PSI
+# audit. Slide 1 (add_pagespeed_slide) is untouched.
+
+# The 6 canonical root causes, in the spec's own priority order, each keyed
+# to the diagnostic audit id pagespeed_client.py already extracts under
+# that exact label (_DIAGNOSTIC_AUDIT_IDS). An audit PSI itself grouped
+# under "load-opportunities" instead of "diagnostics" (common for the last
+# 3 — see _extract_diagnostics' own rule 9) is picked up from `opportunities`
+# by title match instead, so a real cause is never dropped just because PSI
+# happened to bucket it the other way this run.
+_ROOT_CAUSE_CAUSES = [
+    ("total-byte-weight", "Heavy network payload", "increases download and processing workload"),
+    ("bootup-time", "JavaScript execution", "increases browser processing time"),
+    ("mainthread-work-breakdown", "Long main-thread tasks", "delays responsiveness"),
+    ("unused-javascript", "Unused JavaScript", "adds unnecessary JavaScript workload"),
+    ("unused-css-rules", "Unused CSS", "adds unnecessary resource overhead"),
+    ("render-blocking-resources", "Render-blocking resources", "delays first paint and rendering"),
+]
+_ROOT_CAUSE_OPPORTUNITY_FALLBACK = {
+    "unused-javascript": ["unused javascript"],
+    "unused-css-rules": ["unused css"],
+    "render-blocking-resources": ["render-blocking", "render blocking"],
+}
+# Maps a root-cause label straight to spec section B's fix action — same
+# label used to build both Slide 2's cause rows and Slide 3's fix-plan rows,
+# so a cause never appears on one slide without its fix on the other.
+_ROOT_CAUSE_FIX = {
+    "Heavy network payload": "Reduce total page weight — compress/lazy-load large assets and trim third-party scripts.",
+    "JavaScript execution": "Defer, remove, or conditionally load non-critical JavaScript.",
+    "Long main-thread tasks": "Reduce or defer heavy JavaScript execution.",
+    "Unused JavaScript": "Remove unused code or load functionality only where required.",
+    "Unused CSS": "Remove unused stylesheet rules or split CSS by page/component.",
+    "Render-blocking resources": "Defer or inline critical render-blocking scripts and stylesheets.",
+    "Slow LCP rendering": "Identify and optimize the LCP element and prioritize its rendering path.",
+    "Layout instability (CLS)": "Reserve layout space for dynamic content/resources and prevent unexpected movement.",
+    "Third-party resource overhead": "Audit third-party scripts and defer or conditionally load non-critical ones.",
+}
+
+
+def _performance_root_causes(primary: dict, max_rows: int = 6) -> list[tuple[str, str, str]]:
+    """(cause, evidence, effect) rows — §A. Only causes PSI actually
+    evidenced this run; never padded to a fixed count."""
+    diagnostics_by_id = {d["id"]: d for d in primary.get("diagnostics") or []}
+    opportunities = primary.get("opportunities") or []
+    rows = []
+    for audit_id, cause, effect in _ROOT_CAUSE_CAUSES:
+        d = diagnostics_by_id.get(audit_id)
+        if d:
+            rows.append((cause, d["value"], effect))
+            continue
+        terms = _ROOT_CAUSE_OPPORTUNITY_FALLBACK.get(audit_id)
+        if terms:
+            opp = next((o for o in opportunities if any(t in o["title"].lower() for t in terms)), None)
+            if opp:
+                rows.append((cause, opp["savings"], effect))
+    sw = primary.get("script_weight")
+    if sw and len(rows) < max_rows and (sw.get("third_party_pct") or 0) >= 40:
+        rows.append((
+            "Third-party resource overhead", f"{sw['third_party_pct']}% of {_fmt_kb(sw['total_js_bytes'])} JS",
+            "adds third-party processing and network load",
+        ))
+    for m in primary.get("metric_table") or []:
+        if len(rows) >= max_rows:
+            break
+        if m.get("status") not in ("Poor", "Needs Improvement"):
+            continue
+        val = m.get("display_value") or _fmt_metric_value(m["id"], m["value"])
+        if m["id"] == "largest-contentful-paint":
+            rows.append(("Slow LCP rendering", val, "delays when the main content becomes visible"))
+        elif m["id"] == "cumulative-layout-shift":
+            rows.append(("Layout instability (CLS)", val, "creates unexpected visual movement during load"))
+    return rows[:max_rows]
+
+
+def _resource_contributors(script_weight: dict | None, website_url: str | None, limit: int = 5) -> list[tuple[str, int]]:
+    """§B — top resource contributors by transferred size, named by known
+    vendor and deduplicated onto it (spec's "don't show the same underlying
+    resource as separate rows") rather than one row per individual request."""
+    scripts = (script_weight or {}).get("top_scripts") or []
+    if not scripts:
+        return []
+    grouped: dict[str, int] = {}
+    for s in scripts:
+        _party, vendor = _classify_script_party(s["url"], website_url or "")
+        name = vendor or _short_resource_name(s["url"], maxlen=28)
+        grouped[name] = grouped.get(name, 0) + (s.get("encoded_bytes") or 0)
+    return sorted(grouped.items(), key=lambda kv: -kv[1])[:limit]
+
+
+def _psi_source_label() -> str:
+    """PSI is a live lab run captured during report generation, not a
+    windowed metric — 'date range' honestly means the run date, never a
+    fabricated span (rule: never invent a date range PSI doesn't have)."""
+    from datetime import date as _date
+    return f"Source: Google PageSpeed Insights (Lighthouse lab data)  ·  Live run: {_date.today().strftime('%b %d, %Y')}"
+
+
+def _psi_ga4_source_label(date_range: dict | None) -> str:
+    from datetime import date as _date
+    psi_part = f"PageSpeed Insights (live run, {_date.today().strftime('%b %d, %Y')})"
+    ga4_span = _ga4_date_span(date_range)
+    return f"Source: {psi_part} + Google Analytics 4 ({ga4_span})" if ga4_span else f"Source: {psi_part}"
+
+
+def add_pagespeed_why_low_slide(prs: Presentation, mobile: dict | None, desktop: dict | None, website_url: str | None = None):
+    """Slide 2 — 'Why Is Performance Low?' Root causes (§A) + major resource
+    contributors (§B) + one evidence-backed key takeaway (§SLIDE 2 KEY
+    TAKEAWAY). Replaces Score Breakdown + PSI Opportunities & Diagnostics."""
+    primary_label, primary = ("Mobile", mobile) if mobile and mobile.get("metric_table") else ("Desktop", desktop)
+    if not primary or not primary.get("metric_table"):
+        return None
+    causes = _performance_root_causes(primary)
+    if not causes:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Why Is Performance Low?", eyebrow="Website Performance")
+    _textbox(slide, Inches(7.3), Inches(0.22), Inches(5.5), Inches(0.4), _psi_source_label(), size=10.5, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
+
+    left, width = Inches(0.6), Inches(12.1)
+    max_y = SLIDE_H - Inches(0.4)
+    y = Inches(1.05)
+
+    _textbox(slide, left, y, width, Inches(0.24), "ROOT CAUSES", size=12.5, bold=True, color=_accent())
+    y += Inches(0.28)
+    rows = [(c, e, f"→ {eff}") for c, e, eff in causes]
+    y = _draw_table(
+        slide, ["Root Cause", "Evidence", "Effect"], rows, y,
+        col_widths=[3.9, 2.0, 6.2], left=left, width=width, row_height=0.36, row_cap=6, wrap_cols={2},
+    )
+    y += Inches(0.16)
+
+    contributors = _resource_contributors((primary or {}).get("script_weight"), website_url)
+    if contributors and y < max_y - Inches(1.8):
+        _textbox(slide, left, y, width, Inches(0.24), "MAJOR RESOURCE CONTRIBUTORS", size=12.5, bold=True, color=_accent())
+        y += Inches(0.3)
+        card_w = (width - Inches(0.32) * (len(contributors[:5]) - 1)) / len(contributors[:5])
+        max_bytes = max(b for _n, b in contributors[:5])
+        for i, (name, num_bytes) in enumerate(contributors[:5]):
+            cx = left + Emu(int(i * (card_w + Inches(0.32))))
+            card = _card(slide, cx, y, card_w, Inches(1.0))
+            _textbox(slide, cx + Inches(0.14), y + Inches(0.1), card_w - Inches(0.28), Inches(0.3), name, size=13, bold=True)
+            _textbox(slide, cx + Inches(0.14), y + Inches(0.42), card_w - Inches(0.28), Inches(0.25), _fmt_kb(num_bytes), size=11.5, color=TEXT_MUTED)
+            pct = num_bytes / max_bytes if max_bytes else 0
+            bar_bg = slide.shapes.add_shape(1, cx + Inches(0.14), y + Inches(0.78), card_w - Inches(0.28), Pt(5))
+            _fill(bar_bg, RGBColor(0xF1, 0xD9, 0xD6))
+            bar_bg.shadow.inherit = False
+            bar_fg = slide.shapes.add_shape(1, cx + Inches(0.14), y + Inches(0.78), max(Emu(int((card_w - Inches(0.28)) * pct)), Emu(1)), Pt(5))
+            _fill(bar_fg, _accent())
+            bar_fg.shadow.inherit = False
+        y += Inches(1.2)
+
+    if y < max_y - Inches(0.5):
+        network_causes = {"Heavy network payload", "JavaScript execution", "Long main-thread tasks"}
+        takeaway = (
+            "The low performance score is primarily associated with excessive resource weight and JavaScript "
+            "processing, increasing main-thread workload and delaying rendering."
+            if any(c[0] in network_causes for c in causes) else
+            f"The low performance score is primarily associated with {causes[0][0].lower()}, which {causes[0][2]}."
+        )
+        _insights_strip(slide, left, y, width, [takeaway], title="Key Takeaway", max_y=max_y)
+
+    _textbox(slide, Inches(9.5), SLIDE_H - Inches(0.7), Inches(3.2), Inches(0.3), f"{primary_label} Lighthouse run", size=9.5, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
+    return slide
+
+
+_PSI_TARGET_SCORE = 60  # this agency's own near-term realistic target — never Google's 90 "good" cutoff; labeled explicitly wherever shown.
+
+
+def _device_bounce_signal(device_performance: dict | None) -> dict | None:
+    """§C/§D/§E/§F — mobile-vs-desktop GA4 evidence, computed straight from
+    GA4's own metrics (bounceRate, sessionKeyEventRate — never hand-derived
+    from a mismatched numerator/denominator). Returns None when GA4 device
+    data isn't available, so the slide can show rule G's exact fallback
+    line instead of inventing numbers."""
+    by_device = (device_performance or {}).get("by_device") or {}
+    mobile, desktop = by_device.get("mobile"), by_device.get("desktop")
+    if not mobile or not desktop:
+        return None
+    diff_pp = round(mobile["bounce_rate_pct"] - desktop["bounce_rate_pct"], 1)
+    return {"mobile": mobile, "desktop": desktop, "diff_pp": diff_pp}
+
+
+def add_pagespeed_fix_impact_slide(
+    prs: Presentation, mobile: dict | None, desktop: dict | None,
+    device_performance: dict | None = None, date_range: dict | None = None,
+):
+    """Slide 3 — 'What Will We Fix & What Is the Impact?' Left: fix plan
+    mapped 1:1 to Slide 2's confirmed causes. Right: current GA4 device
+    evidence, the configured performance target, and the post-fix
+    measurement framework. Replaces JavaScript Bundle Breakdown + Script
+    Weight Breakdown."""
+    primary_label, primary = ("Mobile", mobile) if mobile and mobile.get("metric_table") else ("Desktop", desktop)
+    if not primary or not primary.get("metric_table"):
+        return None
+    causes = _performance_root_causes(primary)
+    fixes = [(c, _ROOT_CAUSE_FIX[c]) for c, _e, _eff in causes if c in _ROOT_CAUSE_FIX]
+    if not fixes:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "What Will We Fix & What Is the Impact?", eyebrow="Website Performance")
+    _textbox(slide, Inches(6.6), Inches(0.22), Inches(6.2), Inches(0.4), _psi_ga4_source_label(date_range), size=10.5, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
+
+    left_x, left_w = Inches(0.6), Inches(6.05)
+    right_x, right_w = Inches(6.95), Inches(5.75)
+    top = Inches(1.05)
+    max_y = SLIDE_H - Inches(0.4)
+
+    # LEFT — Performance Fix Plan
+    _textbox(slide, left_x, top, left_w, Inches(0.24), "PERFORMANCE FIX PLAN", size=12.5, bold=True, color=_accent())
+    _draw_table(
+        slide, ["Confirmed Issue", "Specific Fix"], fixes, top + Inches(0.3),
+        col_widths=[2.3, 3.75], left=left_x, width=left_w, row_height=0.36, row_cap=6, wrap_cols={0, 1},
+    )
+
+    divider = slide.shapes.add_shape(1, Inches(6.75), top, Pt(1), Inches(5.5))
+    _fill(divider, CARD_BORDER)
+    divider.shadow.inherit = False
+
+    # RIGHT — User / Business Impact
+    y = top
+    _textbox(slide, right_x, y, right_w, Inches(0.24), "USER / BUSINESS IMPACT", size=12.5, bold=True, color=_accent())
+    y += Inches(0.32)
+
+    signal = _device_bounce_signal(device_performance)
+    _textbox(slide, right_x, y, right_w, Inches(0.2), "CURRENT GA4 EVIDENCE", size=10, bold=True, color=TEXT_DARK)
+    y += Inches(0.26)
+    if signal:
+        card_w = (right_w - Inches(0.2)) / 2
+        for i, (dev_label, dev) in enumerate([("MOBILE", signal["mobile"]), ("DESKTOP", signal["desktop"])]):
+            cx = right_x + Emu(int(i * (card_w + Inches(0.2))))
+            card = _card(slide, cx, y, card_w, Inches(0.85))
+            _textbox(slide, cx + Inches(0.12), y + Inches(0.08), card_w - Inches(0.24), Inches(0.18), dev_label, size=9.5, bold=True, color=TEXT_MUTED)
+            bounce_color = BAD if dev["bounce_rate_pct"] >= 55 else (WARN if dev["bounce_rate_pct"] >= 40 else GOOD)
+            _textbox(slide, cx + Inches(0.12), y + Inches(0.24), card_w - Inches(0.24), Inches(0.34), f"{dev['bounce_rate_pct']:.0f}%", size=19, bold=True, color=bounce_color)
+            _textbox(slide, cx + Inches(0.12), y + Inches(0.58), card_w - Inches(0.24), Inches(0.22), f"bounce rate · {dev['pct_share']:.0f}% of sessions", size=9, color=TEXT_MUTED)
+        y += Inches(0.92)
+        direction = "higher" if signal["diff_pp"] > 0 else "lower"
+        _textbox(slide, right_x, y, right_w, Inches(0.24), f"{abs(signal['diff_pp']):.1f} percentage points {direction} bounce rate on mobile (same reporting period).", size=10, color=TEXT_DARK)
+        y += Inches(0.3)
+    else:
+        _textbox(slide, right_x, y, right_w, Inches(0.4), "Device-level behavioural impact cannot be quantified from the available GA4 data.", size=10.5, color=TEXT_MUTED)
+        y += Inches(0.42)
+
+    y += Inches(0.1)
+    _textbox(slide, right_x, y, right_w, Inches(0.2), "PERFORMANCE TARGET", size=10, bold=True, color=TEXT_DARK)
+    y += Inches(0.26)
+    target_w = (right_w - Inches(0.2)) / 2
+    for i, (dev_label, result) in enumerate([("MOBILE", mobile), ("DESKTOP", desktop)]):
+        cx = right_x + Emu(int(i * (target_w + Inches(0.2))))
+        card = _card(slide, cx, y, target_w, Inches(0.55))
+        current = ((result or {}).get("current_score"))
+        current_text = str(current) if current is not None else "—"
+        _textbox(slide, cx + Inches(0.12), y + Inches(0.06), target_w - Inches(0.24), Inches(0.18), dev_label, size=9, bold=True, color=TEXT_MUTED)
+        box = _textbox(slide, cx + Inches(0.12), y + Inches(0.22), target_w - Inches(0.24), Inches(0.28), "", size=14)
+        p = box.text_frame.paragraphs[0]
+        for text, color, bold in ((current_text, TEXT_DARK, True), ("  →  ", TEXT_MUTED, False), (f"{_PSI_TARGET_SCORE}+", GOOD, True)):
+            r = p.add_run()
+            r.text = text
+            r.font.size = Pt(14)
+            r.font.bold = bold
+            r.font.color.rgb = color
+    y += Inches(0.62)
+    _textbox(slide, right_x, y, right_w, Inches(0.22), "Target performance score — a measurement, not a guaranteed business outcome.", size=8.5, color=TEXT_MUTED)
+    y += Inches(0.3)
+
+    if y < max_y - Inches(0.9):
+        _textbox(slide, right_x, y, right_w, Inches(0.2), "POST-FIX MEASUREMENT", size=10, bold=True, color=TEXT_DARK)
+        y += Inches(0.24)
+        col_w = right_w / 3
+        for i, (label, items) in enumerate([
+            ("TECHNICAL", "Performance score, LCP, TBT, CLS"),
+            ("USER BEHAVIOUR", "Mobile/desktop bounce rate, engagement"),
+            ("BUSINESS", "Key events, conversion rate"),
+        ]):
+            cx = right_x + Emu(int(i * col_w))
+            _textbox(slide, cx, y, col_w - Inches(0.1), Inches(0.18), label, size=9, bold=True, color=_accent())
+            _textbox(slide, cx, y + Inches(0.2), col_w - Inches(0.1), Inches(0.5), items, size=9, color=TEXT_MUTED)
+        y += Inches(0.68)
+
+    if y < max_y - Inches(0.6):
+        mobile_score, desktop_score = (mobile or {}).get("current_score"), (desktop or {}).get("current_score")
+        mobile_weaker = mobile_score is not None and (desktop_score is None or mobile_score < desktop_score - 10)
+        if signal and signal["mobile"]["pct_share"] >= 30 and signal["diff_pp"] >= 8 and mobile_weaker:
+            strip_title, strip_text = "Observed Signal — Not Proven Causation", (
+                f"Mobile accounts for {signal['mobile']['pct_share']:.0f}% of sessions and shows a "
+                f"{abs(signal['diff_pp']):.0f} percentage-point higher bounce rate than desktop, alongside weaker "
+                "mobile performance metrics. This supports prioritizing mobile performance remediation and "
+                "validating the behavioural change after implementation."
+            )
+        else:
+            strip_title, strip_text = "Post-Fix Validation", (
+                "Post-fix GA4 measurement will determine whether these performance improvements translate into "
+                "improved engagement and conversion behaviour."
+            )
+        _insights_strip(slide, Inches(0.6), y, Inches(12.1), [strip_text], title=strip_title, max_y=max_y)
+
+    return slide
+
+
 def _fmt_kb(num_bytes: int) -> str:
     return f"{num_bytes / 1024:.0f} KB"
 
@@ -856,6 +1162,7 @@ def _treemap_tile_color(node: dict) -> RGBColor:
 # ("ask <vendor> whether this needs to block page load") instead of a
 # generic "third-party script."
 _KNOWN_THIRD_PARTY_SCRIPT_PATTERNS = [
+    ("recaptcha", "reCAPTCHA"),
     ("fbevents", "Meta/Facebook Pixel"), ("gtag", "Google Analytics/Ads"), ("gtm.js", "Google Tag Manager"),
     ("posthog", "PostHog analytics"), ("hotjar", "Hotjar"), ("fullstory", "FullStory session replay"),
     ("logrocket", "LogRocket session replay"), ("clarity", "Microsoft Clarity"), ("intercom", "Intercom chat widget"),
@@ -8049,9 +8356,11 @@ def _build_report(
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if psi_mobile or psi_desktop:
             add_pagespeed_slide(prs, psi_mobile, psi_desktop)
-            add_pagespeed_score_breakdown_slide(prs, psi_mobile, psi_desktop)
-            add_script_treemap_slide(prs, psi_mobile, psi_desktop, website_url)
-            add_pagespeed_script_weight_slide(prs, psi_mobile, psi_desktop)
+            add_pagespeed_why_low_slide(prs, psi_mobile, psi_desktop, website_url)
+            add_pagespeed_fix_impact_slide(
+                prs, psi_mobile, psi_desktop,
+                (analytics or {}).get("device_performance"), (analytics or {}).get("date_range"),
+            )
         if site_audit:
             add_site_health_slide(prs, site_audit, site_audit_overview, site_audit_pages_rows)
             if site_audit_pages_rows:
