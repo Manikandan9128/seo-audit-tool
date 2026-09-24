@@ -70,8 +70,35 @@ def _num(v) -> float:
         return 0.0
 
 
+def _target_page_authority(backlink_rows: list[dict] | None) -> dict[str, dict]:
+    """§23 per-URL authority — grouped from the SAME Backlinks export
+    already parsed (target_url + the linking page's own "Page ascore"),
+    not a new data source: how many distinct domains link to this URL, and
+    their average authority score."""
+    by_target: dict[str, dict] = {}
+    for r in backlink_rows or []:
+        target = (r.get("target_url") or "").rstrip("/").lower()
+        if not target:
+            continue
+        domain = re.sub(r"^www\.", "", re.sub(r"^[a-z][a-z0-9+.-]*://", "", (r.get("source_url") or "").lower()).split("/")[0])
+        entry = by_target.setdefault(target, {"domains": set(), "scores": []})
+        if domain:
+            entry["domains"].add(domain)
+        score = r.get("domain_score")
+        if score not in (None, ""):
+            try:
+                entry["scores"].append(float(score))
+            except (TypeError, ValueError):
+                pass
+    return {
+        url: {"referring_backlinks": len(e["domains"]),
+              "authority_score": round(sum(e["scores"]) / len(e["scores"])) if e["scores"] else None}
+        for url, e in by_target.items()
+    }
+
+
 def build_site_model(site_audit_pages_rows: list[dict] | None, company_overview: dict | None = None,
-                     page_clicks: dict[str, float] | None = None) -> dict:
+                     page_clicks: dict[str, float] | None = None, backlink_rows: list[dict] | None = None) -> dict:
     """Returns {"graph": {...}, "pages": [...], "audiences": [...],
     "service_areas": [...], "sections": {page_type: "/section/"},
     "duplicate_titles": [...], "page_tokens": {url: set}}."""
@@ -91,6 +118,7 @@ def build_site_model(site_audit_pages_rows: list[dict] | None, company_overview:
     section_counter: dict[str, Counter] = {}
     pages = []
     clicks = {k.rstrip("/").lower(): v for k, v in (page_clicks or {}).items()}
+    authority = _target_page_authority(backlink_rows)
     for r in live:
         url = r["page_url"]
         segs = [s for s in _path(url).lower().split("/") if s]
@@ -124,6 +152,8 @@ def build_site_model(site_audit_pages_rows: list[dict] | None, company_overview:
             "internal_link_role": "Hub" if len(segs) <= 1 and ptype != "home" else ("Home" if ptype == "home" else "Leaf"),
             "business_purpose": _PAGE_PURPOSE.get(ptype, "Supporting page"),
             "traffic_clicks": clicks.get(url.rstrip("/").lower()),
+            "referring_backlinks": authority.get(url.rstrip("/").lower(), {}).get("referring_backlinks"),
+            "authority_score": authority.get(url.rstrip("/").lower(), {}).get("authority_score"),
         })
 
     # A section page with children is a hub, not a leaf.

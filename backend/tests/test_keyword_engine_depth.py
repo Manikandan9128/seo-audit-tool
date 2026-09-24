@@ -6,7 +6,7 @@ See docs/keyword_engine_spec_coverage.md."""
 from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _audit_slide_geometry, add_keyword_master_slide
 from app.services.google_sheets_service import keyword_strategy_tabs
 from app.services.keyword_intelligence_service import annotate_keyword_rows
-from app.services.keyword_site_model import build_site_model, geo_served, keyword_audience_from_site
+from app.services.keyword_site_model import _target_page_authority, build_site_model, geo_served, keyword_audience_from_site
 from app.services.keyword_strategy_depth import (
     cannibalization_similarity, content_gaps, entity_relationship, extra_review_items, programmatic_patterns,
 )
@@ -58,6 +58,24 @@ def test_site_model_builds_entity_graph_and_14_url_fields():
     assert page["content_depth"] == "Deep" and page["traffic_clicks"] == 400
 
 
+# §23 per-page authority, grouped from the same Backlinks export already parsed --------
+def test_page_authority_from_backlink_rows():
+    rows = [
+        {"target_url": "https://acme.com/services/payroll", "source_url": "https://a.com/post", "domain_score": 60},
+        {"target_url": "https://acme.com/services/payroll", "source_url": "https://b.com/post", "domain_score": 40},
+        {"target_url": "https://acme.com/services/payroll/", "source_url": "https://a.com/other-post", "domain_score": 60},
+        {"target_url": "https://acme.com/blog/x", "source_url": "https://c.com/post", "domain_score": 20},
+    ]
+    authority = _target_page_authority(rows)
+    payroll = authority["https://acme.com/services/payroll"]
+    assert payroll["referring_backlinks"] == 2  # a.com counted once despite two links
+    assert payroll["authority_score"] == 53  # round((60+40+60)/3)
+
+    model = build_site_model(_pages(), _overview(), backlink_rows=rows)
+    page = next(p for p in model["pages"] if p["url"] == "https://acme.com/services/payroll")
+    assert page["authority_score"] == 53 and page["referring_backlinks"] == 2
+
+
 # §24/§58 duplicate-title cannibalization from the crawl alone ----------------------
 def test_duplicate_titles_flag_near_identical_pages():
     model = build_site_model(_pages(), _overview())
@@ -91,11 +109,12 @@ def test_full_strategy_with_site_model():
         _summary("Payroll For Construction", [("payroll for construction companies", 400)], url=None, strength="none"),
         _summary("What Is Payroll", [("what is payroll", 900)], family="Informational"),
     ]
+    backlinks = [{"target_url": "https://acme.com/services/payroll", "source_url": "https://a.com", "domain_score": 55}]
     ctx = {
         "site_authority": 40, "brands": {"own": {"acme"}},
         "site_audit_pages_rows": _pages(), "company_overview": _overview(),
         "page_clicks": {"https://acme.com/services/payroll": 400},
-        "site_model": build_site_model(_pages(), _overview(), {"https://acme.com/services/payroll": 400}),
+        "site_model": build_site_model(_pages(), _overview(), {"https://acme.com/services/payroll": 400}, backlinks),
         "page_query_rows": [], "routed_counts": {},
     }
     strategy = build_full_keyword_strategy(summaries, ctx)
@@ -113,6 +132,7 @@ def test_full_strategy_with_site_model():
     for field in ("audience", "geography", "difficulty", "search_demand", "business_value", "target_evidence",
                   "secondary_keywords", "keyword_count"):
         assert field in cluster, field
+    assert cluster["target_evidence"]["authority_score"] == 55
 
     page = next(p for p in strategy["page_map"] if p["url"] == "https://acme.com/services/payroll")
     assert page["primary_entity"] and "supporting_topics" in page

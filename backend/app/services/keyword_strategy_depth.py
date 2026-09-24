@@ -158,7 +158,8 @@ def target_evidence(summaries: list[dict], site_model: dict | None) -> None:
         s["target_evidence"] = {
             "page_type": p["page_type"], "traffic_clicks": p["traffic_clicks"], "crawl_depth": p["crawl_depth"],
             "incoming_internal_links": p["incoming_internal_links"], "content_depth": p["content_depth"],
-            "conversion_role": conv,
+            "conversion_role": conv, "authority_score": p.get("authority_score"),
+            "referring_backlinks": p.get("referring_backlinks"),
         }
 
 

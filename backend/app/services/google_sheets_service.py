@@ -220,12 +220,15 @@ def keyword_strategy_tabs(strategy: dict | None) -> list[tuple[str, list[list]]]
     if site.get("pages"):
         tabs.append(("Site Pages", [["URL", "Page Type", "Primary Entity", "Topic", "Audience", "Intent", "Funnel Stage",
                                       "Geography", "Content Depth", "Internal Links In", "Crawl Depth",
-                                      "Internal-Link Role", "Business Purpose", "Clicks (Search Console)"]]
+                                      "Internal-Link Role", "Business Purpose", "Clicks (Search Console)",
+                                      "Authority Score", "Referring Backlinks"]]
                      + [[p["url"], p["page_type"], p["primary_entity"], p.get("topic") or "", p.get("audience") or "",
                          p["intent"], p["funnel_stage"], p.get("geography") or "", p["content_depth"],
                          p.get("incoming_internal_links") if p.get("incoming_internal_links") is not None else "",
                          p.get("crawl_depth") if p.get("crawl_depth") is not None else "", p["internal_link_role"],
-                         p["business_purpose"], p.get("traffic_clicks") if p.get("traffic_clicks") is not None else ""]
+                         p["business_purpose"], p.get("traffic_clicks") if p.get("traffic_clicks") is not None else "",
+                         p.get("authority_score") if p.get("authority_score") is not None else "",
+                         p.get("referring_backlinks") if p.get("referring_backlinks") is not None else ""]
                         for p in site["pages"]]))
     if site.get("graph"):
         tabs.append(("Entity Graph", [["Entity Kind", "Entities (from the site's own pages + company overview)"]]

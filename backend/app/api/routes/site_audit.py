@@ -746,7 +746,7 @@ def _competitor_brand_tokens(client: Client, gap_domains: set, domain_overview_r
 def _keyword_strategy_context(
     client: Client, company_overview: dict | None, site_audit_pages_rows: list[dict] | None,
     gap_domains: set, domain_overview_rows: list[dict], own_domain_rating, page_query_rows: list[dict] | None,
-    keyword_rows: list[dict] | None, page_click_rows: list[dict] | None = None,
+    keyword_rows: list[dict] | None, page_click_rows: list[dict] | None = None, backlink_rows: list[dict] | None = None,
 ) -> dict:
     """Evidence the keyword strategy layer reads (keyword_strategy_service.
     build_full_keyword_strategy): own authority for §32, Search Console
@@ -779,7 +779,7 @@ def _keyword_strategy_context(
         "routed_counts": dict(routed),
         # §3/§4/§11/§12/§23/§24/§57 website model (keyword_site_model).
         "page_clicks": page_clicks,
-        "site_model": build_site_model(site_audit_pages_rows, company_overview, page_clicks),
+        "site_model": build_site_model(site_audit_pages_rows, company_overview, page_clicks, backlink_rows),
     }
 
 
@@ -2518,7 +2518,7 @@ def _gather_report_data(
     strategy_context = _keyword_strategy_context(
         client, company_overview_result, site_audit_pages_rows, _gap_domains, domain_overview_rows,
         own_domain_rating, ((analytics or {}).get("page_query_clicks") or {}).get("rows"), keyword_rows_all,
-        ((analytics or {}).get("page_clicks") or {}).get("rows"),
+        ((analytics or {}).get("page_clicks") or {}).get("rows"), own_backlink_rows,
     )
     strategic_keyword_clusters = _select_validated_manual_clusters(
         client, list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,

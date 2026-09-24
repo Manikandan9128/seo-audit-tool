@@ -45,7 +45,7 @@ anymore as of the 2026-09-24 depth pass (`keyword_site_model.py` + `keyword_stra
 | 20 | Primary keyword score (normalized components) | Done | 0-100 `primary_score` per keyword — Sheet column | — |
 | 21 | Business relevance gate | Done | — | — |
 | 22 | Page type classification | Done | — | — |
-| 23 | Existing URL mapping (11 checks) | Partial | content depth/internal links/traffic/conversion role now checked (`target_evidence`); per-page authority and SERP alignment still missing | Backlink-per-page data; SERP data |
+| 23 | Existing URL mapping (11 checks) | Partial | content depth/internal links/traffic/conversion role/per-page authority (grouped from the Backlinks export by target URL) now checked (`target_evidence`); only SERP alignment still missing | SERP data (Semrush API) |
 | 24 | Cannibalization detection | Partial | Search Console pairs + near-identical-title pairs (crawl-only) now similarity-scored; true SERP-overlap signal still missing | SERP data (Semrush API) |
 | 25 | Content gap detection | Done | — | — |
 | 26 | Competitor gap analysis | Done | — | — |
@@ -122,8 +122,10 @@ regression cases:
 - 2026-09-24 `4e8ec8c` real-report fixes from Geopits (1): §3, §22, §23, §43, §53, §62.
 - 2026-09-24 `20e7cc8` `keyword_site_model.py` + `keyword_strategy_depth.py`: §3, §4, §6, §11, §12, §14, §18, §19,
   §20, §32, §36, §37, §38, §46-§52, §66 -> Done; code-buildable part of §23, §24, §27, §54, §55, §58, §59 finished.
-- 2026-09-24 (this change) curated abbreviation dictionary (`expand_abbreviations`) fixes the documented "dba" /
-  "database" merge known-limit without needing the AI grouping step or the (ruled-out) Semrush API: §17, §41, §43.
+- 2026-09-24 curated abbreviation dictionary (`expand_abbreviations`) fixes the documented "dba" / "database"
+  merge known-limit without needing the AI grouping step or the (ruled-out) Semrush API: §17, §41, §43.
+- 2026-09-24 (this change) per-page authority (`_target_page_authority`) grouped from the Backlinks export already
+  parsed, by target URL — no new data source. Closes the last code-buildable piece of §23.
 - 2026-09-24 (this change) `keyword_site_model.py` (new) + `keyword_strategy_depth.py` (new): §3, §4, §6, §11, §12,
   §14, §18, §19, §20, §32, §36, §37, §38, §46-§52, §66 moved Partial -> Done; §23, §24, §27, §54, §55, §58, §59 had
   their code-buildable part finished (SERP-only piece remains). 10 new tests (`test_keyword_engine_depth.py`), 530
