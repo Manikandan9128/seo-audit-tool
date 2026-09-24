@@ -32,8 +32,11 @@ Spec sections implemented here:
 
 import hashlib
 import json
+import logging
 import re
 from collections import Counter
+
+logger = logging.getLogger(__name__)
 
 _STOP_WORDS = {
     "a", "an", "the", "of", "for", "in", "on", "to", "and", "or", "with", "by", "at", "from", "as",
@@ -843,10 +846,22 @@ def apply_cluster_intelligence(rows: list[dict]) -> None:
     cluster_reason, cluster_outliers, recommended_page_type and
     recommended_action (§53 vocabulary) on every row of each cluster."""
     clusters: dict[str, list[dict]] = {}
+    unlabeled = 0
     for r in rows:
         label = (r.get("cluster") or "").strip()
         if label:
             clusters.setdefault(label, []).append(r)
+        else:
+            unlabeled += 1
+    # Diagnostic (2026-09-24): confirmed real on a Geopits report — some
+    # Target Keywords slides showed a Confidence/Priority line and others
+    # didn't, with no obvious reason from the deck alone. This is the only
+    # place cluster_confidence ever gets set (or skipped, for a "routing"
+    # bucket, or never reached at all for an empty-label row), so logging
+    # it here — rather than only in pptx_builder — catches the actual
+    # cause instead of guessing from slide output.
+    if unlabeled:
+        logger.info("apply_cluster_intelligence: %d row(s) with no cluster label — never scored", unlabeled)
     for _label, cluster_rows in clusters.items():
         status = (cluster_rows[0].get("cluster_status") or "")
         source = cluster_rows[0].get("cluster_source") or ("manual" if "Manual" in status else "ai")
@@ -855,6 +870,10 @@ def apply_cluster_intelligence(rows: list[dict]) -> None:
             # not target pages — no confidence or URL action applies.
             for r in cluster_rows:
                 r["recommended_action"] = "No Target" if r.get("cluster") != "Competitor / Comparison Opportunities" else "Review"
+            logger.info(
+                "apply_cluster_intelligence: cluster %r (%d rows) routed away — no confidence/priority scored",
+                _label, len(cluster_rows),
+            )
             continue
         result = score_cluster(cluster_rows, source, _label)
         category = Counter(r.get("page_category") for r in cluster_rows if r.get("page_category")).most_common(1)
@@ -866,6 +885,10 @@ def apply_cluster_intelligence(rows: list[dict]) -> None:
             r["cluster_outliers"] = result["outliers"]
             r["recommended_page_type"] = page_type
             r["recommended_action"] = spec_action(r.get("existing_page_action"), result["level"])
+        logger.info(
+            "apply_cluster_intelligence: cluster %r (%d rows, source=%s, status=%r) scored confidence=%d (%s)",
+            _label, len(cluster_rows), source, status, result["score"], result["level"],
+        )
 
 
 # ---------------------------------------------------------------------------

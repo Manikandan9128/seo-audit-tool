@@ -2049,7 +2049,13 @@ def _gather_report_data(
         # value (a real Semrush Cluster/Topic column) UNLESS a manual
         # clustering file exists — manual always overrides even that guard,
         # since it's the client's own authoritative source of truth.
-        if manual_cluster_map or not any((r.get("cluster") or "").strip() for r in keyword_rows_all):
+        native_cluster_rows = sum(1 for r in keyword_rows_all if (r.get("cluster") or "").strip())
+        if manual_cluster_map or not native_cluster_rows:
+            logger.info(
+                "Keyword clustering pipeline RUNNING for client %s (manual_cluster_map=%s, "
+                "native_cluster_rows=%d of %d)",
+                client_id, bool(manual_cluster_map), native_cluster_rows, len(keyword_rows_all),
+            )
             try:
                 build_final_keyword_clusters(
                     keyword_rows_all,
@@ -2062,6 +2068,22 @@ def _gather_report_data(
             except Exception as e:
                 logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
                 content_issues.append(f"Keyword clustering (Target Keywords topic grouping): {e}")
+        else:
+            # Diagnostic (2026-09-24): confirmed real on a Geopits report —
+            # some Target Keywords slides showed a Confidence/Priority line
+            # and others didn't, with no obvious reason from the deck
+            # alone. This is the one gate that decides whether the whole
+            # clustering pipeline (and therefore apply_cluster_intelligence,
+            # which stamps cluster_confidence) runs at all — logging the
+            # skip explicitly so the next real regen shows definitively
+            # whether it's skipped outright, rather than guessing from
+            # slide output.
+            logger.info(
+                "Keyword clustering pipeline SKIPPED for client %s — %d of %d rows already carry a native "
+                "Cluster value and no manual_cluster_map was uploaded; these rows keep their native cluster "
+                "label with no cluster_confidence/priority/existing-page scoring applied",
+                client_id, native_cluster_rows, len(keyword_rows_all),
+            )
 
     own_backlink_rows = _all_rows("backlinks", own_only=True)
     # Semrush Site Audit's own issue-type rollup (Issue/Failed checks/Total
