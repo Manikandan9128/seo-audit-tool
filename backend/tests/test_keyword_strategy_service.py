@@ -109,6 +109,45 @@ def test_topic_hierarchy_groups_clusters_under_their_parent_entity():
     assert links[("Truck Specs", "Trucks")] == "Guide → Product/Service"
 
 
+def test_over_concentrated_token_does_not_become_one_giant_parent():
+    # Regression (confirmed real, Geopits report, 2026-09-24): "Database"
+    # held 100 clusters, "SQL" held 92 — every cluster shared "database"
+    # so it always won as parent, turning the topic map into a couple of
+    # rows reading "+97 more" that told the reader nothing. 16 clusters
+    # here all share "database" but each also has its own distinct second
+    # word — they should split onto their own more specific parents
+    # instead of piling under one "Database" bucket.
+    words = ["support", "managed", "backup", "migration", "performance", "security", "monitoring",
+             "consulting", "tuning", "replication", "sharding", "partitioning", "indexing",
+             "clustering", "scaling", "hosting"]
+    strategy = build_keyword_strategy([
+        _summary(f"Database {w.title()}", [(f"database {w}", 100)]) for w in words
+    ])
+    parents = {t["parent"] for t in strategy["topics"]}
+    assert not any(len(t["clusters"]) > 15 for t in strategy["topics"])
+    assert len(parents) > 1  # never all 16 collapsed into one "Database" bucket
+
+
+def test_weakest_topic_insight_prefers_real_demand_over_first_in_list():
+    # Regression (confirmed real, Geopits report, 2026-09-24): "Weakest
+    # topic: Trigger" (a ~200-combined-search topic) was recommended to
+    # build first, ahead of topics carrying vastly more real demand, just
+    # because it happened to be first among Weak/Missing topics in
+    # opportunity-sort order.
+    strategy = build_keyword_strategy([
+        _summary("Trigger Types", [("trigger types", 110), ("list triggers", 90)]),
+        _summary("Database Support", [("database support services", 260), ("remote database support", 140)]),
+    ])
+    slide = add_keyword_topic_map_slide(_prs(), strategy)
+    text = _text(slide)
+    # "Database Support" (400 combined searches) must win over "Trigger
+    # Types" (200) — whichever parent token it resolves under (a 2-word
+    # cluster's own parent-label tie-break is a separate concern from
+    # this fix), never the lower-demand topic.
+    assert "Weakest topic:" in text
+    assert "Weakest topic: Trigger" not in text
+
+
 def test_sibling_products_are_not_linked_just_for_sharing_a_word():
     strategy = build_keyword_strategy([
         _summary("Truck Types", [("tipper truck", 14800)]),

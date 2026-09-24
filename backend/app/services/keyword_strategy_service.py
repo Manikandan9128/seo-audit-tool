@@ -199,6 +199,18 @@ def _cluster_tokens(s: dict) -> tuple[Counter, float, Counter]:
     return weights, total, heads
 
 
+
+# A parent topic holding this many clusters is already unreadable as one
+# table row (Geopits: "Database, Database Managed Services, Database
+# Support Services +97 more" told the reader nothing) — an ABSOLUTE cap,
+# not a share, since the problem is row-level noise regardless of how big
+# the client's total keyword set is. A share-based cap was tried first
+# and wrongly fragmented small, genuinely single-topic clients (a 5-cluster
+# trucking site where "truck" spans 4 of 5 clusters is exactly the useful
+# case a topic map should keep together).
+_PARENT_TOKEN_MAX_CLUSTERS = 15
+
+
 def _parent_token(tokens: Counter, total: float, cluster_spread: Counter, heads: Counter | None = None) -> str | None:
     """The cluster's parent entity: among tokens present in keywords
     carrying at least half of the cluster's demand, the one shared by the
@@ -210,6 +222,16 @@ def _parent_token(tokens: Counter, total: float, cluster_spread: Counter, heads:
     if not core:
         core = [tokens.most_common(1)[0][0]]
     heads = heads or Counter()
+    # A token spanning an unwieldy number of the client's OWN clusters
+    # (e.g. "database" for a DBA company — genuinely the whole business)
+    # stops being a useful GROUPING signal once it wins here: confirmed
+    # real on a live Geopits report (2026-09-24), "Database" held 100
+    # clusters, "SQL" held 92. Prefer a more specific candidate when this
+    # cluster has one; only fall back to the over-concentrated token when
+    # it's truly the only option (never leaves a cluster unparented).
+    specific = [t for t in core if cluster_spread[t] <= _PARENT_TOKEN_MAX_CLUSTERS]
+    if specific:
+        core = specific
     # Ties (e.g. "school bus": both words in one cluster) go to the head
     # noun, then alphabetically — never to set iteration order.
     return max(core, key=lambda t: (cluster_spread[t], heads[t], tokens[t], t))

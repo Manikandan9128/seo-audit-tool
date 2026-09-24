@@ -6701,7 +6701,15 @@ def add_keyword_topic_map_slide(prs: Presentation, keyword_strategy: dict | None
         insights.insert(0, f"Website model: {', '.join(model['models'])} — read from the site's own sections and target market.")
     weak = [t for t in topics if t["coverage"] in ("Weak", "Missing")]
     if weak:
-        w = weak[0]
+        # Highest real demand among under-covered topics, not simply the
+        # first Weak/Missing one in opportunity-sort order — a tiny,
+        # low-volume topic can still carry a high per-cluster opportunity
+        # score (confidence/gap-type driven, not demand-scaled) and rank
+        # ahead of a far bigger underserved topic. Confirmed real on a
+        # live Geopits report (2026-09-24): "Weakest topic: Trigger" (a
+        # 200-combined-search topic) was recommended to build first, over
+        # topics with vastly more real search demand.
+        w = max(weak, key=lambda t: t["demand"])
         have = f"only {w['covered']} of its {w['total']} page(s) exist" if w["covered"] else             f"none of its {w['total']} page(s) exist yet"
         insights.append(f"Weakest topic: {w['parent']} — {have}; build these before expanding stronger topics.")
     return _table_slide(
