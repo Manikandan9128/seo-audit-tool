@@ -56,6 +56,7 @@ from app.services.ux_findings_service import generate_onboarding_breakdown, gene
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, classify_page_type, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_error_page, is_live_target_page, match_existing_page_for_cluster, site_entity_summary, vendor_product_pricing_reason, vendor_tokens
+from app.services.keyword_site_model import build_site_model
 from app.services.keyword_strategy_service import apply_strategy_to_manual_clusters, build_full_keyword_strategy, summaries_from_keyword_rows
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
 from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
@@ -745,7 +746,7 @@ def _competitor_brand_tokens(client: Client, gap_domains: set, domain_overview_r
 def _keyword_strategy_context(
     client: Client, company_overview: dict | None, site_audit_pages_rows: list[dict] | None,
     gap_domains: set, domain_overview_rows: list[dict], own_domain_rating, page_query_rows: list[dict] | None,
-    keyword_rows: list[dict] | None,
+    keyword_rows: list[dict] | None, page_click_rows: list[dict] | None = None,
 ) -> dict:
     """Evidence the keyword strategy layer reads (keyword_strategy_service.
     build_full_keyword_strategy): own authority for §32, Search Console
@@ -761,6 +762,7 @@ def _keyword_strategy_context(
     routed = Counter(
         r.get("cluster") for r in keyword_rows or [] if r.get("cluster_source") == "routing" and r.get("cluster")
     )
+    page_clicks = {r.get("page"): _num_for_sort(r.get("clicks")) for r in page_click_rows or [] if r.get("page")}
     return {
         "site_authority": authority,
         "page_query_rows": page_query_rows or [],
@@ -775,6 +777,9 @@ def _keyword_strategy_context(
             "vendor": vendor_tokens(site_audit_pages_rows, own),
         },
         "routed_counts": dict(routed),
+        # §3/§4/§11/§12/§23/§24/§57 website model (keyword_site_model).
+        "page_clicks": page_clicks,
+        "site_model": build_site_model(site_audit_pages_rows, company_overview, page_clicks),
     }
 
 
@@ -2513,6 +2518,7 @@ def _gather_report_data(
     strategy_context = _keyword_strategy_context(
         client, company_overview_result, site_audit_pages_rows, _gap_domains, domain_overview_rows,
         own_domain_rating, ((analytics or {}).get("page_query_clicks") or {}).get("rows"), keyword_rows_all,
+        ((analytics or {}).get("page_clicks") or {}).get("rows"),
     )
     strategic_keyword_clusters = _select_validated_manual_clusters(
         client, list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,

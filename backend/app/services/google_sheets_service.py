@@ -73,6 +73,9 @@ _CLIENT_COLUMNS = [
     ("Business Relevance (0-1)", "business_relevance"), ("Conversion Potential (0-1)", "conversion_potential"),
     ("Competitor Gap (0-1)", "competitor_gap"), ("Content Gap", "content_gap_flag"),
     ("Content Gap Type", "content_gap_type"), ("Decision (§53)", "decision"), ("Reason", "decision_reason"),
+    ("Language", "language"), ("Entity Relationship", "entity_relationship"), ("Location Served", "geo_served"),
+    ("Primary Keyword Score", "primary_score"), ("Topical Authority (0-1)", "topical_authority"),
+    ("Existing URL Traffic (clicks)", "existing_url_traffic"), ("Programmatic", "programmatic_flag"),
 ]
 _CLIENT_HEADER = [label for label, _key in _CLIENT_COLUMNS]
 
@@ -169,15 +172,65 @@ def keyword_strategy_tabs(strategy: dict | None) -> list[tuple[str, list[list]]]
         ] for p in pages]))
     canni = strategy.get("cannibalization") or []
     if canni:
-        tabs.append(("Cannibalization", [["Query", "Preferred URL", "Other URLs", "Risk", "Recommended Action", "Evidence"]]
-                     + [[c["query"], c["preferred_url"], _join(c["other_urls"]), c["risk"], c["action"], c["evidence"]]
+        tabs.append(("Cannibalization", [["Keyword / Signal", "Preferred URL", "Other URLs", "Risk", "Similarity",
+                                          "Recommended Action", "Evidence", "Source", "SERP Overlap"]]
+                     + [[c["query"], c["preferred_url"], _join(c["other_urls"]), c["risk"], c.get("similarity", ""),
+                         c["action"], c["evidence"], c.get("source") or "", "Not available (no SERP data yet)"]
                         for c in canni]))
-    gaps = [c for c in strategy.get("clusters") or [] if c.get("content_gap_type")]
+    gaps = strategy.get("content_gaps") or []
     if gaps:
-        tabs.append(("Content Gaps", [["Gap Type", "Cluster", "Topic", "Primary Keyword", "Page Type", "Priority",
-                                        "Opportunity"]]
-                     + [[c["content_gap_type"], c["name"], c.get("parent_topic") or "", c.get("primary_keyword") or "",
-                         c.get("page_type") or "", c.get("priority") or "", c.get("opportunity") or ""] for c in gaps]))
+        tabs.append(("Content Gaps", [["Gap Type", "Missing Cluster", "Topic", "Search Intent", "Business Relevance",
+                                        "Competitor Evidence", "Search Demand", "Recommended Page Type", "Suggested URL",
+                                        "Suggested Primary Keyword", "Supporting Keywords", "Priority", "Reason"]]
+                     + [[g["gap_type"], g["cluster"], g.get("topic") or "", g.get("intent") or "", g["business_relevance"],
+                         g["competitor_evidence"], g["search_demand"], g.get("page_type") or "", g["suggested_url"],
+                         g.get("primary_keyword") or "", _join(g["supporting_keywords"]), g.get("priority") or "",
+                         g["reason"]] for g in gaps]))
+    clusters = strategy.get("clusters") or []
+    if clusters:
+        tabs.append(("Clusters", [["Cluster ID", "Cluster Name", "Parent Topic", "Cluster Type", "Search Intent",
+                                    "Audience", "Geography", "Primary Keyword", "Secondary Keywords", "Keyword Count",
+                                    "Search Demand", "Difficulty", "Existing URL", "Page Type", "Business Value",
+                                    "Opportunity", "Confidence", "Decision (§53)", "Reason", "SERP Evidence"]]
+                     + [[c["cluster_id"], c["name"], c.get("parent_topic") or "", c.get("cluster_type") or "",
+                         c.get("intent") or "", c.get("audience") or "", c.get("geography") or "",
+                         c.get("primary_keyword") or "", _join(c.get("secondary_keywords")), c.get("keyword_count") or "",
+                         c.get("search_demand") or "", c.get("difficulty") if c.get("difficulty") is not None else "",
+                         c.get("target_url") or "(new page)", c.get("page_type") or "", c.get("business_value") or "",
+                         c.get("opportunity") or "", c.get("confidence") or "", c.get("decision") or "",
+                         c.get("decision_reason") or "", "Not available (no SERP data yet)"] for c in clusters]))
+    topics = strategy.get("topics") or []
+    if topics:
+        hier = [["Parent Topic", "Subtopic", "Search Intent", "Cluster", "Coverage", "Topical Authority"]]
+        for t in topics:
+            for sub, by_intent in (t.get("hierarchy") or {}).items():
+                for intent, names in by_intent.items():
+                    for n in names:
+                        hier.append([t["parent"], sub, intent, n, t.get("coverage") or "", t.get("authority_level") or ""])
+        tabs.append(("Topic Hierarchy", hier))
+    patterns = strategy.get("programmatic_patterns") or []
+    if patterns:
+        tabs.append(("Programmatic", [["Pattern", "Dimension A", "Dimension B", "Example Queries", "Search Demand",
+                                        "Business Relevance", "SERP Validation", "Page Uniqueness Potential",
+                                        "Content Requirements", "Risk", "Recommendation"]]
+                     + [[p["pattern"], p["dimension_a"], p["dimension_b"], _join(p["example_queries"]), p["search_demand"],
+                         p["business_relevance"], p["serp_validation"], p["uniqueness_potential"],
+                         p["content_requirements"], p["risk"], p["recommendation"]] for p in patterns]))
+    site = strategy.get("site") or {}
+    if site.get("pages"):
+        tabs.append(("Site Pages", [["URL", "Page Type", "Primary Entity", "Topic", "Audience", "Intent", "Funnel Stage",
+                                      "Geography", "Content Depth", "Internal Links In", "Crawl Depth",
+                                      "Internal-Link Role", "Business Purpose", "Clicks (Search Console)"]]
+                     + [[p["url"], p["page_type"], p["primary_entity"], p.get("topic") or "", p.get("audience") or "",
+                         p["intent"], p["funnel_stage"], p.get("geography") or "", p["content_depth"],
+                         p.get("incoming_internal_links") if p.get("incoming_internal_links") is not None else "",
+                         p.get("crawl_depth") if p.get("crawl_depth") is not None else "", p["internal_link_role"],
+                         p["business_purpose"], p.get("traffic_clicks") if p.get("traffic_clicks") is not None else ""]
+                        for p in site["pages"]]))
+    if site.get("graph"):
+        tabs.append(("Entity Graph", [["Entity Kind", "Entities (from the site's own pages + company overview)"]]
+                     + [[k.replace("_", " ").title(), _join(v)] for k, v in site["graph"].items() if v]
+                     + ([["Service Areas", _join(site.get("service_areas"))]] if site.get("service_areas") else [])))
     queue = strategy.get("review_queue") or []
     if queue:
         tabs.append(("Review Queue", [["Review Type", "Item", "Detail"]]

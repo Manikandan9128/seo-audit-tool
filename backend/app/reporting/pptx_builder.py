@@ -6092,6 +6092,36 @@ def add_keyword_topic_map_slide(prs: Presentation, keyword_strategy: dict | None
     )
 
 
+def add_keyword_master_slide(prs: Presentation, keyword_strategy: dict | None, max_rows: int = 12):
+    """§66 B + C when the Google Sheet (the full keyword master) couldn't be
+    created: the top clusters by roadmap order with their place in the
+    topic hierarchy, primary keyword, intent, priority and §53 decision —
+    so the report's keyword master and hierarchy never simply vanish."""
+    clusters = (keyword_strategy or {}).get("clusters") or []
+    if not clusters:
+        return None
+    subtopic = {}
+    for t in (keyword_strategy or {}).get("topics") or []:
+        for sub, by_intent in (t.get("hierarchy") or {}).items():
+            for names in by_intent.values():
+                for n in names:
+                    subtopic[n] = f"{t['parent']} › {sub}"
+    rows = [
+        (c["cluster_id"], subtopic.get(c["name"], c.get("parent_topic") or "—"), c["name"],
+         c.get("primary_keyword") or "—", c.get("intent") or "—", c.get("priority") or "—",
+         (c.get("decision") or "—").title().replace("Url", "URL"))
+        for c in clusters[:max_rows]
+    ]
+    insights = [f"{len(clusters)} clusters in total; the top {min(max_rows, len(clusters))} by priority are shown."
+                " Connect Google Sheets to get the full keyword master, page map and review queue."]
+    return _table_slide(
+        prs, "Keyword Master (top clusters)",
+        ["ID", "Parent › Subtopic", "Cluster", "Primary Keyword", "Intent", "Priority", "Decision"], rows,
+        col_widths=[0.6, 2.3, 2.6, 2.4, 1.3, 1.1, 1.8], source="Keyword clusters", insights=insights,
+        wrap_cols={1, 2, 3, 6},
+    )
+
+
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
     """One table slide per keyword cluster (Educational Toys, Development
     Skills, etc.), matching the reference deck's "Target Keywords" format —
@@ -8202,6 +8232,8 @@ def _build_report(
             add_keyword_research_slide(prs, keyword_rows)
         # §18/§37/§38 — one topic map for whichever path rendered above.
         add_keyword_topic_map_slide(prs, keyword_strategy)
+        if not keyword_sheet_link:
+            add_keyword_master_slide(prs, keyword_strategy)
         if competitor_rows:
             # 2026-09-20 user request: the "Open full keyword list" button
             # must appear only on Competitor Keyword Gap Analysis (see

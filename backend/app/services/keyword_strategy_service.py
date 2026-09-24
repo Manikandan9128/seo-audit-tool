@@ -26,6 +26,7 @@ from app.services.keyword_intelligence_service import (
     _EXCLUDED_RELEVANCE_STATUSES,
     _demand,
     _num,
+    display_phrase,
     normalize_keyword,
     singularize,
     smart_title,
@@ -93,16 +94,20 @@ def _existing_authority(r: dict) -> float:
     return 0.4 if pos <= 50 else 0.2
 
 
-def _feasibility(kd, site_authority) -> float | None:
+def _feasibility(kd, site_authority, topical: float | None = None) -> float | None:
     """§32: KD is not an absolute barrier — it's read against the site's
     own authority (DR/Authority Score, 0-100) when known: a DR-60 site
     finds KD 50 far easier than a DR-20 site does."""
     if kd in (None, ""):
         return None
     base = (100 - _num(kd)) / 100
-    if site_authority in (None, "") or _num(site_authority) <= 0:
-        return base
-    return max(0.0, min(1.0, base + (_num(site_authority) - _num(kd)) / 200))
+    if site_authority not in (None, "") and _num(site_authority) > 0:
+        base += (_num(site_authority) - _num(kd)) / 200
+    # §32 topical authority: pages the site already has on this topic
+    # make it easier to rank (up to +0.15 at 10+ pages).
+    if topical:
+        base += 0.15 * _num(topical)
+    return max(0.0, min(1.0, base))
 
 
 def keyword_opportunity(r: dict, max_demand: float, strategic: float | None = None, site_authority=None) -> dict:
@@ -117,7 +122,7 @@ def keyword_opportunity(r: dict, max_demand: float, strategic: float | None = No
         # log scale: a 100/mo keyword isn't worth 1/1000th of a 100k one
         "search_demand": (math.log10(1 + _demand(r)) / math.log10(1 + max_demand)) if max_demand > 0 else 0.0,
         "serp_opportunity": None,
-        "ranking_feasibility": _feasibility(kd, site_authority),
+        "ranking_feasibility": _feasibility(kd, site_authority, r.get("topical_authority")),
         "competitor_gap": _competitor_gap(r),
         "existing_authority": _existing_authority(r),
         "strategic_importance": strategic,
@@ -419,8 +424,13 @@ def apply_strategy_to_manual_clusters(
     for s in summaries:
         c = s.pop("_cluster")
         for key in ("opportunity", "roadmap_priority", "cluster_type", "page_type", "content_gap_type",
-                    "decision", "decision_reason", "parent_topic", "cluster_id"):
+                    "decision", "decision_reason", "parent_topic", "cluster_id", "business_rule", "audience",
+                    "geography", "difficulty", "search_demand", "business_value"):
             c[key] = s.get(key)
+        if s.get("primary_keyword") and s["primary_keyword"] != c.get("primary_keyword"):
+            c["primary_keyword"] = s["primary_keyword"]
+            c["user_need"] = next((r.get("user_need") for r in s["rows"] if r.get("keyword") == s["primary_keyword"]),
+                                  c.get("user_need"))
         if s.get("page_type"):
             c["recommended_page_type"] = s["page_type"]
     return strategy
@@ -889,6 +899,9 @@ def build_page_map_v2(summaries: list[dict], topics: list[dict], cannibalization
             "secondary_intents": sorted({s.get("dominant_family") or "Commercial" for s in members} - {family}),
             "page_type": best.get("page_type"),
             "purpose": f"{best.get('page_type') or 'Page'} answering: {primary.get('user_need') or best.get('primary_keyword')}",
+            "primary_entity": smart_title(display_phrase(best.get("primary_keyword") or best["name"])),
+            "supporting_topics": sorted({c for s in members for c in links_in.get(s["name"], [])})[:6],
+            "target_evidence": best.get("target_evidence"),
             "business_goal": _BUSINESS_GOAL.get(family, _BUSINESS_GOAL["Commercial"]),
             "audience": next((r.get("audience") for s in members for r in s["rows"] if r.get("audience")), None),
             "links_in": sorted({c for s in members for c in links_in.get(s["name"], [])}),
@@ -915,19 +928,33 @@ def build_full_keyword_strategy(summaries: list[dict], context: dict | None = No
     summaries = [s for s in summaries if s.get("rows")]
     if not summaries:
         return None
+    from app.services import keyword_strategy_depth as depth
+
     brands = ctx.get("brands") or {}
+    site_model = ctx.get("site_model")
     for s in summaries:
         for r in s["rows"]:
             r["brand_type"] = keyword_brand_type(r.get("keyword") or "", brands.get("own"), brands.get("competitor"),
                                                  brands.get("vendor"))
+    depth.annotate_rows_with_site(summaries, site_model, ctx.get("page_clicks"))
+    depth.topical_authority(summaries, site_model)
     score_summaries(summaries, ctx.get("site_authority"))
     topics = build_topic_model(summaries, max_parents=None)
     business_model = infer_business_model(ctx.get("site_audit_pages_rows"), ctx.get("company_overview"))
     assign_cluster_types(summaries, topics, business_model)
     assign_decisions(summaries, ctx.get("dead_urls"))
-    cannibalization = detect_cannibalization(ctx.get("page_query_rows"))
-    review_queue = build_review_queue(summaries, cannibalization, ctx.get("routed_counts"))
+    depth.apply_business_rules(summaries, site_model, business_model, brands.get("competitor"))
+    depth.primary_keyword_scores(summaries, site_model)
+    depth.target_evidence(summaries, site_model)
+    depth.extra_links(topics, summaries)
+    depth.deepen_topics(topics, summaries)
+    depth.cluster_outputs(summaries)
+    cannibalization = depth.cannibalization_similarity(detect_cannibalization(ctx.get("page_query_rows")), site_model)
+    patterns = depth.programmatic_patterns(summaries)
+    review_queue = build_review_queue(summaries, cannibalization, ctx.get("routed_counts")) \
+        + depth.extra_review_items(summaries, patterns, topics)
     quality = run_quality_checks(summaries, cannibalization, business_model)
+    gaps = depth.content_gaps(summaries, site_model)
     ordered = sorted(summaries, key=lambda s: (_TIER_ORDER.get(s.get("roadmap_priority"), 9), -(s.get("opportunity") or 0), s["name"]))
     for i, s in enumerate(ordered, 1):
         s["cluster_id"] = f"C{i:02d}"
@@ -942,6 +969,7 @@ def build_full_keyword_strategy(summaries: list[dict], context: dict | None = No
                 "competitor_gap": None if factors["competitor_gap"] is None else round(factors["competitor_gap"], 2),
                 "content_gap_flag": not s.get("target_url"),
             })
+            r.setdefault("programmatic_flag", False)
     return {
         "topics": topics,
         "page_map": build_page_map_v2(summaries, topics, cannibalization),
@@ -952,7 +980,20 @@ def build_full_keyword_strategy(summaries: list[dict], context: dict | None = No
             "cluster_type": s["cluster_type"], "page_type": s["page_type"], "content_gap_type": s.get("content_gap_type"),
             "decision": s["decision"], "decision_reason": s["decision_reason"], "priority": s["roadmap_priority"],
             "opportunity": s.get("opportunity"), "target_url": s.get("target_url"), "primary_keyword": s.get("primary_keyword"),
+            "audience": s.get("audience"), "geography": s.get("geography"), "difficulty": s.get("difficulty"),
+            "search_demand": s.get("search_demand"), "business_value": s.get("business_value"),
+            "confidence": s.get("confidence"), "intent": s.get("dominant_family"), "business_rule": s.get("business_rule"),
+            "target_evidence": s.get("target_evidence"), "topical_pages": s.get("topical_pages"),
+            "keyword_count": len(s["rows"]),
+            "secondary_keywords": [r["keyword"] for r in s["rows"] if r.get("keyword") != s.get("primary_keyword")][:8],
         } for s in ordered],
+        "content_gaps": gaps,
+        "programmatic_patterns": patterns,
+        "site": {
+            "graph": (site_model or {}).get("graph"),
+            "pages": ((site_model or {}).get("pages") or [])[:400],
+            "service_areas": (site_model or {}).get("service_areas"),
+        } if site_model else None,
         "cannibalization": cannibalization,
         "review_queue": review_queue,
         "quality_checks": quality,

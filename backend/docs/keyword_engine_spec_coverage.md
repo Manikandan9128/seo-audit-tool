@@ -16,48 +16,51 @@ Main files: `app/services/keyword_intelligence_service.py` (per keyword), `keywo
 Tests: `tests/test_keyword_intelligence_engine.py`, `test_keyword_strategy_service.py`,
 `test_keyword_engine_quality_fixes.py`, `test_keyword_spec_coverage.py`.
 
-**Strict count (every point inside a section must be built for Done): 24 Done · 40 Partial · 5 Blocked — of 69.** Of the Partial ones, 29 can be finished in code; 11 need SERP data, the AI grouping step or stored history.
+**Strict count (every point inside a section must be built for Done): 40 Done · 24 Partial · 5 Blocked — of 69.** Of
+the Partial ones, all now need either SERP data (Semrush API, still deferred), the AI grouping step, stored history,
+or a data source the crawl/Sheets export doesn't carry (e.g. per-page backlink authority) — none are code-only
+anymore as of the 2026-09-24 depth pass (`keyword_site_model.py` + `keyword_strategy_depth.py`).
 
 | § | Section | Status | What's missing | Needs |
 |---|---|---|---|---|
 | 1 | Primary objective (full intelligence model) | Partial | SERP intent, semantic similarity outputs | SERP data (Semrush API) |
 | 2 | Core principle, answer Q1-Q7 per keyword | Partial | Q5 (do SERPs treat them as same intent) | SERP data (Semrush API) |
-| 3 | Website understanding (business model, entity graph) | Partial | no entity graph object linking products/services/audiences/use cases | Code |
-| 4 | Website architecture analysis (14 fields per URL) | Partial | only URL type + live status; no per-URL entity/topic/audience/intent/funnel/depth | Code |
+| 3 | Website understanding (business model, entity graph) | Done | `keyword_site_model.build_site_model` entity graph (products/services/industries/audiences/locations/use cases/features/integrations/docs/technologies) | — |
+| 4 | Website architecture analysis (14 fields per URL) | Done | per-URL page type/primary entity/topic/audience/intent/funnel/geo/content depth/inlinks/crawl depth/link role/purpose/traffic — Sheet "Site Pages" tab | — |
 | 5 | Keyword normalization | Done | — | — |
-| 6 | Entity extraction + entity relationship | Partial | entity type done; entity relationship (product->category, service->industry...) not built | Code |
+| 6 | Entity extraction + entity relationship | Done | `entity_relationship()` (product->category/industry/audience/location/attribute/use case, problem->solution) — Sheet "Entity Relationship" column | — |
 | 7 | Modifier extraction | Done | — | — |
 | 8 | Search intent (primary, secondary, confidence, mixed) | Done | — | — |
 | 9 | User need | Done | — | — |
 | 10 | Funnel stage | Done | — | — |
-| 11 | Audience | Partial | from keyword wording only; not inferred from site/page content/competitor pages | Code |
-| 12 | Geographic intent | Partial | service area known at country level only | Code |
+| 11 | Audience | Done | `keyword_audience_from_site` — audience/industry the site itself serves, read from its pages | — |
+| 12 | Geographic intent | Done | `geo_served` — listed location / country-level / not listed, read from crawl + overview | — |
 | 13 | Semantic relationship (embeddings) | Blocked | no similarity score | AI grouping step working |
-| 14 | Search intent relationship (intent similarity) | Partial | grouping by intent family; no intent-similarity score | Code |
+| 14 | Search intent relationship (intent similarity) | Done | `intent_similarity` cosine score; sibling pairs >=0.9 surfaced as a "Possible same-need clusters" review item | — |
 | 15 | SERP analysis / overlap | Blocked | no SERP data | SERP data (Semrush API) |
 | 16 | Page cohesion score | Blocked | needs SERP overlap | SERP data (Semrush API) |
 | 17 | Same page vs separate page | Partial | synonym-only clusters not merged when AI grouping fails; SERP criterion missing | AI grouping step working |
-| 18 | Topic hierarchy (root->entity->parent->subtopic->intent->cluster) | Partial | parent->cluster only; no subtopic/intent levels | Code |
-| 19 | Primary keyword selection | Partial | ordering rule, not all 10 factors (SERP fit, page fit, conversion potential) | Code |
-| 20 | Primary keyword score (normalized components) | Partial | no normalized primary-keyword score | Code |
+| 18 | Topic hierarchy (root->entity->parent->subtopic->intent->cluster) | Done | `deepen_topics` hierarchy dict — Sheet "Topic Hierarchy" tab | — |
+| 19 | Primary keyword selection | Done | `primary_keyword_scores` — 7-factor score picks the primary in non-AI clusters | — |
+| 20 | Primary keyword score (normalized components) | Done | 0-100 `primary_score` per keyword — Sheet column | — |
 | 21 | Business relevance gate | Done | — | — |
 | 22 | Page type classification | Done | — | — |
-| 23 | Existing URL mapping (11 checks) | Partial | no content depth, internal links, page traffic, authority, conversion role; SERP alignment | Code |
-| 24 | Cannibalization detection | Partial | no SERP-overlap / similar-content / similar-title signals; GSC part needs Search Console data | Code |
+| 23 | Existing URL mapping (11 checks) | Partial | content depth/internal links/traffic/conversion role now checked (`target_evidence`); per-page authority and SERP alignment still missing | Backlink-per-page data; SERP data |
+| 24 | Cannibalization detection | Partial | Search Console pairs + near-identical-title pairs (crawl-only) now similarity-scored; true SERP-overlap signal still missing | SERP data (Semrush API) |
 | 25 | Content gap detection | Done | — | — |
 | 26 | Competitor gap analysis | Done | — | — |
-| 27 | Programmatic SEO detection | Partial | 'search engines would rank each page' needs SERP | SERP data (Semrush API) |
-| 28 | Clustering algorithm (10 signals) | Partial | no SERP / semantic / audience / geo similarity in scoring | SERP data (Semrush API) |
+| 27 | Programmatic SEO detection | Partial | entity x dimension patterns built (`programmatic_patterns`); 'search engines would rank each page' still needs SERP | SERP data (Semrush API) |
+| 28 | Clustering algorithm (10 signals) | Partial | no SERP / semantic similarity in scoring | SERP data (Semrush API) |
 | 29 | Cluster types | Done | — | — |
 | 30 | Cluster confidence | Done | — | — |
 | 31 | Opportunity score (+ recalibration) | Partial | weights configurable; recalibration from history not possible | Stored history |
-| 32 | Difficulty interpretation | Partial | uses KD + own DR only; not topical authority, SERP composition, competitor quality | Code |
+| 32 | Difficulty interpretation | Done | KD read against own DR AND own topical authority (pages already covering the topic) | — |
 | 33 | Search volume interpretation | Done | — | — |
 | 34 | SERP intent validation | Blocked | no SERP data | SERP data (Semrush API) |
 | 35 | Intent changes by modifier | Done | — | — |
-| 36 | Page purpose (11 fields) | Partial | missing primary entity, supporting topics | Code |
-| 37 | Internal linking model (9 relation types) | Partial | has parent/child, guide->product, comparison->product, location->service; missing category->product, problem->solution, audience->product, service->guide | Code |
-| 38 | Topical authority model | Partial | page-coverage only; not entity/audience/commercial-vs-informational coverage | Code |
+| 36 | Page purpose (11 fields) | Done | primary entity + supporting topics added to the page map | — |
+| 37 | Internal linking model (9 relation types) | Done | now has parent/child, guide->product, comparison->product, location->service, category->product, problem->solution, audience->product, service->guide | — |
+| 38 | Topical authority model | Done | entity/audience/commercial-vs-informational coverage feeds each topic's `authority_level` — Sheet column | — |
 | 39 | Near-duplicate intent | Done | — | — |
 | 40 | Do not over-cluster | Done | — | — |
 | 41 | Do not over-split | Partial | synonym clusters on one page stay separate without AI | AI grouping step working |
@@ -65,27 +68,27 @@ Tests: `tests/test_keyword_intelligence_engine.py`, `test_keyword_strategy_servi
 | 43 | Cluster merge test | Partial | same-entity by wording only; SERP question unanswered | AI grouping step working |
 | 44 | Temporal analysis | Done | — | — |
 | 45 | Brand vs non-brand | Done | — | — |
-| 46 | Competitor / alternative intent checks | Partial | no legal/brand-consideration or 'actual alternative offering' check | Code |
-| 47 | Local SEO logic | Partial | no unique-local-value check | Code |
-| 48 | E-commerce logic | Partial | no category/subcategory/product/attribute rule set | Code |
-| 49 | Service business logic | Partial | service page type only; no service x industry / process / eligibility handling | Code |
-| 50 | Informational / publisher logic | Partial | no freshness/depth/monetization handling | Code |
-| 51 | SaaS logic | Partial | no feature vs product vs integration vs documentation split | Code |
-| 52 | Multi-industry / multi-service logic | Partial | no service x industry architecture check | Code |
+| 46 | Competitor / alternative intent checks | Done | `apply_business_rules` §46 — a named-competitor comparison without a matching own offer goes to REVIEW | — |
+| 47 | Local SEO logic | Done | §47 — a location cluster with no listed service area goes to REVIEW instead of NEW URL | — |
+| 48 | E-commerce logic | Done | §48 — buying guide / attribute-filter / subcategory page types from the keyword + modifier mix | — |
+| 49 | Service business logic | Done | §49 — service x industry page type + "cover as a section" call when demand is thin | — |
+| 50 | Informational / publisher logic | Done | §50 — refresh-not-new-page note for temporal informational clusters on a publisher site | — |
+| 51 | SaaS logic | Done | §51 — feature / integration / documentation page types from keyword wording | — |
+| 52 | Multi-industry / multi-service logic | Done | shares the §49 service x industry rule | — |
 | 53 | Keyword-to-URL decision (8 options) | Done | — | — |
-| 54 | Master keyword dataset (50 fields) | Partial | missing language, serp_*, similarity scores, page_cohesion_score, existing_url_traffic, programmatic_flag; Sheet needs Google login | Code |
-| 55 | Cluster output (19 fields) | Partial | missing audience, geography, difficulty, search demand, business value, SERP evidence per cluster | Code |
+| 54 | Master keyword dataset (50 fields) | Partial | language/entity relationship/geo served/primary score/topical authority/existing-URL traffic/programmatic flag added; serp_* fields and page_cohesion_score still missing; still needs Google Sheets for the FULL dataset (a 7-column fallback slide now covers the no-Sheets case, §66-B) | SERP data (Semrush API) |
+| 55 | Cluster output (19 fields) | Partial | audience/geography/difficulty/search demand/business value/target evidence added; SERP evidence per cluster still missing | SERP data (Semrush API) |
 | 56 | Page map output | Done | — | — |
-| 57 | Content gap output (12 fields) | Partial | missing business relevance, competitor evidence, suggested URL, supporting keywords, reason | Code |
-| 58 | Cannibalization output | Partial | missing SERP overlap and similarity fields | Code |
-| 59 | Programmatic output (11 fields) | Partial | missing SERP validation; dimensions/risk only as a sentence | Code |
+| 57 | Content gap output (12 fields) | Done | business relevance, competitor evidence, suggested URL, supporting keywords, reason — Sheet "Content Gaps" tab | — |
+| 58 | Cannibalization output | Partial | similarity score + source added; true SERP-overlap field still missing | SERP data (Semrush API) |
+| 59 | Programmatic output (11 fields) | Partial | dimensions/example queries/demand/relevance/uniqueness/content requirements/risk/recommendation built; SERP validation explicitly marked unavailable | SERP data (Semrush API) |
 | 60 | Explainability | Done | — | — |
 | 61 | Confidence model | Done | — | — |
-| 62 | Human-in-the-loop review queue (10 types) | Partial | missing conflicting-SERP and programmatic-opportunity review types | Code |
+| 62 | Human-in-the-loop review queue (10 types) | Done | added Programmatic opportunity, Conflicting signals, and Possible same-need clusters (§14) review types | — |
 | 63 | Learning system | Blocked | needs stored approvals + outcomes | Stored history |
 | 64 | Anti-bias rules | Done | — | — |
 | 65 | Final decision framework | Partial | SERP step | SERP data (Semrush API) |
-| 66 | Required final report A-K | Partial | B (keyword master) only when Google Sheets is connected; C lacks subtopic/intent levels | Code |
+| 66 | Required final report A-K | Done | B now always reaches the report (Sheet tab, or a fallback slide when Sheets isn't connected); C has subtopic/intent levels | — |
 | 67 | Quality control (14 checks) | Partial | checks 3 and 11 not checked (SERP), 12 delegated | SERP data (Semrush API) |
 | 68 | Operating principle | Done | — | — |
 | 69 | Final principle | Done | — | — |
@@ -113,4 +116,9 @@ regression cases:
 - 2026-09-24 `401bea0` topic map, opportunity roadmap, funnel/audience, Sheet master columns.
 - 2026-09-24 `289e50a` same-page merge, category split, junk filter, names, vendor pricing.
 - 2026-09-24 `d2df10b` §3, §5, §6, §7, §8 mixed, §22, §24/§58, §25/§57, §29, §32, §36, §45, §53, §54 fields, §56 shown, §59, §62, §67.
-- 2026-09-24 (this change) real-report fixes from Geopits (1): §3, §22, §23, §43, §53, §62.
+- 2026-09-24 `4e8ec8c` real-report fixes from Geopits (1): §3, §22, §23, §43, §53, §62.
+- 2026-09-24 (this change) `keyword_site_model.py` (new) + `keyword_strategy_depth.py` (new): §3, §4, §6, §11, §12,
+  §14, §18, §19, §20, §32, §36, §37, §38, §46-§52, §66 moved Partial -> Done; §23, §24, §27, §54, §55, §58, §59 had
+  their code-buildable part finished (SERP-only piece remains). 10 new tests (`test_keyword_engine_depth.py`), 530
+  total pass. Strict count: 24 Done -> 40 Done of 69; 40 Partial -> 24 Partial (all now genuinely blocked on SERP
+  data, the AI grouping step, stored history, or per-page backlink data — none code-only).

@@ -126,6 +126,10 @@ SITE_AUDIT_PAGES_COLUMN_ALIASES = {
     "open_graph": ["open graph", "open_graph"],
     "twitter_cards": ["twitter cards", "twitter_cards"],
     "hreflang_issues": ["hreflang issues", "hreflang_issues"],
+    # §23 existing-URL evaluation (2026-09-24) — present in fuller Site
+    # Audit exports; simply absent otherwise.
+    "incoming_internal_links": ["incoming internal links", "internal links in", "inlinks", "incoming_internal_links"],
+    "word_count": ["word count", "words", "word_count"],
 }
 
 # Semrush Site Audit "Pages > Structured Data" export — one row per crawled
