@@ -86,6 +86,9 @@ _EXTRA_MODIFIERS = {
     "online", "latest", "new", "current", "upcoming", "free", "full", "complete", "list",
     "type", "types", "option", "options", "basic", "basics", "overview", "info", "information",
     "plan", "plans", "feature", "benefit", "resource", "resources", "platforms", "details",
+    # Filler qualifiers (2026-09-24, Geopits "cost based optimizer" made
+    # "Based" a parent topic): they describe HOW, never WHAT.
+    "based", "driven", "powered", "related", "using", "oriented", "enabled",
 }
 _MODIFIER_WORDS = (
     {w for w in _TRANSACTIONAL_MARKERS if " " not in w}
@@ -198,13 +201,25 @@ INTENT_FAMILY = {
 }
 
 
+_NOT_A_PRICE_RE = re.compile(r"\bcost[- ](based|effective|efficient|optimization|optimisation|management|accounting)\b")
+
+# "a or b" with short sides only — never a sentence that merely contains "or".
+_EITHER_OR_RE = re.compile(r"^(?!.*\bor not\b)[a-z0-9][a-z0-9 ]{1,40}? or [a-z0-9][a-z0-9 ]{1,40}$")
+_TROUBLESHOOT_MARKERS = [
+    "not working", "error", "errors", "fix", "fixing", "troubleshoot", "troubleshooting", "issue", "issues",
+    "problem", "problems", "failed", "failure", "stuck", "slow", "crash", "crashing",
+]
+
+
 def detect_intent(keyword: str, source_intent: str | None = None) -> dict:
     """§8/§9 — primary intent, confidence (0-100) and user need, from the
     keyword's own modifiers. An explicit marker gives a confident verdict;
     a bare entity term ("tipper truck") falls back to the upstream source
     intent (Semrush) when one exists, else product/service discovery at
     medium confidence — never presented as certain."""
-    text = " ".join(_words(keyword))
+    # "cost based optimizer", "cost-effective"... name a concept or quality,
+    # not a price search — the compound is removed before marker checks.
+    text = _NOT_A_PRICE_RE.sub(" ", " ".join(_words(keyword))).strip() or " ".join(_words(keyword))
     norm = normalize_keyword(keyword)
     core = norm["core_phrase"] or text
     # For a "learn" need the modifiers ARE the topic ("truck sizes", "bus
@@ -227,6 +242,14 @@ def detect_intent(keyword: str, source_intent: str | None = None) -> dict:
         if marker:
             return {"intent": intent, "family": INTENT_FAMILY[intent], "confidence": confidence,
                     "marker": marker, "user_need": need}
+        if intent == "Comparison" and _EITHER_OR_RE.match(text):
+            # §8/§46: "mysql or sql server" — choosing between two options.
+            return {"intent": "Comparison", "family": "Comparison", "confidence": 80, "marker": "or",
+                    "user_need": f"Compare {core} options before choosing"}
+        if intent == "Informational" and markers is _QUESTION_MARKERS and _has_marker(text, _TROUBLESHOOT_MARKERS):
+            # §8 support/task: a problem to fix is answered by a guide.
+            return {"intent": "Informational", "family": "Informational", "confidence": 80,
+                    "marker": "troubleshooting", "user_need": f"Solve a problem: {text}"}
     src = (source_intent or "").lower()
     if "informational" in src and "commercial" not in src and "transactional" not in src:
         return {"intent": "Informational", "family": "Informational", "confidence": 60, "marker": None,
@@ -376,6 +399,11 @@ def _demand(r: dict) -> float:
     return max(_num(r.get("search_volume")), _num(r.get("gsc_clicks")))
 
 
+# A parent group absorbing more distinct one-word extensions than this is a
+# category, not a page (§40).
+_MAX_PAGE_EXTENSIONS = 4
+
+
 def build_rule_groups(rows: list[dict]) -> list[dict]:
     """§17/§28/§41/§43 — deterministic same-page grouping over EVERY row
     (rows must already be annotated). Step 1 groups by (core entity key,
@@ -430,6 +458,19 @@ def build_rule_groups(rows: list[dict]) -> list[dict]:
         if best:
             merged_into[gkey] = best[1]
 
+    # §40 never over-cluster: a parent that would absorb many DIFFERENT
+    # one-word extensions is a category head ("sql server" + etl /
+    # encryption / replication / health check / service broker...), not
+    # one page — Geopits got a 64-keyword "Sql Server Server" cluster from
+    # exactly this. Its children then stay their own pages. A parent with a
+    # few extensions ("certified payroll" + government / software) still
+    # absorbs them, as before.
+    child_extensions: dict[tuple, set] = {}
+    for child, parent in merged_into.items():
+        child_extensions.setdefault(parent, set()).add(groups[child]["tokens"] - groups[parent]["tokens"])
+    category_heads = {p for p, ext in child_extensions.items() if len(ext) > _MAX_PAGE_EXTENSIONS}
+    merged_into = {c: p for c, p in merged_into.items() if p not in category_heads}
+
     def _root(k):
         seen = set()
         while k in merged_into and k not in seen:
@@ -458,14 +499,71 @@ def build_rule_groups(rows: list[dict]) -> list[dict]:
     return out
 
 
+# Display casing for cluster/topic names (§55/§60). Common acronyms and
+# mixed-case product names across industries — a word not listed simply
+# gets normal Title Case, so a missing entry is cosmetic, never wrong.
+_ACRONYMS = {
+    "ai", "api", "apis", "aws", "b2b", "b2c", "bi", "cms", "cng", "cpu", "crm", "css", "dba", "dbas", "diy", "dns",
+    "erp", "etl", "faq", "gcp", "gps", "gst", "hr", "hrms", "html", "http", "https", "iot", "it", "kpi", "lng", "lpg",
+    "ml", "mri", "nbfc", "oci", "pdf", "php", "pos", "ppc", "qa", "rds", "roi", "saas", "sap", "sdk", "seo", "sla",
+    "sms", "sql", "ssd", "ssl", "suv", "ui", "uk", "us", "usa", "uae", "ux", "vat", "vpn", "vps",
+}
+_CASED_NAMES = {
+    "mysql": "MySQL", "postgresql": "PostgreSQL", "postgres": "Postgres", "mongodb": "MongoDB", "nosql": "NoSQL",
+    "mariadb": "MariaDB", "dynamodb": "DynamoDB", "javascript": "JavaScript", "typescript": "TypeScript",
+    "iphone": "iPhone", "ipad": "iPad", "ios": "iOS", "macos": "macOS", "youtube": "YouTube", "linkedin": "LinkedIn",
+    "wordpress": "WordPress", "woocommerce": "WooCommerce", "github": "GitHub", "devops": "DevOps",
+    "hubspot": "HubSpot", "quickbooks": "QuickBooks", "ecommerce": "eCommerce", "bs6": "BS6", "innodb": "InnoDB",
+}
+_NAME_DROP_WORDS = (
+    {w for w in _TRANSACTIONAL_MARKERS + _QUESTION_MARKERS + _COMPARISON_MARKERS + _NAVIGATIONAL_MARKERS
+     if " " not in w and w not in ("vs", "versus")}
+    | {"is", "are", "the", "a", "an", "of", "for", "in", "to", "and", "near", "me", "best", "top", "review",
+       "reviews", "cheap", "cheapest", "latest"}
+)
+
+
+def smart_title(phrase: str) -> str:
+    """Title-cases a name, keeping acronyms/product casing, and drops a
+    word already used earlier in the name ("sql server server")."""
+    out, seen = [], set()
+    for w in (phrase or "").split():
+        lw = w.lower()
+        if lw in seen:
+            continue
+        seen.add(lw)
+        if lw in ("vs", "versus"):
+            out.append("vs")
+            continue
+        out.append(_CASED_NAMES.get(lw) or (lw.upper() if lw in _ACRONYMS else lw[:1].upper() + lw[1:]))
+    return " ".join(out)
+
+
+def display_phrase(keyword: str) -> str:
+    """The keyword's topic as a name: intent/question/geo/year words out,
+    everything that names the thing kept ("what is azure data studio" ->
+    "azure data studio", "aws aurora pricing" -> "aws aurora")."""
+    text = " ".join(_words(keyword))
+    protected = {w for m in _NOT_A_PRICE_RE.finditer(text) for w in m.group(0).replace("-", " ").split()}
+    words = [
+        w for w in text.split()
+        if w in protected or not (w in _NAME_DROP_WORDS or w in _GEO_WORDS or _YEAR_RE.match(w))
+    ]
+    return " ".join(words) or text
+
+
 def rule_group_name(group: dict) -> str:
-    """§60 — a specific, evidence-based cluster name: the shared core
-    entity, suffixed by intent family when it isn't the default commercial
-    page (so "Certified Payroll" and "Certified Payroll — Guides" read as
-    the two different pages they are)."""
-    base = (group.get("core_phrase") or group["representative"].get("keyword") or "").strip().title()
+    """§60 — a specific, evidence-based cluster name: the topic of the
+    group's highest-demand keyword (§19: the page's primary search),
+    suffixed by intent family when it isn't the default commercial page
+    (so "Certified Payroll" and "Certified Payroll — Guides" read as the
+    two different pages they are)."""
+    rep_kw = group["representative"].get("keyword") or ""
+    base = smart_title(display_phrase(rep_kw) if rep_kw else (group.get("core_phrase") or ""))
     suffix = {"Informational": " — Guides", "Comparison": " — Comparisons", "Local": " — Local",
               "Navigational": " — Navigation"}.get(group.get("family"), "")
+    if " vs " in f" {base} ":
+        suffix = ""  # "PostgreSQL vs MySQL" already says it's a comparison
     return f"{base}{suffix}"
 
 
@@ -634,8 +732,9 @@ def apply_cluster_intelligence(rows: list[dict]) -> None:
 
 # v2 (2026-09-24): relevance prompt gained the client's own brand family,
 # site sections and the "Other Website Search" status — verdicts judged
-# under the old prompt are re-asked once.
-_CACHE_VERSION = 2
+# under the old prompt are re-asked once. v3 (same day): prompt now says a
+# price search for a vendor's own product is a product/service mismatch.
+_CACHE_VERSION = 3
 _MAX_CACHED_CLUSTER_RUNS = 6
 _MAX_CACHED_RELEVANCE = 6000
 

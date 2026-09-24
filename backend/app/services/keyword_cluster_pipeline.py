@@ -58,13 +58,14 @@ from collections import Counter
 import re
 
 from app.services.business_theme_service import UNCLASSIFIED_THEME, generate_business_themes
-from app.services.keyword_relevance_service import build_page_index, is_live_target_page, match_existing_page_for_cluster
+from app.services.keyword_relevance_service import build_page_index, is_junk_keyword, is_live_target_page, match_existing_page_for_cluster
 from app.services.keyword_semantic_cluster_service import generate_phase2_candidate_clusters, generate_phase3_validated_clusters
 from app.services.keyword_intelligence_service import (
     KeywordIntelligenceCache,
     annotate_keyword_rows,
     apply_cluster_intelligence,
     build_rule_groups,
+    normalize_keyword,
     ranking_page_target,
     rule_group_name,
 )
@@ -235,6 +236,13 @@ def _route_non_clusterable_rows(rows: list[dict]) -> list[dict]:
             r["cluster"] = _CAREER_ROUTE_CLUSTER_LABEL
             r["cluster_source"] = "routing"
             r["cluster_status"] = "Validated"
+            continue
+        if is_junk_keyword(r.get("keyword") or ""):
+            # §21: a hash/URL/code fragment is never a page — and must never
+            # name one (it became a Geopits cluster). Kept, in review.
+            r["cluster"] = _NEEDS_REVIEW_CLUSTER_LABEL
+            r["cluster_source"] = "routing"
+            r["cluster_status"] = "Needs Review: not a real search query (code, hash or URL fragment)"
             continue
         if relevance == "Unknown / Needs Review" and reason != _UNJUDGED_REASON:
             r["cluster"] = _NEEDS_REVIEW_CLUSTER_LABEL
@@ -521,7 +529,10 @@ def _select_primary_secondary(rows: list[dict]) -> None:
             intent = (r.get("intent") or "").lower()
             relevance = _RELEVANCE_RANK.get(r.get("relevance_status") or "", 0)
             intent_fit = 1 if dominant_family and r.get("intent_family") == dominant_family else 0
-            commercial = 1 if intent in ("commercial", "transactional") else 0
+            # "Commercial Investigation" is commercial too ("data management
+            # services" must beat "outsourcing data management" on demand).
+            commercial = 1 if intent in ("commercial", "transactional", "commercial investigation") \
+                or r.get("intent_family") == "Commercial" else 0
             has_ranking_signal = 1 if r.get("current_position") not in (None, "") or r.get("position") not in (None, "") else 0
             return (relevance, intent_fit, commercial, has_ranking_signal, _num(r.get("search_volume")))
 
@@ -589,6 +600,92 @@ def _apply_existing_page_matching(rows: list[dict], site_audit_pages_rows: list[
                 r["existing_page_title"] = None
                 r["existing_page_match_strength"] = "none"
             r["existing_page_action"] = _EXISTING_PAGE_ACTION_BY_STRENGTH[strength]
+
+
+# A core word in more than this share of all clusters (and in 3+) is a
+# site-wide head term ("sql" on a database agency) — sharing it is not
+# evidence two clusters are the same need.
+_GENERIC_TOKEN_SHARE = 0.2
+
+
+def _merge_same_page_clusters(rows: list[dict]) -> None:
+    """§39/§41/§43 merge test, run after existing-page matching: two
+    clusters that (a) resolved to the SAME existing page (strong/partial
+    match), (b) share the same intent family, and (c) share a real topic
+    word (not a site-wide head term) are one search need split in two —
+    Geopits got "Index Sql — Guides" and "Indexing Database — Guides" as
+    separate target pages for the same blog post. At least one side must be
+    rule-based: two AI-validated clusters were already judged separate by
+    the AI's own merge test and are left alone (their overlap still shows
+    as cannibalization). The higher-demand cluster keeps its name, primary
+    keyword and target decision."""
+    clusters: dict[str, list[dict]] = {}
+    for r in rows:
+        label = (r.get("cluster") or "").strip()
+        if label and r.get("cluster_source") != "routing":
+            clusters.setdefault(label, []).append(r)
+    if len(clusters) < 2:
+        return
+
+    raw_tokens = {
+        label: {t for r in crow for t in normalize_keyword(r.get("keyword") or "")["core_tokens"]}
+        for label, crow in clusters.items()
+    }
+    vocab = set().union(*raw_tokens.values())
+
+    def _stem(t: str) -> str:
+        # data-driven -ing lemma: "indexing" -> "index" only when "index"
+        # itself occurs in this client's keywords.
+        if t.endswith("ing") and len(t) > 5:
+            for base in (t[:-3], t[:-3] + "e"):
+                if base in vocab:
+                    return base
+        return t
+
+    tokens = {label: {_stem(t) for t in toks} for label, toks in raw_tokens.items()}
+    spread = Counter(t for toks in tokens.values() for t in toks)
+    generic = {t for t, n in spread.items() if n >= 3 and n / len(clusters) > _GENERIC_TOKEN_SHARE}
+
+    def _page_key(crow: list[dict]):
+        sample = crow[0]
+        if sample.get("existing_page_match_strength") not in ("strong", "partial") or not sample.get("existing_page_url"):
+            return None
+        families = Counter(r.get("intent_family") for r in crow if r.get("intent_family"))
+        family = families.most_common(1)[0][0] if families else None
+        return (sample["existing_page_url"].rstrip("/").lower(), family)
+
+    by_page: dict[tuple, list[str]] = {}
+    for label, crow in clusters.items():
+        key = _page_key(crow)
+        if key:
+            by_page.setdefault(key, []).append(label)
+
+    demand = {label: sum(_demand_proxy(r) for r in crow) for label, crow in clusters.items()}
+    for labels in by_page.values():
+        if len(labels) < 2:
+            continue
+        labels.sort(key=lambda lb: (-demand[lb], lb))
+        merged: list[str] = []
+        for label in labels:
+            target = next(
+                (m for m in merged
+                 if (tokens[m] & tokens[label]) - generic
+                 and "rule" in {clusters[m][0].get("cluster_source"), clusters[label][0].get("cluster_source")}),
+                None,
+            )
+            if target is None:
+                merged.append(label)
+                continue
+            winner = clusters[target]
+            for r in clusters[label]:
+                r["cluster"] = target
+                r["cluster_source"] = winner[0].get("cluster_source")
+                r["cluster_status"] = winner[0].get("cluster_status")
+                r["primary_or_secondary"] = "Secondary"
+                for key in ("existing_page_url", "existing_page_title", "existing_page_match_strength",
+                            "existing_page_action", "cluster_priority", "core_category"):
+                    r[key] = winner[0].get(key)
+            winner.extend(clusters[label])
 
 
 def _apply_cannibalization_check(rows: list[dict]) -> None:
@@ -917,6 +1014,7 @@ def build_final_keyword_clusters(
     _assign_core_category_and_priority(rows)
     _select_primary_secondary(rows)
     _apply_existing_page_matching(rows, site_audit_pages_rows)
+    _merge_same_page_clusters(rows)
     _apply_cannibalization_check(rows)
     _final_cluster_acceptance_check(rows)
     _assign_evidence_confidence(rows)

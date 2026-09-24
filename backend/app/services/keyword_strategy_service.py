@@ -28,6 +28,7 @@ from app.services.keyword_intelligence_service import (
     _num,
     normalize_keyword,
     singularize,
+    smart_title,
 )
 
 # §31 starting model. The spec says these "must be configurable" and are
@@ -262,7 +263,7 @@ def build_topic_model(summaries: list[dict], max_parents: int = 8) -> list[dict]
                 "from_cluster": s["name"], "to_cluster": to["name"],
             })
         model.append({
-            "parent": parent.title(),
+            "parent": smart_title(parent),
             "clusters": [s["name"] for s in sorted(members, key=lambda s: -(s.get("opportunity") or 0))],
             "coverage": coverage, "covered": len(covered), "total": len(members),
             "intents_without_page": sorted(families - covered_families),

@@ -296,6 +296,30 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
+# "/" is NOT here: "a/b testing", "24/7 support" are real searches.
+_URLISH_RE = re.compile(r"(https?://|www\.|\.(com|net|org|php|html?|aspx?|jsp)\b|[\\{}<>=;|])", re.I)
+
+
+def is_junk_keyword(keyword: str) -> bool:
+    """§21/§64: not a real search query — a hash/token string (a long word
+    mixing letters and digits, e.g. "7c3735cb431b03e6...cipherdetails"), a
+    URL/file path, or code punctuation. Geopits' export had one and it
+    became a cluster name. Ordinary model numbers ("bs6", "1015r", "iphone
+    15") are short and pass."""
+    text = (keyword or "").strip()
+    if not text:
+        return False
+    if _URLISH_RE.search(text):
+        return True
+    for w in re.findall(r"[a-z0-9]+", text.lower()):
+        digits = sum(ch.isdigit() for ch in w)
+        if len(w) >= 16 and digits >= 4 and digits < len(w):
+            return True
+        if len(w) >= 24:
+            return True
+    return False
+
+
 def _rule_exclude(keyword: str, brand_tokens: set[str]) -> tuple[str, str] | None:
     """Mechanical exclude reasons that need no AI judgment. Returns
     (status_key, reason) — status_key is a key into _RELEVANCE_STATUSES —
@@ -306,6 +330,8 @@ def _rule_exclude(keyword: str, brand_tokens: set[str]) -> tuple[str, str] | Non
         return ("unrelated", "Empty keyword text.")
     if is_adult(text) or any(re.search(rf"\b{re.escape(w)}\b", text) for w in _ADULT_CONTENT_WORDS):
         return ("unrelated", "Adult/explicit content — never a legitimate target keyword.")
+    if is_junk_keyword(text):
+        return ("unrelated", "Not a real search query (code, hash or URL fragment).")
     for brand in brand_tokens:
         if brand and _is_branded_keyword(text, brand):
             # Universal SEO Audit Engine spec (2026-09-20) section 22:
@@ -355,7 +381,10 @@ migration angle — {client_name} has no legitimate claim to this query.
 - "irrelevant_competitor_query": mentions a competitor but for something entirely outside {client_name}'s own \
 industry/business (the competitor serves other markets too) — no strategic value to {client_name}.
 - "geographic_mismatch": targets a location {client_name} does not serve.
-- "product_service_mismatch": names a specific product/service {client_name} does not offer.
+- "product_service_mismatch": names a specific product/service {client_name} does not offer — including a \
+price/buy/licence search for ANOTHER company's own product that {client_name} merely works with, resells or \
+supports (the vendor answers that search, not {client_name}); a search for {client_name}'s own service around \
+that product (support, migration, consulting, management) is NOT a mismatch.
 - "audience_mismatch": targets a buyer/user type {client_name} does not serve.
 - "industry_mismatch": belongs to a DIFFERENT industry or product category than {client_name}'s entirely.
 - "other_website_search": the searcher wants a DIFFERENT, specific website, portal, marketplace, publication or company by name (not {client_name} and not one of its own brands) — e.g. a listing portal, a directory, a marketplace, another business — so no page on {client_domain} can satisfy it.
@@ -814,6 +843,60 @@ def site_entity_summary(site_audit_pages_rows: list[dict] | None, max_sections: 
         budget -= len(shown)
         parts.append(f"{sec.replace('-', ' ')} ({len(names)} pages: {', '.join(shown)})")
     return "Sections and product/service pages on the client's own site: " + "; ".join(parts) + "."
+
+
+# §21 "keyword relates to a competitor's proprietary product": the site's
+# own partner/technology/integration sections name OTHER companies'
+# products the client works with (Geopits: /partners/aws,
+# /technologies/aws-rds). A price/buy search for one of those products is
+# answered by that vendor, not the client.
+_VENDOR_SECTIONS = {
+    "partner", "partners", "technology", "technologies", "tech", "integration", "integrations", "platform",
+    "platforms", "vendors", "vendor", "alliances", "alliance", "brands", "tools", "stack",
+}
+_VENDOR_GENERIC_WORDS = {
+    "and", "the", "for", "with", "services", "service", "solutions", "solution", "cloud", "data", "database",
+    "databases", "management", "support", "consulting", "partner", "partners", "program", "overview", "page",
+    "migration", "managed", "platform", "platforms", "technology", "technologies", "integration", "integrations",
+}
+_CLIENT_SERVICE_WORDS = re.compile(
+    r"\b(services?|support|consult\w*|managed|manage|outsourc\w*|agency|company|companies|partners?|experts?|"
+    r"implementation|migration|migrate|dba|dbas|administrat\w*|development|developers?|hire)\b"
+)
+_PRICE_WORDS = re.compile(r"\b(price|prices|pricing|cost|costs|buy|purchase|license|licensing|licence|subscription|plans?)\b")
+
+
+def vendor_tokens(site_audit_pages_rows: list[dict] | None, own_brands: set[str] | None = None) -> set[str]:
+    """Product/vendor names found under the site's partner/technology/
+    integration sections (URL slug words), minus generic words and the
+    client's own brand tokens."""
+    tokens: set[str] = set()
+    for row in site_audit_pages_rows or []:
+        url = row.get("page_url") or ""
+        if not url or not is_live_target_page(row):
+            continue
+        segments = [s.lower() for s in urlparse(url if "://" in url else f"http://x/{url}").path.split("/") if s]
+        for i, seg in enumerate(segments[:-1]):
+            if seg in _VENDOR_SECTIONS:
+                for w in re.split(r"[-_.]", segments[i + 1]):
+                    if len(w) >= 3 and not w.isdigit() and w not in _VENDOR_GENERIC_WORDS:
+                        tokens.add(w)
+    return tokens - set(own_brands or ())
+
+
+def vendor_product_pricing_reason(keyword: str, vendors: set[str]) -> str | None:
+    """A reason string when `keyword` is a price/buy search for a vendor's
+    own product ("aws aurora pricing"), else None. A search for the
+    CLIENT's service around that product ("oracle dba services cost",
+    "aws migration pricing") is the client's to win and never flagged."""
+    text = (keyword or "").lower()
+    if not vendors or not _PRICE_WORDS.search(text) or _CLIENT_SERVICE_WORDS.search(text):
+        return None
+    hit = next((v for v in sorted(vendors) if re.search(rf"\b{re.escape(v)}\b", text)), None)
+    if not hit:
+        return None
+    return (f'Price/purchase search for another company\'s product ("{hit}", listed on the site as a partner/'
+            "technology) — that vendor answers it, not this business; review before targeting.")
 
 
 def classify_page_type(url: str | None) -> str:

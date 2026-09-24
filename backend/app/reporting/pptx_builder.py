@@ -6006,10 +6006,15 @@ def add_keyword_topic_map_slide(prs: Presentation, keyword_strategy: dict | None
         return None
     headers = ["Parent Topic", "Pages in this Topic (clusters)", "Coverage", "Intent with no page yet"]
     rows = []
-    for t in topics:
+    # Six topics max, three clusters named per topic: the table must leave
+    # room for the internal-link insights (Geopits: 8 rows of 20+ cluster
+    # names each pushed every insight off the slide).
+    for t in topics[:6]:
+        names = t["clusters"]
+        cluster_text = ", ".join(names[:3]) + (f" +{len(names) - 3} more" if len(names) > 3 else "")
         rows.append((
             t["parent"],
-            ", ".join(t["clusters"]),
+            cluster_text,
             f"{t['coverage']} ({t['covered']} of {t['total']} have a page)",
             ", ".join(t["intents_without_page"]) or "—",
         ))
@@ -6186,8 +6191,16 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
     # existing tests/callers that don't set it) — every real pipeline run
     # sets it on every clustered row, so this is a compatibility path, not
     # the normal case.
+    _tier_rank = {"High": 0, "Medium": 1, "Low": 2, "Human Review": 3}
+
     def _cluster_sort_key(kv: tuple[str, list[dict]]) -> tuple:
         _label, cluster_rows = kv
+        # §66-K/§31: the priority roadmap decides slide order when the
+        # strategy layer scored these rows; the older core-category rank
+        # and volume only order rows scored before it existed.
+        tier = cluster_rows[0].get("roadmap_priority")
+        if tier in _tier_rank:
+            return (-1, _tier_rank[tier], -_num(cluster_rows[0].get("cluster_opportunity")))
         priorities = [r.get("cluster_priority") for r in cluster_rows if r.get("cluster_priority") is not None]
         if priorities:
             return (0, min(priorities))

@@ -54,7 +54,7 @@ from app.services.domain_strategy_service import check_domain_strategy
 from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, generate_ux_findings, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
-from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_live_target_page, match_existing_page_for_cluster, site_entity_summary
+from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_live_target_page, match_existing_page_for_cluster, site_entity_summary, vendor_product_pricing_reason, vendor_tokens
 from app.services.keyword_strategy_service import apply_strategy_to_manual_clusters, build_keyword_strategy, summaries_from_keyword_rows
 from app.services.keyword_intelligence_service import KeywordIntelligenceCache, classify_with_cache, enrich_manual_clusters, gate_manual_rows, manual_classify_candidates
 from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
@@ -769,6 +769,14 @@ def _select_validated_manual_clusters(
             )
         except Exception as e:
             logger.warning("Manual keyword relevance check failed for client %s: %s", client.id, e)
+    # §21: price searches for a partner/technology vendor's own product are
+    # flagged for client confirmation, like any other AI doubt.
+    vendors = vendor_tokens(site_audit_pages_rows, own_brands)
+    for r in manual_rows:
+        kw = (r.get("keyword") or "").strip()
+        reason = vendor_product_pricing_reason(kw, vendors)
+        if reason and (relevance.get(kw.lower()) or {}).get("status") not in ("Core Relevant", "Relevant"):
+            relevance[kw.lower()] = {"status": "Product/Service Mismatch", "reason": reason}
     kept, excluded, flagged = gate_manual_rows(
         manual_rows,
         lambda kw: _rule_exclude(kw, set()),
@@ -806,6 +814,9 @@ def _select_validated_manual_clusters(
         )
         # §31/§66-K/§18/§37/§38/§56 on the sheet's selected clusters.
         strategy = apply_strategy_to_manual_clusters(clusters, keyword_ranking)
+        # §66-K: slides in roadmap order (High -> Medium -> Low -> Review).
+        tier_rank = {"High": 0, "Medium": 1, "Low": 2, "Human Review": 3}
+        clusters.sort(key=lambda c: (tier_rank.get(c.get("roadmap_priority"), 4), -(c.get("opportunity") or 0)))
         if strategy:
             clusters[0]["_strategy"] = strategy
     return clusters
@@ -904,6 +915,28 @@ def _filter_keyword_rows(
             kept.append(r)
     assign_geo_status(kept, (company_overview or {}).get("target_country"))
     return kept
+
+
+def _own_brand_tokens(client: Client) -> set[str]:
+    client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
+    return brand_token_variants(client_domain) | {t for t in (_brand_token(client.name),) if t}
+
+
+def _flag_vendor_product_pricing(client: Client, rows: list[dict], site_audit_pages_rows: list[dict] | None) -> None:
+    """§21/§62: a price/buy search for a product the site lists as a
+    partner/technology vendor's ("aws aurora pricing" on Geopits) goes to
+    the review queue (Needs Review) instead of becoming a target page. Only
+    rows the AI didn't already judge core/relevant are touched."""
+    vendors = vendor_tokens(site_audit_pages_rows, _own_brand_tokens(client))
+    if not vendors:
+        return
+    for r in rows:
+        if r.get("relevance_status") in ("Core Relevant", "Relevant"):
+            continue
+        reason = vendor_product_pricing_reason(r.get("keyword") or "", vendors)
+        if reason:
+            r["relevance_status"] = "Unknown / Needs Review"
+            r["relevance_reason"] = reason
 
 
 def _filter_search_queries(client: Client, data: dict, cache: KeywordIntelligenceCache | None = None) -> None:
@@ -1732,6 +1765,7 @@ def _gather_report_data(
     keyword_rows_all = _filter_keyword_rows(
         client, keyword_rows_all, company_overview_result, kw_cache, _all_rows("site_audit_pages", own_only=True),
     )
+    _flag_vendor_product_pricing(client, keyword_rows_all, _all_rows("site_audit_pages", own_only=True))
     # FINAL PIPELINE (lead's spec, 2026-09-19): Merge+Dedupe (above) ->
     # Relevance Filter (above) -> Search Intent -> Page Category -> Business
     # Theme -> Candidate Clustering -> Cluster Validation -> Automatic
