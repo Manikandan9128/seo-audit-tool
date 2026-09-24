@@ -666,7 +666,17 @@ def assign_decisions(summaries: list[dict], dead_urls: set[str] | None = None) -
         ranking_dead = next((r.get("current_url") for r in s["rows"]
                              if (r.get("current_url") or "").rstrip("/").lower() in dead
                              and (r.get("current_url") or "").rstrip("/").lower() != url), None)
-        best_pos = min((_num(r.get("current_position")) for r in s["rows"] if _num(r.get("current_position")) > 0), default=0)
+        # Regression (confirmed real — same bug on a Geopits report,
+        # 2026-09-24 — as an earlier BharatBenz fix): this used to take
+        # the BEST position across every row in the cluster, so one easy
+        # long-tail keyword ranking top-3 marked the whole cluster "no
+        # work needed" even when the cluster's real demand (its primary
+        # keyword, and everything else in it) wasn't ranking at all — an
+        # 850-search cluster went NO TARGET off a single minor keyword's
+        # position. Only the primary keyword's own ranking is evidence
+        # the cluster's actual target term already ranks well.
+        primary_row = next((r for r in s["rows"] if r.get("keyword") == s.get("primary_keyword")), None)
+        best_pos = _num(primary_row.get("current_position")) if primary_row else 0
         if s.get("roadmap_priority") == "Human Review":
             decision, reason = "REVIEW", "Low confidence or mostly doubtful keywords — confirm before building."
         elif ranking_dead:

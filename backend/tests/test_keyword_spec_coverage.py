@@ -120,6 +120,27 @@ def test_decisions_cover_the_spec_vocabulary():
     assert all(s["decision_reason"] for s in summaries)
 
 
+def test_no_target_requires_the_primary_keyword_itself_to_rank_top_3():
+    # Regression (confirmed real, Geopits report, 2026-09-24 — same bug as
+    # an earlier BharatBenz fix): NO TARGET used to fire off the BEST
+    # position across every keyword in the cluster, so one easy long-tail
+    # keyword ranking top-3 marked the whole cluster "no work needed" even
+    # though the cluster's real primary keyword (850 combined searches
+    # here) wasn't ranking at all.
+    s = _summary(
+        "DBA Managed Services",
+        [("dba managed services", 850), ("oracle dba services", 140)],
+        url="https://x.com/technologies/oracle", strength="strong",
+        roadmap_priority="High", opportunity=68,
+    )
+    # Only the secondary keyword ranks well — the primary (kws[0], and
+    # therefore primary_keyword) has no ranking at all.
+    s["rows"][1]["current_position"] = 2
+    assign_decisions([s])
+    assert s["decision"] == "EXISTING URL — PRIMARY TARGET"
+    assert s["decision"] != "NO TARGET"
+
+
 # §24 / §58 cannibalization from Search Console ------------------------------------------
 def test_cannibalization_uses_search_console_pages_per_query():
     rows = [
