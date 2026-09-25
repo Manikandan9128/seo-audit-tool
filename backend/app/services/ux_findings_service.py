@@ -6,9 +6,7 @@ instead of skipping the dimension, per the report spec's Rule 8."""
 import json
 import re
 
-from app.integrations.text_ai_client import (
-    NoAIProviderConfigured, generate_text_with_image, iter_text_attempts,
-)
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 
 PROMPT_TEMPLATE = """You are a conversion-rate/UX consultant writing part of a client-facing SEO/web audit \
 report. You are given manual QA notes a reviewer wrote while walking through {client_name}'s site \
@@ -88,65 +86,10 @@ def generate_ux_findings(client_name: str, website_url: str, ux_notes: str) -> d
 # more was pure waste.
 
 
-# "UI-Level Fixes" (Issue/Where/Fix/Severity) previously only ever filled in
-# from generate_ux_findings() above, which needs a reviewer to have typed
-# manual QA notes first — no reviewer has ever done that for most clients,
-# so this slide sat on static_no_ux_pass()'s fallback message indefinitely.
-# This vision pass fills the SAME ui_fixes shape from a real homepage
-# screenshot instead, independent of the manual-notes path.
-#
-# Deliberately scoped to what's actually verifiable from a STATIC image —
-# unlike a manual walkthrough, a screenshot can't confirm a form fails to
-# submit or a checkout step is broken (that needs real interaction), so
-# this prompt only asks for visual/layout/copy-clarity issues genuinely
-# visible in the image, not invented interactive/functional bugs. Real
-# functional QA (broken checkout, non-submitting forms) still needs an
-# actual manual pass — this doesn't replace that, it fills the visual-
-# usability gap that a screenshot alone CAN honestly answer.
-UI_FIXES_PROMPT_TEMPLATE = """You are a UX/conversion consultant writing part of a client-facing SEO/web audit \
-report. Below is a real screenshot of {client_name}'s homepage ({website_url}) — treat only what is actually \
-visible in it as ground truth. Do not invent page elements, copy, or functionality you cannot see, and do not \
-claim anything about interactive behavior (form submission, checkout flow, broken links) that a static image \
-cannot verify — that needs a real manual walkthrough, which this is not a substitute for.
-
-Find concrete, visible UI-level issues on this homepage — things like: no clear single primary call-to-action \
-above the fold, low-contrast or hard-to-read text, cluttered or competing CTAs, missing visible trust signals \
-(reviews, logos, badges, security marks) near a conversion point, an overloaded or unclear navigation menu, \
-inconsistent button styling, unclear value proposition in the hero area, or a layout that looks cramped or \
-visually broken. Only report an issue you can actually point to in the image — do not pad the list with generic \
-best-practice advice that isn't tied to something visible.
-
-Write in plain, confident agency language — this is client-facing content, not an AI-generated draft. Never \
-mention that you are an AI, a language model, or any tool by name. Every sentence must be complete, with \
-terminal punctuation.
-
-Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
-{{
-  "ui_fixes": [
-    {{"issue": string, "where": string, "fix": string, "severity": "Critical" | "High" | "Medium" | "Low"}}
-  ]
-}}
-
-3 to 6 items. Mark something "Critical" only if it would plausibly block a visitor from converting at all \
-(e.g. no visible way to start the core action); a static homepage screenshot alone can rarely justify Critical \
-for a checkout/form issue specifically, since that needs real interaction to confirm — prefer "High" for a \
-serious-looking but unconfirmed-by-interaction issue instead."""
-
-
-def generate_ui_fixes_from_screenshot(client_name: str, website_url: str, screenshot_bytes: bytes, mime_type: str = "image/png") -> dict:
-    """Vision pass finding concrete UI-level issues from a real homepage
-    screenshot — independent of the manual-QA-notes path. Returns
-    {"ui_fixes": [...]} or {"error": str}."""
-    prompt = UI_FIXES_PROMPT_TEMPLATE.format(client_name=client_name, website_url=website_url)
-    try:
-        raw, _provider = generate_text_with_image(prompt, screenshot_bytes, mime_type)
-    except NoAIProviderConfigured as e:
-        return {"error": str(e)}
-
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    return data
+# "UI-Level Fixes" single-screenshot vision pass (UI_FIXES_PROMPT_TEMPLATE,
+# generate_ui_fixes_from_screenshot) removed 2026-09-25, replaced by the
+# dedicated ui_audit_capture.py / ui_audit_service.py / ui_issue_sheet_
+# export.py pipeline (two real viewports, DOM-measured page_facts, up to
+# 25 evidence-backed issues instead of a fixed 3-6, code-only validation)
+# — this file's own docstring above still describes the manual-notes-only
+# conversion_opportunities path, which that rebuild never touched.

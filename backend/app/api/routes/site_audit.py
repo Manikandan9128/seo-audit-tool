@@ -24,6 +24,7 @@ from app.integrations import google_oauth, text_ai_client
 from app.integrations.crypto import decrypt, encrypt
 from app.integrations.pagespeed_client import run_pagespeed
 from app.integrations.screenshot_client import capture_homepage_screenshots
+from app.integrations.ui_audit_capture import capture_ui_audit
 from app.models.client import Client
 from app.models.domain_rating import DomainRating
 from app.models.google_connection import GoogleConnection
@@ -54,7 +55,9 @@ from app.services.search_intent_service import generate_search_intents
 from app.services.keyword_cluster_pipeline import build_final_keyword_clusters
 from app.services.strategic_keyword_selection_service import select_strategic_clusters
 from app.services.domain_strategy_service import check_domain_strategy
-from app.services.ux_findings_service import generate_ui_fixes_from_screenshot, static_no_ux_pass
+from app.services.ux_findings_service import static_no_ux_pass
+from app.services.ui_audit_service import generate_ui_audit_issues, validate_ui_audit_issues
+from app.services.ui_issue_sheet_export import export_full_issue_list
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, classify_page_type, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_error_page, is_live_target_page, match_existing_page_for_cluster, site_entity_summary, vendor_product_pricing_reason, vendor_tokens
@@ -2333,67 +2336,99 @@ def _gather_report_data(
     # same call-site-compatibility convention as build_report's own
     # site_audit_pages_rows/page_wise_ai params) rather than touched at
     # every call site for a path that's now permanently dead. UI-Level
-    # Fixes was already always regenerated from a real screenshot
-    # regardless (2026-09-09) — untouched here.
+    # Fixes is its own pipeline below now (2026-09-25 rebuild) — untouched
+    # here beyond that; ux_findings_result["note"] still covers the case
+    # where that pipeline never ran at all (see ui_audit_result below).
     ux_findings_result = static_no_ux_pass()
 
-    # Onboarding-bias breakdown and UI-Level Fixes are both vision passes
-    # over the same real screenshot of the site's own homepage — captured
-    # once, reused for both, rather than two separate captures of the same
-    # page. Onboarding breakdown still skips itself if real ux_notes already
-    # produced one; ui_fixes never does (see above).
-    homepage_shot = None
-    # 2026-09-11: GROQ_MODEL itself is text-only, but the same free Groq key
-    # also reaches a vision-capable model (Llama 4 Scout — see
-    # GROQ_VISION_MODEL in text_ai_client.py), so a Groq-only setup can now
-    # run this pass too, not just Gemini/Claude.
+    # UI-Level Fixes rebuild (2026-09-25 spec) — Part A: capture the
+    # homepage at desktop+mobile (ui_audit_capture.capture_ui_audit),
+    # analyze it with the AI (ui_audit_service.generate_ui_audit_issues,
+    # up to 25 evidence-backed issues instead of the old fixed 3-6), then
+    # validate in code (drops empty-evidence/unsupported-overlap issues,
+    # dedupes, sorts, clamps every field). ui_audit_result stays None
+    # only when capture/analysis never ran at all (no vision key, or the
+    # site itself couldn't be reached) — build_report's own "note"
+    # fallback covers that gap, same as the old pipeline.
+    ui_audit_result = None
     vision_key_configured = bool(settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key)
-    if vision_key_configured:
-        homepage_shot = capture_homepage_screenshots([own_website_domain]).get(own_website_domain)
-    else:
+    if not vision_key_configured:
         # 2026-09-10: previously indistinguishable in the logs from a
-        # screenshot-capture failure below — this case is deterministic
-        # (no vision-capable key configured at all, so capture is never
-        # even attempted) and needs a different fix (add a Groq/Gemini/
-        # Claude key) than a capture failure (bot-blocked/timed-out for
-        # this one domain) does.
+        # capture failure below — this case is deterministic (no vision-
+        # capable key configured at all, so capture is never even
+        # attempted) and needs a different fix (add a Groq/Gemini/Claude
+        # key) than a capture failure (bot-blocked/timed-out) does.
         logger.warning(
-            "Skipping UI Fixes/Onboarding vision pass for %s — no Groq, Gemini, or Claude API key configured.",
+            "Skipping UI-Level Fixes analysis for %s — no Groq, Gemini, or Claude API key configured.",
             own_website_domain,
         )
-
-    if homepage_shot:
-        ui_fixes_result = generate_ui_fixes_from_screenshot(client.name, client.website_url, homepage_shot)
-        if ui_fixes_result.get("ui_fixes"):
-            ux_findings_result["ui_fixes"] = ui_fixes_result["ui_fixes"]
-            ux_findings_result["ui_fixes_source"] = "vision"
-        elif ui_fixes_result.get("error"):
-            # 2026-09-10: this used to be silently dropped — UI-Level Fixes
-            # would just sit on the static_no_ux_pass() fallback with
-            # nothing in the logs to say the vision call itself was the
-            # reason, not a missing screenshot.
-            logger.warning("UI fixes vision pass failed for %s: %s", client.website_url, ui_fixes_result["error"])
-            content_issues.append(f"UI-Level Fixes (vision pass): {ui_fixes_result['error']}")
-        # Onboarding Breakdown's own vision call (generate_onboarding_
-        # breakdown) removed 2026-09-25 along with its slide — the slide
-        # was cut as a near-duplicate of UI-Level Fixes above, so calling
-        # a second AI vision pass over the same screenshot for content
-        # nothing renders any more was pure waste.
-    elif vision_key_configured:
-        # A vision-capable key IS configured, so the no-key branch above
-        # already logged and this is the OTHER cause: capture itself
-        # returned nothing for this specific domain (bot-blocked, timed out
-        # even after the retry, DNS/unreachable). See screenshot_client.
-        # capture_homepage_screenshots's own warning log for the underlying
-        # exception. `elif` (not `else`) so this never double-logs alongside
-        # the no-key warning above.
-        logger.warning(
-            "Homepage screenshot capture failed for %s — UI-Level Fixes will be skipped/fallback this run.",
-            own_website_domain,
-        )
-        content_issues.append(
-            "UI-Level Fixes: homepage screenshot capture failed (bot-blocked, timed out, or unreachable)."
-        )
+    else:
+        capture = capture_ui_audit(client.website_url)
+        if not capture or not capture.get("desktop"):
+            logger.warning(
+                "UI-Level Fixes: homepage capture failed for %s — analysis skipped this run.", own_website_domain,
+            )
+            content_issues.append(
+                "UI-Level Fixes: homepage capture failed (bot-blocked, timed out, or unreachable)."
+            )
+        else:
+            desktop_facts = capture.get("desktop", {}).get("page_facts") or {}
+            mobile_facts = capture.get("mobile", {}).get("page_facts") or {}
+            device_perf = ((analytics or {}).get("device_performance") or {}).get("by_device") or {}
+            mobile_dp, desktop_dp = device_perf.get("mobile") or {}, device_perf.get("desktop") or {}
+            total_sessions = sum(d.get("sessions") or 0 for d in device_perf.values())
+            overall_bounce = None
+            if device_perf and total_sessions:
+                overall_bounce = sum((d.get("bounce_rate_pct") or 0) * (d.get("sessions") or 0) for d in device_perf.values()) / total_sessions
+            ga4_evidence = {
+                "bounce_rate_pct": overall_bounce,
+                "mobile_bounce_rate_pct": mobile_dp.get("bounce_rate_pct"),
+                "engagement_rate_pct": mobile_dp.get("engagement_rate_pct") or desktop_dp.get("engagement_rate_pct"),
+            } if device_perf else None
+            page_facts = {
+                "desktop": desktop_facts,
+                "mobile": mobile_facts,
+                "external": {
+                    "pagespeed_mobile_score": (psi_mobile or {}).get("current_score"),
+                    "pagespeed_desktop_score": (psi_desktop or {}).get("current_score"),
+                    "ga4_bounce_rate_pct": overall_bounce,
+                    "ga4_mobile_bounce_rate_pct": mobile_dp.get("bounce_rate_pct"),
+                    "cta_click_tracking_detected": bool((analytics or {}).get("conversion_evidence")),
+                },
+            }
+            images = [
+                (capture["desktop"]["first_screen_png"], "image/png"), (capture["desktop"]["full_page_png"], "image/png"),
+            ]
+            if capture.get("mobile"):
+                images += [
+                    (capture["mobile"]["first_screen_png"], "image/png"), (capture["mobile"]["full_page_png"], "image/png"),
+                ]
+            ai_result = generate_ui_audit_issues(client.name, client.website_url, company_overview_result, page_facts, images)
+            if ai_result.get("error"):
+                logger.warning("UI-Level Fixes vision pass failed for %s: %s", client.website_url, ai_result["error"])
+                content_issues.append(f"UI-Level Fixes (vision pass): {ai_result['error']}")
+            else:
+                validated = validate_ui_audit_issues(ai_result.get("issues") or [], page_facts)
+                sheet_export = export_full_issue_list(client.name, validated["issues"], db)
+                first_cta = (desktop_facts.get("ctas") or [{}])[0].get("text")
+                heatmap_detected = any(
+                    (t.get("name") or "") in ("Hotjar", "Microsoft Clarity") for t in (tech_stack_result or {}).get("detected") or []
+                )
+                ui_audit_result = {
+                    **validated,
+                    "full_list_url": sheet_export["full_list_url"],
+                    "ga4_available": bool(analytics),
+                    "ga4_evidence": ga4_evidence,
+                    "heatmap_tool_detected": heatmap_detected,
+                    "primary_cta_text": first_cta,
+                }
+                # A successful capture+analysis run (whether it found real
+                # issues or genuinely none) fully covers this dimension —
+                # the static "manual UX pass not done" note would be a
+                # redundant/contradictory second slide next to the real
+                # Top-5/Outcomes or No-Issues slide build_report renders
+                # from ui_audit_result below.
+                ux_findings_result.pop("note", None)
 
     # SEO Issues slide's AI insights (headline/root-cause bullets/executive
     # takeaway, 2026-09-10 user spec) — computed from the SAME classification
@@ -2722,6 +2757,7 @@ def _gather_report_data(
         "competitor_analysis": competitor_analysis_result,
         "domain_strategy": domain_strategy_result,
         "ux_findings": ux_findings_result,
+        "ui_audit": ui_audit_result,
         "geopulse_analysis": geopulse_analysis_result,
         "content_generation_issues": content_issues,
     }
