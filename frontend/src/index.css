@@ -335,6 +335,64 @@ input:focus, select:focus {
   flex: 1;
 }
 
+/* Welcome panel (2026-09-25, 2nd of the 3 deferred New User Experience
+   items) — one-time dismissible card, main content area (distinct from
+   the always-there sidebar help box), shown until dismissed once. */
+.welcome-panel {
+  margin-bottom: var(--sp-6, 24px);
+  border-color: var(--accent);
+}
+.welcome-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.welcome-panel-dismiss {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.welcome-panel-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+.welcome-panel-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.welcome-panel-step-num {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.welcome-panel-step-title {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.welcome-panel-step-detail {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
 .clients-empty {
   text-align: center;
   color: var(--text-muted);

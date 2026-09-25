@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
+import WelcomePanel from "../components/WelcomePanel";
 
 interface Client {
   id: string;
@@ -67,6 +68,7 @@ export default function ClientListPage() {
 
   return (
     <div className="clients-page">
+      <WelcomePanel />
       <div className="clients-header">
         <div>
           <p className="eyebrow" style={{ margin: "0 0 4px" }}>
