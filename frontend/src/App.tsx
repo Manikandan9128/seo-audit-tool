@@ -4,6 +4,7 @@ import LoginPage from "./auth/LoginPage";
 import ClientListPage from "./clients/ClientListPage";
 import ClientDetailPage from "./clients/ClientDetailPage";
 import SettingsPage from "./settings/SettingsPage";
+import DownloadedReportsPage from "./reports/DownloadedReportsPage";
 import Layout from "./components/Layout";
 import ToastProvider from "./components/ToastProvider";
 import ReportReadinessProvider from "./components/ReportReadinessProvider";
@@ -39,6 +40,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <SettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/downloaded-reports"
+        element={
+          <ProtectedRoute>
+            <DownloadedReportsPage />
           </ProtectedRoute>
         }
       />

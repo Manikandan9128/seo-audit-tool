@@ -42,5 +42,12 @@ class ReportGenerationJob(Base):
     # agency user sees it in the app before deciding whether to regenerate
     # or send the file as-is.
     content_generation_issues: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Set once, the first time this job's file is actually fetched via the
+    # /download endpoint — never moved on a later re-download of the same
+    # job (2026-09-25: the sidebar's "Downloaded Reports" list needs to
+    # tell a fresh generate+download apart from someone re-downloading the
+    # same morning's report five times, which is a different job never
+    # created, not five new entries).
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

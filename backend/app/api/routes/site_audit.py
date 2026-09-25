@@ -3321,9 +3321,44 @@ def download_generate_report_job(
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status != "done":
         raise HTTPException(status_code=409, detail=f"Report not ready yet (status: {job.status})")
+    if job.downloaded_at is None:
+        # First fetch of this job's file only — a re-download of the same
+        # already-generated report must never move this timestamp or read
+        # as a second "fresh" entry in the Downloaded Reports list.
+        job.downloaded_at = datetime.now(timezone.utc)
+        db.commit()
     return Response(
         content=job.pptx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{job.filename}"'},
     )
+
+
+@router.get("/reports/downloaded")
+def list_downloaded_reports(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sidebar "Downloaded Reports" feed (2026-09-25) — one row per
+    report_generation_jobs row that was actually generated AND fetched at
+    least once via the download endpoint above, most recent first. A job
+    fetched five times still shows once, anchored to its first download —
+    that's the whole point (a fresh generate+download vs. re-downloading
+    the same morning's report repeatedly)."""
+    rows = (
+        db.query(ReportGenerationJob, Client.name)
+        .join(Client, Client.id == ReportGenerationJob.client_id)
+        .filter(Client.owner_user_id == current_user.id, ReportGenerationJob.downloaded_at.isnot(None))
+        .order_by(ReportGenerationJob.downloaded_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "job_id": job.id, "client_id": job.client_id, "client_name": client_name,
+            "filename": job.filename, "downloaded_at": job.downloaded_at,
+        }
+        for job, client_name in rows
+    ]
 
