@@ -25,10 +25,20 @@ function filenameFrom(disposition: string | undefined, fallback: string) {
   return plain ? plain[1] : fallback;
 }
 
+function isToday(iso: string): boolean {
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
+
 export default function DownloadedReportsPage() {
   const [reports, setReports] = useState<DownloadedReport[] | null>(null);
   const [error, setError] = useState("");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  // Defaults to Today — this filter exists specifically so a fresh
+  // generate+download can be checked against this tab right away without
+  // scrolling past older rows.
+  const [scope, setScope] = useState<"today" | "all">("today");
 
   useEffect(() => {
     api
@@ -60,6 +70,8 @@ export default function DownloadedReportsPage() {
     }
   }
 
+  const visible = reports?.filter((r) => scope === "all" || isToday(r.downloaded_at)) ?? null;
+
   return (
     <div className="clients-page">
       <div className="clients-header">
@@ -70,15 +82,36 @@ export default function DownloadedReportsPage() {
         </p>
       </div>
 
+      {reports && reports.length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <button
+            className={`btn ${scope === "today" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setScope("today")}
+          >
+            Today
+          </button>
+          <button
+            className={`btn ${scope === "all" ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setScope("all")}
+          >
+            All
+          </button>
+        </div>
+      )}
+
       {error && <div className="card" style={{ color: "#b91c1c" }}>{error}</div>}
 
       {reports === null && !error && <p className="muted">Loading...</p>}
+
+      {reports && reports.length > 0 && visible && visible.length === 0 && (
+        <p className="muted">No reports downloaded today yet.</p>
+      )}
 
       {reports && reports.length === 0 && (
         <p className="muted">No reports downloaded yet.</p>
       )}
 
-      {reports && reports.length > 0 && (
+      {visible && visible.length > 0 && (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
@@ -90,7 +123,7 @@ export default function DownloadedReportsPage() {
               </tr>
             </thead>
             <tbody>
-              {reports.map((r) => (
+              {visible.map((r) => (
                 <tr key={r.job_id} style={{ borderBottom: "1px solid var(--border, #f0f0f0)" }}>
                   <td style={{ padding: "10px 16px" }}>
                     <Link to={`/clients/${r.client_id}`}>{r.client_name}</Link>
