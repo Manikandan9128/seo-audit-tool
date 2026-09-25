@@ -24,6 +24,7 @@ import type { PrepSection } from "../reportJobs";
 import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourceModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
+import Tip from "../components/Tip";
 
 // Redesign v3 stage 2 — decorative section-row icon anchors, purely for
 // scannability (never repeated as a data-encoding color elsewhere).
@@ -595,7 +596,6 @@ export default function ClientDetailPage() {
           display: "flex",
           flexDirection: "column",
           gap: 4,
-          borderTop: `3px solid ${hasData ? "var(--success)" : "var(--border-strong)"}`,
         }}
       >
         <div
@@ -609,13 +609,13 @@ export default function ClientDetailPage() {
             userSelect: "none",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span
               style={{
                 display: "inline-block",
                 transition: "transform 0.15s ease",
                 transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)",
-                color: "var(--text-muted)",
+                color: "var(--muted)",
                 fontSize: 12,
               }}
             >
@@ -624,15 +624,18 @@ export default function ClientDetailPage() {
             {SECTION_ICONS[sectionKey] && (
               <span className={`section-icon${hasData ? " ready" : ""}`}>{SECTION_ICONS[sectionKey]}</span>
             )}
-            <h3 style={{ margin: 0, fontSize: 17 }}>{title}</h3>
+            <h3 style={{ margin: 0, fontSize: 19, fontFamily: "var(--font-display)", fontWeight: 600 }}>{title}</h3>
           </div>
           <span className={`badge ${status.cls}`}>{status.label}</span>
         </div>
+        {/* Always visible, even collapsed (Cyces editorial spec, NUE §7) —
+            a one-line orientation for what this section covers shouldn't
+            need an expand click to read. */}
+        <p style={{ color: "var(--muted)", fontSize: 12.5, margin: "2px 0 0" }}>{description}</p>
         {!collapsed && (
           <>
-            <p style={{ color: "var(--text-muted)", fontSize: 13, margin: "2px 0 0" }}>{description}</p>
             {!loading && !hasData && (
-              <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 10, fontStyle: "italic" }}>
+              <p style={{ fontSize: 13, color: "var(--muted)", marginTop: 10, fontStyle: "italic" }}>
                 Not generated yet — check this section and click Generate Report.
               </p>
             )}
@@ -677,8 +680,15 @@ export default function ClientDetailPage() {
             <p className="eyebrow" style={{ margin: "0 0 4px" }}>
               Client
             </p>
-            <h2 style={{ margin: 0 }}>{client.name}</h2>
-            <p style={{ color: "var(--text-muted)", margin: "4px 0 0", fontSize: 13.5 }}>{client.website_url}</p>
+            <h2 style={{ margin: 0, fontSize: 40 }}>{client.name}</h2>
+            <a
+              href={client.website_url}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "var(--accent-deep)", margin: "4px 0 0", fontSize: 13.5, display: "inline-block" }}
+            >
+              {client.website_url.replace(/^https?:\/\//, "")}
+            </a>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "flex-start", position: "relative", flexWrap: "wrap" }}>
             <div style={{ position: "relative" }}>
@@ -933,7 +943,9 @@ export default function ClientDetailPage() {
                 <div className="kpi-icon">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><rect x="7" y="12" width="3" height="6" rx="1" fill="currentColor" /><rect x="12" y="8" width="3" height="10" rx="1" fill="currentColor" /><rect x="17" y="5" width="3" height="13" rx="1" fill="currentColor" /></svg>
                 </div>
-                <span className="kpi-label">Domain Rating</span>
+                <Tip text="A 0-100 score estimating how strong this domain's overall backlink profile is compared to others.">
+                  <span className="kpi-label">Domain Rating</span>
+                </Tip>
               </div>
               <div className="kpi-value">{ownDrRow ? ownDrRow.dr : "—"}</div>
               <div className="kpi-sub">
@@ -951,7 +963,9 @@ export default function ClientDetailPage() {
                 <div className="kpi-icon">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 007.07 0l2.83-2.83a5 5 0 00-7.07-7.07L11.5 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M14 11a5 5 0 00-7.07 0L4.1 13.83a5 5 0 007.07 7.07l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
                 </div>
-                <span className="kpi-label">Backlinks tracked</span>
+                <Tip text="Links from other websites pointing to this one — a core signal search engines use to judge authority.">
+                  <span className="kpi-label">Backlinks tracked</span>
+                </Tip>
               </div>
               <div className="kpi-value">{backlinksTracked.toLocaleString()}</div>
               <div className="kpi-sub">
@@ -968,7 +982,9 @@ export default function ClientDetailPage() {
                 <div className="kpi-icon">
                   <svg viewBox="0 0 24 24" fill="none"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="7" r="4" stroke="currentColor" strokeWidth="2" /><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
                 </div>
-                <span className="kpi-label">Competitors tracked</span>
+                <Tip text="Other domains you're comparing this site against for rankings, backlinks, and keyword coverage.">
+                  <span className="kpi-label">Competitors tracked</span>
+                </Tip>
               </div>
               <div className="kpi-value">{competitorsTrackedCount}</div>
               <div className="kpi-sub">
@@ -1000,33 +1016,34 @@ export default function ClientDetailPage() {
           {
             n: 1,
             label: "Connect Google (GA4 / Search Console)",
-            hint: "Optional — enables the Analytics section",
+            time: "1 min",
             done: client.google_connected && !!(client.ga4_property_id || client.gsc_site_url),
             onClick: () => goToTab("analytics"),
           },
           {
             n: 2,
             label: "Upload Semrush data",
-            hint: "Optional — competitor & keyword slides",
+            time: "3 min",
             done: imports.length > 0,
             onClick: () => goToTab("datasources"),
           },
           {
             n: 3,
             label: "Pick sections & Generate Report",
-            hint: "Runs every checked section above",
+            time: "2 min",
             done: hasGenerated,
             onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
           },
           {
             n: 4,
             label: "Preview & Download",
-            hint: "Review, then export the PPTX",
+            time: "1 min",
             done: hasDownloaded,
             onClick: () => window.scrollTo({ top: 0, behavior: "smooth" }),
           },
         ];
         const doneCount = steps.filter((s) => s.done).length;
+        const currentIndex = steps.findIndex((s) => !s.done);
         return (
           <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="card-title-row" style={{ alignItems: "center", justifyContent: "space-between", marginBottom: 0 }}>
@@ -1042,13 +1059,13 @@ export default function ClientDetailPage() {
                 {doneCount} of {steps.length} done
               </span>
             </div>
-            <div style={{ height: 4, borderRadius: 2, background: "var(--border-strong)", overflow: "hidden" }}>
+            <div style={{ height: 2, borderRadius: 0, background: "var(--rule)", overflow: "hidden" }}>
               <div
                 style={{
                   height: "100%",
                   width: `${(doneCount / steps.length) * 100}%`,
-                  background: "var(--success)",
-                  transition: "width 0.3s ease",
+                  background: "var(--ok)",
+                  transition: "width 0.15s ease",
                 }}
               />
             </div>
@@ -1084,61 +1101,101 @@ export default function ClientDetailPage() {
                     />
                   ))}
                 </div>
-                {steps.map((step, i) => (
-                  <div
-                    key={step.n}
-                    style={{
-                      gridColumn: i + 1,
-                      gridRow: 1,
-                      display: "flex",
-                      justifyContent: "center",
-                    }}
-                  >
-                    <span
+                {steps.map((step, i) => {
+                  const isCurrent = i === currentIndex;
+                  return (
+                    <div
+                      key={step.n}
                       style={{
-                        flexShrink: 0,
-                        width: 24,
-                        height: 24,
-                        borderRadius: "50%",
+                        gridColumn: i + 1,
+                        gridRow: 1,
                         display: "flex",
-                        alignItems: "center",
                         justifyContent: "center",
-                        fontSize: 12,
-                        fontWeight: 700,
-                        color: step.done ? "#fff" : "var(--text-muted)",
-                        background: step.done ? "var(--success)" : "var(--border-strong)",
-                        zIndex: 1,
                       }}
                     >
-                      {step.done ? "✓" : step.n}
-                    </span>
-                  </div>
-                ))}
-                {steps.map((step, i) => (
-                  <button
-                    key={step.n}
-                    className="step-btn"
-                    onClick={step.onClick}
-                    style={{
-                      gridColumn: i + 1,
-                      gridRow: 2,
-                      marginTop: 8,
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      textAlign: "center",
-                      background: "none",
-                      border: "none",
-                      padding: "0 8px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <span style={{ fontSize: 13.5, fontWeight: 600, color: step.done ? "var(--text-muted)" : "inherit" }}>
-                      {step.label}
-                    </span>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{step.hint}</span>
-                  </button>
-                ))}
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          width: 24,
+                          height: 24,
+                          borderRadius: "50%",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontFamily: "var(--font-display)",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: step.done ? "#fff" : isCurrent ? "var(--accent-deep)" : "var(--muted)",
+                          background: step.done ? "var(--ok)" : isCurrent ? "var(--accent-wash)" : "transparent",
+                          border: step.done ? "none" : isCurrent ? "2px solid var(--accent)" : "1px solid var(--rule-strong)",
+                          boxShadow: isCurrent ? "0 0 0 4px var(--accent-misty)" : "none",
+                          zIndex: 1,
+                        }}
+                      >
+                        {step.done ? "✓" : step.n}
+                      </span>
+                    </div>
+                  );
+                })}
+                {steps.map((step, i) => {
+                  const isCurrent = i === currentIndex;
+                  return (
+                    <button
+                      key={step.n}
+                      className="step-btn"
+                      onClick={step.onClick}
+                      style={{
+                        gridColumn: i + 1,
+                        gridRow: 2,
+                        marginTop: 8,
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        textAlign: "center",
+                        background: isCurrent ? "var(--accent-wash)" : "none",
+                        border: "none",
+                        borderRadius: "var(--radius-sm)",
+                        padding: "6px 8px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span style={{ fontSize: 13.5, fontWeight: 600, color: step.done ? "var(--muted)" : "var(--ink)" }}>
+                        {step.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10.5,
+                          fontWeight: 500,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.1em",
+                          color: step.done ? "var(--muted)" : isCurrent ? "var(--accent-deep)" : "var(--muted)",
+                          marginTop: 4,
+                        }}
+                      >
+                        {step.done ? "Done" : isCurrent ? `Next up · about ${step.time}` : `About ${step.time}`}
+                      </span>
+                    </button>
+                  );
+                })}
+                {steps.map((step, i) =>
+                  i === currentIndex ? (
+                    <button
+                      key={`start-${step.n}`}
+                      className="btn btn-primary"
+                      onClick={step.onClick}
+                      style={{
+                        gridColumn: i + 1,
+                        gridRow: 3,
+                        justifySelf: "center",
+                        marginTop: 6,
+                        padding: "3px 12px",
+                        fontSize: 11,
+                      }}
+                    >
+                      Start this step
+                    </button>
+                  ) : null
+                )}
               </div>
             </div>
           </div>

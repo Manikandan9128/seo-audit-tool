@@ -1,65 +1,68 @@
 :root {
-  /* ---- Design-system tokens (2026-09 redesign) ---- */
-  /* v4 palette (2026-09-23) — values per seo-audit-tool-redesign-v4. */
-  --color-bg: #F8FAFC;
-  --color-page-plane: #F3F4FA;
+  /* ---- Design-system tokens ---- */
+  /* Cyces editorial palette (2026-09-24) — classic/restrained, replaces the
+     v4 indigo/violet system above. Warm black + Cyces orange as the only
+     accent; everything else warm neutrals. No gradients, no glows, no
+     heavy shadows — see --shadow-card below (kept at zero; structure comes
+     from --color-border hairlines instead). Values per growth.cyces.co. */
+  --color-bg: #F6F3F0;
+  --color-page-plane: #F6F3F0;
   --color-surface: #FFFFFF;
-  --color-border: #E5E7F0;
-  --color-border-soft: #EEF0F7;
-  --color-border-strong: #CBD5E1;
-  --color-text-primary: #0F1222;
-  --color-text-secondary: #63667D;
-  /* Spec value #9698AC fails AA as text (2.8:1); darkened to pass on
-     both white cards and the page plane. Hierarchy comes from size. */
-  --color-text-tertiary: #6B6D7B;
-  --color-primary: #4F46E5;
-  --color-primary-2: #8B5CF6;
-  --color-primary-hover: #4338CA;
-  --color-primary-subtle: #EEF0FF;
-  --color-secondary-bg: #F1F2FA;
-  --color-secondary-bg-hover: #E6E7F5;
+  --color-border: #EBE7E3;
+  --color-border-soft: #EBE7E3;
+  --color-border-strong: #D9D2CB;
+  --color-text-primary: #1D1D1D;
+  --color-text-secondary: #5A4E49;
+  --color-text-tertiary: #8C817B;
+  --color-primary: #EB742E;
+  --color-primary-2: #EB742E;
+  --color-primary-hover: #C4581B;
+  --color-primary-subtle: #FFF7F2;
+  --color-secondary-bg: #F6F3F0;
+  --color-secondary-bg-hover: #FFF7F2;
   /* Status colors — flat only, always paired with icon + label, never
-     gradient, never decorative. */
-  --color-danger: #E23636;
-  --color-danger-subtle: #FEF0F0;
-  --color-success: #16A34A;
-  --color-success-subtle: #EFFCF3;
-  --color-warning: #D97706;
-  --color-warning-subtle: #FFF9EC;
-  /* Text-on-tint variants: the flat status colors above fall to ~3:1 on
-     their own subtle backgrounds, so status TEXT uses these (AA 4.6:1+). */
-  --color-success-text: #11823B;
+     gradient, never decorative. Cyces green for "Ready"/completed; danger/
+     warning kept close to the old hues (never specified by the brief) so
+     existing error/warning UI stays legible against the new warm ground. */
+  --color-danger: #C0392B;
+  --color-danger-subtle: #FCEEEC;
+  --color-success: #006E5E;
+  --color-success-subtle: #E7FFF3;
+  --color-warning: #AB5E04;
+  --color-warning-subtle: #FFF3E0;
+  --color-success-text: #006E5E;
   --color-warning-text: #AB5E04;
-  --color-danger-text: #CD3131;
+  --color-danger-text: #C0392B;
 
-  /* Brand/action gradient — primary buttons, progress fills, leaderboard
-     top-3 bars. Never used for status. */
-  --gradient-primary: linear-gradient(135deg, var(--color-primary), var(--color-primary-2));
-  --gradient-primary-h: linear-gradient(90deg, var(--color-primary), var(--color-primary-2));
-  --gradient-success-h: linear-gradient(90deg, var(--color-success), #34D399);
-  --primary-glow: rgba(99, 80, 238, 0.30);
-  --shadow-primary-glow: 0 4px 14px var(--primary-glow);
-  --shadow-primary-glow-hover: 0 8px 22px var(--primary-glow);
+  /* Cyces orange is the only accent — no brand gradient. Kept as flat
+     colors (never a linear-gradient) so any component still reading
+     --gradient-primary paints a solid orange instead of two-tone. */
+  --gradient-primary: var(--color-primary);
+  --gradient-primary-h: var(--color-primary);
+  --gradient-success-h: var(--color-success);
+  --primary-glow: transparent;
+  --shadow-primary-glow: none;
+  --shadow-primary-glow-hover: none;
 
-  /* Dark sidebar (used from stage 2). */
-  --sidebar-1: #181433;
-  --sidebar-2: #0A0818;
-  --sidebar-text: #E7E5F7;
-  --sidebar-text-dim: #A9A5CC;
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  /* Decorative icon-anchor tints only (redesign v3 stage 2) — never used
-     to encode status or data; success/warning/danger above already carry
-     every meaningful state in this UI. */
-  --accent-teal: #0D9488;
-  --accent-teal-subtle: #F0FDFA;
-  --accent-violet: #7C3AED;
-  --accent-violet-subtle: #F5F3FF;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 18px;
-  --shadow-card: 0 1px 1px rgba(15, 18, 34, 0.03), 0 10px 28px -8px rgba(15, 18, 34, 0.10);
-  --shadow-card-hover: 0 1px 1px rgba(15, 18, 34, 0.04), 0 18px 36px -10px rgba(15, 18, 34, 0.16);
-  --shadow-pop: 0 16px 40px rgba(15, 18, 34, 0.30);
+  /* Sidebar — solid warm black, no gradient (spec: --side #151517). */
+  --sidebar-1: #151517;
+  --sidebar-2: #151517;
+  --sidebar-text: #F5F5F5;
+  --sidebar-text-dim: #A9A9A9;
+  --sidebar-border: #2A2A2C;
+  /* Decorative icon-anchor tints — the brief allows only one accent color,
+     so these fold to the same warm-neutral/orange system rather than
+     introducing teal/violet. */
+  --accent-teal: #5A4E49;
+  --accent-teal-subtle: #F6F3F0;
+  --accent-violet: #C4581B;
+  --accent-violet-subtle: #FFF7F2;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --shadow-card: none;
+  --shadow-card-hover: none;
+  --shadow-pop: 0 8px 24px rgba(29, 29, 29, 0.16);
 
   /* ---- Spacing scale (v3 stage 1; v4 applies it everywhere) ----
      Every redesigned-in-v3 component must read one of these instead of an
@@ -102,9 +105,30 @@
   --danger: var(--color-danger);
   --danger-soft: var(--color-danger-subtle);
   --radius: var(--radius-md);
-  --font-display: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-body: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Cyces editorial type system: serif (Cormorant Garamond) carries
+     headings/big numbers, Poppins carries body/UI — see index.html's font
+     link. */
+  --font-display: "Cormorant Garamond", Georgia, serif;
+  --font-body: "Poppins", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Poppins", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* ---- Cyces brief's own variable names, verbatim ----
+     For component CSS written/touched during the 2026-09-24 reskin —
+     prefer these exact names over the legacy aliases above, which
+     approximate but don't 1:1 match the brief (e.g. --accent-soft above is
+     the wash tint, not the misty-rose halo the brief means by that name). */
+  --side: #151517;
+  --ink: #1D1D1D;
+  --ink-soft: #5A4E49;
+  --muted: #8C817B;
+  --paper: #F6F3F0;
+  --rule: #EBE7E3;
+  --rule-strong: #D9D2CB;
+  --accent-deep: #C4581B;
+  --accent-misty: #FFE4D4;
+  --accent-wash: #FFF7F2;
+  --ok: #006E5E;
+  --ok-soft: #E7FFF3;
   font-family: var(--font-body);
 }
 
@@ -387,33 +411,42 @@ input:focus, select:focus {
   justify-content: space-between;
 }
 
+/* Outlined uppercase status label (2026-09-24 Cyces reskin) — same
+   treatment as .badge-ready/.badge-pending above. */
 .badge {
   display: inline-block;
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
 }
 .badge.success {
-  background: var(--success-soft);
-  color: var(--color-success-text);
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-color: var(--ok);
 }
 .badge.muted {
-  background: #f1f0ea;
-  color: var(--text-muted);
+  background: var(--paper);
+  color: var(--muted);
+  border-color: var(--rule-strong);
 }
 .badge.danger {
   background: var(--danger-soft);
   color: var(--color-danger-text);
+  border-color: var(--color-danger);
 }
 
 /* ---- article-style report ---- */
 .eyebrow {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--muted);
+  font-weight: 500;
   margin: 0 0 6px;
 }
 
@@ -698,65 +731,71 @@ td.mono {
   transition: box-shadow 0.15s ease, border-color 0.15s ease;
 }
 .card-interactive:hover {
-  border-color: var(--color-border-strong);
-  box-shadow: var(--shadow-card-hover);
+  border-color: var(--rule-strong);
+  background: var(--accent-wash);
+  box-shadow: none;
 }
 
 /* =====================================================================
    Redesign v3 — Stage 3: KPI snapshot strip (point 1).
    ===================================================================== */
 
+/* One white strip, 4 columns divided by vertical hairlines — not 4
+   separate shadowed cards (2026-09-24 Cyces reskin). */
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: var(--sp-5);
-  /* Spacing below comes from the parent .stack-cards gap. */
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
   margin-bottom: 0;
 }
 @media (max-width: 900px) {
   .kpi-row {
     grid-template-columns: repeat(2, 1fr);
   }
+  .kpi-tile:nth-child(odd) { border-right: 1px solid var(--rule); }
+  .kpi-tile:nth-child(-n+2) { border-bottom: 1px solid var(--rule); }
 }
 .kpi-tile {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  padding: var(--sp-6);
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--rule);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 22px 24px;
+}
+.kpi-tile:last-child {
+  border-right: none;
 }
 .kpi-top {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  margin-bottom: var(--sp-4);
+  margin-bottom: var(--sp-2);
 }
+/* No colored icon tiles (2026-09-24 — DESIGN PRINCIPLES avoid list). */
 .kpi-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.kpi-icon svg {
-  width: 17px;
-  height: 17px;
+  display: none;
 }
 .kpi-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
 }
-/* Standalone hero number, not a table column — no tabular-nums here
-   (reserved for table cells like .dr-num), per the v3 spec's distinction. */
+/* Big serif stat number — 42px per the type scale. */
 .kpi-value {
-  font-size: 27px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--color-text-primary);
-  margin-bottom: 5px;
+  font-family: var(--font-display);
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
+  color: var(--ink);
+  margin-bottom: 6px;
 }
 .kpi-sub {
   font-size: 12px;
@@ -773,22 +812,21 @@ td.mono {
   color: var(--color-success-text);
 }
 .kpi-bar-track {
-  height: 5px;
-  background: var(--color-secondary-bg);
-  border-radius: 999px;
+  height: 2px;
+  background: var(--rule);
+  border-radius: 0;
   overflow: hidden;
   margin-top: var(--sp-3);
 }
 .kpi-bar-fill {
   height: 100%;
-  border-radius: 999px;
+  border-radius: 0;
 }
 
 /* =====================================================================
-   Redesign v3 — Stage 2: card/section icon anchors (point 2).
-   Purely additive scanning aid — decorative tint only, never repeated as
-   a data-encoding color elsewhere on the page. Default tint is indigo
-   (--color-primary-subtle); .teal/.violet/.success are the alternates.
+   Cyces reskin (2026-09-24): no colored icon tiles (DESIGN PRINCIPLES
+   avoid list) — hidden rather than edited at every call site. Card
+   titles carry hierarchy through the serif display face instead.
    ===================================================================== */
 
 .card-title-row {
@@ -798,41 +836,19 @@ td.mono {
   margin-bottom: var(--sp-1);
 }
 .card-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-}
-.card-icon svg {
-  width: 17px;
-  height: 17px;
-}
-.card-icon.teal {
-  background: var(--accent-teal-subtle);
-  color: var(--accent-teal);
-}
-.card-icon.violet {
-  background: var(--accent-violet-subtle);
-  color: var(--accent-violet);
-}
-.card-icon.success {
-  background: var(--color-success-subtle);
-  color: var(--color-success-text);
+  display: none;
 }
 .card-title-text {
-  padding-top: 3px;
+  padding-top: 0;
   min-width: 0;
 }
 .card-title {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
   margin: 0;
+  color: var(--ink);
 }
 .card-desc {
   font-size: 12.5px;
@@ -845,24 +861,9 @@ td.mono {
   margin-top: var(--sp-5);
 }
 
+/* No colored icon tiles (2026-09-24 — DESIGN PRINCIPLES avoid list). */
 .section-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  background: var(--color-secondary-bg);
-  color: var(--color-text-secondary);
-}
-.section-icon svg {
-  width: 15px;
-  height: 15px;
-}
-.section-icon.ready {
-  background: var(--color-success-subtle);
-  color: var(--color-success-text);
+  display: none;
 }
 
 /* ---- Sidebar logout — compact, not a full CTA-sized button ---- */
@@ -895,47 +896,35 @@ td.mono {
 }
 
 /* ---- Status badges: icon + color as the dominant signal (point 8) ---- */
+/* Outlined uppercase status labels, no fill icon (2026-09-24 Cyces
+   reskin) — near-square corners, matches the global radius rule. */
 .badge-ready,
 .badge-pending,
 .badge-neutral {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11.5px;
-  font-weight: 700;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
   padding: 4px 10px;
-  border-radius: 999px;
-  letter-spacing: 0.01em;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  letter-spacing: 0.08em;
 }
 .badge-ready::before,
 .badge-pending::before {
-  content: "";
-  width: 11px;
-  height: 11px;
-  flex-shrink: 0;
-  background: currentColor;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: contain;
-  mask-size: contain;
-  -webkit-mask-position: center;
-  mask-position: center;
+  content: none;
 }
 .badge-ready {
-  background: var(--color-success-subtle);
-  color: var(--color-success-text);
-}
-.badge-ready::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E");
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-color: var(--ok);
 }
 .badge-pending {
-  background: var(--color-warning-subtle);
-  color: var(--color-warning-text);
-}
-.badge-pending::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E");
+  background: var(--accent-wash);
+  color: var(--accent-deep);
+  border-color: var(--accent);
 }
 .badge-neutral {
   background: var(--color-secondary-bg);
@@ -1472,7 +1461,7 @@ table.matrix th:first-child {
   display: flex;
 }
 .sidebar {
-  width: 240px;
+  width: 232px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -1481,31 +1470,9 @@ table.matrix th:first-child {
   height: 100vh;
   overflow: hidden;
   padding: var(--sp-6) var(--sp-4) var(--sp-4);
-  background: linear-gradient(175deg, var(--sidebar-1) 0%, var(--sidebar-2) 85%);
+  /* Solid warm black — no gradient, no glow blobs (2026-09-24 Cyces reskin). */
+  background: var(--side);
   color: var(--sidebar-text);
-}
-/* Two soft violet glow blobs, off-canvas — depth only, pointer-inert. */
-.sidebar::before,
-.sidebar::after {
-  content: "";
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
-  filter: blur(8px);
-}
-.sidebar::before {
-  top: -120px;
-  right: -140px;
-  width: 320px;
-  height: 320px;
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.30), transparent 70%);
-}
-.sidebar::after {
-  bottom: -100px;
-  left: -100px;
-  width: 260px;
-  height: 260px;
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.22), transparent 70%);
 }
 .sidebar > * {
   position: relative;
@@ -1524,111 +1491,68 @@ table.matrix th:first-child {
 .brand-mark {
   width: 32px;
   height: 32px;
-  border-radius: 9px;
-  background: var(--gradient-primary);
-  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.45);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  box-shadow: none;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-weight: 800;
-  font-size: 13px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
   flex-shrink: 0;
 }
 .brand-name {
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: -0.01em;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 17px;
+  line-height: 1.15;
+  letter-spacing: 0;
   color: #fff;
+}
+.brand-sub {
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--sidebar-text-dim);
+  margin-top: 1px;
 }
 .sidebar-nav {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: 2px;
 }
+/* Text-only — no icons, no pill background on hover/active (2026-09-24). */
 .nav-item {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: 10px var(--sp-3);
-  border-radius: var(--radius-sm);
+  padding: 9px var(--sp-3);
+  border-left: 2px solid transparent;
+  border-radius: 0;
   color: var(--sidebar-text-dim);
   font-weight: 500;
   font-size: 13.5px;
   text-decoration: none;
   position: relative;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.nav-item svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: transparent;
   color: #fff;
   text-decoration: none;
 }
 .nav-item.active {
-  background: linear-gradient(90deg, rgba(139, 92, 246, 0.28), rgba(139, 92, 246, 0.06));
+  background: transparent;
+  border-left-color: var(--accent);
   color: #fff;
   font-weight: 600;
-  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.35);
-}
-/* Glowing left accent bar on the active item. */
-.nav-item.active::before {
-  content: "";
-  position: absolute;
-  left: calc(var(--sp-4) * -1);
-  top: 6px;
-  bottom: 6px;
-  width: 3px;
-  background: linear-gradient(180deg, var(--color-primary-2), var(--color-primary));
-  border-radius: 0 3px 3px 0;
-  box-shadow: 0 0 10px rgba(139, 92, 246, 0.7);
+  box-shadow: none;
 }
 
-.sidebar-progress {
-  margin-top: var(--sp-5);
-  padding: var(--sp-4);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--sidebar-border);
-  border-radius: var(--radius-md);
-}
-.sidebar-progress-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--sp-2);
-}
-.sidebar-progress-label {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--sidebar-text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.sidebar-progress-frac {
-  font-size: 11px;
-  font-weight: 700;
-  color: #fff;
-}
-.sidebar-progress-track {
-  height: 6px;
-  background: rgba(255, 255, 255, 0.09);
-  border-radius: 999px;
-  overflow: hidden;
-}
-.sidebar-progress-fill {
-  height: 100%;
-  background: var(--gradient-success-h);
-  border-radius: 999px;
-  box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
-  transition: width 0.2s ease;
-}
-/* Footer container only — the logout button inside keeps its own
-   pinned pre-v4 styles (user rule). */
 .sidebar-footer {
   margin-top: var(--sp-4);
   padding-top: var(--sp-4);
@@ -1641,20 +1565,9 @@ table.matrix th:first-child {
   position: relative;
   padding: var(--sp-7) var(--sp-6);
 }
-/* Atmospheric only: ~8% violet wash behind the header; never under
-   text at a strength that affects contrast, never interactive. */
+/* No atmospheric wash — classic/restrained, no gradients (2026-09-24). */
 .ambient-wash {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 640px;
-  max-width: 100%;
-  height: 420px;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse at top right, rgba(139, 92, 246, 0.08), transparent 60%),
-    radial-gradient(ellipse at 30% 0%, rgba(79, 70, 229, 0.06), transparent 55%);
+  display: none;
 }
 .app-main > .app-main-content {
   position: relative;
@@ -1665,61 +1578,50 @@ table.matrix th:first-child {
     width: 208px;
   }
 }
+@media (max-width: 900px) {
+  .app-shell {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: relative;
+    flex-direction: row;
+    align-items: center;
+    padding: var(--sp-3) var(--sp-4);
+    overflow-x: auto;
+  }
+  .brand { padding: 0 var(--sp-4) 0 0; }
+  .sidebar-nav { flex-direction: row; flex: none; }
+  .nav-item { border-left: none; border-bottom: 2px solid transparent; }
+  .nav-item.active { border-left-color: transparent; border-bottom-color: var(--accent); }
+  .sidebar-footer { margin-top: 0; padding-top: 0; border-top: none; margin-left: auto; }
+}
 
 /* =====================================================================
-   Redesign v4 — Stage 3: KPI snapshot strip. 36px gradient-tinted icon,
-   32px proportional hero number, soft corner tint. Static info tiles —
-   deliberately NO hover lift (spec: lift only on interactive elements).
+   Cyces reskin (2026-09-24) — flat strip tile: no corner tint, no
+   gradient icon, serif hero number. Static info tiles — no hover lift.
    ===================================================================== */
 
 .kpi-tile {
   position: relative;
-  overflow: hidden;
-  border-color: var(--color-border-soft);
+  overflow: visible;
 }
 .kpi-tile::after {
-  content: "";
-  position: absolute;
-  top: -30px;
-  right: -30px;
-  width: 100px;
-  height: 100px;
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--kpi-tint, rgba(79, 70, 229, 0.12)), transparent 70%);
-  pointer-events: none;
+  content: none;
 }
 .kpi-tile > * {
   position: relative;
 }
-.kpi-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-}
-.kpi-icon svg {
-  width: 18px;
-  height: 18px;
-}
-.kpi-value {
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
-  font-variant-numeric: proportional-nums;
-}
 .kpi-value-of {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--color-text-tertiary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--muted);
 }
-.kpi-primary { --kpi-tint: rgba(79, 70, 229, 0.14); }
-.kpi-primary .kpi-icon { background: linear-gradient(135deg, var(--color-primary-subtle), #E3E1FE); color: var(--color-primary); }
-.kpi-teal { --kpi-tint: rgba(13, 148, 136, 0.14); }
-.kpi-teal .kpi-icon { background: linear-gradient(135deg, var(--accent-teal-subtle), #C9F5EF); color: var(--accent-teal); }
-.kpi-violet { --kpi-tint: rgba(139, 92, 246, 0.16); }
-.kpi-violet .kpi-icon { background: linear-gradient(135deg, #F0EBFF, #E3D9FF); color: var(--color-primary-2); }
-.kpi-success { --kpi-tint: rgba(22, 163, 74, 0.14); }
-.kpi-success .kpi-icon { background: linear-gradient(135deg, var(--color-success-subtle), #C9F6DC); color: var(--color-success); }
+/* Bar fill colors come from --gradient-primary-h/--gradient-success-h
+   inline (JSX) — both resolve to flat Cyces orange/green now (see :root),
+   never an actual two-tone gradient. */
 
 /* =====================================================================
    Redesign v4 — Stage 4: Domain Rating leaderboard (replaces the plain
@@ -1848,29 +1750,28 @@ table.matrix th:first-child {
 }
 
 /* =====================================================================
-   Redesign v4 — Stage 5: micro-interactions. Gradient + glow on primary
-   actions, 1-2px hover lift on genuinely interactive elements only,
-   pulsing dot on Ready badges, 150-200ms transitions throughout.
-   The logout button is excluded from every rule here (user rule).
+   Redesign v4 — Stage 5, retuned for the 2026-09-24 Cyces reskin: no
+   gradients, no glow, no scale/bounce/lift — color transitions only,
+   under 200ms. The logout button is excluded from every rule here
+   (user rule).
    ===================================================================== */
 
 button:not([class]),
 .btn-primary {
-  background: var(--gradient-primary);
+  background: var(--accent);
   border-color: transparent;
   color: #fff;
-  box-shadow: var(--shadow-primary-glow);
-  transition: box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
+  box-shadow: none;
+  transition: background 0.15s ease;
 }
 button:not([class]):hover:not(:disabled),
 .btn-primary:hover:not(:disabled) {
-  background: var(--gradient-primary);
-  box-shadow: var(--shadow-primary-glow-hover);
-  transform: translateY(-1px);
+  background: var(--accent-deep);
+  box-shadow: none;
 }
 button:not([class]):active:not(:disabled),
 .btn-primary:active:not(:disabled) {
-  transform: translateY(1px) scale(0.99);
+  background: var(--accent-deep);
 }
 button:not([class]):disabled,
 .btn-primary:disabled {
@@ -1880,20 +1781,19 @@ button:not([class]):disabled,
 .btn-secondary,
 .btn-outline,
 button.secondary {
-  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 .btn-secondary:hover:not(:disabled),
 .btn-outline:hover:not(:disabled),
 button.secondary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-card-hover);
+  border-color: var(--rule-strong);
+  background: var(--accent-wash);
 }
 
-/* Clickable surfaces: soft shadow + lift. Static info cards never get
-   this (.card alone stays still). */
+/* Clickable surfaces: color change only, no lift/shadow (2026-09-24). */
 .client-tile:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-card-hover);
+  border-color: var(--rule-strong);
+  box-shadow: none;
 }
 .card-interactive {
   transition: box-shadow 0.18s ease, border-color 0.18s ease;
@@ -1911,28 +1811,10 @@ button.secondary:hover:not(:disabled) {
   border-color: #E4E2F7;
 }
 
-/* Pulsing dot on Ready badges — sits behind the check icon so the
-   icon + label stay the primary signal. */
+/* No pulse — classic/restrained, no glow/animation on status badges
+   (2026-09-24 Cyces reskin). */
 .badge-ready {
   position: relative;
-}
-.badge-ready::after {
-  content: "";
-  position: absolute;
-  left: 10px;
-  top: 50%;
-  width: 11px;
-  height: 11px;
-  margin-top: -5.5px;
-  border-radius: 50%;
-  background: var(--color-success);
-  opacity: 0;
-  pointer-events: none;
-  animation: badge-pulse 1.8s ease-out infinite;
-}
-@keyframes badge-pulse {
-  0% { transform: scale(0.6); opacity: 0.45; }
-  100% { transform: scale(2.1); opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1951,15 +1833,20 @@ button.secondary:hover:not(:disabled) {
    only on :focus-visible (mouse clicks leave no glow box behind).
    ===================================================================== */
 
+/* Plain text tabs (2026-09-24 Cyces reskin) — no pill background, no
+   icons, no glow underline: active = orange-deep text + a flat 2px
+   orange underline. Icons are still passed by callers as .tab-icon
+   children; hidden here rather than editing every call site. */
 .tabs {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: 28px;
   margin: var(--sp-4) 0 var(--sp-3);
-  padding: var(--sp-1);
-  background: rgba(238, 240, 255, 0.7);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
   max-width: 100%;
   flex-wrap: wrap;
 }
@@ -1968,84 +1855,55 @@ button.secondary:hover:not(:disabled) {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-4);
-  border: 1px solid transparent;
-  border-radius: 9px;
+  padding: 0 0 11px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--ink-soft);
   font-size: 13.5px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
   box-shadow: none;
-  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 .tab:hover {
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--color-text-primary);
-  transform: translateY(-1px);
-}
-.tab:active {
-  transform: translateY(0);
+  background: transparent;
+  color: var(--ink);
 }
 .tab:focus {
   outline: none;
   box-shadow: none;
 }
 .tab:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .tab-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-tertiary);
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.tab-icon svg {
-  width: 14px;
-  height: 14px;
+  display: none;
 }
 .tab.active {
-  background: var(--color-surface);
-  color: var(--color-primary);
-  border-color: var(--color-border-soft);
-  border-bottom-color: var(--color-border-soft);
-  box-shadow: 0 1px 2px rgba(15, 18, 34, 0.06), 0 6px 16px -6px rgba(79, 70, 229, 0.30);
-}
-.tab.active:hover {
-  transform: none;
-}
-.tab.active .tab-icon {
-  background: var(--gradient-primary);
-  color: #fff;
-  box-shadow: 0 3px 10px var(--primary-glow);
+  background: transparent;
+  color: var(--accent-deep);
+  border-color: transparent;
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+  font-weight: 600;
 }
 .tab.active::after {
-  content: "";
-  position: absolute;
-  left: var(--sp-4);
-  right: var(--sp-4);
-  bottom: -4px;
-  height: 3px;
-  border-radius: 3px;
-  background: var(--gradient-primary-h);
-  box-shadow: 0 0 10px var(--primary-glow);
+  content: none;
 }
 .tab-count {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: var(--color-secondary-bg);
-  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
 }
 .tab.active .tab-count {
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  background: transparent;
+  color: var(--muted);
 }
 
 /* Table rows: center icons, badges, numbers and delete buttons on the
@@ -2065,4 +1923,53 @@ button.secondary:hover:not(:disabled) {
 .step-btn:hover {
   background: var(--color-primary-subtle) !important;
   box-shadow: none;
+}
+
+/* Plain-English hints for jargon labels (Cyces editorial spec, NUE §4):
+   dotted underline, dark (#151517) tooltip on hover/focus. CSS-only —
+   see components/Tip.tsx. */
+.jargon-tip {
+  position: relative;
+  display: inline-block;
+  border-bottom: 1px dotted var(--muted);
+  cursor: help;
+  outline: none;
+}
+.jargon-tip-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%) translateY(4px);
+  min-width: 180px;
+  max-width: 240px;
+  padding: 8px 10px;
+  background: var(--side);
+  color: #F5F5F5;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 20;
+}
+.jargon-tip-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--side);
+}
+.jargon-tip:hover .jargon-tip-bubble,
+.jargon-tip:focus .jargon-tip-bubble,
+.jargon-tip:focus-within .jargon-tip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
 }
