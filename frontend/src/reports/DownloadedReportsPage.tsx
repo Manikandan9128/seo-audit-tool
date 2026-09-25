@@ -33,20 +33,22 @@ function filenameFrom(disposition: string | undefined, fallback: string) {
   return plain ? plain[1] : fallback;
 }
 
-function isToday(iso: string): boolean {
-  const d = new Date(iso);
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+// Local YYYY-MM-DD for both the date input's value and the row-vs-filter
+// comparison — using an ISO date-only string here would compare in UTC
+// and could put a late-evening local download on the "wrong" day.
+function localDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 export default function DownloadedReportsPage() {
   const [reports, setReports] = useState<DownloadedReport[] | null>(null);
   const [error, setError] = useState("");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  // Defaults to Today — this filter exists specifically so a fresh
-  // generate+download can be checked against this tab right away without
-  // scrolling past older rows.
-  const [scope, setScope] = useState<"today" | "all">("today");
+  // Custom date filter, defaults to today; cleared to show every date.
+  const [dateFilter, setDateFilter] = useState(localDateKey(new Date()));
   const [legacy, setLegacy] = useState<UndownloadedReport[] | null>(null);
   const [markingId, setMarkingId] = useState<string | null>(null);
 
@@ -70,18 +72,17 @@ export default function DownloadedReportsPage() {
   }, []);
 
   async function markDownloaded(r: UndownloadedReport) {
-    // One-time backfill for a report actually downloaded before
-    // downloaded_at existed (2026-09-25) — e.g. a job finished and
-    // downloaded this morning, with no record of that download itself.
-    // Stamped with the job's own generated_at, then it moves from this
-    // legacy list into the real Downloaded Reports list above.
+    // One-time action: the row is only ever in this legacy list because
+    // downloaded_at is still null — once this succeeds it's stamped,
+    // the row disappears from here (loadLegacy() refetch below) and
+    // clicking it again is no longer possible.
     setMarkingId(r.job_id);
     try {
       await api.post(`/clients/${r.client_id}/generate-report/${r.job_id}/mark-downloaded`);
       loadDownloaded();
       loadLegacy();
     } catch {
-      setError("Couldn't mark that report as downloaded — try again.");
+      setError("Couldn't add that report — try again.");
     } finally {
       setMarkingId(null);
     }
@@ -110,7 +111,7 @@ export default function DownloadedReportsPage() {
     }
   }
 
-  const visible = reports?.filter((r) => scope === "all" || isToday(r.downloaded_at)) ?? null;
+  const visible = reports?.filter((r) => !dateFilter || localDateKey(new Date(r.downloaded_at)) === dateFilter) ?? null;
 
   return (
     <div className="clients-page">
@@ -123,48 +124,61 @@ export default function DownloadedReportsPage() {
       </div>
 
       {reports && reports.length > 0 && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <button
-            className={`btn ${scope === "today" ? "btn-primary" : "btn-secondary"}`}
-            onClick={() => setScope("today")}
-          >
-            Today
-          </button>
-          <button
-            className={`btn ${scope === "all" ? "btn-primary" : "btn-secondary"}`}
-            onClick={() => setScope("all")}
-          >
-            All
-          </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <label htmlFor="downloaded-date-filter" className="muted" style={{ fontSize: 13 }}>
+            Date
+          </label>
+          <input
+            id="downloaded-date-filter"
+            type="date"
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value)}
+          />
+          {dateFilter && (
+            <button className="btn btn-secondary" onClick={() => setDateFilter("")}>
+              Clear
+            </button>
+          )}
         </div>
       )}
 
       {legacy && legacy.length > 0 && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <p className="muted" style={{ marginTop: 0 }}>
-            Reports generated before this tab existed — mark the ones you already downloaded so they show
-            up in the list below.
+        <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+          <p className="muted" style={{ margin: "16px 16px 0" }}>
+            Reports generated before this tab existed — add the ones you already downloaded.
           </p>
-          {legacy.map((r) => (
-            <div
-              key={r.job_id}
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}
-            >
-              <span>
-                <Link to={`/clients/${r.client_id}`}>{r.client_name}</Link>
-                {" — generated "}
-                {formatDownloadedAt(r.generated_at)}
-                {r.filename ? ` — ${r.filename}` : ""}
-              </span>
-              <button
-                className="btn btn-secondary"
-                onClick={() => markDownloaded(r)}
-                disabled={markingId === r.job_id}
-              >
-                {markingId === r.job_id ? "Marking..." : "Mark as downloaded"}
-              </button>
-            </div>
-          ))}
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border, #e5e5e5)" }}>
+                <th style={{ padding: "10px 16px" }}>Client</th>
+                <th style={{ padding: "10px 16px" }}>Generated</th>
+                <th style={{ padding: "10px 16px" }}>File</th>
+                <th style={{ padding: "10px 16px" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {legacy.map((r) => (
+                <tr key={r.job_id} style={{ borderBottom: "1px solid var(--border, #f0f0f0)" }}>
+                  <td style={{ padding: "10px 16px" }}>
+                    <Link to={`/clients/${r.client_id}`}>{r.client_name}</Link>
+                  </td>
+                  <td style={{ padding: "10px 16px" }}>{formatDownloadedAt(r.generated_at)}</td>
+                  <td style={{ padding: "10px 16px" }} className="muted">
+                    {r.filename || "—"}
+                  </td>
+                  <td style={{ padding: "10px 16px" }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => markDownloaded(r)}
+                      disabled={markingId === r.job_id}
+                    >
+                      {markingId === r.job_id ? "Adding..." : "Add"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -173,7 +187,7 @@ export default function DownloadedReportsPage() {
       {reports === null && !error && <p className="muted">Loading...</p>}
 
       {reports && reports.length > 0 && visible && visible.length === 0 && (
-        <p className="muted">No reports downloaded today yet.</p>
+        <p className="muted">No reports downloaded on that date.</p>
       )}
 
       {reports && reports.length === 0 && (
