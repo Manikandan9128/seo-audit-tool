@@ -888,7 +888,18 @@ def add_pagespeed_why_low_slide(prs: Presentation, mobile: dict | None, desktop:
     return slide
 
 
-_PSI_TARGET_SCORE = 60  # this agency's own near-term realistic target — never Google's 90 "good" cutoff; labeled explicitly wherever shown.
+def _psi_target_for_score(score: int | float | None) -> str | None:
+    """Performance target rule (client spec, 2026-09-25): Poor (0-49) -> 60+,
+    Moderate (50-89) -> 90+, Good (90-100) -> Maintain 90+. Applied per
+    device from that device's OWN current score, not a single fixed
+    target for both."""
+    if score is None:
+        return None
+    if score < 50:
+        return "60+"
+    if score < 90:
+        return "90+"
+    return "Maintain 90+"
 
 
 def _device_bounce_signal(device_performance: dict | None) -> dict | None:
@@ -976,13 +987,20 @@ def add_pagespeed_fix_impact_slide(
         card = _card(slide, cx, y, target_w, Inches(0.55))
         current = ((result or {}).get("current_score"))
         current_text = str(current) if current is not None else "—"
+        target_text = _psi_target_for_score(current) or "—"
+        # "Maintain 90+" (the Good-tier label) is noticeably longer than
+        # "60+"/"90+" — drop a couple points so it never crowds this
+        # narrow card at the same size as the short cases.
+        target_size = 11 if len(target_text) > 4 else 14
         _textbox(slide, cx + Inches(0.12), y + Inches(0.06), target_w - Inches(0.24), Inches(0.18), dev_label, size=9, bold=True, color=TEXT_MUTED)
         box = _textbox(slide, cx + Inches(0.12), y + Inches(0.22), target_w - Inches(0.24), Inches(0.28), "", size=14)
         p = box.text_frame.paragraphs[0]
-        for text, color, bold in ((current_text, TEXT_DARK, True), ("  →  ", TEXT_MUTED, False), (f"{_PSI_TARGET_SCORE}+", GOOD, True)):
+        for text, color, bold, size in (
+            (current_text, TEXT_DARK, True, 14), ("  →  ", TEXT_MUTED, False, 14), (target_text, GOOD, True, target_size),
+        ):
             r = p.add_run()
             r.text = text
-            r.font.size = Pt(14)
+            r.font.size = Pt(size)
             r.font.bold = bold
             r.font.color.rgb = color
     y += Inches(0.62)

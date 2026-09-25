@@ -153,6 +153,24 @@ def test_fix_impact_slide_maps_causes_to_fixes_and_shows_target():
     assert _audit_slide_geometry(prs) == []
 
 
+def test_fix_impact_slide_performance_target_follows_tiered_rule_per_device():
+    # Client spec (2026-09-25): Poor (0-49) -> 60+, Moderate (50-89) ->
+    # 90+, Good (90-100) -> Maintain 90+, applied per device from that
+    # device's OWN current score — never one fixed target for both.
+    prs = _prs()
+    slide = add_pagespeed_fix_impact_slide(prs, _mobile(current_score=35), _mobile(current_score=72))
+    text = _slide_text(slide)
+    assert "35" in text and "60+" in text  # Poor -> 60+
+    assert "72" in text and "90+" in text  # Moderate -> 90+
+    assert _audit_slide_geometry(prs) == []
+
+    prs2 = _prs()
+    slide2 = add_pagespeed_fix_impact_slide(prs2, _mobile(current_score=95), None)
+    text2 = _slide_text(slide2)
+    assert "95" in text2 and "Maintain 90+" in text2  # Good -> Maintain 90+
+    assert _audit_slide_geometry(prs2) == []
+
+
 def test_fix_impact_slide_shows_ga4_device_evidence_and_observed_signal():
     prs = _prs()
     dp = _device_performance()
