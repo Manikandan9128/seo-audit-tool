@@ -123,7 +123,15 @@ export default function SemrushImportCard({
   const [uploadProgress, setUploadProgress] = useState<{ name: string; pct: number } | null>(null);
   const { showToast } = useToast();
 
-  const rows = imports.filter((i) => (i.is_own_site ?? true) === isOwnSite);
+  // GeoPulse and manual-keyword-cluster uploads share this same generic
+  // SemrushImport table/list/delete backend, each with its own dedicated
+  // card (GeoPulseImportCard, ManualKeywordClusterCard) — this card only
+  // filtered by is_own_site, so both leaked into the Semrush documents
+  // list too. Confirmed real (2026-09-25): a GeoPulse upload showed up
+  // here as well as in its own dedicated area.
+  const rows = imports.filter(
+    (i) => (i.is_own_site ?? true) === isOwnSite && i.import_type !== "geopulse" && i.import_type !== "keyword_cluster_manual"
+  );
 
   // Read-only — the Competitor Data accordion shows each domain's DR next
   // to its file count (point 6), reusing the same data DomainRatingEditor
