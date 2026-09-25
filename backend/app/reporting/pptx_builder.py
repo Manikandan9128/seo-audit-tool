@@ -13,7 +13,9 @@ from urllib.parse import urlparse
 
 import pycountry
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
+from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.util import Inches, Pt, Emu
@@ -4816,7 +4818,37 @@ def add_search_opportunities_countries_slide(prs: Presentation, high_countries: 
     return slide
 
 
+# Traffic-source pie/donut slices beyond this many get folded into a single
+# "Other" wedge (2026-09-25 spec: Traffic Overview absorbs the standalone
+# Traffic Sources slide) — enough categories to read as a real distribution
+# without the slice labels overlapping into illegibility. A lone remaining
+# channel is never wrapped into "Other" on its own (see add_traffic_overview_
+# slide) since grouping a single item hides nothing and adds nothing.
+_TRAFFIC_OVERVIEW_MAX_SLICES = 3
+
+# Categorical palette for the Traffic Sources donut: the report's own accent
+# color for the top channel (ties the chart to the client's brand), then a
+# fixed sequence of neutral tones for the rest so the slice colors never
+# clash with an arbitrary client accent.
+_TRAFFIC_SOURCE_PALETTE = [
+    RGBColor(0x2B, 0x2F, 0x38), RGBColor(0x8A, 0x93, 0xA3),
+    RGBColor(0xE3, 0xA8, 0x5F), RGBColor(0xC7, 0xCB, 0xD1),
+]
+
+
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
+    """2026-09-25 redesign: one slide answering "how much traffic, how do
+    visitors engage, where does it come from, what does the mix mean" —
+    KPI cards on top, a Traffic Sources donut + compact channel table and
+    Key Insights on the bottom, so a separate Traffic Sources slide is no
+    longer needed when this same GA4 channel data can carry it. Key Insights
+    here must never just restate a number already visible in a card or in
+    the chart/table below it — _traffic_sources_insights already enforces
+    that (composition paired with a quality signal, concentration only past
+    a real threshold, Direct-inflation framed as "worth investigating" not
+    fact, sample-size caution) — this slide just runs it over the same
+    channels the table actually shows so nothing named is invisible on the
+    page."""
     slide = _blank_slide(prs)
     _content_header(slide, "Traffic Overview")
     span = _ga4_date_span(analytics.get("date_range"))
@@ -4845,6 +4877,8 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     avg_session_duration = engagement_seconds / sessions if sessions else 0
     avg_time_on_page = engagement_seconds / pageviews if pageviews else 0
 
+    # Ordered volume -> engagement -> behaviour (spec section 2) — never
+    # invented, only metrics GA4 actually returned for this period.
     metrics = [
         ("Sessions", f"{sessions:,.0f}"),
         ("Users", f"{users:,.0f}"),
@@ -4854,28 +4888,100 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
         ("Avg. session", _fmt_duration(avg_session_duration)),
         ("Avg. time on page", _fmt_duration(avg_time_on_page)),
     ]
-    # 4 cards per row instead of one fixed-width row of 5 — 7 metrics
-    # (Avg. session and Avg. time on page added) no longer fit one row
-    # without shrinking the value text past legibility.
+    # 4 cards per row — 7 metrics no longer fit one row without shrinking
+    # the value text past legibility. Cards shrunk from the original 1.35in
+    # (2026-09-25) to leave room below for the Traffic Sources donut/table
+    # and Key Insights, so a separate Traffic Sources slide isn't needed.
     cols_per_row = 4
     gap = Inches(0.15)
     total_width = Inches(12.1)
     card_width = Emu(int((total_width - gap * (cols_per_row - 1)) / cols_per_row))
-    card_height = Inches(1.35)
-    row_gap = Inches(0.15)
+    card_height = Inches(0.95)
+    row_gap = Inches(0.1)
+    kpi_top = Inches(1.1)
     for i, (label, value) in enumerate(metrics):
         row, col = divmod(i, cols_per_row)
         left = Inches(0.6) + Emu(col * (card_width + gap))
-        top = Inches(1.3) + Emu(row * (card_height + row_gap))
+        top = kpi_top + Emu(row * (card_height + row_gap))
         _card(slide, left, top, card_width, card_height)
-        _textbox(slide, left + Inches(0.15), top + Inches(0.15), card_width - Inches(0.3), Inches(0.4), label, size=12, color=TEXT_MUTED)
-        _textbox(slide, left + Inches(0.15), top + Inches(0.55), card_width - Inches(0.3), Inches(0.7), value, size=20, bold=True, color=_accent())
+        _textbox(slide, left + Inches(0.15), top + Inches(0.12), card_width - Inches(0.3), Inches(0.35), label, size=11.5, color=TEXT_MUTED)
+        _textbox(slide, left + Inches(0.15), top + Inches(0.44), card_width - Inches(0.3), Inches(0.55), value, size=18, bold=True, color=_accent())
 
-    # Key-insights strip removed per teammate QA on the last report — this
-    # is a pure overview slide (raw KPI cards), the per-metric commentary
-    # duplicated what the numbers already showed and belongs on the slides
-    # that actually break the data down (Traffic Sources, Traffic Spike,
-    # Traffic Breakdown), not restated again here.
+    n_kpi_rows = -(-len(metrics) // cols_per_row)
+    y = kpi_top + Emu(n_kpi_rows * (card_height + row_gap)) + Inches(0.1)
+
+    sources = (analytics.get("traffic_sources") or {}).get("rows", [])
+    if not sources:
+        return slide
+
+    divider = slide.shapes.add_shape(1, Inches(0.6), y, Inches(12.1), Pt(1))
+    _fill(divider, CARD_BORDER)
+    divider.shadow.inherit = False
+    y += Inches(0.15)
+
+    # Traffic Overview's own GA4 total is the master total (2026-09-11
+    # spec, still true now that Sources lives on this same slide) — falls
+    # back to summing the channel rows only if that total is unavailable.
+    total_source_sessions = sum(float(s.get("sessions", 0) or 0) for s in sources)
+    grand_total = sessions if sessions else total_source_sessions
+
+    ranked = sorted(sources, key=lambda s: float(s.get("sessions", 0) or 0), reverse=True)
+    top_n = ranked[:_TRAFFIC_OVERVIEW_MAX_SLICES]
+    rest = ranked[_TRAFFIC_OVERVIEW_MAX_SLICES:]
+    rest_sessions = sum(float(s.get("sessions", 0) or 0) for s in rest)
+    # A single leftover channel is shown directly, not wrapped in "Other" —
+    # grouping one item hides nothing and adds a label for no reason (spec
+    # section 3: "use 'Other' only when mathematically appropriate").
+    chart_rows = list(top_n)
+    if len(rest) == 1:
+        chart_rows.append(rest[0])
+    elif len(rest) > 1 and rest_sessions > 0:
+        chart_rows.append({"channel": "Other", "sessions": rest_sessions})
+
+    left_w = Inches(5.8)
+    _textbox(slide, Inches(0.6), y, left_w, Inches(0.24), "TRAFFIC SOURCES", size=9.5, bold=True, color=_accent())
+    chart_top = y + Inches(0.26)
+    chart_w, chart_h = Inches(2.4), Inches(1.6)
+
+    chart_data = CategoryChartData()
+    chart_data.categories = [str(r.get("channel", "")) for r in chart_rows]
+    chart_data.add_series("Sessions", [float(r.get("sessions", 0) or 0) for r in chart_rows])
+    graphic_frame = slide.shapes.add_chart(XL_CHART_TYPE.DOUGHNUT, Inches(0.6), chart_top, chart_w, chart_h, chart_data)
+    chart = graphic_frame.chart
+    chart.has_legend = False
+    chart.has_title = False
+    plot = chart.plots[0]
+    plot.has_data_labels = False
+    series = plot.series[0]
+    for i, point in enumerate(series.points):
+        point.format.fill.solid()
+        point.format.fill.fore_color.rgb = _accent() if i == 0 else _TRAFFIC_SOURCE_PALETTE[(i - 1) % len(_TRAFFIC_SOURCE_PALETTE)]
+        point.format.line.color.rgb = WHITE
+        point.format.line.width = Pt(1.5)
+
+    # Compact channel table doubles as the chart's legend — same rows the
+    # donut renders (including the "Other" wedge, if any), so the two can
+    # never disagree on what's shown.
+    table_rows = [
+        (
+            str(r.get("channel", "")),
+            f"{int(float(r.get('sessions', 0) or 0)):,}",
+            f"{(float(r.get('sessions', 0) or 0) / grand_total * 100 if grand_total else 0):.1f}%",
+        )
+        for r in chart_rows
+    ]
+    _draw_table(
+        slide, ["Channel", "Sessions", "% of Sessions"], table_rows, chart_top,
+        col_widths=[2.9, 1.4, 1.4], left=Inches(3.1), width=Inches(3.3), row_cap=len(table_rows), row_height=0.28,
+    )
+
+    # Key Insights only ever names a channel actually itemized above (the
+    # real channels in chart_rows, excluding the synthetic "Other" wedge)
+    # so nothing it references is invisible on this slide.
+    shown_for_insights = [r for r in chart_rows if r.get("channel") != "Other"]
+    insights = _traffic_sources_insights(shown_for_insights, grand_total)
+    _insights_strip(slide, Inches(6.7), y, Inches(6.0), insights, max_items=4)
+
     return slide
 
 
@@ -9539,66 +9645,11 @@ def _build_report(
             f"Google Analytics ({channel_breakdown_span}, monthly avg.)" if channel_breakdown_span else "Google Analytics (monthly avg.)"
         )
         if analytics.get("traffic_overview"):
+            # Traffic Overview now carries the Traffic Sources donut/table/
+            # insights directly (2026-09-25 spec) — no separate Traffic
+            # Sources slide when the same GA4 channel data displays
+            # meaningfully within the overview.
             add_traffic_overview_slide(prs, analytics)
-        # Top Pages — Branded vs Non-Branded slide removed 2026-09-09 per
-        # user request — redundant with GSC's own query-level Branded/
-        # Non-Branded split below (search_queries), which classifies real
-        # search intent directly instead of inferring it from a page-path
-        # signal list.
-        #
-        # Slide order (2026-09-11 user spec): Overview -> Sources -> Spike
-        # -> Monthly Average, so the two same-window (30-day) slides sit
-        # together right after the master total, before the two slides
-        # that each use a DIFFERENT window (Spike's single day, Monthly
-        # Average's ~4 months).
-        sources = (analytics.get("traffic_sources") or {}).get("rows", [])
-        if sources:
-            # Traffic Overview is the master total (2026-09-11 user spec) —
-            # Traffic Sources is a SPLIT of that same number, not its own
-            # independently-summed total, so the two slides can never
-            # silently disagree on total sessions. Falls back to summing
-            # this query's own rows only if Traffic Overview has no data
-            # (e.g. GA4 call failed) so the table still renders sane
-            # percentages rather than all-zero.
-            overview_rows = (analytics.get("traffic_overview") or {}).get("rows", [])
-            master_total_sessions = sum(float(r.get("sessions", 0) or 0) for r in overview_rows)
-            total_sessions = int(master_total_sessions) if master_total_sessions else sum(int(float(s.get("sessions", 0) or 0)) for s in sources)
-            # Sorted by sessions and capped BEFORE anything below reads from
-            # it — every insight below names a channel by its exact string,
-            # so it must only ever pick from the same rows the table
-            # actually renders. ROW_CAP must match _table_slide's own
-            # row_cap for THIS call, not just be "a" cap — confirmed live
-            # 2026-09-09: this was capped at 14 while _draw_table's default
-            # row_cap silently drops to 9 whenever insights are passed
-            # (`row_cap = 9 if insights else 14`), so an insight could
-            # still name a channel (e.g. "Cross-network") ranked #10-14
-            # that never actually made it onto the visible 9-row table.
-            # Passed explicitly to _table_slide below too, so this can't
-            # drift out of sync with _draw_table's default again.
-            ROW_CAP = 9
-            shown = sorted(sources, key=lambda s: float(s.get("sessions", 0) or 0), reverse=True)[:ROW_CAP]
-            rows = [
-                (
-                    s["channel"],
-                    f"{int(float(s['sessions'])):,}",
-                    f"{(float(s['sessions']) / total_sessions * 100 if total_sessions else 0):.1f}%",
-                    f"{int(float(s.get('new_users', 0) or 0)):,}",
-                    f"{int(float(s.get('returning_users', 0) or 0)):,}",
-                    f"{s['return_rate_pct']:.0f}%" if s.get("return_rate_pct") is not None else "—",
-                )
-                for s in shown
-            ]
-            # No prior-period channel data is fetched anywhere in this
-            # pipeline (every other slide in this report is single-
-            # snapshot, same convention) — _traffic_sources_insights
-            # always runs in "single" mode today, but is written to
-            # activate real comparison-mode output the moment prior-period
-            # rows are ever passed in, per the 2026-09-09 spec.
-            insights = _traffic_sources_insights(shown, total_sessions)
-            _table_slide(
-                prs, "Traffic Sources", ["Channel", "Sessions", "% of Sessions", "New Users", "Returning Users", "Return Rate"], rows,
-                col_widths=[3.4, 1.8, 1.8, 1.8, 1.9, 1.4], source=ga4_source, insights=insights, row_cap=ROW_CAP,
-            )
         if analytics.get("traffic_spike"):
             add_traffic_spike_slide(prs, analytics["traffic_spike"])
         if analytics.get("traffic_channel_breakdown"):
