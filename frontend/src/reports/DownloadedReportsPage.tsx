@@ -50,7 +50,6 @@ export default function DownloadedReportsPage() {
   // Custom date filter, defaults to today; cleared to show every date.
   const [dateFilter, setDateFilter] = useState(localDateKey(new Date()));
   const [legacy, setLegacy] = useState<UndownloadedReport[] | null>(null);
-  const [markingId, setMarkingId] = useState<string | null>(null);
 
   function loadDownloaded() {
     api
@@ -71,28 +70,11 @@ export default function DownloadedReportsPage() {
     loadLegacy();
   }, []);
 
-  async function markDownloaded(r: UndownloadedReport) {
-    // One-time action: the row is only ever in this legacy list because
-    // downloaded_at is still null — once this succeeds it's stamped,
-    // the row disappears from here (loadLegacy() refetch below) and
-    // clicking it again is no longer possible.
-    setMarkingId(r.job_id);
-    try {
-      await api.post(`/clients/${r.client_id}/generate-report/${r.job_id}/mark-downloaded`);
-      loadDownloaded();
-      loadLegacy();
-    } catch {
-      setError("Couldn't add that report — try again.");
-    } finally {
-      setMarkingId(null);
-    }
-  }
-
-  async function redownload(r: DownloadedReport) {
-    // Re-fetching an already-downloaded job's file on purpose — the
-    // backend only stamps downloaded_at on a job's FIRST fetch, so this
-    // never adds another row or moves this one, same as clicking
-    // Download again on the client page would do.
+  async function downloadJob(r: { job_id: string; client_id: string; filename: string | null }, afterLegacy: boolean) {
+    // Same real /download endpoint for both tables — it stamps
+    // downloaded_at on a job's first fetch, which is exactly what moves a
+    // legacy row (downloaded_at still null) into the real list below, with
+    // an actual file in hand instead of a bare "mark as downloaded" click.
     setDownloadingId(r.job_id);
     try {
       const res = await api.get(`/clients/${r.client_id}/generate-report/${r.job_id}/download`, { responseType: "blob" });
@@ -104,6 +86,10 @@ export default function DownloadedReportsPage() {
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
+      if (afterLegacy) {
+        loadDownloaded();
+        loadLegacy();
+      }
     } catch {
       setError("Couldn't download that report — try again.");
     } finally {
@@ -145,7 +131,7 @@ export default function DownloadedReportsPage() {
       {legacy && legacy.length > 0 && (
         <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
           <p className="muted" style={{ margin: "16px 16px 0" }}>
-            Reports generated before this tab existed — add the ones you already downloaded.
+            Reports generated before this tab existed — download one to add it to the list below.
           </p>
           <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
             <thead>
@@ -169,10 +155,10 @@ export default function DownloadedReportsPage() {
                   <td style={{ padding: "10px 16px" }}>
                     <button
                       className="btn btn-secondary"
-                      onClick={() => markDownloaded(r)}
-                      disabled={markingId === r.job_id}
+                      onClick={() => downloadJob(r, true)}
+                      disabled={downloadingId === r.job_id}
                     >
-                      {markingId === r.job_id ? "Adding..." : "Add"}
+                      {downloadingId === r.job_id ? "Downloading..." : "Download"}
                     </button>
                   </td>
                 </tr>
@@ -218,7 +204,7 @@ export default function DownloadedReportsPage() {
                   <td style={{ padding: "10px 16px" }}>
                     <button
                       className="btn btn-secondary"
-                      onClick={() => redownload(r)}
+                      onClick={() => downloadJob(r, false)}
                       disabled={downloadingId === r.job_id}
                     >
                       {downloadingId === r.job_id ? "Downloading..." : "Download"}
