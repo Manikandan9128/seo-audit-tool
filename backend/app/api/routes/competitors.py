@@ -21,6 +21,8 @@ from app.services.manual_keyword_cluster_parser import parse_manual_keyword_clus
 
 router = APIRouter(prefix="/clients", tags=["competitors"])
 
+_GEOPULSE_MAX_UPLOAD_BYTES = 25 * 1_048_576  # 25 MB — generous for a real data export
+
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
     client = db.get(Client, client_id)
@@ -133,6 +135,17 @@ async def upload_geopulse_file(
     geopulse_ai_service to ground the AEO/GEO slide content."""
     _get_owned_client(client_id, db, current_user)
     content = await file.read()
+    if len(content) > _GEOPULSE_MAX_UPLOAD_BYTES:
+        # Fail fast with a real message instead of letting a huge file
+        # (especially a many-page PDF pdfplumber has to scan) risk a slow
+        # timeout that surfaces in the browser as a bare "upload failed"
+        # with no detail at all — confirmed real 2026-09-25.
+        raise HTTPException(
+            status_code=400,
+            detail=f"File is {len(content) / 1_048_576:.1f} MB — GeoPulse exports over "
+            f"{_GEOPULSE_MAX_UPLOAD_BYTES // 1_048_576} MB aren't accepted. Export a smaller "
+            "date range or section if your GeoPulse tool supports it.",
+        )
     try:
         parsed_data = parse_geopulse_file(file.filename or "upload", content)
     except Exception as e:

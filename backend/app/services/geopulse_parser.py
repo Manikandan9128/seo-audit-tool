@@ -17,6 +17,15 @@ import pandas as pd
 import pdfplumber
 
 MAX_RAW_TEXT_CHARS = 40_000
+# A real GeoPulse export needs far fewer pages than this to reach
+# MAX_RAW_TEXT_CHARS — this is a hard safety cap so a pathological PDF
+# (hundreds of pages, or one with content pdfplumber struggles with)
+# can't turn the request into an unbounded, worker-blocking scan. Bug
+# report (2026-09-25): a real GeoPulse export ("report-run-52.pdf")
+# failed with no error detail at all in the browser — the shape of a
+# timeout/worker crash rather than a caught parsing exception, which the
+# route's own try/except already turns into a clear 400 message.
+MAX_PDF_PAGES = 200
 
 
 def parse_geopulse_file(filename: str, content: bytes) -> dict:
@@ -25,7 +34,22 @@ def parse_geopulse_file(filename: str, content: bytes) -> dict:
 
     if name.endswith(".pdf"):
         with pdfplumber.open(io.BytesIO(content)) as pdf:
-            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            parts: list[str] = []
+            total_len = 0
+            for page in pdf.pages[:MAX_PDF_PAGES]:
+                try:
+                    page_text = page.extract_text() or ""
+                except Exception:
+                    # One malformed page (rare, but pdfminer/pdfplumber can
+                    # throw on certain embedded content) must never fail
+                    # the whole upload when the rest of the file is
+                    # readable — skip it and keep going.
+                    continue
+                parts.append(page_text)
+                total_len += len(page_text)
+                if total_len >= MAX_RAW_TEXT_CHARS:
+                    break
+            text = "\n".join(parts)
     elif name.endswith((".xlsx", ".xls")):
         sheets = pd.read_excel(io.BytesIO(content), sheet_name=None)
         text = "\n\n".join(f"[{sheet}]\n{df.to_string(index=False)}" for sheet, df in sheets.items())
