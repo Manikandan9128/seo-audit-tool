@@ -1691,33 +1691,257 @@ def add_company_overview_extracted_slide(prs: Presentation, client_name: str, ov
     return slide
 
 
-def add_solutions_products_slide(prs: Presentation, overview: dict):
-    """Renders Solutions / Products-by-category / Industries — matches the
-    agency sample deck's 'Solutions, Products & Industries' slide."""
+_TECH_NAME_ALIASES = {
+    # Spec (2026-09-25): shorten names that would otherwise never fit a
+    # tile at 11pt — curated from tech_stack_service.py's actual output,
+    # not a generic rule, so a name never listed there just falls through
+    # to the fit/shrink/ellipsize chain in _tile_display_name instead.
+    "Google Analytics (GA4)": "Google Analytics 4",
+    "Amazon CloudFront": "CloudFront",
+    "Google Tag Manager": "Tag Manager",
+    "Shopify (theme assets)": "Shopify",
+}
+
+
+def _fits_one_line(text: str, width_emu, size_pt: float) -> bool:
+    return _wrap_lines(text, width_emu, size_pt) <= 1
+
+
+def _ellipsize(text: str, width_emu, size_pt: float) -> str:
+    width_in = max(width_emu / 914400, 0.3)
+    chars_per_line = max(10, int(width_in * (154 / size_pt)))
+    return text if len(text) <= chars_per_line else text[: max(chars_per_line - 1, 3)].rstrip() + "…"
+
+
+def _normalize_tech_name(name: str) -> str:
+    """Known short alias first (curated from tech_stack_service.py's own
+    output), then title-cases a name that arrived all-lowercase —
+    defensive; that service's real names are already clean ("Cloudflare",
+    "WordPress"), but a client-facing hosting fact or tile should never
+    show a raw lowercase vendor name regardless."""
+    display = _TECH_NAME_ALIASES.get(name, name)
+    if display and display == display.lower():
+        display = display.title()
+    return display
+
+
+def _tile_display_name(name: str, width_emu) -> tuple[str, float]:
+    """(display text, font size) for one tech tile — spec's fallback chain:
+    known short alias first, then shrink 11pt -> 10pt, then ellipsize at
+    10pt."""
+    display = _normalize_tech_name(name)
+    if _fits_one_line(display, width_emu, 11):
+        return display, 11
+    if _fits_one_line(display, width_emu, 10):
+        return display, 10
+    return _ellipsize(display, width_emu, 10), 10
+
+
+def _draw_tech_tile(slide, x, y, w, h, category: str, name: str | None):
+    tile = slide.shapes.add_shape(5, x, y, w, h)
+    try:
+        tile.adjustments[0] = 0.12
+    except (IndexError, AttributeError):
+        pass
+    tile.fill.solid()
+    tile.fill.fore_color.rgb = RGBColor(0xF7, 0xF8, 0xFA)
+    tile.line.color.rgb = CARD_BORDER
+    tile.line.width = Pt(0.75)
+    tile.shadow.inherit = False
+    pad = Inches(0.13)
+    text_w = w - pad * 2
+    _textbox(slide, x + pad, y + pad, text_w, Inches(0.16), category.upper(), size=8.5, bold=True, color=TEXT_MUTED)
+    if name is None:
+        return
+    display, size = _tile_display_name(name, text_w)
+    _textbox(slide, x + pad, y + pad + Inches(0.22), text_w, Inches(0.28), display, size=size, bold=True, color=TEXT_DARK)
+
+
+def _tech_stack_hosting_card(slide, x, top, width, height, tech_stack: dict):
+    """Right card of the redesigned 'Solutions, Products & Tech Stack'
+    slide (spec 2026-09-25) — this content used to be its own standalone
+    'Tech Stack & Hosting' slide (add_tech_stack_slide, removed); every
+    value here still comes from the same tech_stack dict, never invented.
+    Geometry is fixed-position, not a flowing cursor like the left card —
+    the spec's own offsets already account for every section's height
+    fitting inside this card, since row/tile counts are capped rather
+    than open-ended."""
+    pad = Inches(0.3)
+    inner_x, inner_w = x + pad, width - pad * 2
+    inner_right = x + width - pad
+
+    detected = tech_stack.get("detected") or []
+    # Same CMS-extraction rule as the old standalone slide: pulled out of
+    # the grouped list and shown as its own hosting fact, never duplicated
+    # into the tile grid below.
+    cms_names = [_normalize_tech_name(item["name"]) for item in detected if item.get("category") == "cms"]
+    cms_value = ", ".join(dict.fromkeys(cms_names)) if cms_names else None
+    remaining_detected = [item for item in detected if item.get("category") != "cms"]
+
+    y = top + pad
+    _textbox(slide, inner_x, y, inner_w, Inches(0.3), "Tech Stack & Hosting", size=15, bold=True, color=_accent())
+    subtitle_y = y + Inches(0.32)
+    hostname = tech_stack.get("hostname")
+    _textbox(
+        slide, inner_x, subtitle_y, inner_w, Inches(0.24),
+        f"Website infrastructure detected on {hostname}" if hostname else "Website infrastructure detected on this site",
+        size=9.5, color=TEXT_MUTED,
+    )
+
+    hosting_label_y = subtitle_y + Inches(0.45)
+    _textbox(slide, inner_x, hosting_label_y, inner_w, Inches(0.2), "HOSTING", size=9.5, bold=True, color=TEXT_MUTED)
+
+    row_h = Inches(0.36)
+    row_y = hosting_label_y + Inches(0.3)
+    hosting_rows = [
+        ("CMS", cms_value),
+        ("Hostname", hostname),
+        ("IP address", tech_stack.get("ip")),
+        ("HTTPS", None),  # rendered specially below — colored, never "—"
+    ]
+    # Label and value are two DISTINCT box regions, never the same left
+    # edge relying on right-alignment alone to keep them apart — a longer
+    # value's real rendered text could otherwise sit close to or under the
+    # label, and the geometry auditor correctly refuses to assume a
+    # right-aligned box's true extent (see _estimate_text_extent's own
+    # "falls back... when not left-aligned" rule). Confirmed real: this
+    # exact bug flagged 3 overlaps on the first QA render (2026-09-25).
+    label_w = inner_w * 0.4
+    value_x = inner_x + label_w
+    value_w = inner_w - label_w
+    for label, value in hosting_rows:
+        _textbox(slide, inner_x, row_y + Inches(0.06), label_w, Inches(0.24), label, size=10.5, color=TEXT_MUTED)
+        if label == "HTTPS":
+            https = bool(tech_stack.get("https"))
+            _textbox(
+                slide, value_x, row_y + Inches(0.04), value_w, Inches(0.26),
+                ("✓ Secure" if https else "✗ Not secure"), size=11, bold=True,
+                color=(GOOD if https else BAD), align=PP_ALIGN.RIGHT,
+            )
+        else:
+            _textbox(
+                slide, value_x, row_y + Inches(0.04), value_w, Inches(0.26),
+                str(value) if value else "—", size=11, bold=True, color=TEXT_DARK, align=PP_ALIGN.RIGHT,
+            )
+        divider = slide.shapes.add_shape(1, inner_x, row_y + row_h - Pt(0.5), inner_w, Pt(0.75))
+        _fill(divider, RGBColor(0xEE, 0xF0, 0xF2))
+        divider.shadow.inherit = False
+        row_y += row_h
+
+    tech_label_y = row_y + Inches(0.25)
+    if remaining_detected:
+        _textbox(slide, inner_x, tech_label_y, inner_w, Inches(0.2), "DETECTED TECHNOLOGIES", size=9.5, bold=True, color=TEXT_MUTED)
+        grid_y = tech_label_y + Inches(0.3)
+        gap = Inches(0.15)
+        tile_w = (inner_w - gap) / 2
+        tile_h = Inches(0.68)
+        shown = remaining_detected[:6]
+        overflow = len(remaining_detected) - len(shown)
+        # The 6th slot becomes "+N more" instead of a 6th real tile once
+        # there's an overflow, so the count on screen always matches what
+        # was actually shown.
+        if overflow > 0:
+            shown = shown[:5]
+        for i, item in enumerate(shown):
+            col, rowi = i % 2, i // 2
+            tx = inner_x + col * (tile_w + gap)
+            ty = grid_y + rowi * (tile_h + gap)
+            _draw_tech_tile(slide, tx, ty, tile_w, tile_h, item["category"], item["name"])
+        if overflow > 0:
+            col, rowi = len(shown) % 2, len(shown) // 2
+            tx = inner_x + col * (tile_w + gap)
+            ty = grid_y + rowi * (tile_h + gap)
+            tile = slide.shapes.add_shape(5, tx, ty, tile_w, tile_h)
+            try:
+                tile.adjustments[0] = 0.12
+            except (IndexError, AttributeError):
+                pass
+            tile.fill.solid()
+            tile.fill.fore_color.rgb = RGBColor(0xF7, 0xF8, 0xFA)
+            tile.line.color.rgb = CARD_BORDER
+            tile.line.width = Pt(0.75)
+            tile.shadow.inherit = False
+            tf = tile.text_frame
+            tf.word_wrap = True
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            p = tf.paragraphs[0]
+            p.alignment = PP_ALIGN.CENTER
+            run = p.add_run()
+            run.text = f"+{overflow + 1} more"
+            run.font.size = Pt(11)
+            run.font.bold = True
+            run.font.color.rgb = TEXT_MUTED
+    else:
+        _textbox(slide, inner_x, tech_label_y, inner_w, Inches(0.24), "No technologies detected", size=10.5, color=TEXT_MUTED)
+
+    _textbox(slide, inner_x, top + height - pad - Inches(0.02), inner_w, Inches(0.2), "Source: site crawl", size=9, color=TEXT_MUTED)
+
+
+def add_solutions_products_slide(prs: Presentation, overview: dict, tech_stack: dict | None = None):
+    """Left card: Solutions / Products by category (unchanged content,
+    narrower column). Right card: Tech Stack & Hosting — this used to be
+    its own standalone slide (add_tech_stack_slide); the spec (2026-09-25)
+    folded it in here and the standalone slide is gone, so tech_stack data
+    always has exactly one place to render regardless of whether
+    `overview` has anything in it."""
     solutions = overview.get("solutions") or []
     products_by_category = overview.get("products_by_category") or {}
     industries = overview.get("industries") or []
     products_flat = overview.get("products") or []
     if not products_by_category and products_flat:
         products_by_category = {"Products & Services": products_flat}
-    if not solutions and not products_by_category and not industries:
+    tech_stack = tech_stack or {}
+    has_tech = bool(tech_stack.get("detected") or tech_stack.get("hostname") or tech_stack.get("ip"))
+    if not solutions and not products_by_category and not industries and not has_tech:
         return None
 
     slide = _blank_slide(prs)
-    _content_header(slide, "Products & Services" if not solutions and not industries else "Solutions, Products & Industries")
-    _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.9))
-    y = Inches(1.35)
+    _content_header(slide, "Solutions, Products & Tech Stack")
+
+    left_x, left_w = Inches(0.6), Inches(7.8)
+    right_x, right_w = Inches(8.7), Inches(4.0)
+    top, height = Inches(1.1), Inches(5.9)
+    _card(slide, left_x, top, left_w, height)
+    _card(slide, right_x, top, right_w, height)
+
+    # Left card — text ends 0.30in before the card's right edge (spec).
+    text_left = left_x + Inches(0.3)
+    text_right = left_x + left_w - Inches(0.3)
+    text_w = text_right - text_left
+    y = top + Inches(0.25)
+    max_y = top + height - Inches(0.25)
 
     if solutions:
-        _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Solutions", size=15, bold=True, color=_accent())
-        y += Inches(0.4)
-        for s in solutions[:8]:
-            if y > Inches(6.6):
+        _textbox(slide, text_left, y, text_w, Inches(0.3), "Solutions", size=15, bold=True, color=_accent())
+        y += Inches(0.35)
+        shown_solutions = solutions
+        # Overflow rule (spec step 3, last resort): shrink description
+        # font first (that's the PRODUCTS loop below), then truncate
+        # solutions with "+N more" — checked once, before drawing, using
+        # a fixed per-line estimate consistent with the ~0.30in row pitch
+        # the spec asks for, so the truncation point matches what will
+        # actually render rather than guessing after the fact.
+        budget = max_y - y
+        line_pitch = Inches(0.30)
+        fitted = []
+        cursor = Inches(0)
+        for s in solutions:
+            lines = _wrap_lines(f"•  {s}", text_w - Inches(0.2), size_pt=12)
+            item_h = line_pitch * lines
+            if cursor + item_h > budget:
                 break
+            fitted.append(s)
+            cursor += item_h
+        if len(fitted) < len(shown_solutions):
+            fitted = fitted[:-1] if fitted else fitted
+            shown_solutions = fitted + [f"+{len(solutions) - len(fitted)} more"]
+        else:
+            shown_solutions = fitted
+        for s in shown_solutions:
             text = f"•  {s}"
-            lines = _wrap_lines(text, Inches(11.1), size_pt=12)
-            line_h = Inches(12 * 0.02)
-            box = slide.shapes.add_textbox(Inches(1.1), y, Inches(11.1), line_h * lines)
+            lines = _wrap_lines(text, text_w - Inches(0.2), size_pt=12)
+            line_h = Inches(0.30) * lines
+            box = slide.shapes.add_textbox(text_left + Inches(0.2), y, text_w - Inches(0.2), line_h)
             tf = box.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
@@ -1725,82 +1949,57 @@ def add_solutions_products_slide(prs: Presentation, overview: dict):
             run.text = text
             run.font.size = Pt(12)
             run.font.color.rgb = TEXT_DARK
-            y += line_h * lines + Inches(0.06)
+            y += line_h
         y += Inches(0.15)
 
-    if products_by_category:
-        _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Products (by category)", size=15, bold=True, color=_accent())
-        y += Inches(0.4)
-        for category, items in list(products_by_category.items())[:6]:
-            if y > Inches(6.6):
+    # Dry-run fit check before drawing anything (same principle
+    # _insights_strip already uses elsewhere in this file) — Solutions
+    # above can legitimately consume nearly the whole card on a client
+    # with many/long solution bullets, and drawing this heading
+    # unconditionally then left it with nothing rendered underneath.
+    # Confirmed real on the QA stress case (2026-09-25): "Products (by
+    # category)" printed with zero category content below it. Needs room
+    # for the heading plus at least one category name and one line of
+    # description before it's worth drawing at all.
+    min_products_h = Inches(0.35) + Inches(0.28) + Inches(11 * 0.02)
+    if products_by_category and y + min_products_h <= max_y:
+        _textbox(slide, text_left, y, text_w, Inches(0.3), "Products (by category)", size=15, bold=True, color=_accent())
+        y += Inches(0.35)
+        desc_size = 11
+        # Overflow rule (spec step 3, first resort): drop description font
+        # to 10pt once, before drawing any category, if the full list
+        # wouldn't fit at 11pt — checked with the same flowing-cursor math
+        # used to actually draw it, not a rough guess.
+        def _total_height(size_pt: float) -> float:
+            cursor = Emu(0)
+            for _category, items in products_by_category.items():
+                cursor += Inches(0.28)
+                lines = _wrap_lines(", ".join(items), text_w, size_pt=size_pt)
+                cursor += Inches(size_pt * 0.02) * lines + Inches(0.2)
+            return cursor
+        if y + _total_height(11) > max_y and y + _total_height(10) <= max_y:
+            desc_size = 10
+        for category, items in products_by_category.items():
+            if y > max_y - Inches(0.3):
                 break
-            _textbox(slide, Inches(0.9), y, Inches(11.1), Inches(0.3), category, size=13, bold=True)
-            y += Inches(0.32)
+            _textbox(slide, text_left, y, text_w, Inches(0.26), category, size=12, bold=True, color=TEXT_DARK)
+            y += Inches(0.28)
             joined = ", ".join(items)
-            lines = _wrap_lines(joined, Inches(11.3), size_pt=11)
-            line_h = Inches(11 * 0.02)
-            box = slide.shapes.add_textbox(Inches(1.0), y, Inches(11.3), line_h * lines)
+            lines = _wrap_lines(joined, text_w, size_pt=desc_size)
+            line_h = Inches(desc_size * 0.02) * lines
+            box = slide.shapes.add_textbox(text_left, y, text_w, line_h)
             tf = box.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
             run = p.add_run()
             run.text = joined
-            run.font.size = Pt(11)
+            run.font.size = Pt(desc_size)
             run.font.color.rgb = TEXT_MUTED
-            y += line_h * lines + Inches(0.2)
+            y += line_h + Inches(0.2)
 
-    return slide
+    if has_tech:
+        _tech_stack_hosting_card(slide, right_x, top, right_w, height, tech_stack)
 
-
-def add_tech_stack_slide(prs: Presentation, tech_stack: dict):
-    """Detected CMS/framework/hosting/CDN/analytics — from response headers,
-    DNS/PTR, and HTML markers. No credentials involved."""
-    slide = _blank_slide(prs)
-    _content_header(slide, "Tech Stack & Hosting")
-    _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(5.6))
-    y = Inches(1.35)
-
-    detected = tech_stack.get("detected") or []
-    # CMS pulled out of the grouped "Detected technologies" list and shown
-    # as its own top-line fact — same tier as Hostname/IP/HTTPS — since
-    # "what CMS is this on" is the single most-asked question about a
-    # site's tech stack and was previously easy to miss buried alphabetically
-    # among framework/analytics/hosting categories below. Explicit "Not
-    # detected" fallback (not silently absent) when no cms-category marker
-    # matched, e.g. a custom-built site with none of tech_stack_service's
-    # known CMS signatures — so the slide always answers the question
-    # instead of just omitting the row.
-    cms_names = [item["name"] for item in detected if item.get("category") == "cms"]
-    cms_value = ", ".join(dict.fromkeys(cms_names)) if cms_names else "Not detected — likely a custom-built site"
-    remaining_detected = [item for item in detected if item.get("category") != "cms"]
-
-    facts = [
-        ("CMS", cms_value),
-        ("Hostname", tech_stack.get("hostname")),
-        ("IP address", tech_stack.get("ip")),
-        ("Reverse DNS", tech_stack.get("reverse_dns")),
-        ("HTTPS", "Yes" if tech_stack.get("https") else "No"),
-    ]
-    for label, value in facts:
-        if not value:
-            continue
-        _textbox(slide, Inches(0.9), y, Inches(2.2), Inches(0.3), label, size=11, color=TEXT_MUTED)
-        _textbox(slide, Inches(3.2), y, Inches(9.0), Inches(0.3), str(value), size=12, bold=True)
-        y += Inches(0.34)
-
-    y += Inches(0.2)
-    if remaining_detected:
-        _textbox(slide, Inches(0.9), y, Inches(11.5), Inches(0.35), "Detected technologies", size=14, bold=True, color=_accent())
-        y += Inches(0.42)
-        by_category: dict[str, list[str]] = {}
-        for item in remaining_detected:
-            by_category.setdefault(item["category"], []).append(item["name"])
-        for category, names in by_category.items():
-            if y > Inches(6.5):
-                break
-            _textbox(slide, Inches(0.9), y, Inches(2.4), Inches(0.3), category.upper() if len(category) <= 4 else category.title(), size=12, bold=True)
-            _textbox(slide, Inches(3.2), y, Inches(9.0), Inches(0.3), ", ".join(names), size=12, color=TEXT_DARK)
-            y += Inches(0.36)
     return slide
 
 
@@ -8692,9 +8891,15 @@ def _build_report(
 
     if company_overview:
         add_company_overview_extracted_slide(prs, client_name, company_overview)
-        add_solutions_products_slide(prs, company_overview)
     elif site_audit and site_audit.get("company_summary"):
         add_company_overview_slide(prs, client_name, site_audit["company_summary"])
+    # Unconditional (not nested under `if company_overview`) — spec
+    # 2026-09-25 folded the old standalone "Tech Stack & Hosting" slide's
+    # content into this one's right card, so tech_stack data still needs
+    # somewhere to render even on the rare report with no company_overview
+    # at all. The function itself already no-ops when overview AND
+    # tech_stack are both empty.
+    add_solutions_products_slide(prs, company_overview or {}, tech_stack)
 
     # Domain Strategy slide cut per user request 2026-09-08 — function kept
     # below for fast re-enable if ever needed; domain_strategy is still
@@ -8709,11 +8914,12 @@ def _build_report(
     # crawl/site-health card -> Website Structure -> SEO Issues (+ Critical
     # Issues, not in the canonical list but kept at its existing position
     # right after SEO Issues per 2026-09-18 user instruction) -> Priority
-    # Issues - Page-wise -> Structured Data & Schema Validator -> Tech
-    # Stack & Hosting -> UI-Level Fixes -> Onboarding Breakdown. Tech Stack
-    # moved here (was previously rendering before SEO Issues) to match the
-    # canonical position; site-health/Website Structure swapped to match it
-    # too (previously Website Structure rendered first).
+    # Issues - Page-wise -> Structured Data & Schema Validator -> UI-Level
+    # Fixes -> Onboarding Breakdown. Tech Stack & Hosting no longer has its
+    # own slide here (spec 2026-09-25 moved it onto slide 3's right card,
+    # see add_solutions_products_slide) — site-health/Website Structure
+    # swapped to match the canonical position (previously Website
+    # Structure rendered first).
     if site_audit or page_audit or psi_mobile or psi_desktop:
         add_section_slide(prs, client_name, "Understanding Current Scenario")
         if psi_mobile or psi_desktop:
@@ -8745,9 +8951,6 @@ def _build_report(
             add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
         elif structured_data_rows:
             add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
-
-    if tech_stack:
-        add_tech_stack_slide(prs, tech_stack)
 
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)
