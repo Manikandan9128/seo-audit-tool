@@ -7381,8 +7381,10 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     add_conversion_seo_next_steps_slide. That field is still manual-notes-
     only, unaffected by the ui_fixes change above.
 
-    Onboarding Breakdown (below) is its own separate vision pass over the
-    same screenshot."""
+    No longer renders a separate Onboarding Breakdown slide (removed
+    2026-09-25, user's call — it read as a near-duplicate of UI-Level
+    Fixes above; its own AI vision pass, generate_onboarding_breakdown,
+    was removed too rather than left running for content nothing uses)."""
     slides = []
 
     fixes = ux_findings.get("ui_fixes") or []
@@ -7399,45 +7401,6 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
         _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(2.0))
         _textbox(slide, Inches(0.9), Inches(1.4), Inches(11.4), Inches(1.4), ux_findings["note"], size=13)
         slides.append(slide)
-
-    # Onboarding breakdown of the landing page — separate slide from
-    # UI-Level Fixes (that one is broken/missing things; this one is "the
-    # page works but is fighting the visitor's psychology"). 2026-09-20
-    # spec: "Principle / Heuristic" is the column name (not "Bias" — the
-    # analysis spans UX/CRO/usability/trust/brand-consistency principles,
-    # not only psychological biases), item count is whatever the evidence
-    # supports (never padded to a fixed 5), and the summary line must not
-    # claim a measured "ranked by conversion impact" finding — neither the
-    # manual-notes pass nor the screenshot vision pass has analytics/
-    # experiment data to back that. Source is reported accurately per
-    # which pass actually produced this list (see onboarding_breakdown_
-    # source, set only by the vision pass — its absence means the manual-
-    # notes pass supplied it instead).
-    breakdown = ux_findings.get("onboarding_breakdown") or []
-    if breakdown:
-        rows = [
-            (b.get("principle") or b.get("bias") or "", b.get("where", ""), b.get("suggestion", ""))
-            for b in breakdown[:5]
-        ]
-        source = "Homepage screenshot analysis" if ux_findings.get("onboarding_breakdown_source") == "vision" else "Manual UX walkthrough"
-        principle_names = [r[0] for r in rows if r[0]]
-        if principle_names:
-            joined = principle_names[0] if len(principle_names) == 1 else ", ".join(principle_names[:-1]) + f", and {principle_names[-1]}"
-            summary = f"{joined} are the key friction areas identified on the landing page from {source.lower()}."
-        else:
-            summary = None
-        slides.append(_table_slide(
-            prs, "Onboarding Breakdown — Landing Page", ["Principle / Heuristic", "Where It Shows Up", "Directional Suggestion"], rows,
-            # row_height was 0.6in/line (2026-09-22 fix) — real Directional
-            # Suggestion text runs 2-3 wrapped lines, and at 0.6/line even 5
-            # rows blew past _draw_table's available-height budget, so its
-            # own (3,2,1) fallback collapsed every row to 1 line and
-            # ellipsis-truncated the cell — the reference deck (a real
-            # manual example) shows full, untruncated 3-line suggestions.
-            # 0.35in/line leaves enough budget for genuine 3-line wraps.
-            col_widths=[2.6, 3.6, 5.9], source=source, row_height=0.35, wrap_cols={0, 1, 2},
-            insights=[summary] if summary else None,
-        ))
 
     return slides
 
@@ -8729,8 +8692,9 @@ def _build_report(
         add_ux_findings_slides(prs, ux_findings)
 
     # Not in the 2026-09-18 canonical slide-order list — kept at its
-    # existing position (right after Onboarding Breakdown, before the
-    # Traffic & Search Performance divider) per 2026-09-18 user instruction.
+    # existing position (right after UI-Level Fixes / Onboarding
+    # Breakdown — the latter removed 2026-09-25 — before the Traffic &
+    # Search Performance divider) per 2026-09-18 user instruction.
     # Backlink Profile slide re-enabled 2026-09-17 — was pulled 2026-09-08
     # over a real backlink-total mismatch (10,000 vs 33,800 on Lumber): this
     # slide's own total fell back to `row_count`, the literal row count of

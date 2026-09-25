@@ -54,7 +54,7 @@ from app.services.search_intent_service import generate_search_intents
 from app.services.keyword_cluster_pipeline import build_final_keyword_clusters
 from app.services.strategic_keyword_selection_service import select_strategic_clusters
 from app.services.domain_strategy_service import check_domain_strategy
-from app.services.ux_findings_service import generate_onboarding_breakdown, generate_ui_fixes_from_screenshot, static_no_ux_pass
+from app.services.ux_findings_service import generate_ui_fixes_from_screenshot, static_no_ux_pass
 from app.services.brand_citation_service import check_wikipedia_presence, search_brand_mentions
 from app.services.competitor_narrative_service import generate_competitor_narratives_batch
 from app.services.keyword_relevance_service import _brand_token, _classify_keyword_page_category, _rule_exclude, assign_geo_status, classify_page_type, brand_token_variants, build_page_index, classify_keywords, filter_other_brand_keywords, is_branded_or_near_brand, is_competitor_brand_query, is_error_page, is_live_target_page, match_existing_page_for_cluster, site_entity_summary, vendor_product_pricing_reason, vendor_tokens
@@ -2374,15 +2374,11 @@ def _gather_report_data(
             # reason, not a missing screenshot.
             logger.warning("UI fixes vision pass failed for %s: %s", client.website_url, ui_fixes_result["error"])
             content_issues.append(f"UI-Level Fixes (vision pass): {ui_fixes_result['error']}")
-
-        if not ux_findings_result.get("onboarding_breakdown"):
-            onboarding_result = generate_onboarding_breakdown(client.name, client.website_url, homepage_shot)
-            if onboarding_result.get("onboarding_breakdown"):
-                ux_findings_result["onboarding_breakdown"] = onboarding_result["onboarding_breakdown"]
-                ux_findings_result["onboarding_breakdown_source"] = "vision"
-            elif onboarding_result.get("error"):
-                logger.warning("Onboarding breakdown vision pass failed for %s: %s", client.website_url, onboarding_result["error"])
-                content_issues.append(f"Onboarding breakdown (vision pass): {onboarding_result['error']}")
+        # Onboarding Breakdown's own vision call (generate_onboarding_
+        # breakdown) removed 2026-09-25 along with its slide — the slide
+        # was cut as a near-duplicate of UI-Level Fixes above, so calling
+        # a second AI vision pass over the same screenshot for content
+        # nothing renders any more was pure waste.
     elif vision_key_configured:
         # A vision-capable key IS configured, so the no-key branch above
         # already logged and this is the OTHER cause: capture itself
@@ -2392,11 +2388,11 @@ def _gather_report_data(
         # exception. `elif` (not `else`) so this never double-logs alongside
         # the no-key warning above.
         logger.warning(
-            "Homepage screenshot capture failed for %s — UI-Level Fixes and Onboarding Breakdown will be skipped/fallback this run.",
+            "Homepage screenshot capture failed for %s — UI-Level Fixes will be skipped/fallback this run.",
             own_website_domain,
         )
         content_issues.append(
-            "UI-Level Fixes / Onboarding breakdown: homepage screenshot capture failed (bot-blocked, timed out, or unreachable)."
+            "UI-Level Fixes: homepage screenshot capture failed (bot-blocked, timed out, or unreachable)."
         )
 
     # SEO Issues slide's AI insights (headline/root-cause bullets/executive

@@ -1,12 +1,7 @@
 """UI-Level Fixes + Conversion Opportunities, generated from manual UX/QA
 notes a reviewer typed in by hand (text notes only — no screenshot/vision
 analysis). If no notes were supplied, the caller uses static_no_ux_pass()
-instead of skipping the dimension, per the report spec's Rule 8.
-
-The onboarding-bias breakdown (generate_onboarding_breakdown below) is a
-separate, independent pass that does NOT need those manual notes — it runs
-against a real screenshot of the site's own homepage instead, so it's
-available even when no reviewer has done a manual walkthrough yet."""
+instead of skipping the dimension, per the report spec's Rule 8."""
 
 import json
 import re
@@ -29,34 +24,17 @@ mention that you are an AI, a language model, or any tool by name. Every sentenc
 terminal punctuation — if you're about to run out of room, drop a less-important point entirely rather than \
 truncate one mid-sentence.
 
-Also do an onboarding breakdown of the landing page: walk it the way a first-time visitor experiences it and \
-flag where a recognized UX, CRO, usability, trust, or brand-consistency principle or heuristic (e.g. cognitive \
-load / Hick's law, choice overload, social proof, anchoring, loss aversion, scarcity/urgency, default bias, \
-framing, primacy-recency, risk reversal, brand consistency) is either missing where it would help or working \
-against the visitor. Only report a principle you can actually ground in the notes above — do not invent \
-generic advice that isn't tied to something described. Return as many items as the notes actually support \
-(typically 3-5, never pad to a fixed count) — these are priority friction areas, not a measured \
-conversion-impact ranking (that would need analytics/experiment data this pass doesn't have).
-
-Suggestions must be directional ("may create friction", "could strengthen the CTA experience", "should be \
-tested"), never a guaranteed-outcome claim like "will increase conversions" or "will increase sign-ups" — the \
-notes alone can't prove a conversion outcome.
-
 Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
   "ui_fixes": [
     {{"issue": string, "where": string, "fix": string, "severity": "Critical" | "High" | "Medium" | "Low"}}
   ],
-  "conversion_opportunities": [string],
-  "onboarding_breakdown": [
-    {{"principle": string, "where": string, "suggestion": string}}
-  ]
+  "conversion_opportunities": [string]
 }}
 
 Mark anything that blocks a purchase (broken checkout, dead call-to-action, broken form) as "Critical" \
 severity. conversion_opportunities should cover trust signals, reviews, bundling, and engagement content —
-3 to 6 items. onboarding_breakdown: each item needs a real principle/heuristic name (not a generic UX tip or \
-content-format label like "Overview"), exactly where it shows up on the page, and one directional suggestion.
+3 to 6 items.
 """
 
 
@@ -103,69 +81,11 @@ def generate_ux_findings(client_name: str, website_url: str, ux_notes: str) -> d
     return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}
 
 
-ONBOARDING_PROMPT_TEMPLATE = """You are a conversion-rate/UX consultant writing part of a client-facing SEO/web \
-audit report. Below is a real screenshot of {client_name}'s homepage ({website_url}) — treat only what is \
-actually visible in it as ground truth, do not invent page elements, copy, or flows you cannot see.
-
-Do an onboarding breakdown of this landing page: walk it the way a first-time visitor experiences it and flag \
-where a recognized UX, CRO, usability, trust, or brand-consistency principle or heuristic (e.g. cognitive load \
-/ Hick's law, choice overload, social proof, anchoring, loss aversion, scarcity/urgency, default bias, framing, \
-primacy-recency, risk reversal, brand consistency) is either missing where it would help or working against \
-the visitor. These are not all "psychological biases" — treat "Principle / Heuristic" as the broader category, \
-and give risk reversal and brand consistency equal weight to the others:
-- Risk reversal: does the page remove the visitor's perceived risk of acting — a money-back guarantee, free \
-  trial or no-card-required signup, visible refund policy, security/payment trust badges near the conversion \
-  point? Flag it if a real conversion point (signup, purchase, demo request) has none of these nearby.
-- Brand consistency: does the primary call-to-action look and read the same everywhere it repeats — same \
-  color, shape, and copy in the header nav vs. the hero vs. anywhere else? Flag competing or inconsistently \
-  styled CTAs, or a hero band whose visual treatment doesn't match the rest of the page's brand identity.
-Only report a principle you can actually ground in something visible in the screenshot — do not invent generic \
-advice that isn't tied to a real element on the page, and do not force every page to exhibit every principle \
-listed above. Return as many items as the screenshot actually supports (typically 3-5, never pad to a fixed \
-count) — these are priority friction areas identified from a screenshot, not a measured conversion-impact \
-ranking (that needs analytics/experiment data this pass doesn't have).
-
-"Where It Shows Up" must name the exact UI element or region (e.g. "top utility bar", "primary 'Enquire Now' \
-CTA", "hero visual") — never a vague "on the homepage" or "throughout the page" when a more specific location \
-is visible. Suggestions must be directional ("may create friction", "could strengthen the CTA experience", \
-"should be tested"), never a guaranteed-outcome claim like "will increase conversions" or "will increase \
-sign-ups" — a screenshot alone can't prove a conversion outcome, only point to a UX pattern.
-
-Write in plain, confident agency language — this is client-facing content, not an AI-generated draft. Never \
-mention that you are an AI, a language model, or any tool by name. Every sentence must be complete, with \
-terminal punctuation. Keep each field short enough not to be truncated: "where" one concise phrase/sentence, \
-"suggestion" 1-2 concise sentences.
-
-Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
-{{
-  "onboarding_breakdown": [
-    {{"principle": string, "where": string, "suggestion": string}}
-  ]
-}}
-
-Each item needs a real principle/heuristic name (not a generic UX tip or a content-format label like \
-"Overview"/"Info"), exactly where it shows up on the page, and one directional suggestion."""
-
-
-def generate_onboarding_breakdown(client_name: str, website_url: str, screenshot_bytes: bytes, mime_type: str = "image/png") -> dict:
-    """Vision pass over a real homepage screenshot — independent of the
-    manual-QA-notes path above, so it doesn't need a reviewer to have typed
-    anything in. Returns {"onboarding_breakdown": [...]} or {"error": str},
-    same shape as the field inside generate_ux_findings()'s result so the
-    caller can merge either source into one ux_findings dict."""
-    prompt = ONBOARDING_PROMPT_TEMPLATE.format(client_name=client_name, website_url=website_url)
-    try:
-        raw, _provider = generate_text_with_image(prompt, screenshot_bytes, mime_type)
-    except NoAIProviderConfigured as e:
-        return {"error": str(e)}
-
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    return data
+# Onboarding Breakdown vision pass (ONBOARDING_PROMPT_TEMPLATE,
+# generate_onboarding_breakdown) removed 2026-09-25 along with its slide
+# — cut as a near-duplicate of UI-Level Fixes below, so a second AI
+# vision call over the same screenshot for content nothing renders any
+# more was pure waste.
 
 
 # "UI-Level Fixes" (Issue/Where/Fix/Severity) previously only ever filled in
@@ -173,8 +93,7 @@ def generate_onboarding_breakdown(client_name: str, website_url: str, screenshot
 # manual QA notes first — no reviewer has ever done that for most clients,
 # so this slide sat on static_no_ux_pass()'s fallback message indefinitely.
 # This vision pass fills the SAME ui_fixes shape from a real homepage
-# screenshot instead, same independence-from-manual-notes pattern as
-# generate_onboarding_breakdown above.
+# screenshot instead, independent of the manual-notes path.
 #
 # Deliberately scoped to what's actually verifiable from a STATIC image —
 # unlike a manual walkthrough, a screenshot can't confirm a form fails to
@@ -216,9 +135,8 @@ serious-looking but unconfirmed-by-interaction issue instead."""
 
 def generate_ui_fixes_from_screenshot(client_name: str, website_url: str, screenshot_bytes: bytes, mime_type: str = "image/png") -> dict:
     """Vision pass finding concrete UI-level issues from a real homepage
-    screenshot — independent of the manual-QA-notes path, same pattern as
-    generate_onboarding_breakdown. Returns {"ui_fixes": [...]} or
-    {"error": str}."""
+    screenshot — independent of the manual-QA-notes path. Returns
+    {"ui_fixes": [...]} or {"error": str}."""
     prompt = UI_FIXES_PROMPT_TEMPLATE.format(client_name=client_name, website_url=website_url)
     try:
         raw, _provider = generate_text_with_image(prompt, screenshot_bytes, mime_type)
