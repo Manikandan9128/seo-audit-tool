@@ -114,7 +114,22 @@ cluster (e.g. a comparison-intent keyword sitting inside a product-topic cluster
 Merge two candidate clusters only if they share the same entity, user need, intent, audience and page \
 format. Split only if the user need, intent, audience, entity or expected page format materially differs \
 — never because of plural/singular, word order, or a minor modifier. Aim for the smallest number of \
-genuinely useful pages that satisfy these searches.
+genuinely useful pages that satisfy these searches. Do not assume that keywords sharing one broad topic \
+belong on one page — "Database Support", "Oracle DBA Support", "MySQL Managed Services" and "Remote DBA \
+Services" all sit under "Database" but are different page-level search needs. Watch specifically for: \
+entity conflicts (e.g. Oracle vs MySQL), intent conflicts (Service vs Guide), page-purpose conflicts \
+(Provider vs Comparison, Troubleshooting vs Commercial Service, Case Study vs Service Page), and audience \
+conflicts — do not merge across any of these just because the keywords share a broad topic.
+
+## Step 2c — Cluster purity and conflict signals
+For each final cluster, estimate cluster_purity: the fraction of its member keywords that genuinely \
+share the same intent, user need, entity, and page purpose as the cluster's dominant group (1.0 = every \
+keyword cleanly fits; lower it whenever a member is only a loose or forced fit). A cluster with high \
+wording similarity but a real intent or page-purpose conflict inside it must NOT get purity near 1.0. \
+List any specific conflicts you noticed but judged not severe enough to split out as short \
+conflict_signals strings (e.g. "informational modifier inside a commercial cluster") — empty list when \
+none. Also classify the cluster's expected page_purpose as one of: service, product, category, location, \
+guide, comparison, pricing, troubleshooting, documentation, case_study, resource, other.
 
 ## Step 3 — Catch-all prevention
 Reject any cluster name from this list unless the keyword set genuinely matches it exactly: \
@@ -135,11 +150,15 @@ Hard rules:
 evidence it's genuinely that topic.
 - Every keyword from candidate_clusters must receive a final disposition — Needs Review is valid, \
 silent omission is not.
+- Never assign a cluster_purity near 1.0 merely because the keywords share similar wording — base it on \
+intent/need/entity/page-purpose compatibility, per Step 2c.
 
 Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 {{
   "final_clusters": [
-    {{"cluster_name": string, "primary_keyword": string, "member_keywords": [string, ...], "cluster_status": "Validated" | "Needs Review"}}
+    {{"cluster_name": string, "primary_keyword": string, "member_keywords": [string, ...], \
+"cluster_status": "Validated" | "Needs Review", "cluster_purity": number (0.0-1.0), \
+"conflict_signals": [string, ...], "page_purpose": string}}
   ]
 }}
 Every keyword from every candidate cluster must appear in exactly one final cluster's \
@@ -257,13 +276,27 @@ def generate_phase2_candidate_clusters(
 
 def generate_phase3_validated_clusters(candidate_clusters: dict[str, dict]) -> list[dict]:
     """Phase 3 — validate/split/merge/finalize. `candidate_clusters` is
-    Phase 2's own output shape. Returns a list of
-    {cluster_name, primary_keyword, member_keywords, cluster_status} —
-    re-validated against Phase 2's real keyword set so a hallucinated
-    keyword can never enter a final cluster, and any keyword Phase 3
-    dropped is appended as its own "Needs Review" singleton cluster rather
-    than silently vanishing. Empty list on total failure — caller leaves
-    every keyword unclustered, same fail-safe discipline as Phase 2."""
+    Phase 2's own output shape. Returns a list of {cluster_name,
+    primary_keyword, member_keywords, cluster_status, cluster_purity,
+    conflict_signals, page_purpose} — re-validated against Phase 2's real
+    keyword set so a hallucinated keyword can never enter a final cluster,
+    and any keyword Phase 3 dropped is appended as its own "Needs Review"
+    singleton cluster rather than silently vanishing. Empty list on total
+    failure — caller leaves every keyword unclustered, same fail-safe
+    discipline as Phase 2.
+
+    cluster_purity/conflict_signals/page_purpose (2026-09-25, "Prompt 3"
+    quality-control layer folded into this SAME call rather than added as
+    a separate third AI pass — an audit found Phase 3's existing checks
+    already cover almost all of that prompt's substance nearly verbatim
+    [one-page satisfaction test, catch-all prevention, over-split test],
+    so a whole extra paid call would have mostly re-asked questions this
+    call already answers, at real added token cost the user had just asked
+    to minimize. These three fields are the genuinely new, cheap value:
+    an explicit purity score and named conflicts even for a cluster that
+    still passes, and a page-purpose label used downstream to cap
+    evidence_confidence when purity is low — see keyword_cluster_pipeline.
+    build_final_keyword_clusters."""
     if not candidate_clusters:
         return []
 
@@ -301,17 +334,32 @@ def generate_phase3_validated_clusters(candidate_clusters: dict[str, dict]) -> l
             primary = entry.get("primary_keyword")
             if primary not in members:
                 primary = members[0]
+            purity = entry.get("cluster_purity")
+            try:
+                purity = max(0.0, min(1.0, float(purity)))
+            except (TypeError, ValueError):
+                purity = 1.0
+            conflicts = [c for c in (entry.get("conflict_signals") or []) if isinstance(c, str) and c.strip()]
+            purpose = entry.get("page_purpose")
+            purpose = purpose.strip().lower() if isinstance(purpose, str) and purpose.strip() else None
             result.append({
                 "cluster_name": (entry.get("cluster_name") or "").strip(),
                 "primary_keyword": primary,
                 "member_keywords": members,
                 "cluster_status": entry.get("cluster_status") if entry.get("cluster_status") in ("Validated", "Needs Review") else "Validated",
+                "cluster_purity": purity,
+                "conflict_signals": conflicts,
+                "page_purpose": purpose,
             })
         # Spec's own hard rule: every keyword from candidate_clusters must
         # receive a final disposition. A keyword Phase 3 dropped becomes
         # its own Needs Review singleton rather than silently vanishing.
+        # A singleton is trivially pure (nothing else in it to conflict with).
         for kw in valid_keywords - seen:
-            result.append({"cluster_name": "", "primary_keyword": kw, "member_keywords": [kw], "cluster_status": "Needs Review"})
+            result.append({
+                "cluster_name": "", "primary_keyword": kw, "member_keywords": [kw], "cluster_status": "Needs Review",
+                "cluster_purity": 1.0, "conflict_signals": [], "page_purpose": None,
+            })
         return result
 
     parsed = _call_and_parse(prompt, max_tokens)

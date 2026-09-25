@@ -92,12 +92,62 @@ def test_phase3_parses_valid_response():
     candidate_clusters = {"c1": {"keywords": [{"keyword": "6x4 truck", "search_volume": 100}, {"keyword": "6x4 truck price", "search_volume": 50}]}}
     response = json.dumps({
         "final_clusters": [
-            {"cluster_name": "6x4 Truck", "primary_keyword": "6x4 truck", "member_keywords": ["6x4 truck", "6x4 truck price"], "cluster_status": "Validated"},
+            {"cluster_name": "6x4 Truck", "primary_keyword": "6x4 truck", "member_keywords": ["6x4 truck", "6x4 truck price"],
+             "cluster_status": "Validated", "cluster_purity": 0.9, "conflict_signals": [], "page_purpose": "product"},
         ],
     })
     with patch(f"{_MOD}.iter_text_attempts", side_effect=_attempts((response, "groq"))):
         result = generate_phase3_validated_clusters(candidate_clusters)
-    assert result == [{"cluster_name": "6x4 Truck", "primary_keyword": "6x4 truck", "member_keywords": ["6x4 truck", "6x4 truck price"], "cluster_status": "Validated"}]
+    assert result == [{
+        "cluster_name": "6x4 Truck", "primary_keyword": "6x4 truck", "member_keywords": ["6x4 truck", "6x4 truck price"],
+        "cluster_status": "Validated", "cluster_purity": 0.9, "conflict_signals": [], "page_purpose": "product",
+    }]
+
+
+def test_phase3_cluster_purity_is_clamped_and_defaults_to_pure_when_missing():
+    # A missing/malformed cluster_purity must never silently read as "the
+    # AI flagged a conflict" — default is 1.0 (pure), never 0.0.
+    candidate_clusters = {"c1": {"keywords": [{"keyword": "6x4 truck", "search_volume": 100}]}}
+    response = json.dumps({
+        "final_clusters": [
+            {"cluster_name": "6x4 Truck", "primary_keyword": "6x4 truck", "member_keywords": ["6x4 truck"],
+             "cluster_status": "Validated", "cluster_purity": 4.2},
+        ],
+    })
+    with patch(f"{_MOD}.iter_text_attempts", side_effect=_attempts((response, "groq"))):
+        result = generate_phase3_validated_clusters(candidate_clusters)
+    assert result[0]["cluster_purity"] == 1.0
+
+    response2 = json.dumps({
+        "final_clusters": [
+            {"cluster_name": "6x4 Truck", "primary_keyword": "6x4 truck", "member_keywords": ["6x4 truck"], "cluster_status": "Validated"},
+        ],
+    })
+    with patch(f"{_MOD}.iter_text_attempts", side_effect=_attempts((response2, "groq"))):
+        result2 = generate_phase3_validated_clusters(candidate_clusters)
+    assert result2[0]["cluster_purity"] == 1.0
+    assert result2[0]["conflict_signals"] == []
+    assert result2[0]["page_purpose"] is None
+
+
+def test_phase3_low_purity_cluster_carries_its_conflict_signals():
+    candidate_clusters = {"c1": {"keywords": [
+        {"keyword": "database support", "search_volume": 100},
+        {"keyword": "oracle dba support", "search_volume": 80},
+    ]}}
+    response = json.dumps({
+        "final_clusters": [
+            {"cluster_name": "Database Support", "primary_keyword": "database support",
+             "member_keywords": ["database support", "oracle dba support"], "cluster_status": "Validated",
+             "cluster_purity": 0.4, "conflict_signals": ["entity conflict: generic database vs Oracle-specific"],
+             "page_purpose": "service"},
+        ],
+    })
+    with patch(f"{_MOD}.iter_text_attempts", side_effect=_attempts((response, "groq"))):
+        result = generate_phase3_validated_clusters(candidate_clusters)
+    assert result[0]["cluster_purity"] == 0.4
+    assert "entity conflict" in result[0]["conflict_signals"][0]
+    assert result[0]["page_purpose"] == "service"
 
 
 def test_phase3_never_trusts_a_hallucinated_keyword():

@@ -471,6 +471,9 @@ def _build_candidate_clusters(
             continue
         display_name = _unique(name)
         primary_kw = final.get("primary_keyword")
+        purity = final.get("cluster_purity")
+        conflict_signals = final.get("conflict_signals") or []
+        page_purpose = final.get("page_purpose")
         for g in member_groups:
             placed.add(id(g))
             for r in g["rows"]:
@@ -478,6 +481,9 @@ def _build_candidate_clusters(
                 r["cluster_status"] = status
                 r["cluster_source"] = "ai"
                 r["primary_or_secondary"] = "Primary" if r.get("keyword") == primary_kw else "Secondary"
+                r["cluster_purity"] = purity
+                r["cluster_conflict_signals"] = conflict_signals
+                r["cluster_page_purpose"] = page_purpose
 
     for g in groups:
         if id(g) in placed:
@@ -859,6 +865,9 @@ def _assign_core_category_and_priority(rows: list[dict]) -> None:
         r["cluster_priority"] = priority_by_label.get(label) if label else None
 
 
+_LOW_PURITY_CONFIDENCE_CAP = 0.6
+
+
 def _assign_evidence_confidence(rows: list[dict]) -> None:
     """Spec section 41 — evidence_confidence (High/Medium/Low) per row,
     summarizing how much REAL evidence backs its cluster: a known business
@@ -866,7 +875,15 @@ def _assign_evidence_confidence(rows: list[dict]) -> None:
     existing-page match are each independently corroborating evidence.
     Never a new judgment call — purely derived from fields every earlier
     step in this pipeline already set. An unclustered row (no real
-    evidence to group it with anything) is always Low."""
+    evidence to group it with anything) is always Low.
+
+    Capped at Medium when Phase 3's own cluster_purity (2026-09-25) came
+    back below _LOW_PURITY_CONFIDENCE_CAP — the AI itself flagged real
+    intent/entity/page-purpose friction inside this cluster, so the other
+    three signals (theme/page-match/ranking) can corroborate the cluster
+    existing at all, never that it's cleanly one search need. Purity is
+    only ever set on AI-validated clusters (None on rule-based ones), so
+    this never touches rows the AI never looked at."""
     for r in rows:
         if not (r.get("cluster") or "").strip():
             r["evidence_confidence"] = "Low"
@@ -875,7 +892,11 @@ def _assign_evidence_confidence(rows: list[dict]) -> None:
         strong_page_match = r.get("existing_page_match_strength") in ("strong", "partial")
         has_ranking = r.get("current_position") not in (None, "")
         signals = sum([theme_known, strong_page_match, has_ranking])
-        r["evidence_confidence"] = "High" if signals >= 2 else ("Medium" if signals == 1 else "Low")
+        confidence = "High" if signals >= 2 else ("Medium" if signals == 1 else "Low")
+        purity = r.get("cluster_purity")
+        if confidence == "High" and isinstance(purity, (int, float)) and purity < _LOW_PURITY_CONFIDENCE_CAP:
+            confidence = "Medium"
+        r["evidence_confidence"] = confidence
 
 
 _EFFORT_BY_EXISTING_PAGE_ACTION = {

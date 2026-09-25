@@ -392,6 +392,29 @@ def test_evidence_confidence_medium_with_theme_only():
     assert rows[0]["evidence_confidence"] == "Medium"
 
 
+def test_evidence_confidence_capped_at_medium_when_phase3_flags_low_purity():
+    # Regression guard for the 2026-09-25 "Prompt 3" fold-in: two signals
+    # (theme + ranking) would normally earn High, but Phase 3 itself
+    # scored this cluster low-purity (real intent/entity friction inside
+    # it) — that must cap confidence, not get overridden by unrelated
+    # corroborating signals.
+    rows = [
+        {"keyword": "construction payroll", "search_volume": 900, "intent": "Transactional",
+         "page_category": "Landing Page", "current_position": 5},
+    ]
+    candidate_clusters, final_clusters = _clustered({"Construction Payroll": ["construction payroll"]})
+    final_clusters[0]["cluster_purity"] = 0.3
+    final_clusters[0]["conflict_signals"] = ["intent conflict: transactional term grouped with a guide"]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"construction payroll": "Construction Payroll"}), \
+         patch(_PHASE2_PATH, return_value=(candidate_clusters, [])), \
+         patch(_PHASE3_PATH, return_value=final_clusters), \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+    assert rows[0]["evidence_confidence"] == "Medium"
+    assert rows[0]["cluster_purity"] == 0.3
+    assert rows[0]["cluster_conflict_signals"] == ["intent conflict: transactional term grouped with a guide"]
+
+
 def test_existing_business_theme_is_preserved_not_reclassified():
     # A real Semrush export can already carry its own theme/topic data —
     # generate_business_themes must not be called (and must not overwrite

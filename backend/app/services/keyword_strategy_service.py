@@ -400,6 +400,11 @@ def summaries_from_keyword_rows(rows: list[dict]) -> list[dict]:
             # Core-category rank from the pipeline (1 = the client's core
             # commercial topic) is the only strategic signal we have.
             "strategic": (1.0 if priority_rank <= 3 else 0.5) if isinstance(priority_rank, int) else None,
+            # Phase 3's own quality-control fields (2026-09-25) — None on a
+            # rule-based cluster the AI never validated.
+            "purity": sample.get("cluster_purity"),
+            "conflict_signals": sample.get("cluster_conflict_signals") or [],
+            "page_purpose": sample.get("cluster_page_purpose"),
         })
     return summaries
 
@@ -820,6 +825,12 @@ def build_review_queue(summaries: list[dict], cannibalization: list[dict], route
         if len(s.get("outliers") or []) >= 2:
             queue.append({"type": "Borderline cluster separation", "item": s["name"],
                           "detail": ", ".join((s.get("outliers") or [])[:3])})
+        if s.get("conflict_signals"):
+            # Phase 3's own noted friction (2026-09-25) — the AI still kept
+            # the cluster together but flagged specific tension inside it,
+            # worth a human glance even when nothing else here caught it.
+            queue.append({"type": "Noted cluster conflict", "item": s["name"],
+                          "detail": "; ".join((s.get("conflict_signals") or [])[:2])})
         if s.get("decision") == "EXISTING URL — SECONDARY TARGET" and s.get("_owner_family") in (None, s.get("dominant_family")):
             queue.append({"type": "Potential cannibalization", "item": s["name"], "detail": s.get("decision_reason") or ""})
         # Only where the answer changes what gets built: a High-priority
