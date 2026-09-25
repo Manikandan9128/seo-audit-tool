@@ -18,9 +18,17 @@ function formatDownloadedAt(iso: string): string {
   });
 }
 
+function filenameFrom(disposition: string | undefined, fallback: string) {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition || "");
+  if (star) return decodeURIComponent(star[1]);
+  const plain = /filename="?([^";]+)"?/i.exec(disposition || "");
+  return plain ? plain[1] : fallback;
+}
+
 export default function DownloadedReportsPage() {
   const [reports, setReports] = useState<DownloadedReport[] | null>(null);
   const [error, setError] = useState("");
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -28,6 +36,29 @@ export default function DownloadedReportsPage() {
       .then((res) => setReports(res.data))
       .catch(() => setError("Couldn't load downloaded reports."));
   }, []);
+
+  async function redownload(r: DownloadedReport) {
+    // Re-fetching an already-downloaded job's file on purpose — the
+    // backend only stamps downloaded_at on a job's FIRST fetch, so this
+    // never adds another row or moves this one, same as clicking
+    // Download again on the client page would do.
+    setDownloadingId(r.job_id);
+    try {
+      const res = await api.get(`/clients/${r.client_id}/generate-report/${r.job_id}/download`, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", filenameFrom(res.headers["content-disposition"], r.filename || "seo-audit.pptx"));
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setError("Couldn't download that report — try again.");
+    } finally {
+      setDownloadingId(null);
+    }
+  }
 
   return (
     <div className="clients-page">
@@ -55,6 +86,7 @@ export default function DownloadedReportsPage() {
                 <th style={{ padding: "10px 16px" }}>Client</th>
                 <th style={{ padding: "10px 16px" }}>Downloaded</th>
                 <th style={{ padding: "10px 16px" }}>File</th>
+                <th style={{ padding: "10px 16px" }}></th>
               </tr>
             </thead>
             <tbody>
@@ -66,6 +98,15 @@ export default function DownloadedReportsPage() {
                   <td style={{ padding: "10px 16px" }}>{formatDownloadedAt(r.downloaded_at)}</td>
                   <td style={{ padding: "10px 16px" }} className="muted">
                     {r.filename || "—"}
+                  </td>
+                  <td style={{ padding: "10px 16px" }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => redownload(r)}
+                      disabled={downloadingId === r.job_id}
+                    >
+                      {downloadingId === r.job_id ? "Downloading..." : "Download"}
+                    </button>
                   </td>
                 </tr>
               ))}
