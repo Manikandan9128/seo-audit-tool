@@ -313,6 +313,37 @@ def test_outcomes_slide_light_brand_color_uses_dark_text_on_button():
     _reset_theme()
 
 
+def test_red_brand_color_does_not_override_the_fixed_priority_device_chip_colors():
+    # Spec: "If the brand is close to red or amber, keep the priority
+    # chips as they are; they have their own background tints" — priority
+    # (High/Medium/Low) and device (Both/Mobile/Desktop) chip colors are
+    # FIXED regardless of the client's brand color, never themed to it.
+    _theme["accent"] = RGBColor(0xCC, 0x00, 0x00)
+    _theme["footer"] = "Red Brand Co  ·  redbrand.com"
+    prs = _prs()
+    slide = add_ui_fixes_top5_slide(prs, [_issue(1, priority="High", device="Mobile")], 1)
+    pri_chip = next(sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text == "High")
+    dev_chip = next(sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text == "Mobile")
+    assert pri_chip.fill.fore_color.rgb == RGBColor(0xFD, 0xE8, 0xE8)
+    assert pri_chip.text_frame.paragraphs[0].runs[0].font.color.rgb == RGBColor(0xB9, 0x1C, 0x1C)
+    assert dev_chip.fill.fore_color.rgb == RGBColor(0xE0, 0xF2, 0xFE)
+    assert dev_chip.text_frame.paragraphs[0].runs[0].font.color.rgb == RGBColor(0x03, 0x69, 0xA1)
+    assert _audit_slide_geometry(prs) == []
+
+
+def test_red_brand_color_full_deck_is_geometry_clean_across_issue_counts():
+    # Part C fixture sweep: a red-brand client at 3, 5, and 20 issues.
+    _theme["accent"] = RGBColor(0xCC, 0x00, 0x00)
+    _theme["footer"] = "Red Brand Co  ·  redbrand.com"
+    for n in (3, 5, 20):
+        prs = _prs()
+        issues = _issues(n)
+        add_ui_fixes_top5_slide(prs, issues, n)
+        add_ui_fixes_outcomes_slide(prs, issues[:5], n, {"High": n}, "https://sheet.example/x" if n > 5 else None, "Red Brand Co")
+        problems = _audit_slide_geometry(prs)
+        assert problems == [], f"{n} issues: {problems}"
+
+
 # --- Edge case: 0 issues ------------------------------------------------------
 
 def test_no_issues_slide_lists_a_checklist():

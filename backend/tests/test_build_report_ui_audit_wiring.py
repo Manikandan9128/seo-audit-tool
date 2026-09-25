@@ -2,6 +2,7 @@
 validate_ui_audit_issues()'s output and the two UI-Level Fixes slides
 (or the no-issues edge case) actually lands in the built deck."""
 
+import pytest
 from pptx import Presentation
 
 from app.reporting.pptx_builder import build_report
@@ -74,3 +75,19 @@ def test_build_report_top5_slide_uses_the_configured_brand_color():
     # read, end to end.
     all_text = "\n".join(_slide_titles(pptx_bytes))
     assert "UI-Level Fixes: Issues Found" in all_text
+
+
+# --- Part C fixture sweep: 0 / 3 / 5 / 20 issues, light + red brand -----------
+
+@pytest.mark.parametrize("total_count", [0, 3, 5, 20])
+@pytest.mark.parametrize("brand_hex", ["#F5E042", "#CC0000"])  # light yellow, red
+def test_build_report_full_deck_across_fixtures_and_brand_colors(total_count, brand_hex):
+    ui_audit = {"issues": [], "total_count": 0, "counts_by_priority": {}} if total_count == 0 else _ui_audit(total_count)
+    pptx_bytes = build_report("Fixture Co", "https://fixture.co", ui_audit=ui_audit, brand_color_hex=brand_hex)
+    all_text = "\n".join(_slide_titles(pptx_bytes))
+    if total_count == 0:
+        assert "UI-Level Fixes: No Major Issues Found" in all_text
+    else:
+        title = "UI-Level Fixes: Top 5 Issues" if total_count >= 5 else "UI-Level Fixes: Issues Found"
+        assert title in all_text
+        assert "UI-Level Fixes: Expected Outcomes" in all_text
