@@ -6843,6 +6843,28 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                    + (f" — {impressions:,.0f} impressions in the report window." if impressions else ".")
                    + " No Semrush search volume uploaded for these."]
             out.append(f"Top keyword: \"{top.get('keyword')}\".")
+        # §30/§60/§61: confidence + the evidence behind the grouping — moved
+        # ahead of Recommended format/Cluster validation (2026-09-25): the
+        # 5-line insight cap wasn't the real threat, _insights_strip's own
+        # vertical-space budget is — a large cluster's table (15-21+ rows)
+        # leaves so little room below it that only the first 2-3 lines fit
+        # regardless of the count cap, so whatever sits later in this list
+        # gets silently cut. Confirmed real on a live Geopits report
+        # (2026-09-25): several of the biggest, highest-value clusters
+        # showed only "N keywords, X searches" + "Top opportunity", with
+        # no action, confidence or validation line at all. Confidence
+        # (how much to trust the grouping) is the single most useful line
+        # to guarantee survives that cut, ahead of the narrower "are the
+        # page formats consistent" validation check.
+        if top.get("cluster_confidence") is not None:
+            priority_text = (
+                f" Priority {top['roadmap_priority']} (opportunity {top.get('cluster_opportunity')}/100)."
+                if top.get("roadmap_priority") else ""
+            )
+            out.append(
+                f"Confidence: {top.get('cluster_confidence_level')} ({top.get('cluster_confidence')}/100) — "
+                f"{top.get('cluster_reason') or 'grouped by shared entity and intent'}.{priority_text}"
+            )
         # §22 page type (strategy layer) when computed, else the pipeline's
         # coarse page category; §29 cluster type alongside it.
         page_category = top.get("recommended_page_type") or top.get("page_category")
@@ -6883,18 +6905,6 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 # disagree when the top-volume keyword's own format wasn't
                 # the cluster's most common one.
                 out.append(f"Cluster validation: consistent format ({page_category or cat_counts[0][0]}) — one page can reasonably target every keyword here.")
-        # §30/§60/§61: confidence + the evidence behind the grouping, placed
-        # ahead of the KD/CPC colour lines so the 5-line insight cap never
-        # drops it.
-        if top.get("cluster_confidence") is not None:
-            priority_text = (
-                f" Priority {top['roadmap_priority']} (opportunity {top.get('cluster_opportunity')}/100)."
-                if top.get("roadmap_priority") else ""
-            )
-            out.append(
-                f"Confidence: {top.get('cluster_confidence_level')} ({top.get('cluster_confidence')}/100) — "
-                f"{top.get('cluster_reason') or 'grouped by shared entity and intent'}.{priority_text}"
-            )
         temporal_line = _temporal_keywords_line([r.get("keyword") or "" for r in rows_for_group])
         if temporal_line:
             out.append(temporal_line)

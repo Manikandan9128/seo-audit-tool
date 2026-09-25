@@ -157,6 +157,29 @@ def test_audit_catches_changed_or_missing_rows():
     assert any("differ from source" in p for p in _audit_target_keyword_slides(slides, tampered))
 
 
+def test_large_cluster_keeps_confidence_line_despite_tall_table():
+    # Regression (confirmed real, Geopits report, 2026-09-25): a large
+    # cluster's table (15-21+ rows) leaves so little vertical room below
+    # it that _insights_strip's own space budget — not the 5-line count
+    # cap — silently cuts whatever sits later in the insight list.
+    # Several of the biggest, highest-value clusters showed only "N
+    # keywords, X searches" + "Top opportunity", with no confidence or
+    # action line at all. Confidence must now survive by being early in
+    # the list, not just under the count cap.
+    rows = [
+        {"keyword": f"cloud database option {i}", "cluster": "Cloud Database", "search_volume": 1000 - i * 10,
+         "keyword_difficulty": 40, "detected_intent": "Commercial",
+         "cluster_confidence": 75, "cluster_confidence_level": "High", "cluster_reason": "shared entity and intent",
+         "roadmap_priority": "High", "cluster_opportunity": 70,
+         "recommended_action": "New URL Required", "recommended_page_type": "Service Page"}
+        for i in range(20)
+    ]
+    prs = _prs()
+    slides = add_keyword_research_slide(prs, rows)
+    text = " ".join(sh.text_frame.text for s in slides for sh in s.shapes if sh.has_text_frame)
+    assert "Confidence: High (75/100)" in text
+
+
 def test_top_opportunity_is_always_the_highest_volume_keyword():
     # Regression (confirmed real, Geopits report, 2026-09-24): "Top
     # opportunity" preferred the pipeline's primary_or_secondary pick
