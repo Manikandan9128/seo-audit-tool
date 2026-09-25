@@ -10,6 +10,14 @@ interface DownloadedReport {
   downloaded_at: string;
 }
 
+interface UndownloadedReport {
+  job_id: string;
+  client_id: string;
+  client_name: string;
+  filename: string | null;
+  generated_at: string;
+}
+
 function formatDownloadedAt(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString(undefined, {
@@ -39,13 +47,45 @@ export default function DownloadedReportsPage() {
   // generate+download can be checked against this tab right away without
   // scrolling past older rows.
   const [scope, setScope] = useState<"today" | "all">("today");
+  const [legacy, setLegacy] = useState<UndownloadedReport[] | null>(null);
+  const [markingId, setMarkingId] = useState<string | null>(null);
 
-  useEffect(() => {
+  function loadDownloaded() {
     api
       .get("/clients/reports/downloaded")
       .then((res) => setReports(res.data))
       .catch(() => setError("Couldn't load downloaded reports."));
+  }
+
+  function loadLegacy() {
+    api
+      .get("/clients/reports/undownloaded")
+      .then((res) => setLegacy(res.data))
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    loadDownloaded();
+    loadLegacy();
   }, []);
+
+  async function markDownloaded(r: UndownloadedReport) {
+    // One-time backfill for a report actually downloaded before
+    // downloaded_at existed (2026-09-25) — e.g. a job finished and
+    // downloaded this morning, with no record of that download itself.
+    // Stamped with the job's own generated_at, then it moves from this
+    // legacy list into the real Downloaded Reports list above.
+    setMarkingId(r.job_id);
+    try {
+      await api.post(`/clients/${r.client_id}/generate-report/${r.job_id}/mark-downloaded`);
+      loadDownloaded();
+      loadLegacy();
+    } catch {
+      setError("Couldn't mark that report as downloaded — try again.");
+    } finally {
+      setMarkingId(null);
+    }
+  }
 
   async function redownload(r: DownloadedReport) {
     // Re-fetching an already-downloaded job's file on purpose — the
@@ -96,6 +136,35 @@ export default function DownloadedReportsPage() {
           >
             All
           </button>
+        </div>
+      )}
+
+      {legacy && legacy.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Reports generated before this tab existed — mark the ones you already downloaded so they show
+            up in the list below.
+          </p>
+          {legacy.map((r) => (
+            <div
+              key={r.job_id}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}
+            >
+              <span>
+                <Link to={`/clients/${r.client_id}`}>{r.client_name}</Link>
+                {" — generated "}
+                {formatDownloadedAt(r.generated_at)}
+                {r.filename ? ` — ${r.filename}` : ""}
+              </span>
+              <button
+                className="btn btn-secondary"
+                onClick={() => markDownloaded(r)}
+                disabled={markingId === r.job_id}
+              >
+                {markingId === r.job_id ? "Marking..." : "Mark as downloaded"}
+              </button>
+            </div>
+          ))}
         </div>
       )}
 

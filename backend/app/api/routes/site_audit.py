@@ -3362,3 +3362,58 @@ def list_downloaded_reports(
         for job, client_name in rows
     ]
 
+
+@router.get("/reports/undownloaded")
+def list_undownloaded_reports(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Legacy jobs (2026-09-25) — a "done" report generated and actually
+    downloaded BEFORE the downloaded_at column existed has no way to prove
+    that here; this lists every such job (status=done, downloaded_at still
+    null) so the user can mark the ones they know they downloaded via
+    mark_report_downloaded below, once, rather than losing that history."""
+    rows = (
+        db.query(ReportGenerationJob, Client.name)
+        .join(Client, Client.id == ReportGenerationJob.client_id)
+        .filter(Client.owner_user_id == current_user.id, ReportGenerationJob.status == "done",
+                ReportGenerationJob.downloaded_at.is_(None))
+        .order_by(ReportGenerationJob.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "job_id": job.id, "client_id": job.client_id, "client_name": client_name,
+            "filename": job.filename, "generated_at": job.updated_at,
+        }
+        for job, client_name in rows
+    ]
+
+
+@router.post("/{client_id}/generate-report/{job_id}/mark-downloaded")
+def mark_report_downloaded(
+    client_id: uuid.UUID,
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Backfills downloaded_at for a job the user already downloaded
+    before this column existed (2026-09-25) — e.g. this morning's
+    6:52:08am report. Stamped with the job's own updated_at (when it
+    finished generating), the closest real timestamp this app has for
+    "when this was downloaded" on a legacy job, since no download event
+    was ever recorded for it. Never touches a job that already has a
+    downloaded_at — that's what the real /download endpoint is for."""
+    _get_owned_client(client_id, db, current_user)
+    job = db.get(ReportGenerationJob, job_id)
+    if not job or job.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail=f"Report not ready yet (status: {job.status})")
+    if job.downloaded_at is None:
+        job.downloaded_at = job.updated_at
+        db.commit()
+    return {"job_id": job.id, "downloaded_at": job.downloaded_at}
+
