@@ -4,7 +4,9 @@ import httpx
 import pytest
 
 import app.integrations.text_ai_client as text_ai_client
-from app.integrations.text_ai_client import NoAIProviderConfigured, _reserve_gemini_slot, generate_text
+from app.integrations.text_ai_client import (
+    NoAIProviderConfigured, _reserve_gemini_slot, generate_text, generate_text_with_image, generate_text_with_images,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -239,6 +241,47 @@ def test_try_claude_uses_the_selected_model_override():
         assert kwargs["model"] == "claude-haiku-4-5-20251001"
     finally:
         text_ai_client.set_claude_model(None)
+
+
+def test_generate_text_with_images_sends_every_image_to_claude():
+    # UI-Level Fixes rebuild (2026-09-25) needs all 4 screenshots (desktop/
+    # mobile x first-screen/full-page) in ONE vision call, not one call per
+    # image — this is the real regression risk of generalizing the
+    # single-image path.
+    with patch("app.integrations.text_ai_client.settings") as mock_settings, \
+         patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
+        mock_settings.claude_api_key = "sk-ant-test"
+        mock_anthropic.return_value.messages.create.return_value = _fake_claude_response("4 issues found", 100, 50)
+        images = [(b"img1", "image/png"), (b"img2", "image/png"), (b"img3", "image/png"), (b"img4", "image/png")]
+        text, provider = generate_text_with_images("find issues", images, max_tokens=1024)
+    assert text == "4 issues found"
+    assert provider == "claude"
+    _, kwargs = mock_anthropic.return_value.messages.create.call_args
+    content = kwargs["messages"][0]["content"]
+    image_blocks = [c for c in content if c["type"] == "image"]
+    assert len(image_blocks) == 4
+    assert [b["source"]["data"] for b in image_blocks] == [
+        __import__("base64").b64encode(b).decode() for b in (b"img1", b"img2", b"img3", b"img4")
+    ]
+    text_blocks = [c for c in content if c["type"] == "text"]
+    assert text_blocks[0]["text"] == "find issues"
+
+
+def test_generate_text_with_image_single_image_wrapper_still_works():
+    # Backward-compat: existing single-image callers (semrush_parser,
+    # ux_findings_service) must keep working unchanged.
+    with patch("app.integrations.text_ai_client.settings") as mock_settings, \
+         patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
+        mock_settings.claude_api_key = "sk-ant-test"
+        mock_anthropic.return_value.messages.create.return_value = _fake_claude_response("one image analyzed", 50, 20)
+        text, provider = generate_text_with_image("describe this", b"single-image-bytes", "image/jpeg")
+    assert text == "one image analyzed"
+    assert provider == "claude"
+    _, kwargs = mock_anthropic.return_value.messages.create.call_args
+    content = kwargs["messages"][0]["content"]
+    image_blocks = [c for c in content if c["type"] == "image"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["source"]["media_type"] == "image/jpeg"
 
 
 def test_claude_token_usage_is_inert_without_a_reset_first():

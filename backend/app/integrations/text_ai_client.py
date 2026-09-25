@@ -682,17 +682,22 @@ GROQ_VISION_MODELS = ("qwen/qwen3.6-27b", "qwen/qwen3.8-27b")
 GROQ_VISION_TIMEOUT_SECONDS = 45
 
 
-def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens: int) -> str:
-    b64_image = base64.b64encode(image_bytes).decode("ascii")
-    # +300 covers the image's own token cost, which the char/4 estimate
-    # below (sized for text-only prompts) can't see at all.
-    estimated_prompt_tokens = len(prompt) // 4 + 300
+def _try_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int) -> str:
+    # +300 per image covers each image's own token cost, which the char/4
+    # estimate below (sized for text-only prompts) can't see at all — a
+    # single-image budget of +300 badly undercounts once a caller sends
+    # several (the UI-Level Fixes rebuild's 4-screenshot analysis call).
+    estimated_prompt_tokens = len(prompt) // 4 + 300 * len(images)
     safe_max_tokens = max(256, min(max_tokens, GROQ_TPM_BUDGET - estimated_prompt_tokens))
     if safe_max_tokens < max_tokens // 2:
         raise RuntimeError(
-            f"prompt+image too large for Groq's shared TPM budget to leave room for the requested "
+            f"prompt+image(s) too large for Groq's shared TPM budget to leave room for the requested "
             f"output ({safe_max_tokens} available vs {max_tokens} needed) — skipping to next provider"
         )
+    content = [{"type": "text", "text": prompt}] + [
+        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"}}
+        for image_bytes, mime_type in images
+    ]
     model_errors: list[str] = []
     for model in GROQ_VISION_MODELS:
         _reserve_groq_budget(estimated_prompt_tokens + safe_max_tokens)
@@ -701,13 +706,7 @@ def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens
             headers={"Authorization": f"Bearer {settings.groq_api_key}"},
             json={
                 "model": model,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
-                    ],
-                }],
+                "messages": [{"role": "user", "content": content}],
                 "max_tokens": safe_max_tokens,
                 # Both Qwen vision models only accept "none" or "default" for
                 # reasoning_effort (unlike gpt-oss-120b's low/medium/high) —
@@ -732,45 +731,46 @@ def _try_groq_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens
     raise RuntimeError(f"no Groq vision model available on this account: {'; '.join(model_errors)}")
 
 
-def _try_gemini_vision(prompt: str, image_bytes: bytes, mime_type: str) -> str:
+def _try_gemini_vision(prompt: str, images: list[tuple[bytes, str]]) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
-    image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=[image_part, prompt])
+    image_parts = [genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type) for image_bytes, mime_type in images]
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=[*image_parts, prompt])
     return (response.text or "").strip()
 
 
-def _try_claude_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens: int) -> str:
+def _try_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int) -> str:
     client = Anthropic(api_key=settings.claude_api_key)
+    content = [
+        {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": base64.b64encode(image_bytes).decode()}}
+        for image_bytes, mime_type in images
+    ] + [{"type": "text", "text": prompt}]
     response = client.messages.create(
         model=_current_claude_model(),
         max_tokens=max_tokens,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": base64.b64encode(image_bytes).decode()}},
-                {"type": "text", "text": prompt},
-            ],
-        }],
+        messages=[{"role": "user", "content": content}],
     )
     _record_claude_usage("vision", response.usage.input_tokens, response.usage.output_tokens)
     return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
-def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "image/png", max_tokens: int = 2048) -> tuple[str, str]:
+def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_tokens: int = 2048) -> tuple[str, str]:
     """Same fallback shape as generate_text(), but for a prompt grounded in
-    a real screenshot (e.g. the client's own homepage) instead of text
-    alone. GROQ_MODEL itself is text-only, but the same free Groq key also
-    reaches Groq's vision models (see GROQ_VISION_MODELS/_try_groq_vision
-    above), tried first for the same fast-recovery-budget reason generate_text()
-    tries Groq first — Gemini, then Claude follow as before. Raises
-    NoAIProviderConfigured if no key is set or every call fails."""
+    one or more real screenshots (e.g. the client's own homepage at
+    several viewports) instead of text alone. `images` is a list of
+    (image_bytes, mime_type) pairs, sent together in a single vision call
+    — not one call per image. GROQ_MODEL itself is text-only, but the same
+    free Groq key also reaches Groq's vision models (see GROQ_VISION_
+    MODELS/_try_groq_vision above), tried first for the same fast-
+    recovery-budget reason generate_text() tries Groq first — Gemini,
+    then Claude follow as before. Raises NoAIProviderConfigured if no key
+    is set or every call fails."""
     if not (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
         raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
 
     errors: list[str] = []
     if settings.groq_api_key:
         try:
-            text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
+            text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
             if text:
                 return text, "groq"
             errors.append("Groq returned an empty response")
@@ -786,7 +786,7 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
                 else:
                     time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
                     try:
-                        text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
+                        text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
                         if text:
                             return text, "groq"
                         errors.append("Groq returned an empty response")
@@ -804,7 +804,7 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
             errors.append("Gemini vision skipped — this process's own daily request-count budget looks spent")
         else:
             try:
-                text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
+                text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, images)
                 if text:
                     return text, "gemini"
                 errors.append("Gemini returned an empty response")
@@ -822,7 +822,7 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
                         errors.append("Gemini vision skipped retry — daily request-count budget looks spent")
                     else:
                         try:
-                            text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, image_bytes, mime_type)
+                            text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, images)
                             if text:
                                 return text, "gemini"
                             errors.append("Gemini returned an empty response")
@@ -832,7 +832,7 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
                     errors.append(friendly_gemini_error(e))
     if settings.claude_api_key:
         try:
-            text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, image_bytes, mime_type, max_tokens)
+            text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, images, max_tokens)
             if text:
                 return text, "claude"
             errors.append("Claude returned an empty response")
@@ -840,3 +840,10 @@ def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "
             errors.append(f"Claude vision request failed: {str(e)[:300]}")
 
     raise NoAIProviderConfigured(" / ".join(errors))
+
+
+def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "image/png", max_tokens: int = 2048) -> tuple[str, str]:
+    """Single-image convenience wrapper over generate_text_with_images —
+    every existing caller of this (Onboarding Breakdown, single-screenshot
+    UI-Level Fixes) keeps working unchanged."""
+    return generate_text_with_images(prompt, [(image_bytes, mime_type)], max_tokens)
