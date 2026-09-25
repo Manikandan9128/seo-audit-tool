@@ -10,13 +10,19 @@ deck. These pin each fix so a future edit that reintroduces the same class
 of drift fails here first."""
 
 from pptx import Presentation
+from pptx.util import Inches
 
 from app.reporting import pptx_builder
 from app.reporting.pptx_builder import (
+    SLIDE_H,
+    SLIDE_W,
     _audit_slide_geometry,
     _draw_table,
+    _score_ring,
+    add_competitor_table_slide,
     add_seo_issues_slide,
     add_site_health_slide,
+    add_ux_findings_slides,
 )
 
 
@@ -90,6 +96,64 @@ def test_site_health_ai_search_health_label_does_not_overlap_score_ring():
 
     issues = _audit_slide_geometry(prs)
     assert not any("overlap" in i for i in issues), issues
+
+
+def test_score_ring_perfect_100_uses_a_smaller_font_than_two_digit_scores():
+    # Confirmed real on a live report (2026-09-25): a perfect 100 wrapped
+    # inside its oval score ring — "10" on one line, "0" on the next. An
+    # oval shape's text frame insets further than a rectangle's same
+    # bounding box, so the one 3-digit score this ever shows (0-100) was
+    # the sole case tight enough to wrap at the same 28pt every 2-digit
+    # score already renders fine at.
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _score_ring(slide, Inches(1), Inches(1), Inches(1.1), 100, "Best Practices")
+    _score_ring(slide, Inches(3), Inches(1), Inches(1.1), 92, "Performance")
+    runs_by_text = {}
+    for sh in slide.shapes:
+        if sh.has_text_frame:
+            for p in sh.text_frame.paragraphs:
+                for r in p.runs:
+                    if r.text in ("100", "92"):
+                        runs_by_text[r.text] = r.font.size
+    assert runs_by_text["100"] < runs_by_text["92"]
+
+
+def test_ui_level_fixes_issue_cell_has_a_bullet_prefix():
+    # User request (2026-09-25): each row needs a visible bullet, not
+    # bare text in the Issue cell.
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    ux_findings = {
+        "ui_fixes": [
+            {"issue": "No clear CTA above the fold", "where": "Hero", "fix": "Add a primary button", "severity": "High"},
+        ],
+        "ui_fixes_source": "vision",
+    }
+    slides = add_ux_findings_slides(prs, ux_findings)
+    table = next(sh.table for sh in slides[0].shapes if sh.has_table)
+    assert table.cell(1, 0).text.startswith("•")
+    assert "No clear CTA above the fold" in table.cell(1, 0).text
+
+
+def test_competitor_table_highlights_the_clients_own_row():
+    # User request (2026-09-25): "which is client, which are competitors"
+    # wasn't obvious at a glance — own row now labeled and tinted.
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    competitor_rows = [
+        {"domain": "ourclient.com", "authority_score": 40, "backlinks_total": 5000, "organic_traffic": 10000, "organic_keywords": 500},
+        {"domain": "rival.com", "authority_score": 60, "backlinks_total": 20000, "organic_traffic": 50000, "organic_keywords": 2000},
+    ]
+    slide = add_competitor_table_slide(prs, competitor_rows)
+    table = next(sh.table for sh in slide.shapes if sh.has_table)
+    assert "(Your Site)" in table.cell(1, 0).text
+    assert "(Your Site)" not in table.cell(2, 0).text
+    own_cell_fill = table.cell(1, 0).fill.fore_color.rgb
+    competitor_cell_fill = table.cell(2, 0).fill.fore_color.rgb
+    assert own_cell_fill != competitor_cell_fill
+    assert _audit_slide_geometry(prs) == []
 
 
 def test_wrap_cols_table_does_not_overflow_slide_bottom():

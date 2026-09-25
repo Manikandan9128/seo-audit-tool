@@ -468,7 +468,14 @@ def _score_ring(slide, cx, cy, diameter, score: int | None, label: str):
     p.alignment = PP_ALIGN.CENTER
     run = p.add_run()
     run.text = str(score) if score is not None else "—"
-    run.font.size = Pt(28)
+    # An oval shape's own text frame insets further than a rectangle's
+    # same bounding box (PowerPoint keeps text clear of the curved
+    # edges), so the one 3-digit score this ever shows — a perfect 100 —
+    # was the sole case tight enough to wrap: "10" / "0" on two lines.
+    # Every 2-digit/1-digit score (0-99) already fits fine at 28pt;
+    # only 100 needs the smaller size. Confirmed real on a live report
+    # (2026-09-25).
+    run.font.size = Pt(22) if score == 100 else Pt(28)
     run.font.bold = True
     run.font.color.rgb = color
     _textbox(
@@ -5226,7 +5233,13 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], k
         col_widths = [2.15, 1.0, 1.15, 1.0, 1.2, 0.7, 1.0, 1.1, 0.9, 1.0]
         rows = [
             (
-                r.get("domain", ""),
+                # Row 0 is always the client's own site on this path (see
+                # own_row below) — labeled explicitly, not left to a
+                # background tint alone, so it still reads correctly in
+                # black-and-white or for anyone colorblind. Confirmed
+                # real user ask (2026-09-25): "which is client, which are
+                # competitors" wasn't obvious at a glance.
+                f"{r.get('domain', '')} (Your Site)" if i == 0 else r.get("domain", ""),
                 _fmt_num(r.get("organic_traffic")),
                 _fmt_num(r.get("organic_traffic_worldwide")),
                 _fmt_num(r.get("organic_keywords")),
@@ -5237,14 +5250,14 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], k
                 r.get("branded_pct", ""),
                 r.get("nonbranded_pct", ""),
             )
-            for r in competitor_rows[:14]
+            for i, r in enumerate(competitor_rows[:14])
         ]
     elif has_rich_data:
         headers = ["Domain", "Organic Traffic", "Organic Keywords", "DR", "Backlinks", "Top Countries", "Branded", "Non-Branded"]
         col_widths = [3.8, 1.3, 1.3, 0.9, 1.2, 1.3, 1.1, 1.2]
         rows = [
             (
-                r.get("domain", ""),
+                f"{r.get('domain', '')} (Your Site)" if i == 0 else r.get("domain", ""),
                 _fmt_num(r.get("organic_traffic")),
                 _fmt_num(r.get("organic_keywords")),
                 _fmt_num(r.get("authority_score")),
@@ -5253,7 +5266,7 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], k
                 r.get("branded_pct", ""),
                 r.get("nonbranded_pct", ""),
             )
-            for r in competitor_rows[:14]
+            for i, r in enumerate(competitor_rows[:14])
         ]
     else:
         headers = ["Domain", "Organic Traffic", "Organic Keywords", "Common Keywords"]
@@ -5339,7 +5352,23 @@ def add_competitor_table_slide(prs: Presentation, competitor_rows: list[dict], k
     # caps how far the insights strip below the table may render so a long
     # insights list can't grow down into the same reserved zone either.
     insights_max_y = (SLIDE_H - Inches(1.10)) if keyword_sheet_link else None
-    bottom = _draw_table(slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=9 if insights else 14)
+    bottom, table = _draw_table(
+        slide, headers, rows, Inches(1.2), col_widths=col_widths, row_cap=9 if insights else 14, return_table=True,
+    )
+    if own_row and len(table.rows) > 1:
+        # Background tint on top of the "(Your Site)" text label — belt
+        # and suspenders, since a reader scanning color first should
+        # still spot the client's own row instantly, not just on close
+        # reading of the domain text.
+        # A neutral pale-yellow highlight, not the per-client accent —
+        # this row needs to read as "pay attention here" regardless of
+        # what the client's own brand color happens to be, the same way
+        # a highlighter works independent of a document's own colors.
+        for j in range(len(headers)):
+            cell = table.cell(1, j)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor(0xFF, 0xF9, 0xE0)
+            cell.text_frame.paragraphs[0].font.bold = True
     if insights:
         _insights_strip(slide, Inches(0.6), bottom + Inches(0.15), Inches(12.1), insights, max_y=insights_max_y)
 
@@ -7649,7 +7678,7 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
 
     fixes = ux_findings.get("ui_fixes") or []
     if fixes:
-        rows = [(f.get("issue", ""), f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
+        rows = [(f"•  {f.get('issue', '')}", f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
         source = "Homepage screenshot analysis" if ux_findings.get("ui_fixes_source") == "vision" else "Manual UX walkthrough"
         slides.append(_table_slide(
             prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
