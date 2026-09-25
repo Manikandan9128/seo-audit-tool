@@ -1671,8 +1671,14 @@ def add_company_overview_extracted_slide(prs: Presentation, client_name: str, ov
         # confirmed real on a live Geopits report (2026-09-24): the
         # footer overlapped the wrapped "E-Learning / EdTech" / "Retail"
         # industry chips. Now floors on whichever column's real content
-        # ran longest.
-        footer_y = max(top + height, y, ry) + Inches(0.12)
+        # ran longest — but that floor alone isn't enough: on a client
+        # with enough ICP items to wrap the right column past the slide's
+        # own bottom edge, the "fixed" footer ran OFF THE PAGE entirely
+        # (confirmed real, Geopits regen, 2026-09-25: bottom=7.64in on a
+        # 7.50in-tall slide). Capped so it can never render past the
+        # visible slide, even if that means sitting closer to very tall
+        # content than ideal — off-page text is worse than a close fit.
+        footer_y = min(max(top + height, y, ry) + Inches(0.12), SLIDE_H - Inches(0.42))
         _textbox(slide, Inches(0.6), footer_y, Inches(12.1), Inches(0.3), "  |  ".join(footer_bits), size=10.5, color=TEXT_MUTED)
     return slide
 

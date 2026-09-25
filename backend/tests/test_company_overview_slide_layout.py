@@ -60,3 +60,32 @@ def test_footer_never_overlaps_wrapped_industry_chips():
     assert footer.top >= max(chip_bottoms), (
         f"footer (top={footer.top}) overlaps the industry chips (bottom={max(chip_bottoms)})"
     )
+
+
+def test_footer_never_renders_past_the_bottom_of_the_slide():
+    # Regression (confirmed real, Geopits regen, 2026-09-25): flooring the
+    # footer on whichever column ran longest fixed the overlap above, but
+    # with enough ICP items the RIGHT column itself can wrap past the
+    # slide's own bottom edge — the footer then floors on that and runs
+    # off the visible page entirely (bottom=7.64in on a 7.50in slide).
+    overview = {
+        "company_name": "Geopits",
+        "description": "Short description.",
+        "kpis": ["KPI one", "KPI two"],
+        "industries": ["Automotive", "Retail"],
+        "target_country": "Global",
+        "target_market": "Enterprise",
+        "primary_buyers": [f"Buyer role {i}" for i in range(6)],
+        "daily_users": [f"Daily user role number {i}" for i in range(6)],
+        "beneficiaries": [f"Beneficiary group with a fairly long name {i}" for i in range(6)],
+        "registration_info": "ISO 27001 Certified, ISO 9001 Certified",
+    }
+    prs = _prs()
+    slide = add_company_overview_extracted_slide(prs, "Geopits", overview)
+    footer = next(
+        sh for sh in slide.shapes
+        if sh.has_text_frame and "ISO 27001 Certified" in sh.text_frame.text
+    )
+    assert footer.top + footer.height <= SLIDE_H, (
+        f"footer bottom ({footer.top + footer.height}) runs past the slide height ({SLIDE_H})"
+    )
