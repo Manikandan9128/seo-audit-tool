@@ -7234,6 +7234,163 @@ def add_keyword_master_slide(prs: Presentation, keyword_strategy: dict | None, m
     )
 
 
+# Default share of a cluster's search volume assumed capturable — a rough,
+# stated-nowhere-on-the-slide planning estimate (2026-09-25 spec section 4),
+# never a ranking-position-based CTR model. User-configurable via
+# add_competitor_keyword_overview_slide's/build_report's traffic_capture_rate
+# param; this constant is only the default when no override is given.
+_TRAFFIC_CAPTURE_RATE_DEFAULT = 0.05
+# A cluster needs at least this many of its keywords present in the
+# Competitor Keyword Gap dataset before its Untapped share means anything —
+# one matched keyword out of one is a coincidence, not evidence of a real
+# under-covered topic area.
+_OPPORTUNITY_MIN_MATCHED_KEYWORDS = 2
+# ...and at least this share of its matched keywords must be "Untapped"
+# (neither the client nor any tracked competitor ranks) before the cluster
+# counts as a credible competitor-whitespace opportunity.
+_OPPORTUNITY_UNTAPPED_SHARE = 0.6
+
+
+def add_competitor_keyword_overview_slide(
+    prs: Presentation,
+    keyword_rows: list[dict] | None,
+    competitor_analysis: dict | None = None,
+    traffic_capture_rate: float = _TRAFFIC_CAPTURE_RATE_DEFAULT,
+    max_clusters: int = 6,
+):
+    """Competitor & Keyword Research — ONE executive overview slide
+    (2026-09-25 spec), sitting ahead of the detailed Target Keywords/cluster
+    slides rather than duplicating them: just Clusters | Keyword Volume |
+    Potential Traffic, plus up to two evidence-based Competitor Opportunities.
+    No keyword-level detail, no KD/intent columns, no visible capture-rate
+    label or formula anywhere on the slide (section 6) — Potential Traffic
+    is silently `search_volume * traffic_capture_rate`, never a ranking-
+    position CTR model.
+
+    Cluster selection and ranking reuse the same roadmap_priority/
+    cluster_opportunity/cluster_priority fields keyword_cluster_pipeline
+    already stamped on every row (the same signal add_keyword_research_slide
+    orders its own cluster slides by) — never volume alone — and cluster
+    names are the pipeline's own validated names, never renamed or invented.
+
+    Competitor Opportunities cross-references each shown cluster's keywords
+    against the Competitor Keyword Gap dataset's "Untapped" bucket (neither
+    the client nor any tracked competitor ranks — real whitespace) rather
+    than "Missing" (competitors already rank there; that's the client's own
+    gap, a different concept the dedicated Keyword Gap slides already cover)
+    — so a claim of weak/limited competitor coverage is only ever made where
+    the gap data actually shows nobody tracked covers it."""
+    if not keyword_rows:
+        return None
+
+    clusters: dict[str, list[dict]] = {}
+    for r in keyword_rows:
+        label = (r.get("cluster") or "").strip()
+        if not label or label in _TARGET_KEYWORDS_EXCLUDED_CLUSTERS:
+            continue
+        clusters.setdefault(label, []).append(r)
+    if not clusters:
+        return None
+
+    # Same priority signal add_keyword_research_slide's own _cluster_sort_key
+    # ranks its cluster slides by — kept in sync conceptually (both read the
+    # same pipeline-stamped fields) rather than sharing code, since that
+    # function's version is a closure over its own headers/labels.
+    _tier_rank = {"High": 0, "Medium": 1, "Low": 2, "Human Review": 3}
+
+    def _priority_key(kv: tuple[str, list[dict]]) -> tuple:
+        _label, rows_for_cluster = kv
+        tier = rows_for_cluster[0].get("roadmap_priority")
+        if tier in _tier_rank:
+            return (-1, _tier_rank[tier], -_num(rows_for_cluster[0].get("cluster_opportunity")))
+        priorities = [r.get("cluster_priority") for r in rows_for_cluster if r.get("cluster_priority") is not None]
+        if priorities:
+            return (0, min(priorities))
+        return (1, -sum(_num(r.get("search_volume")) for r in rows_for_cluster))
+
+    ranked = sorted(clusters.items(), key=_priority_key)[:max_clusters]
+
+    table_rows, cluster_stats = [], []
+    for label, rows_for_cluster in ranked:
+        seen, volume = set(), 0.0
+        for r in rows_for_cluster:
+            kw = r.get("keyword", "")
+            if kw in seen:
+                continue
+            seen.add(kw)
+            volume += _num(r.get("search_volume"))
+        # No real Semrush search volume for this cluster (e.g. a GSC-query-
+        # only bucket) — "Keyword Volume" would show 0, which isn't a real
+        # number to plan against, so the cluster is left off this table
+        # entirely rather than shown with an invented or zero figure.
+        if volume <= 0:
+            continue
+        potential_traffic = volume * traffic_capture_rate
+        table_rows.append((label, f"{volume:,.0f}", f"{potential_traffic:,.0f}"))
+        cluster_stats.append({
+            "cluster": label, "keywords": {(r.get("keyword") or "").strip().lower() for r in rows_for_cluster},
+        })
+
+    if not table_rows:
+        return None
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Competitor & Keyword Research")
+    _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), "Source: Semrush export", size=11, color=TEXT_MUTED)
+
+    _textbox(slide, Inches(0.6), Inches(1.05), Inches(8), Inches(0.26), "KEYWORD OPPORTUNITY BY CLUSTER", size=9.5, bold=True, color=_accent())
+    table_top = Inches(1.35)
+    bottom = _draw_table(
+        slide, ["Clusters", "Keyword Volume", "Potential Traffic"], table_rows, table_top,
+        col_widths=[6.5, 2.8, 2.8], left=Inches(0.6), width=Inches(12.1), row_cap=len(table_rows),
+        row_height=0.34, wrap_cols={0},
+    )
+
+    gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
+    gap_by_keyword: dict[str, dict] = {}
+    for r in gap_rows:
+        kw = (r.get("keyword") or "").strip().lower()
+        if kw and kw not in gap_by_keyword:
+            gap_by_keyword[kw] = r
+
+    opportunities = []
+    for stat in cluster_stats:
+        matched = [gap_by_keyword[kw] for kw in stat["keywords"] if kw in gap_by_keyword]
+        if len(matched) < _OPPORTUNITY_MIN_MATCHED_KEYWORDS:
+            continue
+        untapped = [r for r in matched if r.get("gap_category") == "Untapped"]
+        if len(untapped) < _OPPORTUNITY_MIN_MATCHED_KEYWORDS or len(untapped) / len(matched) < _OPPORTUNITY_UNTAPPED_SHARE:
+            continue
+        opportunities.append({
+            "cluster": stat["cluster"], "untapped": len(untapped), "matched": len(matched),
+            "volume": sum(_num(r.get("search_volume")) for r in untapped),
+        })
+    # Highest uncontested volume first — never more than two (spec section
+    # 5), never forced when fewer than two clusters clear the evidence bar.
+    opportunities.sort(key=lambda o: o["volume"], reverse=True)
+    opportunities = opportunities[:2]
+
+    max_y = SLIDE_H - Inches(0.5)
+    if opportunities and bottom + Inches(0.6) < max_y:
+        y = bottom + Inches(0.3)
+        _textbox(slide, Inches(0.6), y, Inches(11.0), Inches(0.26), "COMPETITOR OPPORTUNITIES", size=9.5, bold=True, color=_accent())
+        y += Inches(0.32)
+        for i, o in enumerate(opportunities, start=1):
+            line = (
+                f"{i}. {o['cluster']} — underdeveloped topic area: {o['untapped']} of {o['matched']} tracked keywords "
+                f"here are unclaimed by any tracked competitor ({int(o['volume']):,} combined monthly searches), "
+                "a credible opportunity to build coverage first."
+            )
+            lines = _wrap_lines(line, Inches(11.0), size_pt=11.5)
+            item_h = Inches(0.22) * lines + Inches(0.1)
+            if y + item_h > max_y:
+                break
+            _textbox(slide, Inches(0.6), y, Inches(11.0), Inches(0.22) * lines, line, size=11.5)
+            y += item_h
+
+    return slide
+
+
 def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_clusters: int = 10):
     """One table slide per keyword cluster (Educational Toys, Development
     Skills, etc.), matching the reference deck's "Target Keywords" format —
@@ -9420,6 +9577,7 @@ def build_report(
     strategic_keyword_clusters: list[dict] | None = None,
     keyword_strategy: dict | None = None,
     ui_audit: dict | None = None,
+    traffic_capture_rate: float | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -9449,6 +9607,7 @@ def build_report(
             strategic_keyword_clusters=strategic_keyword_clusters,
             keyword_strategy=keyword_strategy,
             ui_audit=ui_audit,
+            traffic_capture_rate=traffic_capture_rate,
         )
     finally:
         _theme["footer"] = ""
@@ -9502,6 +9661,7 @@ def _build_report(
     strategic_keyword_clusters: list[dict] | None = None,
     keyword_strategy: dict | None = None,
     ui_audit: dict | None = None,
+    traffic_capture_rate: float | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -9700,6 +9860,17 @@ def _build_report(
         if strategic_keyword_clusters:
             add_strategic_keyword_clusters_slide(prs, strategic_keyword_clusters)
         elif keyword_rows:
+            # Executive overview (2026-09-25 spec) ahead of the detailed
+            # per-cluster Target Keywords slides — cluster-level volume/
+            # potential-traffic only, never keyword-level detail (that
+            # stays on add_keyword_research_slide below). Absent (no
+            # slide) when the AI-clustered dataset has no real Semrush
+            # search volume to summarize, same silent-skip convention as
+            # every other data-driven slide in this file.
+            add_competitor_keyword_overview_slide(
+                prs, keyword_rows, competitor_analysis,
+                traffic_capture_rate=traffic_capture_rate if traffic_capture_rate is not None else _TRAFFIC_CAPTURE_RATE_DEFAULT,
+            )
             add_keyword_research_slide(prs, keyword_rows)
         # §18/§37/§38 — one topic map for whichever path rendered above.
         add_keyword_topic_map_slide(prs, keyword_strategy)
