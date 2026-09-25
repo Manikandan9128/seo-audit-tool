@@ -1,6 +1,8 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+
+const SIDEBAR_HELP_DISMISSED_KEY = "sidebarHelpDismissed";
 
 const NAV_ITEMS = [
   { to: "/clients", label: "Dashboard" },
@@ -15,6 +17,22 @@ function isNavActive(pathname: string, to: string) {
 export default function Layout({ children }: { children: ReactNode }) {
   const { logout, isAuthenticated } = useAuth();
   const { pathname } = useLocation();
+  const [helpDismissed, setHelpDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_HELP_DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  function dismissHelp() {
+    setHelpDismissed(true);
+    try {
+      localStorage.setItem(SIDEBAR_HELP_DISMISSED_KEY, "1");
+    } catch {
+      // ignore — worst case it reappears next visit
+    }
+  }
 
   if (!isAuthenticated) {
     return <main style={{ padding: "32px 24px" }}>{children}</main>;
@@ -53,6 +71,25 @@ export default function Layout({ children }: { children: ReactNode }) {
             duplicated the on-page "Sections ready" KPI tile on the client
             page (ClientDetailPage.tsx); that one stays, this one doesn't
             add anything the client page doesn't already show. */}
+
+        {!helpDismissed && (
+          <div className="sidebar-help">
+            <div className="sidebar-help-head">
+              <span className="sidebar-help-title">New here?</span>
+              <button
+                type="button"
+                className="sidebar-help-dismiss"
+                onClick={dismissHelp}
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+            <p className="sidebar-help-text">
+              Add a client, then generate a report from their page — download it once it's ready.
+            </p>
+          </div>
+        )}
 
         {/* .btn-logout is pinned to its pre-v4 look on purpose (user rule,
             2026-09-23 redesign) — not restyled here even though this

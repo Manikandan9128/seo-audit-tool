@@ -1559,6 +1559,47 @@ table.matrix th:first-child {
   border-top: 1px solid var(--sidebar-border);
 }
 
+/* Sidebar "New here?" help box (2026-09-25, first of the 3 deferred New
+   User Experience items) — static tip, dismissible per-browser via
+   localStorage. Sits between nav and the logout footer. */
+.sidebar-help {
+  margin-top: var(--sp-4);
+  padding: var(--sp-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sidebar-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+.sidebar-help-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.sidebar-help-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 12.5px;
+  color: #fff;
+}
+.sidebar-help-dismiss {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  line-height: 1;
+  font-size: 16px;
+  color: var(--sidebar-text-dim);
+  cursor: pointer;
+}
+.sidebar-help-dismiss:hover {
+  color: #fff;
+}
+.sidebar-help-text {
+  margin: var(--sp-1) 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--sidebar-text-dim);
+}
+
 .app-main {
   flex: 1;
   min-width: 0;
