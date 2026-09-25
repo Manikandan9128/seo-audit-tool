@@ -39,6 +39,7 @@ from app.services.keyword_cluster_pipeline import (
     _NEEDS_REVIEW_CLUSTER_LABEL,
     _UNJUDGED_REASON,
 )
+from app.services.business_theme_service import UNCLASSIFIED_THEME
 from app.services.content_safety import redact_presentation
 from app.services.keyword_intelligence_service import _EXCLUDED_RELEVANCE_STATUSES, is_temporal, modifier_types
 from app.services.priority_model import compute_priority_score
@@ -6812,9 +6813,10 @@ def _tk_category_duplicates_cluster_name(category: str, cluster_name: str) -> bo
     Analytics Service"). Confirmed real on a live Geopits report
     (2026-09-25): the same heading visibly repeated once in orange, once
     in black, right above it — drop the redundant orange one rather than
-    stating the same fact twice; a genuinely different category ("
-    Unclassified" over "Database Managed Services") is real information
-    and stays."""
+    stating the same fact twice; a genuinely different, real category
+    still stays (UNCLASSIFIED_THEME never reaches here at all — its
+    display name is already None before this function is ever called,
+    per the client-facing category rule, 2026-09-25)."""
     def norm(s: str) -> str:
         s = re.sub(r"[^\w\s]", "", s.strip().lower())
         # Strip one trailing plural "s" off the WHOLE string only (never
@@ -7457,7 +7459,16 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         # makes the distinction explicit instead.
         has_volume = any(_num(r.get("search_volume")) > 0 for r in deduped)
         theme = (rows_for_cluster[0].get("business_theme") or "").strip()
-        categories.setdefault(theme, {"name": theme or None, "clusters": []})["clusters"].append({
+        # UNCLASSIFIED_THEME ("Unclassified") is an internal classification
+        # state, not a client-facing category — displaying "(Unclassified)"
+        # exposes that the classifier failed, which the client-facing rule
+        # (2026-09-25) forbids. Grouped under the real theme string
+        # internally (so unclassified rows still share one bucket instead
+        # of scattering), but its display name is None so no "(Category)"
+        # heading renders at all and the cluster's own name becomes the
+        # only visible heading, per spec.
+        display_theme = theme if theme and theme != UNCLASSIFIED_THEME else ""
+        categories.setdefault(theme, {"name": display_theme or None, "clusters": []})["clusters"].append({
             "name": label or "Other / Ungrouped Keywords",
             "rows": [
                 (
