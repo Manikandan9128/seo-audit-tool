@@ -168,3 +168,52 @@ def test_attempt_gemini_skips_the_real_call_when_daily_budget_is_spent():
     assert result is None
     mock_try_gemini.assert_not_called()
     assert any("daily request-count budget" in e for e in errors)
+
+
+def _fake_claude_response(text: str, input_tokens: int, output_tokens: int):
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    response = MagicMock()
+    response.content = [block]
+    response.usage.input_tokens = input_tokens
+    response.usage.output_tokens = output_tokens
+    return response
+
+
+def test_claude_token_usage_tracked_across_calls_and_reset_between_jobs():
+    # Real per-report Claude spend (2026-09-25) — same thread-local
+    # lifecycle as set_preferred_provider: reset once per report-
+    # generation job, accumulates every Claude call made on that thread,
+    # never leaks into an unrelated later job reusing the same thread.
+    text_ai_client.reset_claude_token_usage()
+    with patch("app.integrations.text_ai_client.settings") as mock_settings, \
+         patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
+        mock_settings.claude_api_key = "sk-ant-test"
+        mock_anthropic.return_value.messages.create.side_effect = [
+            _fake_claude_response("answer one", 500, 100),
+            _fake_claude_response("answer two", 300, 50),
+        ]
+        text_ai_client._try_claude("prompt one", 1024)
+        text_ai_client._try_claude("prompt two", 1024)
+
+    usage = text_ai_client.get_claude_token_usage()
+    assert usage == {"calls": 2, "input_tokens": 800, "output_tokens": 150}
+
+    # A fresh reset (the next job on a reused thread) must not see the
+    # previous job's totals.
+    text_ai_client.reset_claude_token_usage()
+    assert text_ai_client.get_claude_token_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+
+
+def test_claude_token_usage_is_inert_without_a_reset_first():
+    # A one-off script or test that never calls reset_claude_token_usage()
+    # must not silently accumulate into a stale thread-local from some
+    # earlier, unrelated call on the same thread.
+    calls = getattr(text_ai_client._claude_token_usage, "calls", None)
+    text_ai_client._claude_token_usage.calls = None
+    try:
+        text_ai_client._record_claude_usage("text", 100, 50)
+        assert text_ai_client.get_claude_token_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+    finally:
+        text_ai_client._claude_token_usage.calls = calls

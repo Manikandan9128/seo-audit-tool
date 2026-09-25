@@ -3090,6 +3090,11 @@ def _run_generate_report_job(
     # sites in between. Reset in finally since threading.Thread doesn't
     # tear the thread down between jobs on some deployments.
     text_ai_client.set_preferred_provider(preferred_provider)
+    # Real per-report Claude token usage (2026-09-25) — same thread-local
+    # lifecycle as set_preferred_provider right above: reset at the start
+    # of this job's thread, read once in the finally block below,
+    # regardless of whether the job succeeded or failed partway through.
+    text_ai_client.reset_claude_token_usage()
     semrush_mcp_data_service.set_active_snapshot(semrush_snapshot)
     heartbeat_stop: threading.Event | None = None
     try:
@@ -3138,6 +3143,13 @@ def _run_generate_report_job(
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
+        usage = text_ai_client.get_claude_token_usage()
+        if usage["calls"]:
+            logger.info(
+                "Report generation job %s (client %s): %d Claude call(s), %d input + %d output tokens (%d total)",
+                job_id, client_id, usage["calls"], usage["input_tokens"], usage["output_tokens"],
+                usage["input_tokens"] + usage["output_tokens"],
+            )
         text_ai_client.set_preferred_provider(None)
         semrush_mcp_data_service.set_active_snapshot(None)
         db.close()

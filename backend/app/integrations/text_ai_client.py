@@ -259,6 +259,7 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
+    _record_claude_usage("text", response.usage.input_tokens, response.usage.output_tokens)
     text = "".join(block.text for block in response.content if block.type == "text").strip()
     if not text:
         # A 200 with no text block (safety stop, or the model stopping
@@ -291,6 +292,48 @@ def set_preferred_provider(name: str | None) -> None:
     if name is not None and name not in _VALID_PROVIDERS:
         raise ValueError(f"Unknown provider {name!r} — must be one of {sorted(_VALID_PROVIDERS)} or None")
     _provider_preference.value = name
+
+
+# Real per-call token counts straight from the Claude API's own response
+# (response.usage), not the max_tokens cap a call was allowed up to —
+# added 2026-09-25 so a report's actual Claude spend can be logged, since
+# nothing in this app tracked it before and the only real numbers lived
+# in Anthropic's own Console, not visible to anyone building/debugging
+# the report pipeline itself. Same thread-local lifecycle as
+# _provider_preference above (one report-generation job = one thread =
+# one call to reset_claude_token_usage() at the start, one read at the
+# end) — Groq/Gemini calls aren't tracked here since the question this
+# answers is specifically "what does the Claude API bill for this
+# report," not total AI usage across every provider.
+_claude_token_usage = threading.local()
+
+
+def reset_claude_token_usage() -> None:
+    """Call at the start of one report-generation job's thread so
+    get_claude_token_usage() below reflects only that job's own Claude
+    calls, not whatever a reused thread-pool thread racked up on an
+    earlier, unrelated job."""
+    _claude_token_usage.calls = []
+
+
+def _record_claude_usage(label: str, input_tokens: int, output_tokens: int) -> None:
+    calls = getattr(_claude_token_usage, "calls", None)
+    if calls is None:
+        return  # reset_claude_token_usage() was never called on this thread (e.g. a one-off script) — nothing to track into
+    calls.append({"label": label, "input_tokens": input_tokens, "output_tokens": output_tokens})
+
+
+def get_claude_token_usage() -> dict:
+    """{"calls": n, "input_tokens": total, "output_tokens": total} for every
+    Claude API call made on this thread since the last
+    reset_claude_token_usage() — real numbers from the API's own usage
+    field, not an estimate. All zero if reset was never called."""
+    calls = getattr(_claude_token_usage, "calls", None) or []
+    return {
+        "calls": len(calls),
+        "input_tokens": sum(c["input_tokens"] for c in calls),
+        "output_tokens": sum(c["output_tokens"] for c in calls),
+    }
 
 
 def _attempt_groq(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
@@ -679,6 +722,7 @@ def _try_claude_vision(prompt: str, image_bytes: bytes, mime_type: str, max_toke
             ],
         }],
     )
+    _record_claude_usage("vision", response.usage.input_tokens, response.usage.output_tokens)
     return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
