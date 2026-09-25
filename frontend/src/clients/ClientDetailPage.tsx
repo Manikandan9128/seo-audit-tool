@@ -246,7 +246,7 @@ export default function ClientDetailPage() {
   // default order does. Only keys actually configured in Settings are
   // offered — no point letting someone pick a provider with no key.
   const [preferredProvider, setPreferredProvider] = useState("");
-  const [claudeModel, setClaudeModel] = useState("");
+  const [claudeModel, setClaudeModel] = useState("claude-sonnet-5");
   const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
 
   // Semrush data source for this report: "manual" = the uploaded CSVs,
@@ -323,6 +323,10 @@ export default function ClientDetailPage() {
       if (res.data.browser_use_api_key_set) opts.push({ value: "browser_use", label: "Browser Use" });
       if (res.data.openrouter_api_key_set) opts.push({ value: "openrouter", label: "OpenRouter" });
       setAvailableProviders(opts);
+      // No "Auto" choice in the list anymore — the dropdown always needs
+      // a real selected value, so default to the first configured
+      // provider instead of leaving it blank.
+      if (opts.length > 0) setPreferredProvider((prev) => prev || opts[0].value);
     }).catch(() => {});
   }, []);
 
@@ -748,13 +752,12 @@ export default function ClientDetailPage() {
               <select
                 value={preferredProvider}
                 onChange={(e) => setPreferredProvider(e.target.value)}
-                title="AI provider to try first for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — still falls back to the others on failure"
+                title="AI provider for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — still falls back to the others on failure"
                 style={{ marginRight: 8 }}
               >
-                <option value="">Auto (default order)</option>
                 {availableProviders.map((p) => (
                   <option key={p.value} value={p.value}>
-                    {p.label} first
+                    {p.label}
                   </option>
                 ))}
               </select>
@@ -766,7 +769,6 @@ export default function ClientDetailPage() {
                 title="Which Claude model this report's Claude calls use"
                 style={{ marginRight: 8 }}
               >
-                <option value="">Claude: default model</option>
                 {CLAUDE_MODEL_OPTIONS.map((m) => (
                   <option key={m.value} value={m.value}>
                     {m.label}
