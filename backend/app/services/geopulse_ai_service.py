@@ -237,6 +237,15 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
     dashboard's corrected value) so the AI uses the correction instead of
     repeating the flagged number."""
     if not raw_text or not raw_text.strip():
+        # Diagnostic (2026-09-25): "AI returned no usable result" is shown
+        # for every empty-return path in this function, with no way to
+        # tell from the report alone whether the raw_text itself was
+        # empty (e.g. an image/screenshot-based export PDF pdfplumber
+        # can't extract text from — a real, separate limitation from the
+        # page-count/timeout hardening already fixed) or the AI call
+        # itself failed/returned nothing usable. Logging which branch
+        # fires so the next real report's logs answer that directly.
+        logger.info("GeoPulse AEO/GEO content: raw_text is empty — nothing to send to the AI")
         return {}
     disputed = _find_disputed_metrics(raw_text)
     if disputed:
@@ -272,14 +281,24 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
         logger.warning("GeoPulse AEO/GEO content generation failed: %s", e)
         return {}
     if data is None:
+        logger.warning(
+            "GeoPulse AEO/GEO content: no provider returned usable JSON (raw_text was %d chars) — %s",
+            len(raw_text), "; ".join(errors) if errors else "no errors recorded",
+        )
         return {}
 
     aeo_items = [str(x).strip() for x in (data.get("aeo_items") or []) if str(x).strip()]
     geo_items = [str(x).strip() for x in (data.get("geo_items") or []) if str(x).strip()]
+    aeo_before, geo_before = len(aeo_items), len(geo_items)
     aeo_items = _drop_unsupported_claims(aeo_items, "aeo_items")
     geo_items = _drop_unsupported_claims(geo_items, "geo_items")
     aeo_items = _drop_spec_violations(aeo_items, "aeo_items", raw_text)[:_MAX_ITEMS]
     geo_items = _drop_cross_list_duplicates(aeo_items, _drop_spec_violations(geo_items, "geo_items", raw_text))[:_MAX_ITEMS]
     if not aeo_items and not geo_items:
+        logger.warning(
+            "GeoPulse AEO/GEO content: AI returned %d aeo_item(s)/%d geo_item(s), but every one was dropped "
+            "by the backstop filters (unsupported claim / spec violation / duplicate)",
+            aeo_before, geo_before,
+        )
         return {}
     return {"aeo_items": aeo_items, "geo_items": geo_items}
