@@ -8151,43 +8151,28 @@ def add_ui_fixes_outcomes_slide(
 
 
 def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
-    """UI-Level Fixes (Issue/Where/Fix/Severity) — real ui_fixes render
-    whenever present, regardless of whether a manual UX pass was ever done
-    (2026-09-09: no longer gated on no_ux_pass_done — that flag sat this
-    slide on a permanent fallback message since no reviewer had ever
-    actually typed manual notes in for a real client; ui_fixes now comes
-    from a vision pass over a real homepage screenshot instead, see
-    ux_findings_service.generate_ui_fixes_from_screenshot). The "no pass
-    done" message only shows when there's genuinely nothing — no ui_fixes
-    from either source (report spec Rule 8: state the gap explicitly
-    rather than silently skip the dimension).
+    """UI-Level Fixes' own table rendering (Issue/Where/Fix/Severity) was
+    replaced 2026-09-25 by the dedicated two-slide pipeline (add_ui_fixes_
+    top5_slide/add_ui_fixes_outcomes_slide/add_ui_fixes_no_issues_slide,
+    driven by build_report's own `ui_audit` param, wired from site_audit.
+    py's capture_ui_audit -> generate_ui_audit_issues -> validate_ui_
+    audit_issues pipeline) — no longer this function's job. What's left
+    here is the ONE gap that pipeline doesn't cover: when the vision pass
+    never ran at all (no AI key configured, or the homepage capture
+    itself failed outright), ux_findings["note"] (static_no_ux_pass())
+    states that explicitly rather than the report silently having nothing
+    for this dimension (report spec Rule 8).
 
     Conversion Opportunities (from the same ux_findings dict) render on
     their own "Next Steps: Conversion SEO" slide instead — see
-    add_conversion_seo_next_steps_slide. That field is still manual-notes-
-    only, unaffected by the ui_fixes change above.
-
-    No longer renders a separate Onboarding Breakdown slide (removed
-    2026-09-25, user's call — it read as a near-duplicate of UI-Level
-    Fixes above; its own AI vision pass, generate_onboarding_breakdown,
-    was removed too rather than left running for content nothing uses)."""
+    add_conversion_seo_next_steps_slide. Unaffected by any of this."""
     slides = []
-
-    fixes = ux_findings.get("ui_fixes") or []
-    if fixes:
-        rows = [(f"•  {f.get('issue', '')}", f.get("where", ""), f.get("fix", ""), f.get("severity", "")) for f in fixes]
-        source = "Homepage screenshot analysis" if ux_findings.get("ui_fixes_source") == "vision" else "Manual UX walkthrough"
-        slides.append(_table_slide(
-            prs, "UI-Level Fixes", ["Issue", "Where", "Fix", "Severity"], rows,
-            col_widths=[3.4, 2.8, 4.4, 1.5], source=source,
-        ))
-    elif ux_findings.get("note"):
+    if ux_findings.get("note"):
         slide = _blank_slide(prs)
         _content_header(slide, "UI-Level Fixes")
         _card(slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(2.0))
         _textbox(slide, Inches(0.9), Inches(1.4), Inches(11.4), Inches(1.4), ux_findings["note"], size=13)
         slides.append(slide)
-
     return slides
 
 
@@ -9317,6 +9302,7 @@ def build_report(
     content_issues: list[str] | None = None,
     strategic_keyword_clusters: list[dict] | None = None,
     keyword_strategy: dict | None = None,
+    ui_audit: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -9345,6 +9331,7 @@ def build_report(
             content_issues=content_issues,
             strategic_keyword_clusters=strategic_keyword_clusters,
             keyword_strategy=keyword_strategy,
+            ui_audit=ui_audit,
         )
     finally:
         _theme["footer"] = ""
@@ -9397,6 +9384,7 @@ def _build_report(
     content_issues: list[str] | None = None,
     strategic_keyword_clusters: list[dict] | None = None,
     keyword_strategy: dict | None = None,
+    ui_audit: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -9477,6 +9465,26 @@ def _build_report(
             add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
         elif structured_data_rows:
             add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
+
+    # UI-Level Fixes rebuild (2026-09-25) — ui_audit is validate_ui_audit_
+    # issues()'s own output plus export_full_issue_list()'s full_list_url,
+    # merged with a little GA4/tech-stack context in site_audit.py before
+    # reaching here. total_count>0 gets the real Top-5/Outcomes pair;
+    # ui_audit present but genuinely 0 issues gets the dedicated "No Major
+    # Issues Found" slide instead of either. ui_audit is None only when
+    # capture/analysis never ran at all (no vision key, site unreachable)
+    # — that gap is still ux_findings' own "note" fallback below, not
+    # silently nothing.
+    if ui_audit and ui_audit.get("total_count", 0) > 0:
+        top5 = ui_audit["issues"][:5]
+        add_ui_fixes_top5_slide(prs, ui_audit["issues"], ui_audit["total_count"], ui_audit.get("ga4_available", False))
+        add_ui_fixes_outcomes_slide(
+            prs, top5, ui_audit["total_count"], ui_audit.get("counts_by_priority") or {},
+            ui_audit.get("full_list_url"), client_name, ui_audit.get("ga4_evidence"),
+            ui_audit.get("heatmap_tool_detected", False), ui_audit.get("primary_cta_text"), ui_audit.get("business_type"),
+        )
+    elif ui_audit is not None:
+        add_ui_fixes_no_issues_slide(prs)
 
     if ux_findings:
         add_ux_findings_slides(prs, ux_findings)

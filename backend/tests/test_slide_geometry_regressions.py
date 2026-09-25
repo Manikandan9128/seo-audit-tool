@@ -22,7 +22,6 @@ from app.reporting.pptx_builder import (
     add_competitor_table_slide,
     add_seo_issues_slide,
     add_site_health_slide,
-    add_ux_findings_slides,
 )
 
 
@@ -118,23 +117,6 @@ def test_score_ring_perfect_100_uses_a_smaller_font_than_two_digit_scores():
                     if r.text in ("100", "92"):
                         runs_by_text[r.text] = r.font.size
     assert runs_by_text["100"] < runs_by_text["92"]
-
-
-def test_ui_level_fixes_issue_cell_has_a_bullet_prefix():
-    # User request (2026-09-25): each row needs a visible bullet, not
-    # bare text in the Issue cell.
-    prs = Presentation()
-    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
-    ux_findings = {
-        "ui_fixes": [
-            {"issue": "No clear CTA above the fold", "where": "Hero", "fix": "Add a primary button", "severity": "High"},
-        ],
-        "ui_fixes_source": "vision",
-    }
-    slides = add_ux_findings_slides(prs, ux_findings)
-    table = next(sh.table for sh in slides[0].shapes if sh.has_table)
-    assert table.cell(1, 0).text.startswith("•")
-    assert "No clear CTA above the fold" in table.cell(1, 0).text
 
 
 def test_competitor_table_highlights_the_clients_own_row():
