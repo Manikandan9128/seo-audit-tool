@@ -6388,6 +6388,26 @@ _TK_SMALL_CLUSTER = 4  # keyword rows; two such clusters of one category may sha
 _TK_SHAPE_CATEGORY, _TK_SHAPE_CLUSTER = "TK Category", "TK Cluster"
 
 
+def _tk_category_duplicates_cluster_name(category: str, cluster_name: str) -> bool:
+    """The orange "(Category)" heading is business_theme, an AI/rule-based
+    classification independent of the cluster name below it — but for a
+    theme with only one real cluster, that classification sometimes lands
+    on essentially the same words as the cluster's own name (a plural/
+    singular variant counts: "Business Analytics Services" vs "Business
+    Analytics Service"). Confirmed real on a live Geopits report
+    (2026-09-25): the same heading visibly repeated once in orange, once
+    in black, right above it — drop the redundant orange one rather than
+    stating the same fact twice; a genuinely different category ("
+    Unclassified" over "Database Managed Services") is real information
+    and stays."""
+    def norm(s: str) -> str:
+        s = re.sub(r"[^\w\s]", "", s.strip().lower())
+        # Strip one trailing plural "s" off the WHOLE string only (never
+        # per-word — "Business" must not lose its own trailing "s").
+        return s[:-1] if s.endswith("s") and not s.endswith("ss") else s
+    return norm(category) == norm(cluster_name)
+
+
 def _tk_row_height(row: tuple) -> int:
     lines = _wrap_lines(str(row[0]), Inches(_TK_COL_WIDTHS[1] - 0.2), size_pt=_TK_FONT_PT)
     return max(_TK_ROW_H, _TK_LINE_H * lines + Inches(0.1))
@@ -6529,7 +6549,10 @@ def _render_target_keyword_slides(prs: Presentation, categories: list[dict], tra
         first_cluster = entry["sections"][0][0]
         _textbox(slide, Inches(8.3), Inches(0.3), Inches(4.5), Inches(0.4), f"Source: {first_cluster['source']}", size=11, color=TEXT_MUTED)
         y = _TK_TOP
-        if entry["show_category"] and entry["category"]:
+        if (
+            entry["show_category"] and entry["category"]
+            and not _tk_category_duplicates_cluster_name(entry["category"], entry["sections"][0][1])
+        ):
             box = _textbox(slide, _TK_LEFT, y, _TK_WIDTH, _TK_CATEGORY_H, f"({entry['category']})", size=16, bold=True, color=_accent())
             box.name = _TK_SHAPE_CATEGORY
             y += _TK_CATEGORY_H
@@ -6603,7 +6626,11 @@ def _audit_target_keyword_slides(slides: list, categories: list[dict]) -> list[s
             problems.append(f"slide {s_idx}: clusters from different categories share a slide")
         cat = next(iter(slide_cats), None)
         if cat and cat not in seen_categories:
-            if cat_boxes != [f"({cat})"]:
+            # Intentionally absent, not missing, when it would just repeat
+            # the cluster name right below it in a second color — see
+            # _tk_category_duplicates_cluster_name.
+            duplicate = bool(subheads) and _tk_category_duplicates_cluster_name(cat, subheads[0])
+            if cat_boxes != [f"({cat})"] and not (duplicate and not cat_boxes):
                 problems.append(f"slide {s_idx}: first slide of category {cat!r} lacks '({cat})'")
             seen_categories.add(cat)
         elif cat_boxes:

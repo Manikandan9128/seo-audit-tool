@@ -71,6 +71,26 @@ def test_category_line_only_on_first_slide_of_each_category():
     assert _audit_target_keyword_slides(slides, categories) == []
 
 
+def test_category_heading_dropped_when_it_duplicates_the_cluster_name():
+    # Regression (confirmed real, Geopits report, 2026-09-25): the orange
+    # "(Category)" heading and the black cluster subheading below it
+    # showed the exact same words twice — once for "Data Management
+    # Services" (category) == "Data Management Services" (cluster), once
+    # for "Business Analytics Services" (category) vs "Business Analytics
+    # Service" (cluster, singular) — a plural/singular variant still
+    # reads as the same repeated heading. A genuinely different category
+    # ("Unclassified" over "Database Managed Services") is real
+    # information and must still render.
+    categories = [
+        {"name": "Data Management Services", "clusters": [_cluster("Data Management Services", 4)]},
+        {"name": "Business Analytics Services", "clusters": [_cluster("Business Analytics Service", 5)]},
+        {"name": "Unclassified", "clusters": [_cluster("Database Managed Services", 12)]},
+    ]
+    slides = _render_target_keyword_slides(_prs(), categories)
+    assert [_named(s, "TK Category") for s in slides] == [[], [], ["(Unclassified)"]]
+    assert _audit_target_keyword_slides(slides, categories) == []
+
+
 def test_long_cluster_continues_without_losing_rows():
     categories = [{"name": "Trucks", "clusters": [_cluster("Heavy Duty Trucks", 30)]}]
     prs = _prs()
