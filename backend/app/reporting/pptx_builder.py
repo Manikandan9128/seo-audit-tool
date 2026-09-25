@@ -7734,6 +7734,422 @@ def add_domain_strategy_slide(prs: Presentation, domain_strategy: dict):
     return slide
 
 
+\
+# ============================================================
+# UI-Level Fixes rebuild, Part B (2026-09-25 spec) — always 2 slides, or
+# 1 when validate_ui_audit_issues() found 0 issues. Colors/fields below
+# are FIXED per the spec (never themed to the client's brand); the brand
+# color itself (title underline, section headings, number circles, icon
+# strokes/tint, the full-list button) comes from the existing _accent()
+# theme, same as every other slide in this deck.
+# ============================================================
+
+_PRIORITY_CHIP_COLORS = {
+    "High": (RGBColor(0xFD, 0xE8, 0xE8), RGBColor(0xB9, 0x1C, 0x1C)),
+    "Medium": (RGBColor(0xFE, 0xF3, 0xC7), RGBColor(0xB4, 0x50, 0x09)),
+    "Low": (RGBColor(0xEE, 0xF0, 0xF2), RGBColor(0x4B, 0x55, 0x63)),
+}
+_DEVICE_CHIP_COLORS = {
+    "Both": (RGBColor(0xEE, 0xF2, 0xF7), RGBColor(0x33, 0x41, 0x55)),
+    "Mobile": (RGBColor(0xE0, 0xF2, 0xFE), RGBColor(0x03, 0x69, 0xA1)),
+    "Desktop": (RGBColor(0xF3, 0xE8, 0xFF), RGBColor(0x7E, 0x22, 0xCE)),
+}
+
+# tag -> (title, description template ({client} filled in), icon kind)
+_OUTCOME_CARD_DEFS = {
+    "clarity": ("Clearer User Journey", "Visitors understand what {client} does and the next step faster.", "people"),
+    "cta": ("Higher CTA Engagement", "Less competing messaging gives key CTAs more attention.", "cursor"),
+    "friction": ("Lower Interaction Friction", "Key content and CTAs are no longer covered by banners and pop-ups.", "browser"),
+    "trust": ("Stronger Trust at Conversion Points", "Client logos and KPI numbers near the CTA build confidence to act.", "shield"),
+    "mobile_access": ("Easier to Reach Us on Mobile", "A visible contact CTA opens a direct enquiry path on phones.", "phone"),
+    "speed_focus": ("Faster, More Focused Experience", "One clear, light hero guides visitors from landing to understanding to action.", "bars"),
+}
+_OUTCOME_TAG_ORDER = ["clarity", "cta", "friction", "trust", "mobile_access", "speed_focus"]
+
+
+def _relative_luminance(rgb: RGBColor) -> float:
+    def lin(c):
+        c = c / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
+
+
+def _contrast_ratio(rgb1: RGBColor, rgb2: RGBColor) -> float:
+    l1, l2 = _relative_luminance(rgb1), _relative_luminance(rgb2)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _mix_with_white(rgb: RGBColor, fraction: float) -> RGBColor:
+    """`fraction` of rgb blended onto white — spec's brand_tint (8% brand
+    on white) / brand_line (25% brand on white)."""
+    return RGBColor(*(min(255, max(0, round(255 * (1 - fraction) + c * fraction))) for c in rgb))
+
+
+def _readable_text_on(bg: RGBColor) -> RGBColor:
+    """Contrast guard (spec 2026-09-25): a brand color that can't clear
+    4.5:1 against white (yellow/light brands especially) falls back to
+    dark text on that brand-filled element instead."""
+    return WHITE if _contrast_ratio(bg, WHITE) >= 4.5 else TEXT_DARK
+
+
+def _fixed_pill(slide, left, top, width, height, text, bg, fg, size=11.5):
+    chip = slide.shapes.add_shape(5, left, top, width, height)
+    try:
+        chip.adjustments[0] = 0.5
+    except (IndexError, AttributeError):
+        pass
+    chip.fill.solid()
+    chip.fill.fore_color.rgb = bg
+    chip.line.fill.background()
+    chip.shadow.inherit = False
+    tf = chip.text_frame
+    tf.word_wrap = False
+    tf.margin_left = tf.margin_right = Emu(0)
+    tf.margin_top = tf.margin_bottom = Emu(0)
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    run = p.add_run()
+    run.text = text
+    run.font.size = Pt(size)
+    run.font.bold = True
+    run.font.color.rgb = fg
+    return chip
+
+
+def _draw_outcome_icon(slide, cx, cy, diameter, kind, stroke):
+    """Simple geometric line-icon inside the tint circle at (cx, cy) —
+    this codebase's only prior icon precedent (_icon_dot) is a plain
+    filled circle; python-pptx has no practical way to author true vector
+    artwork, so each kind below is a small, deliberately simple
+    composition of its existing primitive shapes that still reads
+    correctly at a glance (people/cursor/browser/shield/phone/bars)."""
+    r = Emu(int(diameter))
+    ix, iy = Emu(int(cx + r * 0.22)), Emu(int(cy + r * 0.22))
+    iw = Emu(int(r * 0.56))
+
+    def _outline_shape(shape_id, x, y, w, h, adjustment=None):
+        shp = slide.shapes.add_shape(shape_id, x, y, w, h)
+        if adjustment is not None:
+            try:
+                shp.adjustments[0] = adjustment
+            except (IndexError, AttributeError):
+                pass
+        shp.fill.background()
+        shp.line.color.rgb = stroke
+        shp.line.width = Pt(1.5)
+        shp.shadow.inherit = False
+        return shp
+
+    if kind == "people":
+        head_d = Emu(int(iw * 0.42))
+        for dx in (0, int(iw * 0.4)):
+            _outline_shape(9, Emu(int(ix) + dx), iy, head_d, head_d)
+        _outline_shape(9, Emu(int(ix) - int(head_d * 0.15)), Emu(int(iy) + int(head_d * 0.9)), iw, Emu(int(iw * 0.7)))
+    elif kind == "cursor":
+        arrow = slide.shapes.add_shape(33, ix, Emu(int(iy) + int(iw * 0.15)), iw, Emu(int(iw * 0.55)))  # RIGHT_ARROW
+        _fill(arrow, stroke)
+        arrow.shadow.inherit = False
+    elif kind == "browser":
+        _outline_shape(5, ix, iy, iw, Emu(int(iw * 0.78)), adjustment=0.12)
+        bar = slide.shapes.add_shape(1, ix, Emu(int(iy) + int(iw * 0.22)), iw, Pt(1.2))
+        _fill(bar, stroke)
+        bar.shadow.inherit = False
+    elif kind == "shield":
+        _outline_shape(5, ix, iy, iw, Emu(int(iw * 1.1)), adjustment=0.3)
+        _icon_dot(slide, Emu(int(ix) + int(iw * 0.36)), Emu(int(iy) + int(iw * 0.4)), Emu(int(iw * 0.28)), stroke)
+    elif kind == "phone":
+        _outline_shape(5, Emu(int(ix) + int(iw * 0.22)), iy, Emu(int(iw * 0.56)), Emu(int(iw * 1.05)), adjustment=0.25)
+        _icon_dot(slide, Emu(int(ix) + int(iw * 0.42)), Emu(int(iy) + int(iw * 0.85)), Emu(int(iw * 0.12)), stroke)
+    elif kind == "bars":
+        bar_w = Emu(int(iw * 0.22))
+        for i, h_frac in enumerate((0.45, 0.7, 1.0)):
+            bh = Emu(int(iw * h_frac))
+            bx = Emu(int(ix) + i * (int(bar_w) + int(iw * 0.09)))
+            by = Emu(int(iy) + int(iw) - int(bh))
+            bar = slide.shapes.add_shape(1, bx, by, bar_w, bh)
+            _fill(bar, stroke)
+            bar.shadow.inherit = False
+
+
+def add_ui_fixes_no_issues_slide(prs: Presentation, checked: list[str] | None = None):
+    """Edge case (spec 2026-09-25): 0 validated issues — one slide
+    stating that plainly plus the checklist of what was actually
+    reviewed, never the Top-5/Outcomes pair with nothing real to show."""
+    checked = checked or [
+        "Hero clarity and headline", "H1 presence and uniqueness", "Primary CTA visibility (desktop and mobile)",
+        "Overlays and pop-ups blocking content", "Trust elements (logos, testimonials, KPIs)",
+        "Cookie consent banner", "Tap target sizing on mobile",
+    ]
+    slide = _blank_slide(prs)
+    _content_header(slide, "UI-Level Fixes: No Major Issues Found")
+    _textbox(
+        slide, Inches(0.6), Inches(1.1), Inches(12.1), Inches(0.4),
+        "A live review of the homepage (desktop and mobile) found no issues worth flagging.", size=13,
+    )
+    card = _card(slide, Inches(0.6), Inches(1.65), Inches(12.1), Inches(0.5) + Inches(0.32) * len(checked))
+    y = Inches(1.9)
+    for item in checked:
+        _icon_dot(slide, Inches(0.85), y + Inches(0.04), Inches(0.12), GOOD)
+        _textbox(slide, Inches(1.1), y, Inches(11.4), Inches(0.28), item, size=12.5)
+        y += Inches(0.32)
+    return slide
+
+
+def add_ui_fixes_top5_slide(prs: Presentation, issues: list[dict], total_count: int, ga4_available: bool = False):
+    """Slide 1 — Part B. `issues` is validate_ui_audit_issues()'s own
+    sorted, clamped output; this slide shows only the first min(5,
+    total_count) of it. Returns None when there are no issues (caller
+    should have already routed to add_ui_fixes_no_issues_slide instead)."""
+    if not issues:
+        return None
+    shown = issues[:5]
+    title = "UI-Level Fixes: Top 5 Issues" if total_count >= 5 else "UI-Level Fixes: Issues Found"
+    slide = _blank_slide(prs)
+    _content_header(slide, title)
+    source = "Source: Live homepage review (desktop + mobile)" + (" + GA4" if ga4_available else "")
+    _textbox(slide, Inches(7.0), Inches(0.22), Inches(5.8), Inches(0.4), source, size=10.5, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
+
+    left, width = Inches(0.6), Inches(12.1)
+    col_num_w, col_issue_w, col_where_w, col_fix_w, col_pri_w, col_dev_w = (
+        Inches(0.42), Inches(3.9), Inches(2.5), Inches(3.6), Inches(0.85), Inches(0.85),
+    )
+    col_x = [left]
+    for w in (col_num_w, col_issue_w, col_where_w, col_fix_w, col_pri_w):
+        col_x.append(col_x[-1] + w)
+
+    header_y = Inches(1.05)
+    for i, (label, w) in enumerate(zip(
+        ["ISSUE", "WHERE", "FIX", "PRIORITY", "DEVICE"], [col_issue_w, col_where_w, col_fix_w, col_pri_w, col_dev_w],
+    )):
+        _textbox(slide, col_x[i + 1], header_y, w, Inches(0.2), label, size=11.5, bold=True, color=TEXT_MUTED)
+
+    rows_top = header_y + Inches(0.32)
+    max_y = SLIDE_H - Inches(0.4)
+    available_h = max_y - rows_top
+    row_h = available_h / 5 if len(shown) == 5 else Inches(0.9)
+    y = rows_top
+
+    for i, issue in enumerate(shown, start=1):
+        card_h = row_h - Inches(0.1)
+        _card(slide, left, y, width, card_h)
+        circle_d = Inches(0.32)
+        circle_cy = y + card_h / 2 - circle_d / 2
+        circ = slide.shapes.add_shape(9, col_x[0], circle_cy, circle_d, circle_d)
+        _fill(circ, _accent())
+        circ.shadow.inherit = False
+        circ.line.fill.background()
+        tf = circ.text_frame
+        tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Emu(0)
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        r = p.add_run()
+        r.text = str(i)
+        r.font.size = Pt(13)
+        r.font.bold = True
+        r.font.color.rgb = _readable_text_on(_accent())
+
+        cell_pad = Inches(0.1)
+        title_h = min(Inches(0.3), card_h * 0.42)
+        _textbox(slide, col_x[1] + cell_pad, y + Inches(0.08), col_issue_w - cell_pad * 2, title_h,
+                 _ui_fixes_truncate_cell(issue["title"], col_issue_w - cell_pad * 2, 14.5, bold=True), size=14.5, bold=True)
+        _textbox(slide, col_x[1] + cell_pad, y + Inches(0.08) + title_h, col_issue_w - cell_pad * 2, card_h - title_h - Inches(0.12),
+                 _ui_fixes_truncate_cell(issue["evidence"], col_issue_w - cell_pad * 2, 12.5, lines=2), size=12.5, color=TEXT_MUTED)
+        _textbox(slide, col_x[2] + cell_pad, y + card_h / 2 - Inches(0.15), col_where_w - cell_pad * 2, Inches(0.5),
+                 _ui_fixes_truncate_cell(issue["where"], col_where_w - cell_pad * 2, 13, lines=2), size=13)
+        _textbox(slide, col_x[3] + cell_pad, y + card_h / 2 - Inches(0.2), col_fix_w - cell_pad * 2, Inches(0.6),
+                 _ui_fixes_truncate_cell(issue["fix"], col_fix_w - cell_pad * 2, 13, lines=3), size=13)
+
+        pri_bg, pri_fg = _PRIORITY_CHIP_COLORS[issue["priority"]]
+        _fixed_pill(slide, col_x[4] + Inches(0.05), y + card_h / 2 - Inches(0.14), col_pri_w - Inches(0.1), Inches(0.28),
+                    issue["priority"], pri_bg, pri_fg, size=10.5)
+        dev_bg, dev_fg = _DEVICE_CHIP_COLORS[issue["device"]]
+        _fixed_pill(slide, col_x[5] + Inches(0.05), y + card_h / 2 - Inches(0.14), col_dev_w - Inches(0.1), Inches(0.28),
+                    issue["device"], dev_bg, dev_fg, size=10.5)
+        y += row_h
+    return slide
+
+
+def _ui_fixes_truncate_cell(text: str, box_width, size_pt: float, lines: int = 1, bold: bool = False) -> str:
+    """Character-count-budget truncation (same approach _fit_title_font_
+    size/_estimate_text_extent already use elsewhere in this file) —
+    guarantees the text fits its declared box at the given size instead of
+    relying on a live shrink-then-truncate loop this codebase has no
+    per-cell render-measurement hook for. Named distinctly from the
+    existing _truncate_cell (used by _draw_table, a different signature —
+    (text, width_in, size_pt, max_lines)) after that name collision broke
+    every _draw_table caller in this file (2026-09-25, caught by the full
+    suite, not this feature's own tests)."""
+    text = (text or "").strip()
+    if not text:
+        return text
+    box_in = Emu(int(box_width)).inches
+    char_w_in = (0.62 if bold else 0.52) * size_pt / 72
+    budget = max(8, int(box_in / char_w_in) * lines)
+    return text if len(text) <= budget else text[: budget - 1].rstrip() + "…"
+
+
+def add_ui_fixes_outcomes_slide(
+    prs: Presentation, top5_issues: list[dict], total_count: int, counts_by_priority: dict,
+    full_list_url: str | None, client_name: str, ga4_evidence: dict | None = None,
+    heatmap_tool_detected: bool = False, primary_cta_text: str | None = None, business_type: str | None = None,
+) -> object | None:
+    """Slide 2 — Part B. top5_issues is the SAME slice add_ui_fixes_top5_
+    slide rendered (its issue numbers 1-5 are what the outcome cards'
+    "Issue N" references point back to — never the full validated list,
+    per spec: "cards whose tag appears on at least one of the top-5
+    issues"). Returns None when there are no issues."""
+    if not top5_issues:
+        return None
+    slide = _blank_slide(prs)
+    _content_header(slide, "UI-Level Fixes: Expected Outcomes")
+    _textbox(slide, Inches(6.8), Inches(0.22), Inches(6.0), Inches(0.4),
+             "Outcomes are directional, measured after fixes go live", size=10.5, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
+
+    left, width = Inches(0.6), Inches(12.1)
+    y = Inches(1.05)
+
+    # a) Issue summary bar
+    bar_h = Inches(0.8)
+    _card(slide, left, y, width, bar_h)
+    _textbox(slide, left + Inches(0.2), y + Inches(0.1), Inches(4.0), Inches(0.2), "ISSUES FOUND ON HOMEPAGE", size=11, bold=True, color=TEXT_MUTED)
+    box = _textbox(slide, left + Inches(0.2), y + Inches(0.32), Inches(2.4), Inches(0.36), "", size=22)
+    p = box.text_frame.paragraphs[0]
+    for text, color, size, bold in ((str(total_count), _accent(), 22, True), ("  total", TEXT_MUTED, 12, False)):
+        r = p.add_run()
+        r.text = text
+        r.font.size = Pt(size)
+        r.font.bold = bold
+        r.font.color.rgb = color
+    chip_x = left + Inches(2.6)
+    for pri in ("High", "Medium", "Low"):
+        n = counts_by_priority.get(pri, 0)
+        if not n:
+            continue
+        bg, fg = _PRIORITY_CHIP_COLORS[pri]
+        pill_w = Inches(0.15) + Inches(0.11) * len(f"{n} {pri}")
+        _fixed_pill(slide, chip_x, y + Inches(0.34), pill_w, Inches(0.3), f"{n} {pri}", bg, fg, size=10.5)
+        chip_x += pill_w + Inches(0.12)
+
+    if total_count > 5:
+        note = f"Top 5 of {total_count} shown on the previous slide"
+    else:
+        note = f"All {total_count} shown on the previous slide"
+    _textbox(slide, left + Inches(7.0), y + Inches(0.14), Inches(3.0), Inches(0.4), note, size=10.5, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
+    if total_count > 5 and full_list_url:
+        btn_w, btn_h = Inches(2.6), Inches(0.36)
+        btn = slide.shapes.add_shape(5, left + Inches(9.4), y + Inches(0.36), btn_w, btn_h)
+        try:
+            btn.adjustments[0] = 0.5
+        except (IndexError, AttributeError):
+            pass
+        _fill(btn, _accent())
+        btn.shadow.inherit = False
+        btn.click_action.hyperlink.address = full_list_url
+        tf = btn.text_frame
+        tf.margin_left = tf.margin_right = Emu(0)
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        bp = tf.paragraphs[0]
+        bp.alignment = PP_ALIGN.CENTER
+        br = bp.add_run()
+        br.text = f"Open full issue list ({total_count}) →"
+        br.font.size = Pt(11)
+        br.font.bold = True
+        br.font.color.rgb = _readable_text_on(_accent())
+    elif full_list_url:
+        link_box = _textbox(slide, left + Inches(9.4), y + Inches(0.4), Inches(2.6), Inches(0.3), "Open full issue list →", size=10.5, color=_accent())
+        link_box.text_frame.paragraphs[0].runs[0].hyperlink.address = full_list_url
+    y += bar_h + Inches(0.22)
+
+    # b) Expected Outcomes grid — only tags present on the top-5 issues.
+    present_tags = [t for t in _OUTCOME_TAG_ORDER if any(t in (i.get("outcome_tags") or []) for i in top5_issues)]
+    if present_tags:
+        _textbox(slide, left, y, width, Inches(0.24), "EXPECTED OUTCOMES", size=15, bold=True, color=_accent())
+        y += Inches(0.32)
+        n = len(present_tags)
+        cols = 3 if n >= 5 else (2 if n == 4 or n == 2 else (3 if n == 3 else 1))
+        cols = min(cols, n) or 1
+        # Compact sizing (2026-09-25 QA fix): the original spec-derived
+        # card_h=1.55in left too little room for the measurement section
+        # below whenever 5-6 outcome themes matched (2 rows) — confirmed
+        # by _audit_slide_geometry overlapping the footer. Tightened here
+        # rather than dropping the measurement section, since both are
+        # meant to always show together.
+        gap = Inches(0.14)
+        card_w = (width - gap * (cols - 1)) / cols
+        card_h = Inches(1.32)
+        tint, line = _mix_with_white(_accent(), 0.08), _mix_with_white(_accent(), 0.25)
+        for idx, tag in enumerate(present_tags):
+            title, desc_tpl, icon_kind = _OUTCOME_CARD_DEFS[tag]
+            cx = left + Emu(int((idx % cols) * (int(card_w) + int(gap))))
+            cyy = y + Emu(int((idx // cols) * (int(card_h) + int(gap))))
+            card = _card(slide, cx, cyy, card_w, card_h)
+            card.line.color.rgb = line
+            icon_d = Inches(0.46)
+            icon_circle = slide.shapes.add_shape(9, cx + Inches(0.13), cyy + Inches(0.12), icon_d, icon_d)
+            _fill(icon_circle, tint)
+            icon_circle.shadow.inherit = False
+            icon_circle.line.fill.background()
+            _draw_outcome_icon(slide, cx + Inches(0.13), cyy + Inches(0.12), icon_d, icon_kind, _accent())
+            _textbox(slide, cx + Inches(0.15), cyy + Inches(0.62), card_w - Inches(0.3), Inches(0.22), title, size=12.5, bold=True)
+            desc = desc_tpl.format(client=client_name)
+            _textbox(slide, cx + Inches(0.15), cyy + Inches(0.84), card_w - Inches(0.3), Inches(0.36),
+                     _ui_fixes_truncate_cell(desc, card_w - Inches(0.3), 10, lines=2), size=10, color=TEXT_MUTED)
+            refs = [str(num) for num, issue in enumerate(top5_issues, start=1) if tag in (issue.get("outcome_tags") or [])]
+            ref_label = f"Issue {refs[0]}" if len(refs) == 1 else f"Issues {', '.join(refs)}"
+            _textbox(slide, cx + Inches(0.15), cyy + card_h - Inches(0.22), card_w - Inches(0.3), Inches(0.18), ref_label, size=9.5, bold=True, color=_accent())
+        rows_used = -(-n // cols)
+        y += Emu(int(rows_used * (int(card_h) + int(gap))))
+
+    # c) How We Measure the Impact — the outcome cards above were sized
+    # deliberately compact so this always has room to render alongside
+    # them (confirmed real in QA: the original larger card_h left no room
+    # once 5-6 outcome themes matched, pushing this section's 3rd content
+    # line past the footer). measure_h >= 1.0in is still checked as a
+    # defensive floor, never a normal-case escape hatch.
+    measure_h = min(Inches(1.5), SLIDE_H - Inches(0.4) - Inches(0.32) - y)
+    if y < SLIDE_H - Inches(1.6) and measure_h >= Inches(1.0):
+        _textbox(slide, left, y, width, Inches(0.24), "HOW WE MEASURE THE IMPACT", size=15, bold=True, color=_accent())
+        y += Inches(0.32)
+        _card(slide, left, y, width, measure_h)
+        col_w = width / 3
+        ga4 = ga4_evidence or {}
+        bounce, mobile_bounce, engagement = ga4.get("bounce_rate_pct"), ga4.get("mobile_bounce_rate_pct"), ga4.get("engagement_rate_pct")
+        engagement_lines = ["Bounce rate: baseline not available" if bounce is None else
+                             (f"Bounce rate: {bounce:.0f}% baseline" + (f" ({mobile_bounce:.0f}% mobile)" if mobile_bounce is not None else "")),
+                             "Engagement rate: baseline not available" if engagement is None else f"Engagement rate: {engagement:.0f}% baseline",
+                             "Scroll depth & time on page"]
+        cta_label = primary_cta_text or "Primary CTA"
+        if business_type == "ecommerce":
+            conversion_lines = [f"{cta_label} / add-to-cart clicks", "Key events: add-to-cart, purchases", "Conversion rate by device"]
+        else:
+            conversion_lines = [f"{cta_label} / CTA clicks", "Key events: contact form fills, demo requests", "Conversion rate by device"]
+        qualitative_lines = ["Session recordings", "Heatmaps"]
+        if not heatmap_tool_detected:
+            qualitative_lines.append("Needs a tool such as Microsoft Clarity. Not currently detected on the site.")
+        else:
+            qualitative_lines.append("User feedback (if available)")
+        for i, (label, lines) in enumerate([
+            ("USER ENGAGEMENT", engagement_lines), ("CONVERSION", conversion_lines), ("QUALITATIVE FEEDBACK", qualitative_lines),
+        ]):
+            cx = left + Emu(int(i * int(col_w)))
+            _textbox(slide, cx + Inches(0.15), y + Inches(0.12), col_w - Inches(0.3), Inches(0.2), label, size=10.5, bold=True, color=_accent())
+            item_y = y + Inches(0.36)
+            for line in lines:
+                muted = line.startswith("Needs a tool")
+                _textbox(slide, cx + Inches(0.15), item_y, col_w - Inches(0.3), Inches(0.32),
+                         _ui_fixes_truncate_cell(line, col_w - Inches(0.3), 9.5 if muted else 10.5, lines=2),
+                         size=9.5 if muted else 10.5, color=TEXT_MUTED)
+                item_y += Inches(0.3) if not muted else Inches(0.42)
+            if i > 0:
+                divider = slide.shapes.add_shape(1, cx, y + Inches(0.08), Pt(1), measure_h - Inches(0.16))
+                _fill(divider, CARD_BORDER)
+                divider.shadow.inherit = False
+    return slide
+
+
 def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     """UI-Level Fixes (Issue/Where/Fix/Severity) — real ui_fixes render
     whenever present, regardless of whether a manual UX pass was ever done
