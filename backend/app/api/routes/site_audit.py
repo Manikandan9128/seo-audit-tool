@@ -3077,6 +3077,7 @@ def _run_generate_report_job(
     ux_notes: str | None,
     preferred_provider: str | None = None,
     semrush_snapshot: dict | None = None,
+    claude_model: str | None = None,
 ):
     """Builds the PPTX in a background thread with its own DB session, so a
     slow build (PageSpeed Insights, AI narratives, crawls) never has an HTTP
@@ -3090,6 +3091,10 @@ def _run_generate_report_job(
     # sites in between. Reset in finally since threading.Thread doesn't
     # tear the thread down between jobs on some deployments.
     text_ai_client.set_preferred_provider(preferred_provider)
+    # Which Claude model this job's Claude calls use (2026-09-25), same
+    # thread-local-per-job pattern — applies whether Claude is the
+    # preferred provider or only reached on the fallback path.
+    text_ai_client.set_claude_model(claude_model)
     # Real per-report Claude token usage (2026-09-25) — same thread-local
     # lifecycle as set_preferred_provider right above: reset at the start
     # of this job's thread, read once in the finally block below,
@@ -3151,6 +3156,7 @@ def _run_generate_report_job(
                 usage["input_tokens"] + usage["output_tokens"],
             )
         text_ai_client.set_preferred_provider(None)
+        text_ai_client.set_claude_model(None)
         semrush_mcp_data_service.set_active_snapshot(None)
         db.close()
         progress_db.close()
@@ -3166,6 +3172,7 @@ def start_generate_report_job(
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
     preferred_provider: str | None = Body(default=None),
+    claude_model: str | None = Body(default=None),
     semrush_source: str | None = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -3178,10 +3185,16 @@ def start_generate_report_job(
     the others (Groq, Gemini, Claude — never Browser Use/OpenRouter, see
     _DEFAULT_PROVIDER_ORDER) on failure. 'browser_use' runs a real Browser
     Use Cloud agent run per AI call this job makes — much slower per call
-    (a billed agent run, not a token completion) than the other three."""
+    (a billed agent run, not a token completion) than the other three.
+    claude_model (2026-09-25) picks which Claude model any Claude call this
+    job makes uses — see text_ai_client.CLAUDE_MODEL_CHOICES for the valid
+    ids; applies whether or not Claude is the preferred_provider, since a
+    fallback call still reaches Claude on the other two providers' failure."""
     _get_owned_client(client_id, db, current_user)
     if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use", "openrouter"):
         raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', 'openrouter', or omitted")
+    if claude_model is not None and claude_model not in text_ai_client.CLAUDE_MODEL_CHOICES:
+        raise HTTPException(status_code=400, detail=f"claude_model must be one of {sorted(text_ai_client.CLAUDE_MODEL_CHOICES)} or omitted")
     # One build per client at a time: a double click, a second tab, or a
     # page that lost track of its job after navigation/refresh gets the
     # build already in progress instead of starting a duplicate. The client
@@ -3202,7 +3215,7 @@ def start_generate_report_job(
         args=(
             job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
             company_overview_override, competitor_analysis_override, ux_notes, preferred_provider,
-            semrush_snapshot,
+            semrush_snapshot, claude_model,
         ),
         daemon=True,
     ).start()

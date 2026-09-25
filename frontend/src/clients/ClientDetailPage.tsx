@@ -26,6 +26,17 @@ import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
 import Tip from "../components/Tip";
 
+// Selectable Claude models (2026-09-25) — mirrors backend's
+// text_ai_client.CLAUDE_MODEL_CHOICES; kept in sync by hand since there's
+// no GET endpoint for it (same pattern this page already uses for the AI
+// provider list, which is hardcoded here too — only the *availability*
+// flags come from /settings).
+const CLAUDE_MODEL_OPTIONS = [
+  { value: "claude-opus-5-5", label: "Opus 5.5 (most capable, highest cost)" },
+  { value: "claude-sonnet-5", label: "Sonnet 5 (balanced — default)" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5 (fastest, lowest cost)" },
+];
+
 // Redesign v3 stage 2 — decorative section-row icon anchors, purely for
 // scannability (never repeated as a data-encoding color elsewhere).
 // Keyed by SectionKey string literal; module-level since it's static.
@@ -235,6 +246,8 @@ export default function ClientDetailPage() {
   // default order does. Only keys actually configured in Settings are
   // offered — no point letting someone pick a provider with no key.
   const [preferredProvider, setPreferredProvider] = useState("");
+  const [claudeModel, setClaudeModel] = useState("");
+  const [claudeAvailable, setClaudeAvailable] = useState(false);
   const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
 
   // Semrush data source for this report: "manual" = the uploaded CSVs,
@@ -307,7 +320,10 @@ export default function ClientDetailPage() {
       const opts: { value: string; label: string }[] = [];
       if (res.data.groq_api_key_set) opts.push({ value: "groq", label: "Groq" });
       if (res.data.gemini_api_key_set) opts.push({ value: "gemini", label: "Gemini" });
-      if (res.data.claude_api_key_set) opts.push({ value: "claude", label: "Claude" });
+      if (res.data.claude_api_key_set) {
+        opts.push({ value: "claude", label: "Claude" });
+        setClaudeAvailable(true);
+      }
       if (res.data.browser_use_api_key_set) opts.push({ value: "browser_use", label: "Browser Use" });
       if (res.data.openrouter_api_key_set) opts.push({ value: "openrouter", label: "OpenRouter" });
       setAvailableProviders(opts);
@@ -542,6 +558,7 @@ export default function ClientDetailPage() {
     const body = {
       ...(overview ? { company_overview_override: overview } : {}),
       ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
+      ...(claudeModel ? { claude_model: claudeModel } : {}),
       ...semrushBody,
     };
     downloadReportWithBody(Object.keys(body).length ? body : null, false);
@@ -552,6 +569,7 @@ export default function ClientDetailPage() {
       company_overview_override: previewOverview,
       competitor_analysis_override: previewCompetitorAnalysis,
       ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
+      ...(claudeModel ? { claude_model: claudeModel } : {}),
       ...semrushBody,
     };
     downloadReportWithBody(body, true);
@@ -741,6 +759,21 @@ export default function ClientDetailPage() {
                 {availableProviders.map((p) => (
                   <option key={p.value} value={p.value}>
                     {p.label} first
+                  </option>
+                ))}
+              </select>
+            )}
+            {claudeAvailable && (
+              <select
+                value={claudeModel}
+                onChange={(e) => setClaudeModel(e.target.value)}
+                title="Which Claude model any Claude call this report makes uses — applies whether Claude is preferred above or only reached as a fallback. A cheaper/faster model trades some quality for lower token cost."
+                style={{ marginRight: 8 }}
+              >
+                <option value="">Claude: default model</option>
+                {CLAUDE_MODEL_OPTIONS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
                   </option>
                 ))}
               </select>

@@ -206,6 +206,41 @@ def test_claude_token_usage_tracked_across_calls_and_reset_between_jobs():
     assert text_ai_client.get_claude_token_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0}
 
 
+def test_set_claude_model_rejects_unknown_model():
+    with pytest.raises(ValueError):
+        text_ai_client.set_claude_model("gpt-4")
+
+
+def test_current_claude_model_defaults_to_the_module_constant():
+    text_ai_client.set_claude_model(None)
+    assert text_ai_client._current_claude_model() == text_ai_client.CLAUDE_MODEL
+
+
+def test_current_claude_model_reflects_the_selected_override():
+    text_ai_client.set_claude_model("claude-haiku-4-5-20251001")
+    try:
+        assert text_ai_client._current_claude_model() == "claude-haiku-4-5-20251001"
+    finally:
+        text_ai_client.set_claude_model(None)
+
+
+def test_try_claude_uses_the_selected_model_override():
+    # 2026-09-25: a per-job model selection (cheaper/faster Claude model)
+    # must actually reach the real API call, not just sit in the
+    # thread-local unused.
+    text_ai_client.set_claude_model("claude-haiku-4-5-20251001")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings, \
+             patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
+            mock_settings.claude_api_key = "sk-ant-test"
+            mock_anthropic.return_value.messages.create.return_value = _fake_claude_response("answer", 10, 5)
+            text_ai_client._try_claude("prompt", 1024)
+        _, kwargs = mock_anthropic.return_value.messages.create.call_args
+        assert kwargs["model"] == "claude-haiku-4-5-20251001"
+    finally:
+        text_ai_client.set_claude_model(None)
+
+
 def test_claude_token_usage_is_inert_without_a_reset_first():
     # A one-off script or test that never calls reset_claude_token_usage()
     # must not silently accumulate into a stale thread-local from some

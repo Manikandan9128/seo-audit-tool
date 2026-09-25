@@ -43,6 +43,18 @@ GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_MODEL = "openai/gpt-oss-120b"
 CLAUDE_MODEL = "claude-sonnet-5"
 
+# Selectable Claude models (2026-09-25) — the paid API bills per token by
+# model, and a cheaper/faster model can be worth trading some quality for
+# on a report where cost or speed matters more. Keys are what the UI's
+# dropdown offers; values are the real Anthropic model ids this session's
+# own environment reports as current. Sonnet 5 stays CLAUDE_MODEL's
+# default (unchanged behavior when nothing is selected).
+CLAUDE_MODEL_CHOICES = {
+    "claude-opus-5-5": "Opus 5.5 (most capable, highest cost)",
+    "claude-sonnet-5": "Sonnet 5 (balanced — default)",
+    "claude-haiku-4-5-20251001": "Haiku 4.5 (fastest, lowest cost)",
+}
+
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 GEMINI_TIMEOUT_SECONDS = 45
@@ -255,7 +267,7 @@ def _groq_retry_after_seconds(response: httpx.Response) -> float | None:
 def _try_claude(prompt: str, max_tokens: int) -> str:
     client = Anthropic(api_key=settings.claude_api_key)
     response = client.messages.create(
-        model=CLAUDE_MODEL,
+        model=_current_claude_model(),
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -292,6 +304,24 @@ def set_preferred_provider(name: str | None) -> None:
     if name is not None and name not in _VALID_PROVIDERS:
         raise ValueError(f"Unknown provider {name!r} — must be one of {sorted(_VALID_PROVIDERS)} or None")
     _provider_preference.value = name
+
+
+# Same thread-local-per-job pattern as _provider_preference above, one
+# level down: which Claude model this job's Claude calls use, independent
+# of whether Claude was even picked as the preferred provider (it still
+# applies on the fallback path). Reset to None (falls back to CLAUDE_MODEL)
+# in the same finally block that resets the provider preference.
+_claude_model_preference = threading.local()
+
+
+def set_claude_model(model: str | None) -> None:
+    if model is not None and model not in CLAUDE_MODEL_CHOICES:
+        raise ValueError(f"Unknown Claude model {model!r} — must be one of {sorted(CLAUDE_MODEL_CHOICES)} or None")
+    _claude_model_preference.value = model
+
+
+def _current_claude_model() -> str:
+    return getattr(_claude_model_preference, "value", None) or CLAUDE_MODEL
 
 
 # Real per-call token counts straight from the Claude API's own response
@@ -712,7 +742,7 @@ def _try_gemini_vision(prompt: str, image_bytes: bytes, mime_type: str) -> str:
 def _try_claude_vision(prompt: str, image_bytes: bytes, mime_type: str, max_tokens: int) -> str:
     client = Anthropic(api_key=settings.claude_api_key)
     response = client.messages.create(
-        model=CLAUDE_MODEL,
+        model=_current_claude_model(),
         max_tokens=max_tokens,
         messages=[{
             "role": "user",
