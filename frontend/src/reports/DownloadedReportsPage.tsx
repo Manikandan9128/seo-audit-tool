@@ -18,7 +18,22 @@ interface UndownloadedReport {
   generated_at: string;
 }
 
-function formatDownloadedAt(iso: string): string {
+// One shared row shape so both endpoints' results can live in a single
+// list — a report generated but not yet downloaded still shows here
+// (2026-09-25: user found it confusing having it split into a separate
+// segment above the main list), just marked "Not downloaded yet" instead
+// of a real time, and using generated_at to sort/filter until it's
+// actually fetched.
+interface ReportRow {
+  job_id: string;
+  client_id: string;
+  client_name: string;
+  filename: string | null;
+  timestamp: string;
+  downloaded: boolean;
+}
+
+function formatTimestamp(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString(undefined, {
     dateStyle: "medium",
@@ -44,37 +59,37 @@ function localDateKey(d: Date): string {
 }
 
 export default function DownloadedReportsPage() {
-  const [reports, setReports] = useState<DownloadedReport[] | null>(null);
+  const [downloaded, setDownloaded] = useState<DownloadedReport[] | null>(null);
+  const [undownloaded, setUndownloaded] = useState<UndownloadedReport[] | null>(null);
   const [error, setError] = useState("");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   // Custom date filter, defaults to today; cleared to show every date.
   const [dateFilter, setDateFilter] = useState(localDateKey(new Date()));
-  const [legacy, setLegacy] = useState<UndownloadedReport[] | null>(null);
 
   function loadDownloaded() {
     api
       .get("/clients/reports/downloaded")
-      .then((res) => setReports(res.data))
+      .then((res) => setDownloaded(res.data))
       .catch(() => setError("Couldn't load downloaded reports."));
   }
 
-  function loadLegacy() {
+  function loadUndownloaded() {
     api
       .get("/clients/reports/undownloaded")
-      .then((res) => setLegacy(res.data))
+      .then((res) => setUndownloaded(res.data))
       .catch(() => {});
   }
 
   useEffect(() => {
     loadDownloaded();
-    loadLegacy();
+    loadUndownloaded();
   }, []);
 
-  async function downloadJob(r: { job_id: string; client_id: string; filename: string | null }, afterLegacy: boolean) {
-    // Same real /download endpoint for both tables — it stamps
-    // downloaded_at on a job's first fetch, which is exactly what moves a
-    // legacy row (downloaded_at still null) into the real list below, with
-    // an actual file in hand instead of a bare "mark as downloaded" click.
+  async function downloadJob(r: { job_id: string; client_id: string; filename: string | null }) {
+    // Same real /download endpoint for every row — it stamps
+    // downloaded_at on a job's first fetch, so downloading a row that was
+    // only "generated" turns it into a real downloaded one (and the two
+    // lists get refetched below so it reflects that immediately).
     setDownloadingId(r.job_id);
     try {
       const res = await api.get(`/clients/${r.client_id}/generate-report/${r.job_id}/download`, { responseType: "blob" });
@@ -86,10 +101,8 @@ export default function DownloadedReportsPage() {
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      if (afterLegacy) {
-        loadDownloaded();
-        loadLegacy();
-      }
+      loadDownloaded();
+      loadUndownloaded();
     } catch {
       setError("Couldn't download that report — try again.");
     } finally {
@@ -97,19 +110,27 @@ export default function DownloadedReportsPage() {
     }
   }
 
-  const visible = reports?.filter((r) => !dateFilter || localDateKey(new Date(r.downloaded_at)) === dateFilter) ?? null;
+  const rows: ReportRow[] | null =
+    downloaded === null || undownloaded === null
+      ? null
+      : [
+          ...downloaded.map((r): ReportRow => ({ ...r, timestamp: r.downloaded_at, downloaded: true })),
+          ...undownloaded.map((r): ReportRow => ({ ...r, timestamp: r.generated_at, downloaded: false })),
+        ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const visible = rows?.filter((r) => !dateFilter || localDateKey(new Date(r.timestamp)) === dateFilter) ?? null;
 
   return (
     <div className="clients-page">
       <div className="clients-header">
         <h1>Downloaded Reports</h1>
         <p className="muted">
-          Every report that was freshly generated and then downloaded at least once — re-downloading the
-          same report again doesn't add another row here.
+          Every report that's been generated, most recently downloaded first — re-downloading an
+          already-downloaded report doesn't add another row.
         </p>
       </div>
 
-      {reports && reports.length > 0 && (
+      {rows && rows.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
           <label htmlFor="downloaded-date-filter" className="muted" style={{ fontSize: 13 }}>
             Date
@@ -128,57 +149,15 @@ export default function DownloadedReportsPage() {
         </div>
       )}
 
-      {legacy && legacy.length > 0 && (
-        <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
-          <p className="muted" style={{ margin: "16px 16px 0" }}>
-            Reports generated before this tab existed — download one to add it to the list below.
-          </p>
-          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 12 }}>
-            <thead>
-              <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border, #e5e5e5)" }}>
-                <th style={{ padding: "10px 16px" }}>Client</th>
-                <th style={{ padding: "10px 16px" }}>Generated</th>
-                <th style={{ padding: "10px 16px" }}>File</th>
-                <th style={{ padding: "10px 16px" }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {legacy.map((r) => (
-                <tr key={r.job_id} style={{ borderBottom: "1px solid var(--border, #f0f0f0)" }}>
-                  <td style={{ padding: "10px 16px" }}>
-                    <Link to={`/clients/${r.client_id}`}>{r.client_name}</Link>
-                  </td>
-                  <td style={{ padding: "10px 16px" }}>{formatDownloadedAt(r.generated_at)}</td>
-                  <td style={{ padding: "10px 16px" }} className="muted">
-                    {r.filename || "—"}
-                  </td>
-                  <td style={{ padding: "10px 16px" }}>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => downloadJob(r, true)}
-                      disabled={downloadingId === r.job_id}
-                    >
-                      {downloadingId === r.job_id ? "Downloading..." : "Download"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
       {error && <div className="card" style={{ color: "#b91c1c" }}>{error}</div>}
 
-      {reports === null && !error && <p className="muted">Loading...</p>}
+      {rows === null && !error && <p className="muted">Loading...</p>}
 
-      {reports && reports.length > 0 && visible && visible.length === 0 && (
-        <p className="muted">No reports downloaded on that date.</p>
+      {rows && rows.length > 0 && visible && visible.length === 0 && (
+        <p className="muted">No reports on that date.</p>
       )}
 
-      {reports && reports.length === 0 && (
-        <p className="muted">No reports downloaded yet.</p>
-      )}
+      {rows && rows.length === 0 && <p className="muted">No reports yet.</p>}
 
       {visible && visible.length > 0 && (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
@@ -197,14 +176,18 @@ export default function DownloadedReportsPage() {
                   <td style={{ padding: "10px 16px" }}>
                     <Link to={`/clients/${r.client_id}`}>{r.client_name}</Link>
                   </td>
-                  <td style={{ padding: "10px 16px" }}>{formatDownloadedAt(r.downloaded_at)}</td>
+                  <td style={{ padding: "10px 16px" }}>
+                    {r.downloaded ? formatTimestamp(r.timestamp) : (
+                      <span className="muted">Not downloaded yet — generated {formatTimestamp(r.timestamp)}</span>
+                    )}
+                  </td>
                   <td style={{ padding: "10px 16px" }} className="muted">
                     {r.filename || "—"}
                   </td>
                   <td style={{ padding: "10px 16px" }}>
                     <button
                       className="btn btn-secondary"
-                      onClick={() => downloadJob(r, false)}
+                      onClick={() => downloadJob(r)}
                       disabled={downloadingId === r.job_id}
                     >
                       {downloadingId === r.job_id ? "Downloading..." : "Download"}
