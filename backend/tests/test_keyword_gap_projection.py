@@ -63,6 +63,23 @@ def test_na_is_exact_string_no_dash_no_blank_url():
     assert "Not ranking" not in text
 
 
+def test_volume_and_kd_never_wrap():
+    # Regression (confirmed real, Geopits report, 2026-09-25): "8,100" in
+    # the Volume column wrapped with its last digit alone on the next
+    # line — a short number in a narrow column with no natural break
+    # point for word-wrap to use, plus 0.55in was too narrow for a
+    # 6-figure comma-formatted volume like "139,180" even without
+    # wrapping.
+    analysis = {"keyword_gap_rows": [
+        _gap_row("high volume keyword", 139180, 40, gap_category="Missing"),
+    ]}
+    slides = add_keyword_gap_slides(_prs(), analysis)
+    table = next(s for s in slides[1].shapes if s.has_table).table
+    assert table.cell(1, 2).text_frame.text == "139,180"
+    assert table.cell(1, 2).text_frame.word_wrap is False
+    assert table.cell(1, 3).text_frame.word_wrap is False
+
+
 def test_position_and_url_shown_in_separate_columns_when_ranking():
     # 2026-09-22 layout change: Position and URL are two separate columns
     # per ranking source, not one "#N · /path" cell.

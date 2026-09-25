@@ -101,6 +101,22 @@ def test_root_causes_add_third_party_overhead_when_significant():
     assert causes == [("Third-party resource overhead", "62% of 1465 KB JS", "adds third-party processing and network load")]
 
 
+def test_resource_contributors_name_fits_one_line_in_the_narrowest_card():
+    # Regression (confirmed real, Geopits report, 2026-09-25): an
+    # unrecognized (no known vendor) script's raw filename could run up
+    # to 28 chars — at 13pt bold inside the ~1.9in-wide card the 5-card
+    # layout leaves (12.1in row / 5 cards), that routinely wrapped to a
+    # 2nd line with no natural break point, landing on top of the
+    # fixed-position KB text below it. The 2nd/4th contributor cards on
+    # that live report were exactly this case.
+    script_weight = {"top_scripts": [
+        {"url": "https://example.com/_next/static/chunks/O5JBjZ_SBodhEgBNnZ3e48-TaSN123456.js",
+         "encoded_bytes": 181000, "resource_bytes": 181000},
+    ]}
+    contributors = _resource_contributors(script_weight, "https://example.com")
+    assert len(contributors[0][0]) <= 17  # 16 chars + ellipsis
+
+
 def test_resource_contributors_dedup_by_vendor_and_rank_by_size():
     contributors = _resource_contributors(_mobile()["script_weight"], "https://example.com")
     names = [c[0] for c in contributors]

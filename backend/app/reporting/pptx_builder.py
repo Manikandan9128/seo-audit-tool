@@ -806,7 +806,15 @@ def _resource_contributors(script_weight: dict | None, website_url: str | None, 
     grouped: dict[str, int] = {}
     for s in scripts:
         _party, vendor = _classify_script_party(s["url"], website_url or "")
-        name = vendor or _short_resource_name(s["url"], maxlen=28)
+        # 28 chars routinely wrapped to a 2nd line inside these cards'
+        # ~1.9in usable width at 13pt bold (worst case: 5 cards across a
+        # 12.1in row) — the fixed-position KB line below never moved to
+        # match, so the wrapped 2nd line landed directly on top of it.
+        # Confirmed real on a live Geopits report (2026-09-25): the 2nd
+        # and 4th contributor cards (raw hashed filenames, no natural
+        # break point for word-wrap to use) overlapped their own KB text.
+        # 16 reliably fits one line at that width with margin to spare.
+        name = vendor or _short_resource_name(s["url"], maxlen=16)
         grouped[name] = grouped.get(name, 0) + (s.get("encoded_bytes") or 0)
     return sorted(grouped.items(), key=lambda kv: -kv[1])[:limit]
 
@@ -5429,7 +5437,13 @@ def _render_gap_table(slide, top, rows: list[dict], competitor_columns: list[str
         row_categories.append(r.get("gap_category") or "Missing")
         row_urls.append(urls)
 
-    wrap_cols = set(range(1, len(headers)))  # keyword + every Position/URL cell can wrap, not the chip column
+    # keyword + every Position/URL cell can wrap, not the chip column —
+    # Volume (2) and KD (3) excluded too: they're short numbers in a
+    # narrow column (0.55in/0.4in) with no natural break point, so
+    # word-wrap split them mid-digit-group instead of just fitting on
+    # one line — confirmed real on a live Geopits report (2026-09-25):
+    # "8,100" wrapped with its last digit alone on the next line.
+    wrap_cols = set(range(1, len(headers))) - {2, 3}
     # Smaller than _draw_table's 0.4in default (2026-09-22) — the summary
     # slide can now carry up to 15 inline rows (5 keywords x 3 statuses,
     # each still under the dedicated-slide threshold) instead of the old
@@ -5883,7 +5897,11 @@ def add_keyword_gap_slides(
     headers = ["Status", "Keyword", "Volume", "KD", "My Position", "URL"]
     for domain in competitor_columns:
         headers += [domain, "URL"]
-    col_widths = [0.5, 1.85, 0.55, 0.4]
+    # Volume 0.55 -> 0.75 (Keyword gives up the same 0.2in): 0.55in was too
+    # narrow for a 6-figure comma-formatted volume like "139,180" even
+    # without wrapping — see the wrap_cols note above for the live case
+    # that surfaced this.
+    col_widths = [0.5, 1.65, 0.75, 0.4]
     # 0.85in, not something narrower like 0.45 — "Not ranking" (11 chars)
     # needs ~0.8in to fit on one line at 11pt (_wrap_lines-confirmed); any
     # narrower and every Position cell wraps to 2 lines, doubling every
