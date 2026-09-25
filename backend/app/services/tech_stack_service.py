@@ -41,6 +41,7 @@ HTML_TECH_HINTS = [
     (r"www\.googletagmanager\.com/gtm\.js", "Google Tag Manager", "analytics"),
     (r"connect\.facebook\.net.*fbevents", "Meta Pixel", "analytics"),
     (r"hotjar\.com", "Hotjar", "analytics"),
+    (r"clarity\.ms", "Microsoft Clarity", "analytics"),
     (r"cdn\.segment\.com", "Segment", "analytics"),
     (r"jquery[.-](\d+\.\d+\.\d+)?.*\.js", "jQuery", "library"),
     (r"cdn\.jsdelivr\.net/npm/bootstrap|bootstrap\.min\.css", "Bootstrap", "library"),
