@@ -282,12 +282,6 @@ export async function startDownload(clientId: string, body: any) {
   }
 }
 
-export function downloadReadyReport(clientId: string) {
-  const ready = get(clientId).download.readyJob;
-  if (!ready || isDownloadActive(clientId)) return;
-  saveJobFile(clientId, ready.id);
-}
-
 // Called when the page mounts. After navigation within the app the store
 // already knows the state (and its poll loop kept running), so the server
 // is only asked once per client per page load — that covers a refresh.

@@ -19,7 +19,7 @@ import { useReportReadiness } from "../components/ReportReadinessProvider";
 import ReportPreviewModal from "../components/ReportPreviewModal";
 import SemrushSourceModal from "../components/SemrushSourceModal";
 import { SEMRUSH_MCP_ENABLED } from "../features";
-import { downloadReadyReport, resumeGenerate, resumeReportJob, startDownload, startGenerate, useReportJobState } from "../reportJobs";
+import { resumeGenerate, resumeReportJob, startDownload, startGenerate, useReportJobState } from "../reportJobs";
 import type { PrepSection } from "../reportJobs";
 import type { SemrushSource, SemrushMcpState } from "../components/SemrushSourceModal";
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
@@ -829,15 +829,6 @@ export default function ClientDetailPage() {
                 <button className="btn btn-secondary" onClick={downloadReportDirect} disabled={reportLoading || semrushBlocksReport}>
                   {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
                 </button>
-                {!reportLoading && dl.readyJob && (
-                  <button
-                    className="btn btn-secondary"
-                    onClick={() => downloadReadyReport(clientId!)}
-                    title="Downloads the report already built, without building it again"
-                  >
-                    Download last report ({new Date(dl.readyJob.createdAt).toLocaleString()})
-                  </button>
-                )}
                 {reportLoading && reportStatusMsg && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
                     <span className="muted" style={{ fontSize: 12 }}>
