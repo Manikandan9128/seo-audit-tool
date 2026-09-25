@@ -32,9 +32,9 @@ import Tip from "../components/Tip";
 // provider list, which is hardcoded here too — only the *availability*
 // flags come from /settings).
 const CLAUDE_MODEL_OPTIONS = [
-  { value: "claude-opus-5-5", label: "Opus 5.5 (most capable, highest cost)" },
-  { value: "claude-sonnet-5", label: "Sonnet 5 (balanced — default)" },
-  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5 (fastest, lowest cost)" },
+  { value: "claude-opus-5-5", label: "Opus 5.5" },
+  { value: "claude-sonnet-5", label: "Sonnet 5" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
 
 // Redesign v3 stage 2 — decorative section-row icon anchors, purely for
@@ -247,7 +247,6 @@ export default function ClientDetailPage() {
   // offered — no point letting someone pick a provider with no key.
   const [preferredProvider, setPreferredProvider] = useState("");
   const [claudeModel, setClaudeModel] = useState("");
-  const [claudeAvailable, setClaudeAvailable] = useState(false);
   const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
 
   // Semrush data source for this report: "manual" = the uploaded CSVs,
@@ -320,10 +319,7 @@ export default function ClientDetailPage() {
       const opts: { value: string; label: string }[] = [];
       if (res.data.groq_api_key_set) opts.push({ value: "groq", label: "Groq" });
       if (res.data.gemini_api_key_set) opts.push({ value: "gemini", label: "Gemini" });
-      if (res.data.claude_api_key_set) {
-        opts.push({ value: "claude", label: "Claude" });
-        setClaudeAvailable(true);
-      }
+      if (res.data.claude_api_key_set) opts.push({ value: "claude", label: "Claude" });
       if (res.data.browser_use_api_key_set) opts.push({ value: "browser_use", label: "Browser Use" });
       if (res.data.openrouter_api_key_set) opts.push({ value: "openrouter", label: "OpenRouter" });
       setAvailableProviders(opts);
@@ -763,11 +759,11 @@ export default function ClientDetailPage() {
                 ))}
               </select>
             )}
-            {claudeAvailable && (
+            {preferredProvider === "claude" && (
               <select
                 value={claudeModel}
                 onChange={(e) => setClaudeModel(e.target.value)}
-                title="Which Claude model any Claude call this report makes uses — applies whether Claude is preferred above or only reached as a fallback. A cheaper/faster model trades some quality for lower token cost."
+                title="Which Claude model this report's Claude calls use"
                 style={{ marginRight: 8 }}
               >
                 <option value="">Claude: default model</option>
