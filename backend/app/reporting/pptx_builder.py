@@ -919,16 +919,63 @@ def _psi_target_for_score(score: int | float | None) -> str | None:
 
 def _device_bounce_signal(device_performance: dict | None) -> dict | None:
     """§C/§D/§E/§F — mobile-vs-desktop GA4 evidence, computed straight from
-    GA4's own metrics (bounceRate, sessionKeyEventRate — never hand-derived
-    from a mismatched numerator/denominator). Returns None when GA4 device
-    data isn't available, so the slide can show rule G's exact fallback
-    line instead of inventing numbers."""
+    GA4's own metrics (bounceRate, engagementRate, keyEvents,
+    sessionKeyEventRate — never hand-derived from a mismatched numerator/
+    denominator). mobile/desktop already carry engagement_rate_pct/
+    key_events/key_event_rate_pct alongside bounce_rate_pct/pct_share (see
+    ga4_service.get_device_performance_breakdown) — this helper's own job
+    is just the bounce diff and the both-present gate. Returns None when
+    GA4 device data isn't available, so the slide can show rule G's exact
+    fallback line instead of inventing numbers."""
     by_device = (device_performance or {}).get("by_device") or {}
     mobile, desktop = by_device.get("mobile"), by_device.get("desktop")
     if not mobile or not desktop:
         return None
     diff_pp = round(mobile["bounce_rate_pct"] - desktop["bounce_rate_pct"], 1)
     return {"mobile": mobile, "desktop": desktop, "diff_pp": diff_pp}
+
+
+_OUTCOME_THEMES = [
+    "Lower Bounce Rates", "Higher Conversions", "Stronger Search Performance",
+    "Faster Content Discovery", "Better Mobile Experience", "Lower Resource Overhead",
+]
+
+_RESOURCE_OVERHEAD_CAUSES = {"Heavy network payload", "Unused JavaScript", "Unused CSS", "Third-party resource overhead"}
+_CONTENT_DISCOVERY_CAUSES = {"Render-blocking resources", "Long main-thread tasks", "JavaScript execution"}
+_SEARCH_PERFORMANCE_CAUSES = {"Slow LCP rendering", "Layout instability (CLS)"}
+
+
+def _expected_outcomes(cause_labels: set[str], signal: dict | None, mobile_weaker: bool) -> list[str]:
+    """Prompt spec (2026-09-25) — short, user-facing outcome labels, only
+    the ones reasonably connected to the actual confirmed issues/evidence
+    on THIS run, never all six forced onto every site. Each gate below
+    ties back to real fields already on the slide (root causes, GA4
+    device signal, comparative device scores) rather than a fixed list.
+
+    mobile_weaker is the SAME comparison the trailing Observed-Signal strip
+    already makes (see caller) — "Better Mobile Experience" needs genuine
+    comparative evidence that mobile is the weaker (or only-audited)
+    device, not just that mobile happened to be PSI's primary data source
+    (true almost every run, so too weak a signal on its own)."""
+    outcomes: list[str] = []
+    if signal and max(signal["mobile"]["bounce_rate_pct"], signal["desktop"]["bounce_rate_pct"]) >= 40:
+        outcomes.append("Lower Bounce Rates")
+    if signal and (signal["mobile"].get("key_events") or signal["desktop"].get("key_events")):
+        outcomes.append("Higher Conversions")
+    if cause_labels & _SEARCH_PERFORMANCE_CAUSES:
+        outcomes.append("Stronger Search Performance")
+    if cause_labels & _CONTENT_DISCOVERY_CAUSES:
+        outcomes.append("Faster Content Discovery")
+    if mobile_weaker:
+        outcomes.append("Better Mobile Experience")
+    if cause_labels & _RESOURCE_OVERHEAD_CAUSES:
+        outcomes.append("Lower Resource Overhead")
+    # Preserve _OUTCOME_THEMES' canonical order regardless of gate order
+    # above, capped at 4 — this slide's right column already carries
+    # Target/Evidence/Measurement in the same space; a good performance
+    # audit routinely matches all six themes, and showing every one would
+    # either overflow the slide or crowd out Post-Fix Measurement below.
+    return [t for t in _OUTCOME_THEMES if t in outcomes][:4]
 
 
 def add_pagespeed_fix_impact_slide(
@@ -968,32 +1015,15 @@ def add_pagespeed_fix_impact_slide(
     _fill(divider, CARD_BORDER)
     divider.shadow.inherit = False
 
-    # RIGHT — User / Business Impact
+    # RIGHT — User / Business Impact. Order per spec (2026-09-25): Performance
+    # Target, Current GA4 Evidence, Expected Outcomes, Post-Fix Measurement.
     y = top
     _textbox(slide, right_x, y, right_w, Inches(0.24), "USER / BUSINESS IMPACT", size=12.5, bold=True, color=_accent())
     y += Inches(0.32)
 
     signal = _device_bounce_signal(device_performance)
-    _textbox(slide, right_x, y, right_w, Inches(0.2), "CURRENT GA4 EVIDENCE", size=10, bold=True, color=TEXT_DARK)
-    y += Inches(0.26)
-    if signal:
-        card_w = (right_w - Inches(0.2)) / 2
-        for i, (dev_label, dev) in enumerate([("MOBILE", signal["mobile"]), ("DESKTOP", signal["desktop"])]):
-            cx = right_x + Emu(int(i * (card_w + Inches(0.2))))
-            card = _card(slide, cx, y, card_w, Inches(0.85))
-            _textbox(slide, cx + Inches(0.12), y + Inches(0.08), card_w - Inches(0.24), Inches(0.18), dev_label, size=9.5, bold=True, color=TEXT_MUTED)
-            bounce_color = BAD if dev["bounce_rate_pct"] >= 55 else (WARN if dev["bounce_rate_pct"] >= 40 else GOOD)
-            _textbox(slide, cx + Inches(0.12), y + Inches(0.24), card_w - Inches(0.24), Inches(0.34), f"{dev['bounce_rate_pct']:.0f}%", size=19, bold=True, color=bounce_color)
-            _textbox(slide, cx + Inches(0.12), y + Inches(0.58), card_w - Inches(0.24), Inches(0.22), f"bounce rate · {dev['pct_share']:.0f}% of sessions", size=9, color=TEXT_MUTED)
-        y += Inches(0.92)
-        direction = "higher" if signal["diff_pp"] > 0 else "lower"
-        _textbox(slide, right_x, y, right_w, Inches(0.24), f"{abs(signal['diff_pp']):.1f} percentage points {direction} bounce rate on mobile (same reporting period).", size=10, color=TEXT_DARK)
-        y += Inches(0.3)
-    else:
-        _textbox(slide, right_x, y, right_w, Inches(0.4), "Device-level behavioural impact cannot be quantified from the available GA4 data.", size=10.5, color=TEXT_MUTED)
-        y += Inches(0.42)
 
-    y += Inches(0.1)
+    # 1. PERFORMANCE TARGET
     _textbox(slide, right_x, y, right_w, Inches(0.2), "PERFORMANCE TARGET", size=10, bold=True, color=TEXT_DARK)
     y += Inches(0.26)
     target_w = (right_w - Inches(0.2)) / 2
@@ -1020,15 +1050,68 @@ def add_pagespeed_fix_impact_slide(
             r.font.color.rgb = color
     y += Inches(0.62)
     _textbox(slide, right_x, y, right_w, Inches(0.22), "Target performance score — a measurement, not a guaranteed business outcome.", size=8.5, color=TEXT_MUTED)
-    y += Inches(0.3)
+    y += Inches(0.32)
 
+    # 2. CURRENT GA4 EVIDENCE — bounce rate, engagement rate, key events, all
+    # straight from GA4 (§ spec: "mobile/desktop sessions/share, bounce
+    # rate, engagement rate, key events/conversions"); previously only
+    # bounce rate was ever shown even though device_performance already
+    # carried engagement_rate_pct/key_events (ga4_service's own real
+    # fields, unused on this slide until now).
+    _textbox(slide, right_x, y, right_w, Inches(0.2), "CURRENT GA4 EVIDENCE", size=10, bold=True, color=TEXT_DARK)
+    y += Inches(0.26)
+    if signal:
+        card_w = (right_w - Inches(0.2)) / 2
+        card_h = Inches(1.12)
+        for i, (dev_label, dev) in enumerate([("MOBILE", signal["mobile"]), ("DESKTOP", signal["desktop"])]):
+            cx = right_x + Emu(int(i * (card_w + Inches(0.2))))
+            _card(slide, cx, y, card_w, card_h)
+            inner_x, inner_w = cx + Inches(0.12), card_w - Inches(0.24)
+            _textbox(slide, inner_x, y + Inches(0.08), inner_w, Inches(0.16), dev_label, size=9, bold=True, color=TEXT_MUTED)
+            bounce_color = BAD if dev["bounce_rate_pct"] >= 55 else (WARN if dev["bounce_rate_pct"] >= 40 else GOOD)
+            _textbox(slide, inner_x, y + Inches(0.27), inner_w, Inches(0.2),
+                     f"Bounce {dev['bounce_rate_pct']:.0f}%", size=11, bold=True, color=bounce_color)
+            _textbox(slide, inner_x, y + Inches(0.5), inner_w, Inches(0.2),
+                     f"Engagement {dev['engagement_rate_pct']:.0f}%", size=10.5, color=TEXT_DARK)
+            key_events, key_rate = dev.get("key_events"), dev.get("key_event_rate_pct")
+            events_text = f"Key events {int(key_events):,} ({key_rate:.1f}%)" if key_events else "Key events —"
+            _textbox(slide, inner_x, y + Inches(0.71), inner_w, Inches(0.2), events_text, size=10.5, color=TEXT_DARK)
+            _textbox(slide, inner_x, y + Inches(0.93), inner_w, Inches(0.18), f"{dev['pct_share']:.0f}% of sessions", size=8.5, color=TEXT_MUTED)
+        y += card_h + Inches(0.08)
+        direction = "higher" if signal["diff_pp"] > 0 else "lower"
+        _textbox(slide, right_x, y, right_w, Inches(0.24), f"{abs(signal['diff_pp']):.1f} percentage points {direction} bounce rate on mobile (same reporting period).", size=10, color=TEXT_DARK)
+        y += Inches(0.3)
+    else:
+        _textbox(slide, right_x, y, right_w, Inches(0.4), "Device-level behavioural impact cannot be quantified from the available GA4 data.", size=10.5, color=TEXT_MUTED)
+        y += Inches(0.42)
+    y += Inches(0.08)
+
+    # 3. EXPECTED OUTCOMES — short, user-facing labels only for outcomes
+    # reasonably tied to the confirmed issues/evidence above; never all
+    # six themes forced onto every report.
+    cause_labels = {c for c, _e, _eff in causes}
+    mobile_score, desktop_score = (mobile or {}).get("current_score"), (desktop or {}).get("current_score")
+    mobile_weaker = mobile_score is not None and (desktop_score is None or mobile_score < desktop_score - 10)
+    outcomes = _expected_outcomes(cause_labels, signal, mobile_weaker)
+    if outcomes:
+        _textbox(slide, right_x, y, right_w, Inches(0.2), "EXPECTED OUTCOMES", size=10, bold=True, color=TEXT_DARK)
+        y += Inches(0.26)
+        col_w = right_w / 2
+        for i, outcome in enumerate(outcomes):
+            cx = right_x + Emu(int((i % 2) * col_w))
+            cy = y + Emu(int((i // 2) * Inches(0.3)))
+            _textbox(slide, cx, cy, col_w - Inches(0.1), Inches(0.26), f"•  {outcome}", size=10.5, bold=True, color=_accent())
+        rows_used = -(-len(outcomes) // 2)  # ceil division
+        y += Emu(int(rows_used * Inches(0.3))) + Inches(0.1)
+
+    # 4. POST-FIX MEASUREMENT
     if y < max_y - Inches(0.9):
         _textbox(slide, right_x, y, right_w, Inches(0.2), "POST-FIX MEASUREMENT", size=10, bold=True, color=TEXT_DARK)
         y += Inches(0.24)
         col_w = right_w / 3
         for i, (label, items) in enumerate([
             ("TECHNICAL", "Performance score, LCP, TBT, CLS"),
-            ("USER BEHAVIOUR", "Mobile/desktop bounce rate, engagement"),
+            ("USER ENGAGEMENT", "Bounce rate, engagement rate, device-level engagement"),
             ("BUSINESS", "Key events, conversion rate"),
         ]):
             cx = right_x + Emu(int(i * col_w))
@@ -1037,8 +1120,6 @@ def add_pagespeed_fix_impact_slide(
         y += Inches(0.68)
 
     if y < max_y - Inches(0.6):
-        mobile_score, desktop_score = (mobile or {}).get("current_score"), (desktop or {}).get("current_score")
-        mobile_weaker = mobile_score is not None and (desktop_score is None or mobile_score < desktop_score - 10)
         if signal and signal["mobile"]["pct_share"] >= 30 and signal["diff_pp"] >= 8 and mobile_weaker:
             strip_title, strip_text = "Observed Signal — Not Proven Causation", (
                 f"Mobile accounts for {signal['mobile']['pct_share']:.0f}% of sessions and shows a "

@@ -222,3 +222,87 @@ def test_fix_impact_slide_source_label_includes_ga4_date_range():
     slide = add_pagespeed_fix_impact_slide(prs, _mobile(), None, date_range=date_range)
     text = _slide_text(slide)
     assert "Aug 01, 2026" in text and "Aug 31, 2026" in text
+
+
+# --- Slide 3 — Fix -> Target -> Outcome -> Measurement spec (2026-09-25) -------------
+
+def test_fix_impact_slide_right_column_order_is_target_evidence_outcomes_measurement():
+    prs = _prs()
+    dp = _device_performance()
+    slide = add_pagespeed_fix_impact_slide(prs, _mobile(), None, device_performance=dp)
+    text = _slide_text(slide)
+    target_i = text.index("PERFORMANCE TARGET")
+    evidence_i = text.index("CURRENT GA4 EVIDENCE")
+    outcomes_i = text.index("EXPECTED OUTCOMES")
+    measurement_i = text.index("POST-FIX MEASUREMENT")
+    assert target_i < evidence_i < outcomes_i < measurement_i
+    assert _audit_slide_geometry(prs) == []
+
+
+def test_fix_impact_slide_ga4_evidence_shows_engagement_and_key_events_not_just_bounce():
+    # Regression: engagement_rate_pct/key_events were already real fields on
+    # device_performance (ga4_service.get_device_performance_breakdown) but
+    # this slide only ever rendered bounce rate before this spec pass.
+    prs = _prs()
+    dp = _device_performance()
+    slide = add_pagespeed_fix_impact_slide(prs, _mobile(), None, device_performance=dp)
+    text = _slide_text(slide)
+    assert "Engagement 41%" in text and "Engagement 60%" in text
+    assert "Key events 40 (0.6%)" in text and "Key events 60 (1.7%)" in text
+    assert _audit_slide_geometry(prs) == []
+
+
+def test_fix_impact_slide_expected_outcomes_only_shows_themes_tied_to_real_evidence():
+    prs = _prs()
+    dp = _device_performance()
+    slide = add_pagespeed_fix_impact_slide(prs, _mobile(), None, device_performance=dp)
+    text = _slide_text(slide)
+    assert "EXPECTED OUTCOMES" in text
+    # _mobile()'s default causes (network payload, JS execution, main-thread,
+    # unused JS/CSS, LCP) plus this device signal (elevated bounce, real key
+    # events, mobile is primary) trigger every theme — capped at the
+    # canonical-order top 4, never all six crowding the column.
+    assert "Lower Bounce Rates" in text
+    assert "Higher Conversions" in text
+    assert "Stronger Search Performance" in text
+    assert "Faster Content Discovery" in text
+    assert "Better Mobile Experience" not in text  # 5th in canonical order, past the cap
+    assert "Lower Resource Overhead" not in text  # 6th
+    assert _audit_slide_geometry(prs) == []
+
+
+def test_fix_impact_slide_better_mobile_experience_needs_real_comparative_evidence():
+    # "Better Mobile Experience" must tie to mobile actually being the
+    # weaker (or only-audited) device, not just that mobile happened to be
+    # PSI's primary data source — true on almost every run regardless of
+    # whether mobile has any real problem relative to desktop.
+    prs = _prs()
+    m = _mobile(diagnostics=[], opportunities=[])  # only Slow LCP rendering -> no bounce/conversion themes either
+    slide = add_pagespeed_fix_impact_slide(prs, m, None, device_performance=None)  # desktop absent entirely
+    text = _slide_text(slide)
+    assert "Better Mobile Experience" in text
+    assert _audit_slide_geometry(prs) == []
+
+    prs2 = _prs()
+    # Desktop present and NOT meaningfully worse than mobile -> no
+    # comparative case for a mobile-specific outcome.
+    mobile_ok = _mobile(current_score=85, diagnostics=[], opportunities=[])
+    desktop_similar = _mobile(current_score=80, diagnostics=[], opportunities=[])
+    slide2 = add_pagespeed_fix_impact_slide(prs2, mobile_ok, desktop_similar, device_performance=None)
+    text2 = _slide_text(slide2)
+    assert "Better Mobile Experience" not in text2
+    assert _audit_slide_geometry(prs2) == []
+
+
+def test_fix_impact_slide_expected_outcomes_skips_untied_themes():
+    # No device_performance at all -> no bounce/conversion evidence, so
+    # neither "Lower Bounce Rates" nor "Higher Conversions" can be claimed.
+    prs = _prs()
+    m = _mobile(diagnostics=[], opportunities=[])  # only "Slow LCP rendering" survives -> no resource-overhead cause
+    slide = add_pagespeed_fix_impact_slide(prs, m, None, device_performance=None)
+    text = _slide_text(slide)
+    assert "Lower Bounce Rates" not in text
+    assert "Higher Conversions" not in text
+    assert "Lower Resource Overhead" not in text
+    assert "Stronger Search Performance" in text  # from Slow LCP rendering
+    assert _audit_slide_geometry(prs) == []
