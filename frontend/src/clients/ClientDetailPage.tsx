@@ -777,6 +777,7 @@ export default function ClientDetailPage() {
               </select>
             )}
             <button
+              data-tour="tour-generate-report"
               className="btn btn-primary"
               onClick={() => (SEMRUSH_MCP_ENABLED ? setShowSemrushSourceModal(true) : generateSelectedReport("manual"))}
               disabled={generating || selectedSections.length === 0}
@@ -823,10 +824,20 @@ export default function ClientDetailPage() {
             )}
             {hasGenerated && (
               <>
-                <button className="btn btn-secondary" onClick={openPreview} disabled={previewLoading || semrushBlocksReport}>
+                <button
+                  data-tour="tour-preview-report"
+                  className="btn btn-secondary"
+                  onClick={openPreview}
+                  disabled={previewLoading || semrushBlocksReport}
+                >
                   {previewLoading ? "Loading..." : "Preview Report"}
                 </button>
-                <button className="btn btn-secondary" onClick={downloadReportDirect} disabled={reportLoading || semrushBlocksReport}>
+                <button
+                  data-tour="tour-download-report"
+                  className="btn btn-secondary"
+                  onClick={downloadReportDirect}
+                  disabled={reportLoading || semrushBlocksReport}
+                >
                   {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
                 </button>
                 {reportLoading && reportStatusMsg && (

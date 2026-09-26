@@ -99,7 +99,9 @@ export default function ClientListPage() {
               />
             </label>
           )}
-          <button onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ Add client"}</button>
+          <button data-tour="tour-add-client" onClick={() => setShowForm(!showForm)}>
+            {showForm ? "Cancel" : "+ Add client"}
+          </button>
         </div>
       </div>
 
@@ -142,8 +144,13 @@ export default function ClientListPage() {
       )}
 
       <div className="clients-grid">
-        {filtered.map((c) => (
-          <Link key={c.id} to={`/clients/${c.id}`} className="card client-tile">
+        {filtered.map((c, i) => (
+          <Link
+            key={c.id}
+            to={`/clients/${c.id}`}
+            className="card client-tile"
+            {...(i === 0 ? { "data-tour": "tour-client-tile", "data-client-id": c.id } : {})}
+          >
             <div className="client-tile-top">
               <div className="client-avatar" style={{ background: avatarColor(c.name) }}>
                 {initials(c.name)}

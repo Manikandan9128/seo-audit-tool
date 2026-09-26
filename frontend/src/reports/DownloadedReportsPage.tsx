@@ -178,7 +178,7 @@ export default function DownloadedReportsPage() {
                   </td>
                   <td style={{ padding: "10px 16px" }}>
                     {r.downloaded ? formatTimestamp(r.timestamp) : (
-                      <span className="muted">Not downloaded yet — generated {formatTimestamp(r.timestamp)}</span>
+                      <span className="muted">{formatTimestamp(r.timestamp)}</span>
                     )}
                   </td>
                   <td style={{ padding: "10px 16px" }} className="muted">

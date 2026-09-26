@@ -392,6 +392,105 @@ input:focus, select:focus {
   color: var(--text-muted);
   margin-top: 2px;
 }
+.welcome-panel-tour-btn {
+  margin-top: 18px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+.welcome-panel-tour-btn:hover {
+  text-decoration: underline;
+}
+
+/* Guided tour (2026-09-26, 3rd of the 3 deferred New User Experience
+   items) — a 5-step spotlight overlay. `.guided-tour-spotlight` is a
+   fixed-position box whose oversized box-shadow darkens the rest of the
+   viewport, leaving the real target element as a bright cutout — no
+   canvas/SVG masking needed. Sits above everything (z-index 1000, higher
+   than any modal's 100) since a step's real target can itself be behind
+   an open modal on a very unlucky click sequence. */
+.guided-tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  pointer-events: none;
+}
+.guided-tour-spotlight {
+  position: fixed;
+  border-radius: 8px;
+  box-shadow: 0 0 0 9999px rgba(26, 22, 19, 0.6);
+  transition: top 0.15s ease, left 0.15s ease, width 0.15s ease, height 0.15s ease;
+  pointer-events: none;
+}
+.guided-tour-card {
+  position: fixed;
+  background: #fff;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop, 0 12px 32px rgba(26, 22, 19, 0.22));
+  padding: var(--sp-4);
+  pointer-events: auto;
+  transition: top 0.15s ease, left 0.15s ease;
+}
+.guided-tour-card-floating {
+  right: 24px;
+  bottom: 24px;
+  width: 320px;
+}
+.guided-tour-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.guided-tour-step-count {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.guided-tour-skip {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.guided-tour-skip:hover {
+  color: var(--accent-deep);
+}
+.guided-tour-title {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+}
+.guided-tour-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text, #2b2521);
+}
+.guided-tour-hint {
+  margin: var(--sp-2) 0 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+}
+.guided-tour-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
 
 .clients-empty {
   text-align: center;
@@ -1656,6 +1755,20 @@ table.matrix th:first-child {
   font-size: 12px;
   line-height: 1.4;
   color: var(--sidebar-text-dim);
+}
+.sidebar-help-tour-btn {
+  margin-top: var(--sp-2);
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-deep, #C4581B);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.sidebar-help-tour-btn:hover {
+  color: #fff;
 }
 
 .app-main {

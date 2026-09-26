@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useGuidedTour } from "./GuidedTour";
 
 const WELCOME_PANEL_DISMISSED_KEY = "welcomePanelDismissed";
 
@@ -9,6 +10,7 @@ const STEPS = [
 ];
 
 export default function WelcomePanel() {
+  const { start: startTour } = useGuidedTour();
   const [dismissed, setDismissed] = useState(() => {
     try {
       return localStorage.getItem(WELCOME_PANEL_DISMISSED_KEY) === "1";
@@ -52,6 +54,9 @@ export default function WelcomePanel() {
           </div>
         ))}
       </div>
+      <button type="button" className="welcome-panel-tour-btn" onClick={startTour}>
+        Take a quick tour →
+      </button>
     </div>
   );
 }

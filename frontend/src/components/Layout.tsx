@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { useGuidedTour } from "./GuidedTour";
 
 const SIDEBAR_HELP_DISMISSED_KEY = "sidebarHelpDismissed";
 
@@ -17,6 +18,7 @@ function isNavActive(pathname: string, to: string) {
 export default function Layout({ children }: { children: ReactNode }) {
   const { logout, isAuthenticated } = useAuth();
   const { pathname } = useLocation();
+  const { start: startTour } = useGuidedTour();
   const [helpDismissed, setHelpDismissed] = useState(() => {
     try {
       return localStorage.getItem(SIDEBAR_HELP_DISMISSED_KEY) === "1";
@@ -88,6 +90,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             <p className="sidebar-help-text">
               Add a client, then generate a report from their page — download it once it's ready.
             </p>
+            <button type="button" className="sidebar-help-tour-btn" onClick={startTour}>
+              Take a quick tour
+            </button>
           </div>
         )}
 

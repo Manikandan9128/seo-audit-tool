@@ -8,6 +8,7 @@ import DownloadedReportsPage from "./reports/DownloadedReportsPage";
 import Layout from "./components/Layout";
 import ToastProvider from "./components/ToastProvider";
 import ReportReadinessProvider from "./components/ReportReadinessProvider";
+import GuidedTourProvider from "./components/GuidedTour";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -61,9 +62,11 @@ export default function App() {
     <AuthProvider>
       <ToastProvider>
         <ReportReadinessProvider>
-          <Layout>
-            <AppRoutes />
-          </Layout>
+          <GuidedTourProvider>
+            <Layout>
+              <AppRoutes />
+            </Layout>
+          </GuidedTourProvider>
         </ReportReadinessProvider>
       </ToastProvider>
     </AuthProvider>
