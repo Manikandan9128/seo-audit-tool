@@ -5,7 +5,8 @@ import pytest
 
 import app.integrations.text_ai_client as text_ai_client
 from app.integrations.text_ai_client import (
-    NoAIProviderConfigured, _reserve_gemini_slot, generate_text, generate_text_with_image, generate_text_with_images,
+    NoAIProviderConfigured, _cap_image_dimensions, _reserve_gemini_slot, generate_text, generate_text_with_image,
+    generate_text_with_images,
 )
 
 
@@ -265,6 +266,50 @@ def test_generate_text_with_images_sends_every_image_to_claude():
     ]
     text_blocks = [c for c in content if c["type"] == "text"]
     assert text_blocks[0]["text"] == "find issues"
+
+
+def _make_png(width: int, height: int) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (width, height), color=(200, 200, 200)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_cap_image_dimensions_downscales_an_oversized_full_page_screenshot():
+    # Regression (confirmed real, Geopits regen, 2026-09-26): a Playwright
+    # full_page=True screenshot of a long homepage (ui_audit_capture.py)
+    # came back at 1280x8600px. Claude's vision API hard-rejects anything
+    # over 8000px on either side with a 400 before its own paid, last-
+    # resort fallback ever gets a chance to run — this happened AFTER Groq
+    # timed out and Gemini's daily quota was exhausted, so all three
+    # providers failed and the whole UI-Level Fixes slide was dropped.
+    from PIL import Image
+
+    oversized = _make_png(1280, 8600)
+    capped_bytes, mime_type = _cap_image_dimensions(oversized, "image/png")
+    img = Image.open(__import__("io").BytesIO(capped_bytes))
+    assert max(img.size) <= 8000
+    assert mime_type == "image/png"
+
+
+def test_cap_image_dimensions_leaves_a_normal_screenshot_untouched():
+    normal = _make_png(1280, 800)
+    capped_bytes, mime_type = _cap_image_dimensions(normal, "image/png")
+    assert capped_bytes == normal
+    assert mime_type == "image/png"
+
+
+def test_cap_image_dimensions_falls_back_to_original_bytes_on_decode_failure():
+    # A corrupt/truncated capture shouldn't vanish here — it should still
+    # reach the provider's own error handling, same as before this cap
+    # existed.
+    garbage = b"not a real image"
+    capped_bytes, mime_type = _cap_image_dimensions(garbage, "image/png")
+    assert capped_bytes == garbage
+    assert mime_type == "image/png"
 
 
 def test_generate_text_with_image_single_image_wrapper_still_works():

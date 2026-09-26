@@ -5,7 +5,8 @@ of the left column's real content."""
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, add_company_overview_extracted_slide
+from app.reporting import pptx_builder
+from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _audit_slide_geometry, add_company_overview_extracted_slide
 
 
 def _prs():
@@ -89,3 +90,33 @@ def test_footer_never_renders_past_the_bottom_of_the_slide():
     assert footer.top + footer.height <= SLIDE_H, (
         f"footer bottom ({footer.top + footer.height}) runs past the slide height ({SLIDE_H})"
     )
+
+
+def test_registration_line_never_overlaps_the_persistent_global_footer():
+    # Regression (confirmed real, Geopits regen, 2026-09-26): both prior
+    # tests here call add_company_overview_extracted_slide() directly
+    # without ever setting _theme["footer"], so _footer() (pptx_builder.py)
+    # no-ops and neither test could ever see this. In a real build_report()
+    # run, build_report() sets _theme["footer"] = "{client} · {domain}"
+    # BEFORE any slide function runs, and _content_header() draws it on
+    # every content slide at a fixed row (SLIDE_H-0.4in to SLIDE_H-0.1in,
+    # L=0.4-8.4in). The registration/contact line's old bottom-of-page cap
+    # (SLIDE_H-0.42in) put it on that exact same row — a guaranteed
+    # collision on every deck with a company_overview payload, not an edge
+    # case: "Geopits · www.geopits.com" <-> "ISO 27001 Certified, ISO 9001
+    # Certified".
+    pptx_builder._theme["footer"] = "Geopits  ·  www.geopits.com"
+    try:
+        overview = {
+            "company_name": "Geopits",
+            "description": "Short description.",
+            "kpis": ["KPI one", "KPI two"],
+            "industries": ["Automotive", "Retail"],
+            "registration_info": "ISO 27001 Certified, ISO 9001 Certified",
+        }
+        prs = _prs()
+        add_company_overview_extracted_slide(prs, "Geopits", overview)
+        issues = _audit_slide_geometry(prs)
+        assert not any("overlap" in i for i in issues), issues
+    finally:
+        pptx_builder._theme["footer"] = ""

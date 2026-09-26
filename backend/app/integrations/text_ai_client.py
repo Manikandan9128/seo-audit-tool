@@ -26,6 +26,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from io import BytesIO
 
 import base64
 
@@ -731,6 +732,40 @@ def _try_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: i
     raise RuntimeError(f"no Groq vision model available on this account: {'; '.join(model_errors)}")
 
 
+_VISION_MAX_DIM_PX = 7900  # Anthropic hard-rejects any image over 8000px on either side
+
+
+def _cap_image_dimensions(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
+    """A Playwright full_page=True screenshot of a long homepage can exceed
+    8000px tall (e.g. UI-Level Fixes' 4-screenshot capture, ui_audit_capture.py)
+    — Claude's vision API then rejects it outright with a 400 before this
+    call's own paid, last-resort fallback ever gets a chance to run
+    (confirmed real, Geopits regen 2026-09-26: 'image dimensions exceed max
+    allowed size: 8000 pixels', after Groq timed out and Gemini's daily
+    quota was exhausted — all three providers failed and the whole slide
+    was dropped). Downscales in place, once, before any provider sees the
+    image, so Groq/Gemini/Claude all get the same safe payload instead of
+    branching per provider. Falls back to the original bytes on any decode
+    failure so a corrupt capture still reaches the provider's own error
+    handling rather than silently vanishing here."""
+    try:
+        from PIL import Image
+
+        img = Image.open(BytesIO(image_bytes))
+        if max(img.size) <= _VISION_MAX_DIM_PX:
+            return image_bytes, mime_type
+        ratio = _VISION_MAX_DIM_PX / max(img.size)
+        new_size = (max(1, int(img.width * ratio)), max(1, int(img.height * ratio)))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        resized = img.resize(new_size, Image.LANCZOS)
+        out = BytesIO()
+        resized.save(out, format="PNG")
+        return out.getvalue(), "image/png"
+    except Exception:
+        return image_bytes, mime_type
+
+
 def _try_gemini_vision(prompt: str, images: list[tuple[bytes, str]]) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
     image_parts = [genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type) for image_bytes, mime_type in images]
@@ -767,6 +802,7 @@ def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_
     if not (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
         raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
 
+    images = [_cap_image_dimensions(b, m) for b, m in images]
     errors: list[str] = []
     if settings.groq_api_key:
         try:

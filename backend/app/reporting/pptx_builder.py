@@ -1777,7 +1777,14 @@ def add_company_overview_extracted_slide(prs: Presentation, client_name: str, ov
         # 7.50in-tall slide). Capped so it can never render past the
         # visible slide, even if that means sitting closer to very tall
         # content than ideal — off-page text is worse than a close fit.
-        footer_y = min(max(top + height, y, ry) + Inches(0.12), SLIDE_H - Inches(0.42))
+        # The 0.42in cap left this line's box (0.3in tall) spanning
+        # 7.08-7.38in, the SAME row _footer() always draws the persistent
+        # "{client} · {domain}" text on (7.10-7.40in, same left range) —
+        # a guaranteed collision on every deck, not an edge case (confirmed
+        # real, Geopits regen 2026-09-26: "Geopits · www.geopits.com" <->
+        # "ISO 27001 Certified, ISO 9001 Certified"). Capped further up so
+        # this line's bottom always clears the global footer's top.
+        footer_y = min(max(top + height, y, ry) + Inches(0.12), SLIDE_H - Inches(0.78))
         _textbox(slide, Inches(0.6), footer_y, Inches(12.1), Inches(0.3), "  |  ".join(footer_bits), size=10.5, color=TEXT_MUTED)
     return slide
 
