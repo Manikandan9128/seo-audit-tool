@@ -788,6 +788,98 @@ def _try_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens:
     return "".join(block.text for block in response.content if block.type == "text").strip()
 
 
+def _attempt_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.groq_api_key:
+        return None
+    try:
+        text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
+        if text:
+            return text
+        errors.append("Groq returned an empty response")
+    except httpx.HTTPStatusError as e:
+        # Same per-minute-vs-daily distinction _attempt_groq already
+        # makes for text calls — a burst of vision calls (UI-Level
+        # Fixes + Onboarding Breakdown back to back) can trip Groq's
+        # per-minute cap even when the account's daily budget is fine.
+        if e.response.status_code == 429:
+            retry_after = _groq_retry_after_seconds(e.response)
+            if retry_after is not None and retry_after > RATE_LIMIT_RETRY_DELAY_SECONDS:
+                errors.append(f"Groq vision rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:200]}")
+            else:
+                time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+                try:
+                    text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
+                    if text:
+                        return text
+                    errors.append("Groq returned an empty response")
+                except Exception as e2:
+                    errors.append(f"Groq vision request failed: {str(e2)[:300]}")
+        else:
+            errors.append(f"Groq vision request failed: {str(e)[:300]}")
+    except Exception as e:
+        errors.append(f"Groq vision request failed: {str(e)[:300]}")
+    return None
+
+
+def _attempt_gemini_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.gemini_api_key:
+        return None
+    # Vision calls share the SAME Gemini project/account as text calls
+    # — same 10 RPM / 250 RPD budget, same _reserve_gemini_slot counters,
+    # not a separate pool (see _attempt_gemini's own use of this).
+    if not _reserve_gemini_slot():
+        errors.append("Gemini vision skipped — this process's own daily request-count budget looks spent")
+        return None
+    try:
+        text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, images)
+        if text:
+            return text
+        errors.append("Gemini returned an empty response")
+    except Exception as e:
+        # Same retry _attempt_gemini already does for text calls — a
+        # transient "servers are temporarily unavailable" or a
+        # per-minute RESOURCE_EXHAUSTED both recover inside a short
+        # wait; a daily-quota exhaustion won't, so don't bother there.
+        error_text = str(e)
+        is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
+        is_transient = "UNAVAILABLE" in error_text or "temporarily unavailable" in error_text.lower()
+        if not is_daily_quota and (is_transient or "RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
+            time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
+            if not _reserve_gemini_slot():
+                errors.append("Gemini vision skipped retry — daily request-count budget looks spent")
+            else:
+                try:
+                    text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, images)
+                    if text:
+                        return text
+                    errors.append("Gemini returned an empty response")
+                except Exception as e2:
+                    errors.append(friendly_gemini_error(e2))
+        else:
+            errors.append(friendly_gemini_error(e))
+    return None
+
+
+def _attempt_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.claude_api_key:
+        return None
+    try:
+        text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, images, max_tokens)
+        if text:
+            return text
+        errors.append("Claude returned an empty response")
+    except Exception as e:
+        errors.append(f"Claude vision request failed: {str(e)[:300]}")
+    return None
+
+
+_VISION_PROVIDER_ATTEMPTS = {
+    "groq": _attempt_groq_vision,
+    "gemini": _attempt_gemini_vision,
+    "claude": _attempt_claude_vision,
+}
+
+
 def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_tokens: int = 2048) -> tuple[str, str]:
     """Same fallback shape as generate_text(), but for a prompt grounded in
     one or more real screenshots (e.g. the client's own homepage at
@@ -797,83 +889,31 @@ def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_
     free Groq key also reaches Groq's vision models (see GROQ_VISION_
     MODELS/_try_groq_vision above), tried first for the same fast-
     recovery-budget reason generate_text() tries Groq first — Gemini,
-    then Claude follow as before. Raises NoAIProviderConfigured if no key
-    is set or every call fails."""
+    then Claude follow as before.
+
+    Respects set_preferred_provider() same as generate_text() does
+    (2026-09-26 fix): before this, a job's preferred-provider pin only
+    ever reached text calls — every vision call (UI-Level Fixes,
+    Onboarding Breakdown) silently ignored it and always went Groq then
+    Gemini then Claude regardless, so picking "Claude" for a job still
+    burned through Groq/Gemini's free-tier failures first on every vision
+    call (confirmed real, Geopits regen 2026-09-26: user had picked
+    Claude, but the UI-Level Fixes vision pass still hit
+    "Groq vision request failed" / "Gemini free-tier daily quota
+    exceeded" before ever reaching Claude).
+
+    Raises NoAIProviderConfigured if no key is set or every call fails."""
     if not (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
         raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
 
     images = [_cap_image_dimensions(b, m) for b, m in images]
     errors: list[str] = []
-    if settings.groq_api_key:
-        try:
-            text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
-            if text:
-                return text, "groq"
-            errors.append("Groq returned an empty response")
-        except httpx.HTTPStatusError as e:
-            # Same per-minute-vs-daily distinction _attempt_groq already
-            # makes for text calls — a burst of vision calls (UI-Level
-            # Fixes + Onboarding Breakdown back to back) can trip Groq's
-            # per-minute cap even when the account's daily budget is fine.
-            if e.response.status_code == 429:
-                retry_after = _groq_retry_after_seconds(e.response)
-                if retry_after is not None and retry_after > RATE_LIMIT_RETRY_DELAY_SECONDS:
-                    errors.append(f"Groq vision rate-limited, not retrying (Retry-After {retry_after:.0f}s): {str(e)[:200]}")
-                else:
-                    time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-                    try:
-                        text = _call_with_timeout(_try_groq_vision, GROQ_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
-                        if text:
-                            return text, "groq"
-                        errors.append("Groq returned an empty response")
-                    except Exception as e2:
-                        errors.append(f"Groq vision request failed: {str(e2)[:300]}")
-            else:
-                errors.append(f"Groq vision request failed: {str(e)[:300]}")
-        except Exception as e:
-            errors.append(f"Groq vision request failed: {str(e)[:300]}")
-    if settings.gemini_api_key:
-        # Vision calls share the SAME Gemini project/account as text calls
-        # — same 10 RPM / 250 RPD budget, same _reserve_gemini_slot counters,
-        # not a separate pool (see _attempt_gemini's own use of this).
-        if not _reserve_gemini_slot():
-            errors.append("Gemini vision skipped — this process's own daily request-count budget looks spent")
-        else:
-            try:
-                text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, images)
-                if text:
-                    return text, "gemini"
-                errors.append("Gemini returned an empty response")
-            except Exception as e:
-                # Same retry _attempt_gemini already does for text calls — a
-                # transient "servers are temporarily unavailable" or a
-                # per-minute RESOURCE_EXHAUSTED both recover inside a short
-                # wait; a daily-quota exhaustion won't, so don't bother there.
-                error_text = str(e)
-                is_daily_quota = "PerDay" in error_text or "free_tier" in error_text.lower()
-                is_transient = "UNAVAILABLE" in error_text or "temporarily unavailable" in error_text.lower()
-                if not is_daily_quota and (is_transient or "RESOURCE_EXHAUSTED" in error_text or "429" in error_text):
-                    time.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-                    if not _reserve_gemini_slot():
-                        errors.append("Gemini vision skipped retry — daily request-count budget looks spent")
-                    else:
-                        try:
-                            text = _call_with_timeout(_try_gemini_vision, GEMINI_TIMEOUT_SECONDS, prompt, images)
-                            if text:
-                                return text, "gemini"
-                            errors.append("Gemini returned an empty response")
-                        except Exception as e2:
-                            errors.append(friendly_gemini_error(e2))
-                else:
-                    errors.append(friendly_gemini_error(e))
-    if settings.claude_api_key:
-        try:
-            text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, images, max_tokens)
-            if text:
-                return text, "claude"
-            errors.append("Claude returned an empty response")
-        except Exception as e:
-            errors.append(f"Claude vision request failed: {str(e)[:300]}")
+    for provider in _provider_order():
+        if provider not in _VISION_PROVIDER_ATTEMPTS:
+            continue  # preferred_provider can be "browser_use"/"openrouter" — no vision path for those
+        text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
+        if text:
+            return text, provider
 
     raise NoAIProviderConfigured(" / ".join(errors))
 

@@ -244,6 +244,34 @@ def test_try_claude_uses_the_selected_model_override():
         text_ai_client.set_claude_model(None)
 
 
+def test_generate_text_with_images_respects_a_job_level_claude_preference():
+    # Regression (confirmed real, Geopits regen 2026-09-26): generate_text()
+    # already reorders on set_preferred_provider(), but generate_text_with_
+    # images() used to be hardcoded Groq -> Gemini -> Claude with no
+    # awareness of the preference at all. A job pinned to "claude" (the
+    # user's paid choice) still burned through Groq/Gemini failures on
+    # every vision call (UI-Level Fixes, Onboarding Breakdown) before ever
+    # reaching Claude. Both Groq and Gemini keys are configured here too —
+    # if the fix regresses, one of them gets called first and this fails.
+    text_ai_client.set_preferred_provider("claude")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings, \
+             patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic, \
+             patch("app.integrations.text_ai_client._try_groq_vision") as mock_groq_vision, \
+             patch("app.integrations.text_ai_client._try_gemini_vision") as mock_gemini_vision:
+            mock_settings.groq_api_key = "test-groq"
+            mock_settings.gemini_api_key = "test-gemini"
+            mock_settings.claude_api_key = "sk-ant-test"
+            mock_anthropic.return_value.messages.create.return_value = _fake_claude_response("issues found", 100, 50)
+            text, provider = generate_text_with_images("find issues", [(b"img1", "image/png")], max_tokens=1024)
+        assert provider == "claude"
+        assert text == "issues found"
+        mock_groq_vision.assert_not_called()
+        mock_gemini_vision.assert_not_called()
+    finally:
+        text_ai_client.set_preferred_provider(None)
+
+
 def test_generate_text_with_images_sends_every_image_to_claude():
     # UI-Level Fixes rebuild (2026-09-25) needs all 4 screenshots (desktop/
     # mobile x first-screen/full-page) in ONE vision call, not one call per
