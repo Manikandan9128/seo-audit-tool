@@ -92,9 +92,25 @@ list or in "unmapped" — using its exact original text.
 """
 
 
-_PHASE3_PROMPT_TEMPLATE = """You are validating candidate keyword clusters before they become \
-final. Apply every check below; split, merge, or flag "Needs Review" as needed — never force a \
-keyword into a cluster it doesn't cleanly belong to.
+_PHASE3_PROMPT_TEMPLATE = """You are the FINAL AUTHORITY for page-level keyword clustering. The \
+candidate clusters below are hypotheses from an earlier pass, not final decisions — independently \
+validate every one. Apply every check below; split, merge, or flag "Needs Review" as needed — never \
+force a keyword into a cluster it doesn't cleanly belong to, and never keep a cluster only because its \
+keywords share similar wording, the same broad topic, the same entity, semantic similarity, or a \
+previous cluster assignment. The primary question for every cluster: can ONE high-quality webpage \
+genuinely satisfy the underlying search need represented by every keyword in it?
+
+OVERRIDE RULE: if a candidate cluster fails that test, override it — split, merge, or mark it "Needs \
+Review" — regardless of how confidently the earlier pass grouped it. Do not preserve a grouping simply \
+because it already exists.
+
+CONFIDENCE RULE: cluster_purity must never read as High/near 1.0 while an unresolved conflict remains \
+in intent, underlying user need, entity, page purpose, audience, or modifier specificity — it reflects \
+YOUR final validated membership, not whatever confidence the earlier pass implied.
+
+SERP LIMITATION: no live SERP data is provided here. Never claim or invent SERP ranking overlap as \
+evidence for a merge or split — reason only from the keyword, intent, entity, user-need, and page-purpose \
+evidence actually given below.
 
 ## Input
 

@@ -180,3 +180,23 @@ def test_phase3_fails_open_on_malformed_json_after_retry():
     with patch(f"{_MOD}.iter_text_attempts", side_effect=_attempts(("not json", "groq"))):
         result = generate_phase3_validated_clusters(candidate_clusters)
     assert result == []
+
+
+def test_phase3_prompt_states_final_authority_override_confidence_and_serp_guardrails():
+    # 2026-09-26: the user pasted an external "Prompt 3" spec naming this
+    # module's Phase 3 call as its intended target — comparing it against
+    # the existing _PHASE3_PROMPT_TEMPLATE found 4 real gaps (no explicit
+    # override-rule framing, no confidence-rule tied to unresolved
+    # conflicts, no SERP-invention guardrail, no "don't keep merely
+    # because of X" list). User chose the minimal fix: strengthen the
+    # prompt text only, no output-schema change. This pins that the
+    # strengthened language actually ships in the real prompt sent to
+    # every provider, not just in a comment.
+    from app.services.keyword_semantic_cluster_service import _PHASE3_PROMPT_TEMPLATE
+
+    assert "FINAL AUTHORITY" in _PHASE3_PROMPT_TEMPLATE
+    assert "OVERRIDE RULE" in _PHASE3_PROMPT_TEMPLATE
+    assert "CONFIDENCE RULE" in _PHASE3_PROMPT_TEMPLATE
+    assert "SERP LIMITATION" in _PHASE3_PROMPT_TEMPLATE
+    assert "semantic similarity" in _PHASE3_PROMPT_TEMPLATE
+    assert "previous cluster assignment" in _PHASE3_PROMPT_TEMPLATE
