@@ -27,6 +27,12 @@ it to "every page" or "all pages". For any site-wide structured data / schema cl
 "structured_data_full_crawl" when present (e.g. "26 of 823 crawled pages carry schema; FAQPage only"), and if it \
 shows schema on some pages, never say the site has none.
 
+Any number already stated in a finding (a keyword-gap count, a backlink count, an issue count, etc.) must be \
+copied EXACTLY as given, never recalculated or combined with another number in the same finding. In particular, a \
+count of items EXCLUDED from a total ("X off-topic/competitor-brand excluded") is not part of that total and must \
+never be added back into it — if a finding says "301 relevant keyword gap(s) ... (14 off-topic/competitor-brand \
+excluded)", the only valid total to cite is 301, never 315.
+
 Return ONLY valid JSON, no markdown fences, no commentary:
 {
   "thesis": string,

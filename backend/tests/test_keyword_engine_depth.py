@@ -179,6 +179,32 @@ def test_cannibalization_similarity_and_duplicate_pairs():
     assert any(c["source"] == "Duplicate titles" for c in out)
 
 
+def test_cannibalization_merges_multiple_duplicates_of_the_same_preferred_page():
+    # Regression (confirmed real, Geopits regen 2026-09-26): a paginated
+    # blog series (?page=1 preferred, ?page=2 and ?page=3 near-identical
+    # siblings) used to emit one dict per PAIR, both sharing the same
+    # preferred_url — since the old evidence text never named either page
+    # ("Two blog pages with 92% title overlap."), the two pairs rendered
+    # as byte-identical bullets on the Next Steps: Content SEO slide.
+    # Siblings of the same preferred page must merge into ONE finding,
+    # with every sibling actually named.
+    fake_site_model = {
+        "duplicate_titles": [
+            {"preferred_url": "https://x.com/blog?page=1", "other_url": "https://x.com/blog?page=2",
+             "similarity": 0.92, "page_type": "blog"},
+            {"preferred_url": "https://x.com/blog?page=1", "other_url": "https://x.com/blog?page=3",
+             "similarity": 0.88, "page_type": "blog"},
+        ],
+    }
+    out = cannibalization_similarity([], fake_site_model)
+    dupe_findings = [c for c in out if c["source"] == "Duplicate titles"]
+    assert len(dupe_findings) == 1, f"expected one merged finding, got {len(dupe_findings)}: {dupe_findings}"
+    finding = dupe_findings[0]
+    assert set(finding["other_urls"]) == {"https://x.com/blog?page=2", "https://x.com/blog?page=3"}
+    assert "https://x.com/blog?page=2" in finding["evidence"]
+    assert "https://x.com/blog?page=3" in finding["evidence"]
+
+
 # §27/§59/§62 programmatic patterns + extra review types ------------------------------
 def test_programmatic_patterns_and_review_items():
     s = _summary("Payroll By Business Type", [

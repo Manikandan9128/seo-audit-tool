@@ -419,12 +419,35 @@ def cannibalization_similarity(cannibalization: list[dict], site_model: dict | N
         a, b = _toks(c["preferred_url"]), _toks(c["other_urls"][0]) if c.get("other_urls") else set()
         c["similarity"] = round(len(a & b) / len(a | b), 2) if a | b else 0.0
         c.setdefault("source", "Search Console")
+    # _duplicate_titles (keyword_site_model.py) emits one dict per PAIR —
+    # a preferred page with 2+ near-identical siblings (e.g. a paginated
+    # blog series) produces one pair per sibling, all sharing the same
+    # preferred_url. Rendered independently (as this used to), two such
+    # pairs came out byte-identical: the old evidence text never named
+    # either page ("Two blog pages with 92% title overlap.") and the
+    # slide-render step (pptx_builder.py's add_content_seo_next_steps_
+    # slide) never surfaces other_url at all — so with the same
+    # preferred_url, same page_type, and a same-rounded similarity%, two
+    # genuinely different duplicate pairs read as one finding repeated
+    # twice (confirmed real, Geopits regen 2026-09-26: two identical
+    # "(near-identical page titles) is split across 2 pages — merge,
+    # keeping .../blog?...page=1..." bullets). Grouped by preferred_url so
+    # every sibling for the same target becomes ONE finding with an
+    # accurate page count, and each sibling is now named in the evidence
+    # text so two different preferred pages with coincidentally identical
+    # stats still read as distinct findings.
+    by_preferred: dict[str, list[dict]] = {}
     for d in (site_model or {}).get("duplicate_titles") or []:
+        by_preferred.setdefault(d["preferred_url"], []).append(d)
+    for preferred_url, dupes in by_preferred.items():
+        best_similarity = max(d["similarity"] for d in dupes)
+        others = ", ".join(f"{d['other_url']} ({int(d['similarity'] * 100)}%)" for d in dupes)
         cannibalization.append({
-            "query": "(near-identical page titles)", "preferred_url": d["preferred_url"], "other_urls": [d["other_url"]],
-            "risk": "Medium", "action": "Merge" if d["similarity"] >= 0.9 else "Differentiate", "impressions": 0,
-            "similarity": d["similarity"], "source": "Duplicate titles",
-            "evidence": f"Two {d['page_type']} pages with {int(d['similarity'] * 100)}% title overlap.",
+            "query": "(near-identical page titles)", "preferred_url": preferred_url,
+            "other_urls": [d["other_url"] for d in dupes],
+            "risk": "Medium", "action": "Merge" if best_similarity >= 0.9 else "Differentiate", "impressions": 0,
+            "similarity": best_similarity, "source": "Duplicate titles",
+            "evidence": f"{len(dupes)} other {dupes[0]['page_type']} page(s) with near-identical titles: {others}.",
         })
     return cannibalization
 
