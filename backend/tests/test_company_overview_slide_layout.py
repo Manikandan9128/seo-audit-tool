@@ -6,7 +6,9 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from app.reporting import pptx_builder
-from app.reporting.pptx_builder import SLIDE_H, SLIDE_W, _audit_slide_geometry, add_company_overview_extracted_slide
+from app.reporting.pptx_builder import (
+    SLIDE_H, SLIDE_W, _audit_slide_geometry, _chip_row, add_company_overview_extracted_slide,
+)
 
 
 def _prs():
@@ -120,3 +122,34 @@ def test_registration_line_never_overlaps_the_persistent_global_footer():
         assert not any("overlap" in i for i in issues), issues
     finally:
         pptx_builder._theme["footer"] = ""
+
+
+def test_industry_chip_boxes_are_wide_enough_for_their_bold_text():
+    # Regression (confirmed real, Geopits regen 2026-09-26): "E-Learning /
+    # EdTech" and "Retail" both visibly overflowed their own pill — the
+    # per-char width estimate (~0.075in-per-char-at-size-11, i.e. the
+    # REGULAR-weight rate) was never adjusted for the fact every chip's
+    # text renders bold (run.font.bold = True). 0.62in-per-72pt-per-char is
+    # the calibrated bold-text constant this codebase already trusts
+    # elsewhere (_ui_fixes_truncate_cell) — every chip box must be at least
+    # that wide for its own text plus padding.
+    from pptx.util import Emu, Inches, Pt
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    size = 10.5
+    items = ["Automotive", "Non-Banking Financial Companies (NBFC)", "E-Learning / EdTech", "Retail"]
+    _chip_row(slide, Inches(0.6), Inches(1.0), items, Inches(6.0), size=size)
+
+    pad_x = Inches(0.14)
+    min_char_w = Emu(int(Inches(1) * 0.62 * size / 72))
+    for item in items:
+        chip = next(
+            sh for sh in slide.shapes
+            if sh.has_text_frame and sh.text_frame.text.strip() == item
+        )
+        required = Emu(int(min_char_w) * len(item)) + pad_x * 2
+        assert chip.width >= required - Emu(1000), (  # 1000 EMU (~0.001in) float-rounding slack
+            f"{item!r} chip is {Emu(chip.width).inches:.3f}in wide, needs >= {Emu(required).inches:.3f}in for bold text"
+        )

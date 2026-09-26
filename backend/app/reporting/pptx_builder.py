@@ -244,7 +244,16 @@ def _chip_row(slide, left, top, items, max_width, size=11, bg=None, fg=None):
     y = top
     row_h = Inches(0.3)
     pad_x = Inches(0.14)
-    char_w = Emu(int(Inches(1) * (size / 11) * 0.075))
+    # Every chip's text is rendered bold (run.font.bold = True below), but
+    # this estimate used the same per-char width regardless of weight — a
+    # bold glyph runs measurably wider than that (confirmed real, Geopits
+    # regen 2026-09-26: "E-Learning / EdTech" and "Retail" both visibly
+    # overflowed their own pill). 0.62in-per-72pt-per-char for bold text is
+    # the same calibrated constant _ui_fixes_truncate_cell already uses for
+    # bold text elsewhere in this file — the old 0.075-at-size-11 constant
+    # here (~0.52in-per-72pt) was actually the correct value for REGULAR
+    # weight, just never adjusted when this chip's text became bold.
+    char_w = Emu(int(Inches(1) * 0.62 * size / 72))
     for item in items:
         w = Emu(int(char_w) * len(item)) + pad_x * 2
         if x + w > left + max_width and x != left:
@@ -1009,7 +1018,7 @@ def add_pagespeed_fix_impact_slide(
 
     # LEFT — Performance Fix Plan
     _textbox(slide, left_x, top, left_w, Inches(0.24), "PERFORMANCE FIX PLAN", size=12.5, bold=True, color=_accent())
-    _draw_table(
+    left_table_bottom = _draw_table(
         slide, ["Confirmed Issue", "Specific Fix"], fixes, top + Inches(0.3),
         col_widths=[2.3, 3.75], left=left_x, width=left_w, row_height=0.36, row_cap=6, wrap_cols={0, 1},
     )
@@ -1121,6 +1130,17 @@ def add_pagespeed_fix_impact_slide(
             _textbox(slide, cx, y, col_w - Inches(0.1), Inches(0.18), label, size=9, bold=True, color=_accent())
             _textbox(slide, cx, y + Inches(0.2), col_w - Inches(0.1), Inches(0.5), items, size=9, color=TEXT_MUTED)
         y += Inches(0.68)
+
+    # This closing strip spans the FULL width (x=0.6 to 12.7in) — under the
+    # right column's own USER/BUSINESS IMPACT sections, but also directly
+    # under the LEFT column's Performance Fix Plan table, whose real bottom
+    # this function never tracked. `y` only ever advanced from the right
+    # column's own fixed-height sections above, so on a report with fewer
+    # right-column sections than the left table has wrapped rows for, this
+    # strip drew on top of the table instead of below it (confirmed real,
+    # caught by _audit_slide_geometry on a 2-cause fixture: table bottom
+    # ran to y=2.55in while the right column's own y was still at 1.98in).
+    y = max(y, left_table_bottom + Inches(0.15))
 
     if y < max_y - Inches(0.6):
         if signal and signal["mobile"]["pct_share"] >= 30 and signal["diff_pp"] >= 8 and mobile_weaker:
@@ -4978,9 +4998,19 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
         )
         for r in chart_rows
     ]
+    # col_widths must sum to `width` (3.3in) — _draw_table renders each
+    # column at its own explicit col_widths entry regardless of what
+    # `width` says, so a mismatch between the two silently produces a
+    # table wider than intended instead of erroring. This used to be
+    # [2.9, 1.4, 1.4] (sums to 5.7in, over 2x the declared 3.3in budget),
+    # pushing the table's real right edge to 8.8in — deep into the Key
+    # Insights column that starts at x=6.7in (confirmed real, Geopits
+    # regen 2026-09-26: table numbers visibly overlapping Key Insights
+    # text, unreadable). "% of Sessions" shortened to "% Share" so its
+    # header still fits a single line at this narrower width.
     _draw_table(
-        slide, ["Channel", "Sessions", "% of Sessions"], table_rows, chart_top,
-        col_widths=[2.9, 1.4, 1.4], left=Inches(3.1), width=Inches(3.3), row_cap=len(table_rows), row_height=0.28,
+        slide, ["Channel", "Sessions", "% Share"], table_rows, chart_top,
+        col_widths=[1.5, 0.9, 0.9], left=Inches(3.1), width=Inches(3.3), row_cap=len(table_rows), row_height=0.28,
     )
 
     # Key Insights only ever names a channel actually itemized above (the
@@ -9512,10 +9542,19 @@ def _audit_slide_geometry(prs: Presentation, tolerance=Emu(18288)) -> list[str]:
     runs on every real build_report() call so a layout regression shows up
     in the server logs immediately instead of only in a downloaded file.
     Tolerance (~0.02in) absorbs float/EMU rounding, not real overflow.
-    Overlap is checked only between actual text boxes (add_textbox shapes)
-    — cards/rules/icons are AUTO_SHAPE backgrounds that text boxes are
-    deliberately drawn on top of, so including them would flag every
-    card+label pair as a false positive."""
+    Overlap is checked between text boxes (add_textbox shapes), tables, and
+    charts — cards/rules/icons are AUTO_SHAPE backgrounds that text boxes
+    are deliberately drawn on top of, so including them would flag every
+    card+label pair as a false positive. Tables and charts (unlike text
+    boxes, which are often declared oversized on purpose) use their full
+    declared extent rather than an estimate — a table's real rendered
+    width is the sum of its own column widths, which python-pptx reflects
+    back as the graphic frame's width regardless of what `width` was
+    originally passed to add_table (2026-09-26 fix — confirmed real,
+    Geopits regen: a table's col_widths summed to 5.7in against a declared
+    3.3in budget, silently rendering into the Key Insights column 2in+
+    away, invisible to this auditor when it only ever checked text boxes
+    against each other)."""
     issues = []
     for slide_idx, slide in enumerate(prs.slides, 1):
         text_boxes = []
@@ -9537,6 +9576,8 @@ def _audit_slide_geometry(prs: Presentation, tolerance=Emu(18288)) -> list[str]:
             if shape.shape_type == MSO_SHAPE_TYPE.TEXT_BOX:
                 eff_width, eff_height = _estimate_text_extent(shape)
                 text_boxes.append((shape, left, top, eff_width, eff_height))
+            elif shape.shape_type in (MSO_SHAPE_TYPE.TABLE, MSO_SHAPE_TYPE.CHART):
+                text_boxes.append((shape, left, top, width, height))
         for i in range(len(text_boxes)):
             s1, l1, t1, w1, h1 = text_boxes[i]
             for s2, l2, t2, w2, h2 in text_boxes[i + 1 :]:
