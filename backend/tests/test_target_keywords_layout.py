@@ -84,7 +84,7 @@ def test_category_heading_dropped_when_it_duplicates_the_cluster_name():
     categories = [
         {"name": "Data Management Services", "clusters": [_cluster("Data Management Services", 4)]},
         {"name": "Business Analytics Services", "clusters": [_cluster("Business Analytics Service", 5)]},
-        {"name": "Unclassified", "clusters": [_cluster("Database Managed Services", 12)]},
+        {"name": "Unclassified", "clusters": [_cluster("Database Managed Services", 10)]},
     ]
     slides = _render_target_keyword_slides(_prs(), categories)
     assert [_named(s, "TK Category") for s in slides] == [[], [], ["(Unclassified)"]]
@@ -103,19 +103,24 @@ def test_long_cluster_continues_without_losing_rows():
 
 
 def test_split_clusters_small_leftover_tail_shares_a_slide_with_the_next_cluster():
-    # Regression (confirmed real, Geopits report, 2026-09-24): a 15-keyword
-    # cluster split across slides as 12+3 rows left an entire slide holding
-    # only 3 rows, when the next cluster (2 rows) could have shared it —
-    # same reasoning already applied to two whole small clusters, just
-    # never applied to a big cluster's own leftover tail.
-    categories = [{"name": "Trucks", "clusters": [_cluster("Heavy Duty Trucks", 15), _cluster("Tippers", 2)]}]
+    # Regression (confirmed real, Geopits report, 2026-09-24): a big
+    # cluster split across slides left an entire slide holding only a
+    # handful of leftover rows, when the next cluster (2 rows) could have
+    # shared it — same reasoning already applied to two whole small
+    # clusters, just never applied to a big cluster's own leftover tail.
+    # 14 (not the original 15) reproduces a leftover-tail split under
+    # _TK_INSIGHTS_RESERVE's corrected, larger value (2026-09-26 fix) —
+    # the exact row count that splits with a small leftover shifts
+    # whenever the reserve does; what matters is that a leftover tail
+    # still merges with the next cluster rather than sitting alone.
+    categories = [{"name": "Trucks", "clusters": [_cluster("Heavy Duty Trucks", 14), _cluster("Tippers", 2)]}]
     prs = _prs()
     slides = _render_target_keyword_slides(prs, categories)
     last = slides[-1]
     tables = _tables(last)
     assert len(tables) == 2
     assert {t.cell(1, 0).text for t in tables} == {"Heavy Duty Trucks", "Tippers"}
-    assert sum(len(t.rows) - 1 for s in slides for t in _tables(s)) == 17
+    assert sum(len(t.rows) - 1 for s in slides for t in _tables(s)) == 16
     assert _audit_target_keyword_slides(slides, categories) == []
     assert _audit_slide_geometry(prs) == []
 
@@ -178,17 +183,24 @@ def test_audit_catches_changed_or_missing_rows():
 
 
 def test_large_cluster_keeps_confidence_line_despite_tall_table():
-    # Regression (confirmed real, Geopits report, 2026-09-25): a large
-    # cluster's table (15-21+ rows) leaves so little vertical room below
-    # it that _insights_strip's own space budget — not the 5-line count
-    # cap — silently cuts whatever sits later in the insight list.
-    # Several of the biggest, highest-value clusters showed only "N
-    # keywords, X searches" + "Top opportunity", with no confidence or
-    # action line at all. Confidence must now survive by being early in
-    # the list, not just under the count cap.
+    # Regression (confirmed real, Geopits report, 2026-09-25, and STILL
+    # real on a 2026-09-26 regen): a large cluster's table (15-21+ rows)
+    # leaves so little vertical room below it that _insights_strip's own
+    # space budget — not the 5-line count cap — silently cuts whatever
+    # sits later in the insight list. Several of the biggest, highest-
+    # value clusters showed only "N keywords, X searches" + "Top
+    # opportunity", with no confidence or recommended-format line at all.
+    # The 2026-09-25 fix (moving Confidence to position 3) alone wasn't
+    # enough: a long, realistic `user_need` (every real AI-clustered row
+    # has one) makes "Top opportunity" itself wrap to 2 lines, which the
+    # fixed _TK_INSIGHTS_RESERVE must budget for — this test's original
+    # fixture never set `user_need`, so it never caught that the reserve
+    # was still too small.
     rows = [
-        {"keyword": f"cloud database option {i}", "cluster": "Cloud Database", "search_volume": 1000 - i * 10,
+        {"keyword": f"managed postgresql database migration and modernization services {i}",
+         "cluster": "Cloud Database", "search_volume": 1000 - i * 10,
          "keyword_difficulty": 40, "detected_intent": "Commercial",
+         "user_need": "Evaluate expert-managed, cloud-native database alternatives to running Postgres in-house",
          "cluster_confidence": 75, "cluster_confidence_level": "High", "cluster_reason": "shared entity and intent",
          "roadmap_priority": "High", "cluster_opportunity": 70,
          "recommended_action": "New URL Required", "recommended_page_type": "Service Page"}
@@ -198,6 +210,7 @@ def test_large_cluster_keeps_confidence_line_despite_tall_table():
     slides = add_keyword_research_slide(prs, rows)
     text = " ".join(sh.text_frame.text for s in slides for sh in s.shapes if sh.has_text_frame)
     assert "Confidence: High (75/100)" in text
+    assert "Recommended format:" in text
 
 
 def test_top_opportunity_is_always_the_highest_volume_keyword():

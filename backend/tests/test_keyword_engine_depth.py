@@ -231,6 +231,28 @@ def test_keyword_master_fallback_slide_when_no_sheet():
     assert add_keyword_master_slide(prs, None) is None
 
 
+def test_keyword_master_shows_as_many_rows_as_it_claims():
+    # Regression (confirmed real, Geopits regen 2026-09-26): the slide's
+    # own insights line said "the top 12 by priority are shown", but
+    # _draw_table's row_cap defaults to 9 (not 14) whenever `insights` is
+    # passed — a generic heuristic never checked against this table's own
+    # columns — so only 9 of the 12 computed rows actually rendered.
+    clusters = [
+        {"cluster_id": f"C{i:02d}", "name": f"Cloud Database Migration Strategy Cluster {i}",
+         "parent_topic": "Cloud & Database Services",
+         "primary_keyword": f"managed postgresql database migration services {i}",
+         "intent": "Commercial", "priority": "High", "decision": "new_url_required"}
+        for i in range(12)
+    ]
+    strategy = {"clusters": clusters, "topics": []}
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    slide = add_keyword_master_slide(prs, strategy, max_rows=12)
+    assert _audit_slide_geometry(prs) == []
+    table = next(sh.table for sh in slide.shapes if sh.has_table)
+    assert len(table.rows) - 1 == 12, f"claimed top 12 but rendered {len(table.rows) - 1} rows"
+
+
 # §12/§15 zero-API same-need review signal (SERP_API_Alternatives doc, 2026-09-24) -----
 def test_deepen_topics_flags_a_genuine_zero_overlap_same_need_pair():
     a = _summary("Remote DBA", [("remote dba services", 900)], url=None, strength="none")

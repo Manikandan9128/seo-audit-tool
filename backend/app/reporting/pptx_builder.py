@@ -6835,7 +6835,22 @@ _TK_TOP = Inches(1.05)
 _TK_CATEGORY_H = Inches(0.4)
 _TK_SUBHEAD_H = Inches(0.34)
 _TK_SECTION_GAP = Inches(0.16)
-_TK_INSIGHTS_RESERVE = Inches(1.2)
+# Sized for heading + 3 real insight lines, the 3rd (Confidence) assumed
+# to wrap to 2 lines same as the 2nd (Top opportunity) commonly does once
+# `user_need` is appended to it (0.26 heading + 0.27 + 0.49 + 0.49 =
+# 1.51in of content, plus the 0.15in gap _render_target_keyword_slides
+# adds before the strip even starts = 1.66in minimum). 1.2in only ever
+# covered item 1 + a single-line item 2 — confirmed real, Geopits regen
+# 2026-09-26: several 15-16 keyword clusters (this reserve doesn't scale
+# with cluster size, so the biggest clusters are affected identically to
+# small ones) showed only "N keywords, X searches" + "Top opportunity",
+# Confidence and Recommended format both silently cut by _insights_strip's
+# own vertical-space check, not the 5-line count cap moving Confidence up
+# to position 3 (2026-09-25) was meant to protect against. The existing
+# regression test for that fix never included `user_need` in its fixture,
+# so "Top opportunity" never wrapped to 2 lines there and the gap never
+# surfaced.
+_TK_INSIGHTS_RESERVE = Inches(1.7)
 _TK_BOTTOM = SLIDE_H - Inches(0.5)
 _TK_SMALL_CLUSTER = 4  # keyword rows; two such clusters of one category may share a slide
 _TK_SHAPE_CATEGORY, _TK_SHAPE_CLUSTER = "TK Category", "TK Cluster"
@@ -7263,11 +7278,21 @@ def add_keyword_master_slide(prs: Presentation, keyword_strategy: dict | None, m
     ]
     insights = [f"{len(clusters)} clusters in total; the top {min(max_rows, len(clusters))} by priority are shown."
                 " Connect Google Sheets to get the full keyword master, page map and review queue."]
+    # _draw_table's row_cap defaults to 9 (not 14) whenever `insights` is
+    # passed — a generic heuristic sized for tables in general, never
+    # checked against this specific table's own column widths/content. Left
+    # unset, `rows` (already sliced to `max_rows`, 12 by default) silently
+    # got re-sliced down to 9 at render time while the insights line above
+    # kept claiming "top 12" — confirmed real, Geopits regen 2026-09-26:
+    # slide said "top 12" but only 9 rows rendered. 12 rows (even wrapped,
+    # this table's longest real columns) fit the slide cleanly — verified
+    # via _audit_slide_geometry — so the cap only needs to match max_rows,
+    # not shrink further.
     return _table_slide(
         prs, "Keyword Master (top clusters)",
         ["ID", "Parent › Subtopic", "Cluster", "Primary Keyword", "Intent", "Priority", "Decision"], rows,
         col_widths=[0.6, 2.3, 2.6, 2.4, 1.3, 1.1, 1.8], source="Keyword clusters", insights=insights,
-        wrap_cols={1, 2, 3, 6},
+        wrap_cols={1, 2, 3, 6}, row_cap=max_rows,
     )
 
 
