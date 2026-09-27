@@ -4981,11 +4981,16 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     plot = chart.plots[0]
     plot.has_data_labels = False
     series = plot.series[0]
+    # Kept in chart_rows order so the table's swatch dots below can reuse the
+    # exact same colors the donut wedges got, instead of recomputing them.
+    slice_colors = []
     for i, point in enumerate(series.points):
+        color = _accent() if i == 0 else _TRAFFIC_SOURCE_PALETTE[(i - 1) % len(_TRAFFIC_SOURCE_PALETTE)]
         point.format.fill.solid()
-        point.format.fill.fore_color.rgb = _accent() if i == 0 else _TRAFFIC_SOURCE_PALETTE[(i - 1) % len(_TRAFFIC_SOURCE_PALETTE)]
+        point.format.fill.fore_color.rgb = color
         point.format.line.color.rgb = WHITE
         point.format.line.width = Pt(1.5)
+        slice_colors.append(color)
 
     # Compact channel table doubles as the chart's legend — same rows the
     # donut renders (including the "Other" wedge, if any), so the two can
@@ -5008,10 +5013,22 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     # regen 2026-09-26: table numbers visibly overlapping Key Insights
     # text, unreadable). "% of Sessions" shortened to "% Share" so its
     # header still fits a single line at this narrower width.
-    _draw_table(
+    table_left = Inches(3.1)
+    row_h = Inches(0.28)
+    _, table = _draw_table(
         slide, ["Channel", "Sessions", "% Share"], table_rows, chart_top,
-        col_widths=[1.5, 0.9, 0.9], left=Inches(3.1), width=Inches(3.3), row_cap=len(table_rows), row_height=0.28,
+        col_widths=[1.5, 0.9, 0.9], left=table_left, width=Inches(3.3), row_cap=len(table_rows), row_height=0.28,
+        return_table=True,
     )
+    # Color-code the "Channel" column with the same swatch the donut wedge
+    # uses for that row, so the table doubles as a legend the reader can
+    # actually match to the chart instead of guessing by position.
+    dot_d = Inches(0.1)
+    for i in range(len(table_rows)):
+        cell = table.cell(i + 1, 0)
+        cell.margin_left = Inches(0.24)
+        dot_cy = chart_top + row_h * (i + 1) + (row_h - dot_d) / 2
+        _icon_dot(slide, table_left + Inches(0.08), dot_cy, dot_d, slice_colors[i])
 
     # Key Insights only ever names a channel actually itemized above (the
     # real channels in chart_rows, excluding the synthetic "Other" wedge)
