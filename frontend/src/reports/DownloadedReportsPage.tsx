@@ -63,8 +63,11 @@ export default function DownloadedReportsPage() {
   const [undownloaded, setUndownloaded] = useState<UndownloadedReport[] | null>(null);
   const [error, setError] = useState("");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  // Custom date filter, defaults to today; cleared to show every date.
-  const [dateFilter, setDateFilter] = useState(localDateKey(new Date()));
+  // Custom date-range filter, defaults to today for both ends; either side
+  // cleared to make that end open-ended, both cleared to show every date.
+  const today = localDateKey(new Date());
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(today);
 
   function loadDownloaded() {
     api
@@ -118,7 +121,13 @@ export default function DownloadedReportsPage() {
           ...undownloaded.map((r): ReportRow => ({ ...r, timestamp: r.generated_at, downloaded: false })),
         ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-  const visible = rows?.filter((r) => !dateFilter || localDateKey(new Date(r.timestamp)) === dateFilter) ?? null;
+  const visible =
+    rows?.filter((r) => {
+      const key = localDateKey(new Date(r.timestamp));
+      if (dateFrom && key < dateFrom) return false;
+      if (dateTo && key > dateTo) return false;
+      return true;
+    }) ?? null;
 
   return (
     <div className="clients-page">
@@ -131,18 +140,35 @@ export default function DownloadedReportsPage() {
       </div>
 
       {rows && rows.length > 0 && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <label htmlFor="downloaded-date-filter" className="muted" style={{ fontSize: 13 }}>
-            Date
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          <label htmlFor="downloaded-date-from" className="muted" style={{ fontSize: 13 }}>
+            From
           </label>
           <input
-            id="downloaded-date-filter"
+            id="downloaded-date-from"
             type="date"
-            value={dateFilter}
-            onChange={(e) => setDateFilter(e.target.value)}
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
           />
-          {dateFilter && (
-            <button className="btn btn-secondary" onClick={() => setDateFilter("")}>
+          <label htmlFor="downloaded-date-to" className="muted" style={{ fontSize: 13 }}>
+            To
+          </label>
+          <input
+            id="downloaded-date-to"
+            type="date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+          />
+          {(dateFrom || dateTo) && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setDateFrom("");
+                setDateTo("");
+              }}
+            >
               Clear
             </button>
           )}
@@ -154,7 +180,7 @@ export default function DownloadedReportsPage() {
       {rows === null && !error && <p className="muted">Loading...</p>}
 
       {rows && rows.length > 0 && visible && visible.length === 0 && (
-        <p className="muted">No reports on that date.</p>
+        <p className="muted">No reports in that date range.</p>
       )}
 
       {rows && rows.length === 0 && <p className="muted">No reports yet.</p>}
