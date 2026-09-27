@@ -21,6 +21,7 @@ CLAUDE_API_KEY = "claude_api_key"
 CLAUDE_MODEL = "claude-sonnet-5"
 BROWSER_USE_API_KEY = "browser_use_api_key"
 OPENROUTER_API_KEY = "openrouter_api_key"
+AHREFS_API_KEY = "ahrefs_api_key"
 BROWSER_USE_ACCOUNT_URL = "https://api.browser-use.com/api/v2/billing/account"
 GOOGLE_SHEETS_OAUTH_ACCESS_TOKEN = "google_sheets_oauth_access_token"
 GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN = "google_sheets_oauth_refresh_token"
@@ -47,6 +48,9 @@ def load_overrides_into_settings(db: Session) -> None:
     row = db.get(AppSetting, OPENROUTER_API_KEY)
     if row and row.value:
         settings.openrouter_api_key = row.value
+    row = db.get(AppSetting, AHREFS_API_KEY)
+    if row and row.value:
+        settings.ahrefs_api_key = row.value
     row = db.get(AppSetting, GOOGLE_SHEETS_OAUTH_CLIENT_ID)
     if row and row.value:
         settings.google_sheets_oauth_client_id = row.value
@@ -282,6 +286,29 @@ def test_openrouter_key() -> dict:
 
 def masked_openrouter_api_key() -> str | None:
     return _mask(settings.openrouter_api_key)
+
+
+def set_ahrefs_api_key(db: Session, value: str) -> None:
+    settings.ahrefs_api_key = _set_key(db, AHREFS_API_KEY, value)
+
+
+def test_ahrefs_key() -> dict:
+    """Makes one minimal real call to confirm the currently-configured key
+    actually works — not just that it was saved. Uses ahrefs.com as the
+    target, one of the domains Ahrefs explicitly allows for free test
+    queries (docs.ahrefs.com/api/docs/free-test-queries)."""
+    if not settings.ahrefs_api_key:
+        return {"ok": False, "message": "No Ahrefs API key configured"}
+    from app.services.ahrefs_service import fetch_domain_rating
+
+    dr = fetch_domain_rating("ahrefs.com")
+    if dr is None:
+        return {"ok": False, "message": "Ahrefs rejected the request — check the key was copied correctly and hasn't been revoked."}
+    return {"ok": True, "message": f"Key works — ahrefs.com Domain Rating came back as {dr}."}
+
+
+def masked_ahrefs_api_key() -> str | None:
+    return _mask(settings.ahrefs_api_key)
 
 
 def test_sheets_connection(db: Session) -> dict:

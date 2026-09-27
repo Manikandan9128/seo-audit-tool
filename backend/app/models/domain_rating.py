@@ -10,11 +10,13 @@ from app.db.base import Base
 
 class DomainRating(Base):
     """A manually-entered Domain Rating for one domain under one client —
-    own site or a competitor. Ahrefs (the source the user wants DR from)
-    has no free bulk/API access, only a free single-domain manual lookup
-    tool — so this is typed in by hand rather than pulled automatically.
-    Overrides whatever Semrush's Authority Score would otherwise show for
-    that domain in the Competitor Analysis table."""
+    own site or a competitor. Fallback only (2026-09-27): DR is pulled
+    live from Ahrefs' free public Domain Rating API by default (see
+    app.services.ahrefs_service); a row here is only used when that call
+    fails for the domain (no Ahrefs key configured, rate limited, unknown
+    domain, etc). Never comes from Semrush's Authority Score — that's
+    explicitly cleared for the DR column in the Competitor Analysis
+    table."""
 
     __tablename__ = "domain_ratings"
 

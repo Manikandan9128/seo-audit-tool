@@ -484,6 +484,8 @@ export default function SettingsPage() {
   const [browserUseMasked, setBrowserUseMasked] = useState<string | null>(null);
   const [openRouterSet, setOpenRouterSet] = useState(false);
   const [openRouterMasked, setOpenRouterMasked] = useState<string | null>(null);
+  const [ahrefsSet, setAhrefsSet] = useState(false);
+  const [ahrefsMasked, setAhrefsMasked] = useState<string | null>(null);
   const [sheetsOauthEmail, setSheetsOauthEmail] = useState<string | null>(null);
   const [sheetsOauthClientId, setSheetsOauthClientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -504,6 +506,8 @@ export default function SettingsPage() {
       setBrowserUseMasked(res.data.browser_use_api_key_masked);
       setOpenRouterSet(res.data.openrouter_api_key_set);
       setOpenRouterMasked(res.data.openrouter_api_key_masked);
+      setAhrefsSet(res.data.ahrefs_api_key_set);
+      setAhrefsMasked(res.data.ahrefs_api_key_masked);
       setSheetsOauthEmail(res.data.google_sheets_oauth_email);
       setSheetsOauthClientId(res.data.google_sheets_oauth_client_id);
     } catch (err: any) {
@@ -644,6 +648,31 @@ export default function SettingsPage() {
           onSaved={(set, masked) => {
             setOpenRouterSet(set);
             setOpenRouterMasked(masked);
+          }}
+        />
+
+        <ApiKeyCard
+          title="Ahrefs API Key"
+          description={
+            <>
+              Get a free APIv3 key at{" "}
+              <a href="https://app.ahrefs.com/api/keys" target="_blank" rel="noreferrer">
+                app.ahrefs.com/api/keys
+              </a>
+              . No paid plan needed — Domain Rating lookups are free (0 API units), the key just has to exist.
+              Auto-fills the DR column in Competitor Analysis; falls back to the manual Domain Rating table per
+              domain if a lookup fails.
+            </>
+          }
+          keySet={ahrefsSet}
+          masked={ahrefsMasked}
+          loading={loading}
+          saveUrl="/settings/ahrefs-api-key"
+          testUrl="/settings/ahrefs-api-key/test"
+          saveField="ahrefs_api_key"
+          onSaved={(set, masked) => {
+            setAhrefsSet(set);
+            setAhrefsMasked(masked);
           }}
         />
 

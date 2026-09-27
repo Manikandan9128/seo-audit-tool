@@ -31,7 +31,7 @@ from app.models.google_connection import GoogleConnection
 from app.models.page_audit_job import PageAuditJob
 from app.models.report_generation_job import ReportGenerationJob
 from app.models.semrush_import import SemrushImport
-from app.services import semrush_mcp_data_service
+from app.services import ahrefs_service, semrush_mcp_data_service
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import (
@@ -2251,26 +2251,38 @@ def _gather_report_data(
         covered_domains.add(norm_domain)
     domain_overview_rows.sort(key=lambda row: row["domain"] != own_website_domain)
 
-    # DR column in the Competitor Analysis table comes ONLY from manually
-    # entered Domain Rating (see DomainRating model) — user decision
-    # 2026-08-28: Semrush's Authority Score is no longer used to fill this
-    # column at all, even as a fallback. Ahrefs has no free bulk/API access
-    # (only a free single-domain manual lookup), so this is typed in by
-    # hand per domain rather than pulled automatically. Explicitly clear
-    # any authority_score a domain_overview CSV row might already carry
+    # DR column in the Competitor Analysis table never comes from Semrush's
+    # Authority Score (user decision 2026-08-28) — explicitly clear any
+    # authority_score a domain_overview CSV row might already carry
     # (DOMAIN_OVERVIEW_COLUMN_ALIASES maps an "authority score" column on
     # bulk exports) so no Semrush-sourced value can leak through.
+    # 2026-09-27: DR is now pulled live from Ahrefs' free public Domain
+    # Rating endpoint (see app.services.ahrefs_service — 0 API units, needs
+    # a free APIv3 key set in Settings). Falls back to the manually entered
+    # DomainRating row (see DomainRating model) per-domain whenever the API
+    # call fails — no key configured, rate limited, unknown domain, etc.
     for row in domain_overview_rows:
         row["authority_score"] = None
     manual_dr_rows = db.query(DomainRating).filter(DomainRating.client_id == client_id).all()
     manual_dr_by_domain = {_normalize_domain(r.domain): r.dr for r in manual_dr_rows}
+    dr_domains = {row["domain"] for row in domain_overview_rows}
+    dr_domains.add(own_website_domain)
+    dr_by_domain: dict[str, int] = {}
+    for domain in dr_domains:
+        norm = _normalize_domain(domain)
+        dr = ahrefs_service.fetch_domain_rating(domain)
+        if dr is None:
+            dr = manual_dr_by_domain.get(norm)
+        if dr is not None:
+            dr_by_domain[norm] = dr
     for row in domain_overview_rows:
-        match = manual_dr_by_domain.get(_normalize_domain(row["domain"]))
+        match = dr_by_domain.get(_normalize_domain(row["domain"]))
         if match is not None:
             row["authority_score"] = match
-    # Same manual DR, for the Backlink Profile slide's own stat card (that
-    # slide is about the client's own site only, not a comparison table).
-    own_domain_rating = manual_dr_by_domain.get(_normalize_domain(own_website_domain))
+    # Same DR (Ahrefs-first, manual fallback), for the Backlink Profile
+    # slide's own stat card (that slide is about the client's own site
+    # only, not a comparison table).
+    own_domain_rating = dr_by_domain.get(_normalize_domain(own_website_domain))
 
     # Fold Worldwide traffic/keywords onto every row — matched by domain,
     # same way DR is above — using the worldwide_by_domain dict already

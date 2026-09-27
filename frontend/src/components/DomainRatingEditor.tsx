@@ -81,10 +81,10 @@ export default function DomainRatingEditor({
           <svg viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><rect x="7" y="12" width="3" height="6" rx="1" fill="currentColor" /><rect x="12" y="8" width="3" height="10" rx="1" fill="currentColor" /><rect x="17" y="5" width="3" height="13" rx="1" fill="currentColor" /></svg>
         </div>
         <div className="card-title-text">
-          <h3 className="card-title">Domain Rating</h3>
+          <h3 className="card-title">Domain Rating (fallback)</h3>
           <p className="card-desc">
-            Manually entered — look up each domain on Ahrefs' free Authority Checker and enter it here.
-            Covers the DR column in Competitor Analysis for your own site and any competitor domain.
+            DR is pulled automatically from Ahrefs' free API when a key is set in Settings. Entries here are only
+            used as a fallback — for a domain where that lookup fails, or while no Ahrefs key is configured.
           </p>
         </div>
       </div>

@@ -9,11 +9,13 @@ from app.services.app_settings_service import (
     disconnect_sheets_oauth,
     get_sheets_oauth_client_id,
     get_sheets_oauth_email,
+    masked_ahrefs_api_key,
     masked_browser_use_api_key,
     masked_claude_api_key,
     masked_gemini_api_key,
     masked_groq_api_key,
     masked_openrouter_api_key,
+    set_ahrefs_api_key,
     set_browser_use_api_key,
     set_claude_api_key,
     set_gemini_api_key,
@@ -21,6 +23,7 @@ from app.services.app_settings_service import (
     set_openrouter_api_key,
     set_sheets_oauth_client,
     set_sheets_oauth_tokens,
+    test_ahrefs_key,
     test_browser_use_key,
     test_claude_key,
     test_gemini_key,
@@ -58,6 +61,10 @@ class OpenRouterKeyIn(BaseModel):
     openrouter_api_key: str
 
 
+class AhrefsKeyIn(BaseModel):
+    ahrefs_api_key: str
+
+
 class GoogleSheetsOAuthClientIn(BaseModel):
     google_sheets_oauth_client_id: str
     google_sheets_oauth_client_secret: str
@@ -70,6 +77,7 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
     claude_masked = masked_claude_api_key()
     browser_use_masked = masked_browser_use_api_key()
     openrouter_masked = masked_openrouter_api_key()
+    ahrefs_masked = masked_ahrefs_api_key()
     return {
         "gemini_api_key_set": gemini_masked is not None,
         "gemini_api_key_masked": gemini_masked,
@@ -81,6 +89,8 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
         "browser_use_api_key_masked": browser_use_masked,
         "openrouter_api_key_set": openrouter_masked is not None,
         "openrouter_api_key_masked": openrouter_masked,
+        "ahrefs_api_key_set": ahrefs_masked is not None,
+        "ahrefs_api_key_masked": ahrefs_masked,
         "google_sheets_oauth_email": get_sheets_oauth_email(db),
         "google_sheets_oauth_client_id": get_sheets_oauth_client_id(),
     }
@@ -215,6 +225,34 @@ def update_openrouter_api_key(
 def test_openrouter_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_openrouter_key()
+    return {"test_ok": test["ok"], "test_message": test["message"]}
+
+
+@router.put("/ahrefs-api-key")
+def update_ahrefs_api_key(
+    payload: AhrefsKeyIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Saves the key, then immediately makes one real call (Ahrefs' free
+    Domain Rating endpoint, target=ahrefs.com) to confirm it actually
+    works. Used to auto-fill the DR column in Competitor Analysis; when
+    this key is missing or a lookup fails, that domain falls back to
+    whatever's in the manual Domain Rating table instead."""
+    set_ahrefs_api_key(db, payload.ahrefs_api_key)
+    test = test_ahrefs_key()
+    return {
+        "ahrefs_api_key_set": True,
+        "ahrefs_api_key_masked": masked_ahrefs_api_key(),
+        "test_ok": test["ok"],
+        "test_message": test["message"],
+    }
+
+
+@router.post("/ahrefs-api-key/test")
+def test_ahrefs_api_key(current_user: User = Depends(get_current_user)):
+    """Re-runs the connectivity test on demand, without changing the key."""
+    test = test_ahrefs_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
