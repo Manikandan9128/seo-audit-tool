@@ -1322,7 +1322,7 @@ def _generate_competitor_narratives(
         # Trade-off accepted deliberately: if this one call fails outright,
         # every competitor's narrative is lost together instead of just
         # one — see competitor_narrative_service's module docstring.
-        progress(f"Analyzing {len(competitors_facts)} competitor(s) together...", 65)
+        progress(f"Analyzing {len(competitors_facts)} competitor(s) together...", 78)
         results = generate_competitor_narratives_batch(client.name, client_domain, competitors_facts)
         for domain, result in results.items():
             if "error" in result:
@@ -1351,7 +1351,7 @@ def _generate_competitor_narratives(
     # just means that competitor's slide renders without one — never an
     # error surfaced anywhere in the report.
     if narratives:
-        progress("Capturing competitor homepage screenshots...", 82)
+        progress("Capturing competitor homepage screenshots...", 85)
     try:
         screenshots = capture_homepage_screenshots(list(narratives.keys()))
     except Exception:
@@ -3151,7 +3151,13 @@ def _run_generate_report_job(
             j = progress_db.get(ReportGenerationJob, job_id)
             if j:
                 j.progress_stage = stage
-                j.progress_pct = pct
+                # Never let the bar move backward — a stage helper can be
+                # invoked later in the build than its progress() call sites
+                # read in this file (e.g. competitor narratives is called
+                # after core-problem diagnosis but defined, and historically
+                # numbered, earlier), which visibly dropped the percentage
+                # mid-build (confirmed live 2026-09-27: 75% -> 65% -> 82%).
+                j.progress_pct = max(pct, j.progress_pct or 0)
                 progress_db.commit()
 
         heartbeat_stop = threading.Event()
