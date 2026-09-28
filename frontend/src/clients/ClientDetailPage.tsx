@@ -88,9 +88,8 @@ interface SemrushImportSummary {
 }
 
 interface DomainRatingSummary {
-  id: string;
   domain: string;
-  dr: number;
+  dr: number | null;
 }
 
 function normalizeDomainForKpi(d: string) {
@@ -148,10 +147,13 @@ export default function ClientDetailPage() {
   const [analyticsEnd, setAnalyticsEnd] = useState(() => new Date().toISOString().slice(0, 10));
 
   const [imports, setImports] = useState<SemrushImportSummary[]>([]);
-  // KPI snapshot strip (redesign v3 stage 3) reads the same already-
-  // existing GET /domain-ratings endpoint DomainRatingEditor calls —
-  // duplicate read, no new route, so the strip can show Domain Rating
-  // without prop-drilling that component's own internal state.
+  // KPI snapshot strip (redesign v3 stage 3) reads the same live
+  // Ahrefs-first/manual-fallback GET /domain-ratings/live endpoint
+  // DomainRatingEditor uses — duplicate read, no new route, so the strip
+  // can show Domain Rating without prop-drilling that component's own
+  // internal state. Switched from the old manual-only /domain-ratings
+  // 2026-09-28 so this tile can't show a different DR than the live
+  // leaderboard on the Data Sources tab.
   const [domainRatings, setDomainRatings] = useState<DomainRatingSummary[]>([]);
 
   // Generate/Download state lives in reportJobs.ts, not here — this page
@@ -455,7 +457,7 @@ export default function ClientDetailPage() {
 
   async function loadDomainRatingsForKpi() {
     try {
-      const res = await api.get(`/clients/${clientId}/domain-ratings`);
+      const res = await api.get(`/clients/${clientId}/domain-ratings/live`);
       setDomainRatings(res.data);
     } catch {
       // quiet — same fail-open discipline as DomainRatingEditor's own load(); the KPI tile just shows "—"
@@ -950,7 +952,9 @@ export default function ClientDetailPage() {
         // imports, readiness), never invented or hardcoded.
         const ownNorm = client.website_url ? normalizeDomainForKpi(client.website_url) : null;
         const ownDrRow = ownNorm ? domainRatings.find((r) => normalizeDomainForKpi(r.domain) === ownNorm) : undefined;
-        const competitorDrRows = domainRatings.filter((r) => normalizeDomainForKpi(r.domain) !== ownNorm);
+        const competitorDrRows = domainRatings.filter(
+          (r) => normalizeDomainForKpi(r.domain) !== ownNorm && r.dr !== null
+        ) as (DomainRatingSummary & { dr: number })[];
         const avgCompetitorDr = competitorDrRows.length
           ? Math.round(competitorDrRows.reduce((s, r) => s + r.dr, 0) / competitorDrRows.length)
           : null;
@@ -980,11 +984,11 @@ export default function ClientDetailPage() {
                   <span className="kpi-label">Domain Rating</span>
                 </Tip>
               </div>
-              <div className="kpi-value">{ownDrRow ? ownDrRow.dr : "—"}</div>
+              <div className="kpi-value">{ownDrRow?.dr != null ? ownDrRow.dr : "—"}</div>
               <div className="kpi-sub">
-                <span>{avgCompetitorDr !== null ? `vs. avg. competitor DR ${avgCompetitorDr}` : "no competitor DR entered yet"}</span>
+                <span>{avgCompetitorDr !== null ? `vs. avg. competitor DR ${avgCompetitorDr}` : "no competitor DR yet"}</span>
               </div>
-              {ownDrRow && (
+              {ownDrRow?.dr != null && (
                 <div className="kpi-bar-track">
                   <div className="kpi-bar-fill" style={{ width: `${Math.min(ownDrRow.dr, 100)}%`, background: "var(--gradient-primary-h)" }} />
                 </div>
