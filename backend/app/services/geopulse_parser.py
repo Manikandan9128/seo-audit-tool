@@ -28,6 +28,26 @@ MAX_RAW_TEXT_CHARS = 40_000
 MAX_PDF_PAGES = 200
 
 
+def _cap_text(text: str, max_chars: int) -> str:
+    """Caps text length by keeping both the start AND the end, not just
+    the start. 2026-09-28: the same real export named above
+    (report-run-52.pdf) still failed downstream even after the timeout
+    fix — it's a dense 100-page report (headline stats + competitor
+    landscape on page 1, then ~90 pages of verbatim per-prompt AI
+    transcripts, with its own "Recommended Actions" section only at the
+    very end). A pure head-truncation to MAX_RAW_TEXT_CHARS sliced off
+    partway through the transcript pages, well before the AI prompt
+    (geopulse_ai_service.py) ever saw the Recommended Actions section —
+    plausible root cause of "the AI returned no usable result" on this
+    exact file. Splitting the budget between head and tail means both
+    survive even when whatever's in the middle gets cut."""
+    if len(text) <= max_chars:
+        return text
+    head_len = max_chars * 3 // 5
+    tail_len = max_chars - head_len
+    return text[:head_len] + text[-tail_len:]
+
+
 def parse_geopulse_file(filename: str, content: bytes) -> dict:
     name = (filename or "").lower()
     text = ""
@@ -35,7 +55,6 @@ def parse_geopulse_file(filename: str, content: bytes) -> dict:
     if name.endswith(".pdf"):
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             parts: list[str] = []
-            total_len = 0
             for page in pdf.pages[:MAX_PDF_PAGES]:
                 try:
                     page_text = page.extract_text() or ""
@@ -46,9 +65,14 @@ def parse_geopulse_file(filename: str, content: bytes) -> dict:
                     # readable — skip it and keep going.
                     continue
                 parts.append(page_text)
-                total_len += len(page_text)
-                if total_len >= MAX_RAW_TEXT_CHARS:
-                    break
+                # No longer stops early once MAX_RAW_TEXT_CHARS is
+                # reached (2026-09-28) — that used to silently drop
+                # everything after the first ~40k characters, including
+                # a real report's own Recommended Actions section near
+                # the end. MAX_PDF_PAGES above is already the safety
+                # bound on scan cost; capping to MAX_RAW_TEXT_CHARS now
+                # happens once, on the full assembled text, via
+                # _cap_text (head + tail) below.
             text = "\n".join(parts)
     elif name.endswith((".xlsx", ".xls")):
         sheets = pd.read_excel(io.BytesIO(content), sheet_name=None)
@@ -65,5 +89,5 @@ def parse_geopulse_file(filename: str, content: bytes) -> dict:
     text = text.strip()
     return {
         "row_count": 1,
-        "rows": [{"filename": filename, "raw_text": text[:MAX_RAW_TEXT_CHARS]}],
+        "rows": [{"filename": filename, "raw_text": _cap_text(text, MAX_RAW_TEXT_CHARS)}],
     }

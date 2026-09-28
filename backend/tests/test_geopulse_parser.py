@@ -59,12 +59,37 @@ def test_pdf_extraction_stops_at_max_page_cap():
     assert called == MAX_PDF_PAGES
 
 
-def test_pdf_extraction_stops_once_enough_text_collected():
-    pages = [_fake_page("x" * MAX_RAW_TEXT_CHARS)] + [_fake_page("should never run") for _ in range(10)]
+# 2026-09-28: the old "stop scanning once MAX_RAW_TEXT_CHARS is reached"
+# optimization is gone — it silently dropped everything after the first
+# ~40k characters, including a real GeoPulse export's own "Recommended
+# Actions" section that sits near the end, past pages of dense verbatim
+# transcript content (report-run-52.pdf, plausible root cause of "the AI
+# returned no usable result" on that exact file). All pages up to
+# MAX_PDF_PAGES (the actual safety bound) are now scanned; the char
+# budget is enforced once, at the end, via _cap_text (head + tail).
+def test_pdf_extraction_scans_all_pages_not_just_until_char_budget_met():
+    pages = [_fake_page("x" * MAX_RAW_TEXT_CHARS)] + [_fake_page("tail marker") for _ in range(3)]
     with _patched_pdf(pages):
         result = parse_geopulse_file("export.pdf", b"%PDF-1.4 fake")
-    assert not pages[1].extract_text.called
+    assert all(p.extract_text.called for p in pages)
+    assert "tail marker" in result["rows"][0]["raw_text"]
     assert len(result["rows"][0]["raw_text"]) == MAX_RAW_TEXT_CHARS
+
+
+def test_cap_text_keeps_head_and_tail_not_just_head():
+    from app.services.geopulse_parser import _cap_text
+
+    text = "HEAD" + "x" * 100_000 + "TAIL"
+    capped = _cap_text(text, MAX_RAW_TEXT_CHARS)
+    assert capped.startswith("HEAD")
+    assert capped.endswith("TAIL")
+    assert len(capped) == MAX_RAW_TEXT_CHARS
+
+
+def test_cap_text_leaves_short_text_untouched():
+    from app.services.geopulse_parser import _cap_text
+
+    assert _cap_text("short text", MAX_RAW_TEXT_CHARS) == "short text"
 
 
 def test_pdf_extraction_skips_a_page_that_throws_instead_of_failing_the_whole_file():
