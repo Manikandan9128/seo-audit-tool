@@ -10160,9 +10160,12 @@ def _build_report(
             )
             add_keyword_research_slide(prs, keyword_rows)
         # §18/§37/§38 — one topic map for whichever path rendered above.
-        add_keyword_topic_map_slide(prs, keyword_strategy)
-        if not keyword_sheet_link:
-            add_keyword_master_slide(prs, keyword_strategy)
+        # Both cut from the report 2026-09-28 per user request (functions
+        # kept, only the calls removed — same convention as the Backlink
+        # Profile slide cut 2026-09-18).
+        # add_keyword_topic_map_slide(prs, keyword_strategy)
+        # if not keyword_sheet_link:
+        #     add_keyword_master_slide(prs, keyword_strategy)
         if competitor_rows:
             # 2026-09-20 user request: the "Open full keyword list" button
             # must appear only on Competitor Keyword Gap Analysis (see

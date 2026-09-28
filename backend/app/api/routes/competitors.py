@@ -13,6 +13,7 @@ from app.models.client import Client
 from app.models.domain_rating import DomainRating
 from app.models.semrush_import import SemrushImport
 from app.models.user import User
+from app.services.ahrefs_service import fetch_domain_rating
 from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.semrush_ai_summary_service import generate_ai_summary
 from app.services.semrush_parser import parse_semrush_file
@@ -365,6 +366,55 @@ def delete_semrush_import(
     db.delete(record)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/{client_id}/domain-ratings/live")
+def live_domain_ratings(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """What the report will actually show for DR right now, per domain —
+    own site plus every competitor domain seen in an upload — same
+    Ahrefs-first/manual-fallback logic as report generation itself (see
+    app.services.ahrefs_service + DomainRating model), just surfaced here
+    so the user can see it before generating a report instead of only
+    inside the finished PPTX."""
+    client = _get_owned_client(client_id, db, current_user)
+    own_domain = (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
+
+    competitor_labels = (
+        db.query(SemrushImport.domain_label)
+        .filter(
+            SemrushImport.client_id == client_id,
+            SemrushImport.is_own_site.is_(False),
+            SemrushImport.domain_label.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    domains: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    if own_domain:
+        domains.append((own_domain, True))
+        seen.add(_normalize_domain(own_domain))
+    for (label,) in competitor_labels:
+        norm = _normalize_domain(label)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        domains.append((label, False))
+
+    manual_by_domain = {
+        _normalize_domain(r.domain): r.dr
+        for r in db.query(DomainRating).filter(DomainRating.client_id == client_id).all()
+    }
+
+    result = []
+    for domain, is_own in domains:
+        dr = fetch_domain_rating(domain)
+        source = "ahrefs"
+        if dr is None:
+            dr = manual_by_domain.get(_normalize_domain(domain))
+            source = "manual" if dr is not None else "unavailable"
+        result.append({"domain": domain, "dr": dr, "source": source, "is_own": is_own})
+    return result
 
 
 @router.get("/{client_id}/domain-ratings")
