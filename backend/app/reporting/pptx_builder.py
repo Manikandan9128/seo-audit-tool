@@ -6785,14 +6785,20 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
     if c.get("cluster_type"):
         page_type = f"{page_type} ({c['cluster_type']})"
     gap_text = f" Gap: {c['content_gap_type']}." if c.get("content_gap_type") and not target else ""
-    out.append(
-        f"Target: {page_type} — {target_text}. "
-        f"Action: {c.get('decision') or c.get('recommended_action')}.{gap_text}{priority_text}"
-    )
+    # 2026-09-28 Target Keywords rule: `decision`/`recommended_action` are
+    # internal codes ("EXISTING URL — SECONDARY TARGET", "REVIEW", ...) —
+    # never render them raw, same fix as _keyword_insights above.
+    # decision_reason is the natural sentence explaining the same call.
+    _decision_reason = c.get("decision_reason")
+    action_text = f" {_decision_reason.rstrip('.')}." if _decision_reason and c.get("decision") != "REVIEW" else ""
+    out.append(f"Target: {page_type} — {target_text}.{action_text}{gap_text}{priority_text}")
     if c.get("primary_keyword"):
-        # §55/§66-D: the page's one primary keyword and the searcher's need.
-        need = f" · User need: {c['user_need']}" if c.get("user_need") else ""
-        out.append(f'Primary keyword: "{c["primary_keyword"]}"{need}.')
+        # §55/§66-D: the page's one primary keyword and the searcher's
+        # need. 2026-09-28: natural sentence instead of a raw "User need:
+        # <label>" field — same fix as _keyword_insights above.
+        _need = c.get("user_need") or ""
+        need = f" Users are trying to {_need[0].lower()}{_need[1:]}." if _need else ""
+        out.append(f'Primary keyword: "{c["primary_keyword"]}".{need}')
     excluded = c.get("excluded") or []
     if excluded:
         out.append(
@@ -6809,10 +6815,13 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
             bits.append(f"{_quoted_list(other_sites)} are searches for another website")
         if doubts:
             bits.append(f"{_quoted_list(doubts)} may not match this business (possible other brand or product)")
-        out.append(
-            "Relevance check: " + "; ".join(bits)
-            + " — confirm with the client before targeting."
-        )
+        # 2026-09-28 Target Keywords rule: "Relevance check:" is the "manual
+        # relevance review" internal-process label, and "confirm with the
+        # client before targeting" is an instruction to the agency team,
+        # not a claim for the client's own deck to make to the client.
+        # Kept the finding itself (still evidence-backed, still useful),
+        # dropped the label and the internal instruction.
+        out.append("Note: " + "; ".join(bits) + ".")
     mismatches = c.get("intent_mismatches") or []
     if mismatches:
         detected = Counter(m["detected"] for m in mismatches).most_common(1)[0][0]
@@ -7192,7 +7201,11 @@ _TARGET_KEYWORDS_EXCLUDED_CLUSTERS = {
     _NEEDS_REVIEW_CLUSTER_LABEL, _CAREER_ROUTE_CLUSTER_LABEL, _GEO_ROUTE_CLUSTER_LABEL,
 }
 _EXCLUDED_CLUSTER_NOUN = {
-    _NEEDS_REVIEW_CLUSTER_LABEL: "keyword(s) awaiting relevance review",
+    # 2026-09-28 Target Keywords rule: "awaiting relevance review" is
+    # explicitly banned client-facing language (names the internal
+    # not-yet-classified state). These are genuinely low-confidence
+    # matches to the client's business, so say that instead.
+    _NEEDS_REVIEW_CLUSTER_LABEL: "keyword(s) with unclear relevance to your business",
     _CAREER_ROUTE_CLUSTER_LABEL: "job/career search(es)",
     _GEO_ROUTE_CLUSTER_LABEL: "out-of-market location search(es)",
 }
@@ -7290,14 +7303,26 @@ def add_keyword_master_slide(prs: Presentation, keyword_strategy: dict | None, m
             for names in by_intent.values():
                 for n in names:
                     subtopic[n] = f"{t['parent']} › {sub}"
+    # 2026-09-28 Target Keywords rule: `decision` is an internal code
+    # ("EXISTING URL — SECONDARY TARGET", "REVIEW", ...) — never render it
+    # raw, same fix as add_keyword_research_slide/add_strategic_keyword_
+    # clusters_slide above. decision_reason is the natural sentence
+    # explaining the same call; "REVIEW" (internal not-confident-enough
+    # flag) gets no action text.
+    def _action_text(c: dict) -> str:
+        reason = c.get("decision_reason")
+        if reason and c.get("decision") != "REVIEW":
+            return reason.rstrip(".") + "."
+        return "—"
+
     rows = [
         (c["cluster_id"], subtopic.get(c["name"], c.get("parent_topic") or "—"), c["name"],
          c.get("primary_keyword") or "—", c.get("intent") or "—", c.get("priority") or "—",
-         (c.get("decision") or "—").title().replace("Url", "URL"))
+         _action_text(c))
         for c in clusters[:max_rows]
     ]
     insights = [f"{len(clusters)} clusters in total; the top {min(max_rows, len(clusters))} by priority are shown."
-                " Connect Google Sheets to get the full keyword master, page map and review queue."]
+                " Connect Google Sheets to get the full keyword master and page map."]
     # _draw_table's row_cap defaults to 9 (not 14) whenever `insights` is
     # passed — a generic heuristic sized for tables in general, never
     # checked against this specific table's own column widths/content. Left
@@ -7310,7 +7335,7 @@ def add_keyword_master_slide(prs: Presentation, keyword_strategy: dict | None, m
     # not shrink further.
     return _table_slide(
         prs, "Keyword Master (top clusters)",
-        ["ID", "Parent › Subtopic", "Cluster", "Primary Keyword", "Intent", "Priority", "Decision"], rows,
+        ["ID", "Parent › Subtopic", "Cluster", "Primary Keyword", "Intent", "Priority", "Recommended Action"], rows,
         col_widths=[0.6, 2.3, 2.6, 2.4, 1.3, 1.1, 1.8], source="Keyword clusters", insights=insights,
         wrap_cols={1, 2, 3, 6}, row_cap=max_rows,
     )
@@ -7550,7 +7575,16 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             kd = top.get("keyword_difficulty")
             kd_text = f", KD {kd}" if kd not in (None, "") else ""
             # §55/§66-D: the searcher's need behind the primary keyword.
-            need_text = f" User need: {top['user_need']}." if top.get("user_need") else ""
+            # 2026-09-28 Target Keywords rule: never show the raw "User
+            # need: <label>" internal field format — write it as a natural
+            # sentence instead. user_need values are already short verb
+            # phrases (keyword_intelligence_service._classify_intent:
+            # "Discover X options", "Compare X options before choosing",
+            # "Learn about X", ...), so lowercasing the leading verb and
+            # framing it as what users are doing reads naturally without
+            # inventing any new meaning.
+            _need = top.get("user_need") or ""
+            need_text = f" Users are trying to {_need[0].lower()}{_need[1:]}." if _need else ""
             out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month{kd_text}.{need_text}")
         else:
             # Search Console-only rows carry no Semrush search volume —
@@ -7584,9 +7618,19 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             # vertical-space cut described above.
             _tier_phrase = {"High": " This is a high-priority opportunity.", "Medium": " This is a medium-priority opportunity.", "Low": " This is a lower-priority opportunity."}
             priority_text = _tier_phrase.get(top.get("roadmap_priority"), "")
-            out.append(
-                f"{(top.get('cluster_reason') or 'Grouped by shared entity and intent').rstrip('.').capitalize()}.{priority_text}"
-            )
+            # 2026-09-28 Target Keywords rule: cluster_reason (see
+            # keyword_intelligence_service._score_cluster's reason_bits) is
+            # built to explain HOW the grouping was classified — it can read
+            # "AI-validated as one search need", "rule-based grouping
+            # (shared core entity), not AI-validated", "N keyword(s)
+            # flagged for relevance review", "no SERP data to confirm".
+            # Every one of those is explicitly banned client-facing
+            # language (AI-validated / rule-based grouping / relevance
+            # review / internal classification methodology). It's kept in
+            # the data model for the Sheets export's own "Reason" column
+            # (a different, more technical deliverable) but never rendered
+            # on this slide — always the plain, safe default instead.
+            out.append(f"Grouped by shared entity and intent.{priority_text}")
         # §22 page type (strategy layer) when computed, else the pipeline's
         # coarse page category; §29 cluster type alongside it.
         page_category = top.get("recommended_page_type") or top.get("page_category")
@@ -7595,9 +7639,17 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         existing_url = top.get("existing_page_url")
         # Universal SEO Keyword engine (2026-09-23) §53/§55: the cluster's
         # own target decision — only added when the pipeline computed it.
-        # The §53 decision label wins once the strategy layer set it.
-        action = top.get("decision") or top.get("recommended_action")
-        action_text = f" Action: {action}." if action else ""
+        # 2026-09-28 Target Keywords rule: `decision` is an internal code
+        # ("EXISTING URL — SECONDARY TARGET", "MERGE EXISTING URLS",
+        # "REVIEW", ...) — never render it raw. `decision_reason` is
+        # already the natural sentence explaining that same decision
+        # (keyword_strategy_service._resolve_decisions), so use that
+        # instead. The "REVIEW" decision's reason text is itself internal
+        # QA language ("confirm before building") with no safe rewrite, so
+        # it's dropped entirely — same treatment as the Human Review tier's
+        # priority label above.
+        decision_reason = top.get("decision_reason")
+        action_text = f" {decision_reason.rstrip('.')}." if decision_reason and top.get("decision") != "REVIEW" else ""
         if top.get("content_gap_type") and not (existing_url and top.get("existing_page_match_strength") in ("strong", "partial")):
             action_text += f" Gap: {top['content_gap_type']}."
         if page_category and existing_url and top.get("existing_page_match_strength") == "weak":
@@ -7606,19 +7658,22 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             out.append(f"Recommended format: {page_category} — an existing page already covers this: {existing_url}.{action_text}")
         elif page_category:
             out.append(f"Recommended format: {page_category} — no existing page covers this yet, new page opportunity.{action_text}")
-        # Cluster validation (lead's reference flow, doc 1 final step): can
-        # one page realistically satisfy every keyword in this cluster?
+        # Can one page realistically satisfy every keyword in this cluster?
         # Deterministic — reuses page_category already computed per
         # keyword, no extra AI call. A single stray keyword in a different
         # format isn't treated as a real split signal (min_count=2) —
         # only flagged when there's a genuine second sub-group worth its
-        # own page.
+        # own page. 2026-09-28 Target Keywords rule: "Cluster validation:"
+        # is explicitly banned client-facing language (it's on the same
+        # list as "cluster validation" / "AI-validated") — the underlying
+        # fact (do these keywords share a page format) is still useful to
+        # the client, just stated without the internal-process label.
         categories_present = [r.get("page_category") for r in rows_for_group if r.get("page_category")]
         if categories_present:
             cat_counts = Counter(categories_present).most_common()
             if len(cat_counts) > 1 and cat_counts[1][1] >= 2:
                 cats_text = ", ".join(f"{c} ({n})" for c, n in cat_counts)
-                out.append(f"Cluster validation: mixed page formats — {cats_text}. One page likely can't satisfy all of these; consider splitting into separate pages.")
+                out.append(f"These keywords show mixed page formats — {cats_text}. One page likely can't satisfy all of these; consider splitting into separate pages.")
             else:
                 # 2026-09-10 spec: never publish two different values for the
                 # same classified field on one slide — anchor to page_category
@@ -7626,7 +7681,7 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
                 # instead of independently re-deriving the mode, which could
                 # disagree when the top-volume keyword's own format wasn't
                 # the cluster's most common one.
-                out.append(f"Cluster validation: consistent format ({page_category or cat_counts[0][0]}) — one page can reasonably target every keyword here.")
+                out.append(f"These keywords share a consistent format ({page_category or cat_counts[0][0]}) — one page can reasonably target every keyword here.")
         temporal_line = _temporal_keywords_line([r.get("keyword") or "" for r in rows_for_group])
         if temporal_line:
             out.append(temporal_line)

@@ -209,11 +209,14 @@ def test_large_cluster_keeps_confidence_line_despite_tall_table():
     prs = _prs()
     slides = add_keyword_research_slide(prs, rows)
     text = " ".join(sh.text_frame.text for s in slides for sh in s.shapes if sh.has_text_frame)
-    # 2026-09-28 Key Insights rule: no raw confidence score/label exposed to
-    # the client — the underlying grouping-rationale line must still survive
-    # the vertical-space cut this test guards against, just with client-safe
-    # wording instead of "Confidence: High (75/100)".
-    assert "Shared entity and intent" in text and "high-priority opportunity" in text
+    # 2026-09-28 Target Keywords rule: cluster_reason (which could read
+    # "AI-validated as one search need" / "rule-based grouping... not
+    # AI-validated" / "N keyword(s) flagged for relevance review") is never
+    # rendered raw any more — always this fixed, client-safe sentence. The
+    # underlying grouping-rationale line must still survive the vertical-
+    # space cut this test guards against, just with this wording instead of
+    # "Confidence: High (75/100)".
+    assert "Grouped by shared entity and intent" in text and "high-priority opportunity" in text
     assert "Recommended format:" in text
 
 

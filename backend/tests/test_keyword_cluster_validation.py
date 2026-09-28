@@ -60,10 +60,10 @@ def test_single_outlier_keyword_does_not_trigger_split():
 
 
 def test_top_keywords_minority_format_matches_recommended_format():
-    # Regression guard (2026-09-10 spec): Cluster validation must never
-    # state a different format than Recommended format above it. Here the
-    # top-volume keyword's own format ("Landing Page") is the cluster's
-    # minority — Cluster validation used to independently report the mode
+    # Regression guard (2026-09-10 spec): the page-format-consistency line
+    # must never state a different format than Recommended format above
+    # it. Here the top-volume keyword's own format ("Landing Page") is the
+    # cluster's minority — this line used to independently report the mode
     # ("Blog / Guide") instead, contradicting the Recommended format line.
     rows = [
         {"keyword": "what is certified payroll", "cluster": "C", "search_volume": 50, "page_category": "Blog / Guide"},
@@ -73,7 +73,9 @@ def test_top_keywords_minority_format_matches_recommended_format():
     slides = add_keyword_research_slide(_prs(), rows)
     text = _slide_text(slides[0])
     assert "Recommended format: Landing Page" in text
-    assert "Cluster validation: consistent format (Landing Page)" in text
+    # 2026-09-28 Target Keywords rule: no "Cluster validation:" label
+    # (internal-process language) — same fact, client-safe wording.
+    assert "consistent format (Landing Page)" in text and "Cluster validation" not in text
 
 
 def test_no_page_category_data_omits_validation_bullet():

@@ -298,10 +298,16 @@ def test_manual_cluster_enrichment_flags_intent_mismatch_and_split_without_rewri
     text = _slide_text(slides[0])
     assert "Intent corrected:" in text
     assert "Removed from this cluster:" in text
-    # 2026-09-28 Key Insights rule: no raw confidence score exposed to the
-    # client — the Target/Action line (which used to carry "Confidence ...")
-    # must still render.
-    assert "Target:" in text and "Action:" in text
+    # 2026-09-28 Target Keywords rule: no raw decision code (e.g. "Action:
+    # EXISTING URL — PRIMARY TARGET") exposed to the client. This test only
+    # exercises enrich_manual_clusters in isolation (no decision/
+    # decision_reason set — that's the later keyword_strategy_service
+    # stage), so the Action text is correctly empty here; the Target line
+    # itself must still render, and recommended_action's own raw label
+    # ("New URL Required" etc, set by this stage via spec_action) must
+    # never leak onto the slide either.
+    assert "Target:" in text
+    assert c["recommended_action"] not in text
     assert "Every keyword here carries commercial" not in text
 
 
@@ -388,7 +394,12 @@ def test_manual_slide_shows_relevance_flags():
                            flagged=[{"keyword": "brabus price in india", "cluster": "Truck Price", "reason": "Competitor Brand Search"}])
     text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
     assert "brabus price in india" in text  # still shown — never silently dropped
-    assert "Relevance check" in text and "confirm with the client" in text
+    # 2026-09-28 Target Keywords rule: "Relevance check:" (manual-relevance-
+    # review label) and "confirm with the client before targeting" (an
+    # instruction to the agency, not a claim for the client's own deck) are
+    # both banned — same underlying finding, client-safe wording instead.
+    assert "may not match this business" in text
+    assert "Relevance check" not in text and "confirm with the client" not in text
     assert "brabus price in india †" not in text  # keyword cell stays exactly as the sheet has it
     assert 'Highest demand: "brabus' not in text  # demand lines never name a flagged keyword
 
