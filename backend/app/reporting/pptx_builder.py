@@ -3663,18 +3663,23 @@ def _wrap_lines(text: str, width_emu, size_pt: float = 12) -> int:
 
 
 def add_core_problem_slide(prs: Presentation, core_problem: dict):
-    """The report's single diagnostic thesis — everything else gathered
-    synthesized into one root-cause statement plus a category breakdown
-    (On-page SEO / Off-page SEO / Content & Keyword Strategy), matching
-    the real manual-report "Core Problem" slide format confirmed from a
-    SPOTONIX audit. AI-generated (core_problem_service.py) from
-    already-gathered findings, not invented — only called when a real
-    thesis was returned; a category with no points is dropped entirely
-    rather than padded with generic advice."""
+    """The report's single diagnostic thesis plus the 2-3 most consequential
+    confirmed problems across the whole audit, ranked by impact — not one
+    mandatory pick per topic area. AI-generated (core_problem_service.py)
+    from already-gathered findings, not invented — only called when a real
+    thesis was returned. If the evidence genuinely only supports 2 solid
+    problems, 2 are shown, never padded to 3.
+
+    2026-09-28 redesign: previously a 3-column category breakdown (On-page
+    SEO / Off-page SEO / Content & Keyword Strategy, matching a SPOTONIX
+    manual-report reference) with up to ~12 findings total — replaced with
+    this flat ranked list per the report's own final-implementation rule
+    for this slide ("show only the 2-3 most consequential confirmed
+    problems"), user decision."""
     thesis = core_problem.get("thesis")
     if not thesis:
         return None
-    categories = [c for c in (core_problem.get("categories") or []) if c.get("points")]
+    problems = [p for p in (core_problem.get("problems") or []) if p][:3]
 
     slide = _blank_slide(prs)
     _content_header(slide, "Core Problem")
@@ -3685,36 +3690,33 @@ def add_core_problem_slide(prs: Presentation, core_problem: dict):
         size=16, bold=True, color=_accent(),
     )
 
-    if not categories:
+    if not problems:
         return slide
 
-    col_top, col_height = Inches(2.65), Inches(4.0)
-    gap = Inches(0.2)
-    total_width = Inches(12.1)
-    col_width = Emu(int((total_width - gap * (len(categories) - 1)) / len(categories)))
-    left = Inches(0.6)
-    for cat in categories:
-        _card(slide, left, col_top, col_width, col_height)
-        y = col_top + Inches(0.2)
-        _textbox(slide, left + Inches(0.25), y, col_width - Inches(0.5), Inches(0.35), cat.get("name", ""), size=14, bold=True, color=_accent())
-        rule = slide.shapes.add_shape(1, left + Inches(0.25), y + Inches(0.36), col_width - Inches(0.5), Pt(1.5))
-        _fill(rule, _accent())
-        rule.shadow.inherit = False
-        y += Inches(0.55)
-        for point in cat["points"][:5]:
-            text = f"•  {point}"
-            lines = _wrap_lines(text, col_width - Inches(0.5), size_pt=11.5)
-            line_h = Inches(0.24)
-            box = slide.shapes.add_textbox(left + Inches(0.25), y, col_width - Inches(0.5), line_h * lines)
-            tf = box.text_frame
-            tf.word_wrap = True
-            p = tf.paragraphs[0]
-            run = p.add_run()
-            run.text = text
-            run.font.size = Pt(11.5)
-            run.font.color.rgb = TEXT_DARK
-            y += line_h * lines + Inches(0.08)
-        left += col_width + gap
+    left, width = Inches(0.6), Inches(12.1)
+    top = Inches(2.65)
+    max_y = SLIDE_H - Inches(0.5)
+    card = _card(slide, left, top, width, max_y - top)
+
+    y = top + Inches(0.3)
+    for i, point in enumerate(problems, start=1):
+        text = f"{i}.  {point}"
+        lines = _wrap_lines(text, width - Inches(0.7), size_pt=15)
+        line_h = Inches(0.3)
+        box = slide.shapes.add_textbox(left + Inches(0.35), y, width - Inches(0.7), line_h * lines)
+        tf = box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(15)
+        run.font.color.rgb = TEXT_DARK
+        y += line_h * lines + Inches(0.35)
+    # The card was drawn to fill the whole remaining slide height regardless
+    # of how few problems (2 or 3) actually got listed — shrink it to just
+    # what got drawn so a 2-problem slide doesn't show a tall mostly-empty
+    # box, same trailing-whitespace discipline as every other card here.
+    card.height = min(card.height, y - Inches(0.15) - top)
     return slide
 
 

@@ -1,10 +1,18 @@
 """Synthesizes everything already gathered for the report (crawl issues,
 backlink stats, competitor gap findings) into ONE diagnostic "Core Problem"
-thesis for the report's executive-summary slide — the single root-cause
-statement plus category breakdown, matching the real manual-report format
-confirmed from a SPOTONIX audit. Not cached: unlike Company Overview (a
-static description), this reflects CURRENT metrics/issues, and a cached
-diagnosis would go stale exactly when a client has fixed something."""
+thesis plus the 2-3 most consequential confirmed problems, for the report's
+executive-summary slide. Not cached: unlike Company Overview (a static
+description), this reflects CURRENT metrics/issues, and a cached diagnosis
+would go stale exactly when a client has fixed something.
+
+2026-09-28 redesign: the slide previously matched a SPOTONIX manual-report
+format of 3 fixed categories (On-page/Off-page/Content & Keyword Strategy)
+each with 2-4 findings, up to ~12 total. The report's own final-
+implementation rule for this slide ("show only the 2-3 most consequential
+confirmed problems... Core Problem summarizes established evidence, it
+does not create new evidence") explicitly conflicts with that format, so
+the output is now a flat, ranked list instead of a category breakdown —
+user decision, not a unilateral rewrite."""
 
 import json
 import re
@@ -15,15 +23,17 @@ CORE_PROBLEM_PROMPT = """You are a senior SEO strategist writing the "Core Probl
 Web & SEO Audit report — the single diagnostic thesis explaining why the site isn't ranking or converting as well \
 as it could, based ONLY on the findings below. Never invent a finding that isn't present in the data.
 
-Write ONE thesis sentence (the root cause, plain confident agency language, no hedging like "may" or "could") \
-plus 2-4 short findings under each of these three categories, grounded only in what the data actually supports:
-- On-page SEO
-- Off-page SEO
-- Content & Keyword Strategy
-
-If a category genuinely has nothing to flag in the data, return an empty "points" array for it rather than padding \
-with generic advice not backed by the findings. "sample_page_level_issues" covers only a small sample of pages (pages_checked) — never generalize \
-it to "every page" or "all pages". For any site-wide structured data / schema claim use \
+Write ONE thesis sentence (the root cause, plain confident agency language, no hedging like "may" or "could"), \
+then identify the 2-3 MOST CONSEQUENTIAL confirmed problems across the entire audit — on-page, off-page, and \
+content/keyword issues all compete for the same 2-3 slots, ranked by real impact (how much traffic/how many \
+pages/keywords/rankings it affects, or how severe the confirmed issue is), never one mandatory pick per topic \
+area. If the evidence genuinely only supports 2 solid, consequential problems, return 2 — never pad to 3 with a \
+weaker or less-supported finding. "sample_page_level_issues"/"homepage_issues" cover only a small \
+sample of pages (pages_checked) — never generalize them to "every page" or "all pages". For any site-wide \
+technical/on-page issue count, use "technical_issues_full_crawl" when present instead of the small sample (e.g. \
+"47 errors and 112 warnings across 823 crawled pages") — it's the same real multi-page crawl the report's own SEO \
+Issues slide is built from, and is more accurate than the small sample. For any site-wide structured data / schema \
+claim use \
 "structured_data_full_crawl" when present (e.g. "26 of 823 crawled pages carry schema; FAQPage only"), and if it \
 shows schema on some pages, never say the site has none.
 
@@ -33,15 +43,17 @@ count of items EXCLUDED from a total ("X off-topic/competitor-brand excluded") i
 never be added back into it — if a finding says "301 relevant keyword gap(s) ... (14 off-topic/competitor-brand \
 excluded)", the only valid total to cite is 301, never 315.
 
+Avoid unsupported causal claims the data doesn't actually establish — never write "poor rankings stem from...", \
+"this prevents rankings...", "this causes...", or "this will improve rankings...". State what the audit found, not \
+a causal chain it can't prove: prefer phrasing like "The audit identified...", "Organic visibility is currently \
+constrained by...", "The site currently has...", or "This represents a gap in...".
+
 Return ONLY valid JSON, no markdown fences, no commentary:
 {
   "thesis": string,
-  "categories": [
-    {"name": "On-page SEO", "points": [string]},
-    {"name": "Off-page SEO", "points": [string]},
-    {"name": "Content & Keyword Strategy", "points": [string]}
-  ]
+  "problems": [string]
 }
+"problems" must have exactly 2 or 3 items, ranked most consequential first.
 
 FINDINGS:
 {findings}
@@ -70,9 +82,8 @@ def _parse(raw: str) -> dict | None:
     # would then crash instead of being treated as a bad response.
     if not isinstance(data, dict) or not data.get("thesis"):
         return None
-    for cat in data.get("categories") or []:
-        if isinstance(cat, dict) and isinstance(cat.get("points"), list):
-            cat["points"] = [p for p in cat["points"] if not _leaks_internal_field(p)]
+    if isinstance(data.get("problems"), list):
+        data["problems"] = [p for p in data["problems"] if p and not _leaks_internal_field(p)][:3]
     return data
 
 

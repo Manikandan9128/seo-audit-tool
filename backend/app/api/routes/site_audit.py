@@ -2607,6 +2607,50 @@ def _gather_report_data(
     if gap_finding:
         competitor_gap_findings.append(gap_finding)
 
+    # 2026-09-28 Core Problem rule: technical counts must match the SEO
+    # Issues slide's own authoritative source. When a Semrush Site Audit
+    # CSV is uploaded, that slide prefers its richer multi-page
+    # classify_seo_issues() output over homepage_issues/sample_page_level_
+    # issues below (see the comment where site_audit_issues_rows is first
+    # read) — without this, Core Problem only ever saw the 20-page
+    # own-crawl sample even when the client's actual SEO Issues slide was
+    # built from hundreds of Semrush-crawled pages, same class of bug as
+    # the structured_data_full_crawl fix below. Same _canonical_page_totals
+    # the Site Health/Critical Issues/SEO Issues/Priority Issues slides all
+    # already share.
+    technical_issues_full_crawl = None
+    if site_audit_issues_rows:
+        _tech_error_entries, _tech_warning_entries = classify_seo_issues(site_audit_issues_rows)
+        _tech_page_totals = _canonical_page_totals(site_audit_pages_rows, None) or {}
+        technical_issues_full_crawl = {
+            "error_count": len(_tech_error_entries),
+            "warning_count": len(_tech_warning_entries),
+            "total_pages": _tech_page_totals.get("total"),
+            "pages_with_issues": _tech_page_totals.get("with_issues"),
+        }
+
+    # 2026-09-28 Core Problem rule: authority metrics must match Competitor
+    # Analysis. backlink_summary's "authority_score" is Semrush's own
+    # Authority Score, parsed straight off the Backlink List PDF
+    # (semrush_parser.parse_backlink_list_pdf) — a different source, and a
+    # different number, from the DR the report shows everywhere else
+    # (Competitor Analysis table, Backlink Profile slide): Semrush's
+    # Authority Score has been explicitly excluded from that DR column
+    # since 2026-08-28, and DR itself now comes from Ahrefs' free API /
+    # manual fallback (see DomainRating model, app.services.ahrefs_
+    # service). Left as-is, Core Problem could cite a second, conflicting
+    # authority number the client never sees anywhere else in the deck.
+    # Swapped for the same own_domain_rating value the rest of the report
+    # already uses — copied, not mutated in place, since backlink_summary
+    # is also read elsewhere (Backlink Profile slide) with Semrush's own
+    # Authority Score intact there, which is fine, that slide's own stat
+    # card doesn't use it either (own_domain_rating there too).
+    core_problem_backlink_summary = dict(backlink_summary) if backlink_summary else None
+    if core_problem_backlink_summary is not None:
+        core_problem_backlink_summary.pop("authority_score", None)
+        if own_domain_rating is not None:
+            core_problem_backlink_summary["authority_score"] = own_domain_rating
+
     core_problem_result = None
     if settings.gemini_api_key or settings.claude_api_key:
         progress("Diagnosing core problem...", 75)
@@ -2619,7 +2663,7 @@ def _gather_report_data(
                 for p in (page_audit_result or {}).get("pages", [])
                 if p.get("issues")
             ][:15],
-            "backlink_summary": backlink_summary,
+            "backlink_summary": core_problem_backlink_summary,
             "own_backlink_row_count": own_backlink_row_count,
             "competitor_gap_findings": competitor_gap_findings,
             "target_keyword_count": len(keyword_rows_all) if keyword_rows_all else 0,
@@ -2634,6 +2678,7 @@ def _gather_report_data(
                 "pages_with_any_schema": schema_validation_result.get("pages_with_schema"),
                 "schema_types_found": {c["type"]: c["pages_with_it"] for c in (schema_validation_result.get("type_coverage") or [])},
             } if schema_validation_result else None,
+            "technical_issues_full_crawl": technical_issues_full_crawl,
         }
         core_problem_candidate = generate_core_problem(core_problem_findings)
         if "error" not in core_problem_candidate:
