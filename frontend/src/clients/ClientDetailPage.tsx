@@ -25,6 +25,9 @@ import type { SemrushSource, SemrushMcpState } from "../components/SemrushSource
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
 import Tip from "../components/Tip";
+import {
+  PROVIDER_LABELS, readClaudeModel, readSelectedProvider, writeClaudeModel, writeSelectedProvider,
+} from "../aiProvider";
 
 // Selectable Claude models (2026-09-25) — mirrors backend's
 // text_ai_client.CLAUDE_MODEL_CHOICES; kept in sync by hand since there's
@@ -162,7 +165,11 @@ export default function ClientDetailPage() {
   const reportJob = useReportJobState(clientId!);
   const dl = reportJob.download;
   const reportLoading = dl.status === "building" || dl.status === "downloading";
-  const reportStatusMsg = dl.stage;
+  // Names the provider the build is actually running on, not just the
+  // dropdown's current value.
+  const reportStatusMsg = dl.stage && dl.aiProvider
+    ? `${dl.stage} · ${PROVIDER_LABELS[dl.aiProvider] ?? dl.aiProvider}`
+    : dl.stage;
   const reportProgressPct = dl.pct;
   const contentGenerationIssues = dl.issues;
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -242,14 +249,19 @@ export default function ClientDetailPage() {
     }
   }, [dl.downloadedSeq]);
 
-  // "" = default automatic order (Groq, then Gemini, then Claude — see
-  // text_ai_client.py). Picking one here STRICTLY pins this report's AI
-  // calls to that provider only (2026-09-28) — no fallback to the others
-  // on failure, so a selected paid key is never silently substituted with
-  // a free one. Only keys actually configured in Settings are offered —
-  // no point letting someone pick a provider with no key.
-  const [preferredProvider, setPreferredProvider] = useState("");
-  const [claudeModel, setClaudeModel] = useState("claude-sonnet-5");
+  // Report AI Provider — the ONE provider every AI step of this report
+  // uses (Generate, Preview, Download), no fallback (see aiProvider.ts).
+  // "" = nothing selected yet: Generate/Preview/Download stay disabled
+  // rather than a provider being picked for the user. Remembered across
+  // reloads; only keys actually configured in Settings are offered.
+  const [preferredProvider, setPreferredProvider] = useState(readSelectedProvider);
+  const [claudeModel, setClaudeModel] = useState(() => readClaudeModel("claude-sonnet-5"));
+  useEffect(() => writeSelectedProvider(preferredProvider), [preferredProvider]);
+  useEffect(() => writeClaudeModel(claudeModel), [claudeModel]);
+  const aiSelectionBody = {
+    preferred_provider: preferredProvider,
+    ...(preferredProvider === "claude" ? { claude_model: claudeModel } : {}),
+  };
   const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
 
   // Semrush data source for this report: "manual" = the uploaded CSVs,
@@ -320,16 +332,13 @@ export default function ClientDetailPage() {
   useEffect(() => {
     api.get("/settings").then((res) => {
       const opts: { value: string; label: string }[] = [];
-      if (res.data.groq_api_key_set) opts.push({ value: "groq", label: "Groq" });
-      if (res.data.gemini_api_key_set) opts.push({ value: "gemini", label: "Gemini" });
-      if (res.data.claude_api_key_set) opts.push({ value: "claude", label: "Claude" });
-      if (res.data.browser_use_api_key_set) opts.push({ value: "browser_use", label: "Browser Use" });
-      if (res.data.openrouter_api_key_set) opts.push({ value: "openrouter", label: "OpenRouter" });
+      for (const value of Object.keys(PROVIDER_LABELS)) {
+        if (res.data[`${value}_api_key_set`]) opts.push({ value, label: PROVIDER_LABELS[value] });
+      }
       setAvailableProviders(opts);
-      // No "Auto" choice in the list anymore — the dropdown always needs
-      // a real selected value, so default to the first configured
-      // provider instead of leaving it blank.
-      if (opts.length > 0) setPreferredProvider((prev) => prev || opts[0].value);
+      // A remembered provider whose key has since been removed is cleared,
+      // never swapped for another configured one.
+      setPreferredProvider((prev) => (opts.some((o) => o.value === prev) ? prev : ""));
     }).catch(() => {});
   }, []);
 
@@ -357,15 +366,13 @@ export default function ClientDetailPage() {
     // Semrush MCP (behind SEMRUSH_MCP_ENABLED, off) still fetches from the page.
     if (source === "mcp") fetchSemrushMcpData(database);
     if (sections.length) {
-      // Same strict provider pin as the download build — the AI calls this
-      // run makes (Company Overview, company summary) use only the
-      // selected provider/model, no fallback chain.
+      // The AI calls this run makes (Company Overview, company summary)
+      // use only the selected Report AI Provider/model.
       await startGenerate(clientId!, {
         sections,
         analytics_start: analyticsStart,
         analytics_end: analyticsEnd,
-        ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
-        ...(preferredProvider === "claude" && claudeModel ? { claude_model: claudeModel } : {}),
+        ...aiSelectionBody,
       });
     }
   }
@@ -546,6 +553,7 @@ export default function ClientDetailPage() {
     try {
       const body = {
         ...(overview ? { company_overview_override: overview } : {}),
+        ...aiSelectionBody,
         ...semrushBody,
       };
       const res = await api.post(`/clients/${clientId}/report-preview`, Object.keys(body).length ? body : null);
@@ -569,8 +577,7 @@ export default function ClientDetailPage() {
   function downloadReportDirect() {
     const body = {
       ...(overview ? { company_overview_override: overview } : {}),
-      ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
-      ...(claudeModel ? { claude_model: claudeModel } : {}),
+      ...aiSelectionBody,
       ...semrushBody,
     };
     downloadReportWithBody(Object.keys(body).length ? body : null, false);
@@ -580,8 +587,7 @@ export default function ClientDetailPage() {
     const body = {
       company_overview_override: previewOverview,
       competitor_analysis_override: previewCompetitorAnalysis,
-      ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
-      ...(claudeModel ? { claude_model: claudeModel } : {}),
+      ...aiSelectionBody,
       ...semrushBody,
     };
     downloadReportWithBody(body, true);
@@ -760,20 +766,26 @@ export default function ClientDetailPage() {
                 </>
               )}
             </div>
-            {availableProviders.length > 1 && (
+            <label className="report-ai-provider" style={{ display: "flex", flexDirection: "column", marginRight: 8, fontSize: 12 }}>
+              <span style={{ fontWeight: 600 }}>Report AI Provider</span>
               <select
                 value={preferredProvider}
                 onChange={(e) => setPreferredProvider(e.target.value)}
-                title="AI provider for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — strict pin, no fallback to the others on failure"
-                style={{ marginRight: 8 }}
+                aria-describedby="report-ai-provider-help"
               >
+                <option value="" disabled>
+                  {availableProviders.length ? "Select a provider…" : "No AI key in Settings"}
+                </option>
                 {availableProviders.map((p) => (
                   <option key={p.value} value={p.value}>
                     {p.label}
                   </option>
                 ))}
               </select>
-            )}
+              <span id="report-ai-provider-help" className="muted" style={{ fontSize: 11 }}>
+                All report analysis will use this provider. No automatic fallback.
+              </span>
+            </label>
             {preferredProvider === "claude" && (
               <select
                 value={claudeModel}
@@ -792,7 +804,8 @@ export default function ClientDetailPage() {
               data-tour="tour-generate-report"
               className="btn btn-primary"
               onClick={() => (SEMRUSH_MCP_ENABLED ? setShowSemrushSourceModal(true) : generateSelectedReport("manual"))}
-              disabled={generating || selectedSections.length === 0}
+              disabled={generating || selectedSections.length === 0 || !preferredProvider}
+              title={preferredProvider ? undefined : "Select a Report AI Provider first"}
             >
               {generating ? "Generating..." : "Generate Report"}
             </button>
@@ -840,7 +853,7 @@ export default function ClientDetailPage() {
                   data-tour="tour-preview-report"
                   className="btn btn-secondary"
                   onClick={openPreview}
-                  disabled={previewLoading || semrushBlocksReport}
+                  disabled={previewLoading || semrushBlocksReport || !preferredProvider}
                 >
                   {previewLoading ? "Loading..." : "Preview Report"}
                 </button>
@@ -848,7 +861,7 @@ export default function ClientDetailPage() {
                   data-tour="tour-download-report"
                   className="btn btn-secondary"
                   onClick={downloadReportDirect}
-                  disabled={reportLoading || semrushBlocksReport}
+                  disabled={reportLoading || semrushBlocksReport || !preferredProvider}
                 >
                   {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
                 </button>
@@ -885,8 +898,8 @@ export default function ClientDetailPage() {
                     }}
                   >
                     <strong>Heads up:</strong> {contentGenerationIssues.length} section(s) didn't generate this run
-                    (shown below, not in the downloaded file) — usually a temporary AI rate limit. Regenerating often
-                    fixes it.
+                    {dl.aiProvider ? ` with ${PROVIDER_LABELS[dl.aiProvider] ?? dl.aiProvider}` : ""} (shown below, not in
+                    the downloaded file). No other provider was tried. Regenerating often fixes a temporary rate limit.
                     <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
                       {contentGenerationIssues.map((issue, i) => (
                         <li key={i}>{issue}</li>

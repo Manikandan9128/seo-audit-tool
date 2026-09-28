@@ -1,14 +1,13 @@
 """Turns the rule-based Semrush gap analysis (semrush_analysis_service.analyze)
 into a short narrative summary — an executive-summary paragraph plus a
 prioritized action list, grounded only in the issues/data already found.
-Tries Gemini first, falls back to Claude — either key alone is enough."""
+Uses the selected Report AI Provider only — no fallback to another provider."""
 
 import json
 import re
 import time
 
-from app.config import settings
-from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts, resolve_selected_provider
 
 PROMPT_TEMPLATE = """You are an SEO consultant writing a short narrative summary for a client report. \
 Base everything ONLY on the structured findings below — never invent numbers, competitors, or issues \
@@ -46,12 +45,14 @@ Return ONLY valid JSON, no markdown fences, no commentary, matching this shape:
 def generate_ai_summary(client_name: str, website_url: str, analysis: dict) -> dict:
     """Returns {"summary": str, "priorities": [str]} or {"error": str}.
 
-    Tries every configured provider in order (Groq, Gemini, Claude), not
-    just the first one to answer (2026-09-22, same fix as
+    Takes up to two responses from the selected Report AI Provider, not
+    just the first (2026-09-22, same fix as
     structured_data_insights_service, 2026-09-20; see
     core_problem_service.generate_core_problem's docstring for why)."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
-        return {"error": "No Groq, Gemini, or Claude API key configured — add one in Settings"}
+    try:
+        resolve_selected_provider()
+    except NoAIProviderConfigured as e:
+        return {"error": str(e)}
 
     issues = analysis.get("issues") or []
     if not issues:

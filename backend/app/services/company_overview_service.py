@@ -10,8 +10,7 @@ import time
 
 import httpx
 
-from app.config import settings
-from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts, resolve_selected_provider
 from app.services.product_catalogue_service import crawl_product_catalogue
 
 USER_AGENT = (
@@ -180,14 +179,13 @@ def gather_site_text(website_url: str, max_chars: int = 45000) -> str:
 def extract_company_overview(website_url: str) -> dict:
     """Returns a structured overview dict, or a dict with an 'error' key if
     extraction isn't available (no API key, no crawlable content, bad
-    response). Tries every configured provider in order (Groq, Gemini,
-    Claude — see text_ai_client.generate_text's docstring), not just the
-    first one to answer: a syntactically-invalid response from one
-    provider now falls through to the next instead of failing the whole
-    extraction outright (2026-09-22 — same fix as
-    structured_data_insights_service, 2026-09-20)."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
-        return {"error": "No Groq, Gemini, or Claude API key configured — add one in Settings"}
+    response). Uses the selected Report AI Provider only; a syntactically-
+    invalid first response gets one more try from that same provider
+    (text_ai_client.iter_text_attempts), never another provider."""
+    try:
+        resolve_selected_provider()
+    except NoAIProviderConfigured as e:
+        return {"error": str(e)}
 
     site_text = gather_site_text(website_url)
     if not site_text.strip():

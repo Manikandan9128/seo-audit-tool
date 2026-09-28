@@ -340,7 +340,7 @@ def generate_structured_data_insights(
 ) -> dict:
     """Returns {"insights": [str]} or {"error": str}.
 
-    Tries every configured provider in order (2026-09-20 fix — confirmed
+    Takes up to two responses from the selected Report AI Provider (2026-09-20 fix — confirmed
     real on two consecutive reports, Lumber and BharatBenz: Groq, first in
     the default order, returned syntactically valid JSON with an empty
     `{"insights": []}` for a report whose schema data had obvious real

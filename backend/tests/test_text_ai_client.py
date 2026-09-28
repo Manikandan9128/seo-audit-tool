@@ -11,6 +11,13 @@ from app.integrations.text_ai_client import (
 
 
 @pytest.fixture(autouse=True)
+def _reset_provider_selection():
+    yield
+    text_ai_client.set_preferred_provider(None)
+    text_ai_client.set_claude_model(None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_gemini_pacer_windows():
     # The pacer's rolling windows are plain module-level lists, shared
     # (and mutated) across every test in the whole suite that ends up
@@ -42,54 +49,127 @@ def _groq_429(retry_after_seconds: int) -> httpx.HTTPStatusError:
     )
 
 
-def test_both_providers_failing_are_clearly_separated_not_run_together():
-    # Regression (confirmed real, 2026-09-19 live report): joining errors
-    # with " / " let a truncated Groq error (which legitimately contains
-    # " / " inside its own org-id text) run straight into Gemini's separate
-    # error with no readable boundary — looked, on a real downloaded
-    # report, like Gemini's quota message was somehow embedded INSIDE
-    # Groq's own error body.
-    with patch("app.integrations.text_ai_client.settings") as mock_settings:
-        mock_settings.groq_api_key = "gsk_test"
-        mock_settings.gemini_api_key = "test"
-        mock_settings.claude_api_key = None
-        with patch("app.integrations.text_ai_client._try_groq", side_effect=_groq_429(1550)), \
-             patch("app.integrations.text_ai_client._try_gemini", side_effect=Exception("503 UNAVAILABLE: servers are overloaded")):
-            with pytest.raises(NoAIProviderConfigured) as exc_info:
-                generate_text("some prompt")
+_ALL_PROVIDERS = ["groq", "gemini", "claude", "browser_use", "openrouter"]
+_TEXT_TRY = {
+    "groq": "_try_groq", "gemini": "_try_gemini", "claude": "_try_claude",
+    "browser_use": "_try_browser_use", "openrouter": "_try_openrouter",
+}
+_VISION_ATTEMPT = {
+    "groq": "_try_groq_vision", "gemini": "_try_gemini_vision", "claude": "_try_claude_vision",
+    "browser_use": "_try_browser_use", "openrouter": "_try_openrouter_vision",
+}
 
-    message = str(exc_info.value)
-    assert " | " in message
-    groq_part, gemini_part = message.split(" | ")
+
+def _all_keys(mock_settings):
+    for provider in _ALL_PROVIDERS:
+        setattr(mock_settings, f"{provider}_api_key", f"{provider}-key")
+
+
+@pytest.mark.parametrize("selected", _ALL_PROVIDERS)
+def test_selected_provider_is_the_only_one_called_for_text(selected):
+    text_ai_client.set_preferred_provider(selected)
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            _all_keys(mock_settings)
+            mocks = {p: patch(f"app.integrations.text_ai_client.{fn}", return_value=f"{p} answer") for p, fn in _TEXT_TRY.items()}
+            started = {p: m.start() for p, m in mocks.items()}
+            try:
+                assert generate_text("prompt") == (f"{selected} answer", selected)
+            finally:
+                for m in mocks.values():
+                    m.stop()
+        for provider, mock in started.items():
+            assert mock.called == (provider == selected), provider
+    finally:
+        text_ai_client.set_preferred_provider(None)
+
+
+@pytest.mark.parametrize("selected", _ALL_PROVIDERS)
+def test_selected_provider_is_the_only_one_called_for_vision(selected):
+    text_ai_client.set_preferred_provider(selected)
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            _all_keys(mock_settings)
+            mocks = {p: patch(f"app.integrations.text_ai_client.{fn}", return_value=f"{p} saw it") for p, fn in _VISION_ATTEMPT.items()}
+            started = {p: m.start() for p, m in mocks.items()}
+            try:
+                with patch("app.integrations.text_ai_client._cap_image_dimensions", side_effect=lambda b, m: (b, m)):
+                    assert generate_text_with_images("find issues", [(b"img", "image/png")]) == (f"{selected} saw it", selected)
+            finally:
+                for m in mocks.values():
+                    m.stop()
+        for provider, mock in started.items():
+            assert mock.called == (provider == selected), provider
+    finally:
+        text_ai_client.set_preferred_provider(None)
+
+
+def test_selected_provider_failure_never_calls_another_provider():
+    # Groq's own error text (org id and all) is reported as-is, followed by
+    # the no-fallback note — Gemini/Claude are never touched.
+    text_ai_client.set_preferred_provider("groq")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            _all_keys(mock_settings)
+            with patch("app.integrations.text_ai_client._try_groq", side_effect=_groq_429(1550)), \
+                 patch("app.integrations.text_ai_client._try_gemini") as mock_gemini, \
+                 patch("app.integrations.text_ai_client._try_claude") as mock_claude:
+                with pytest.raises(NoAIProviderConfigured) as exc_info:
+                    generate_text("some prompt")
+        mock_gemini.assert_not_called()
+        mock_claude.assert_not_called()
+    finally:
+        text_ai_client.set_preferred_provider(None)
+    groq_part, note = str(exc_info.value).split(" | ")
     assert groq_part.startswith("Groq rate-limited, not retrying (Retry-After 1550s)")
-    assert gemini_part == "Gemini's servers are temporarily unavailable. Try again shortly."
-    # The org-id text that caused the original confusion must stay inside
-    # Groq's own segment, never bleed into Gemini's.
     assert "org_01m1nfvvxbe998jw8y33xx4qce" in groq_part
-    assert "org_01m1nfvvxbe998jw8y33xx4qce" not in gemini_part
+    assert note == "No fallback provider was used because Groq was selected."
 
 
-def test_no_key_configured_raises_immediately():
+def test_no_selection_raises_without_calling_any_provider():
+    # No provider order to fall back on: every key configured, nothing
+    # selected -> nothing is called.
     with patch("app.integrations.text_ai_client.settings") as mock_settings:
-        mock_settings.groq_api_key = None
-        mock_settings.gemini_api_key = None
-        mock_settings.claude_api_key = None
-        with pytest.raises(NoAIProviderConfigured):
-            generate_text("some prompt")
-
-
-def test_first_successful_provider_short_circuits_the_rest():
-    with patch("app.integrations.text_ai_client.settings") as mock_settings:
-        mock_settings.groq_api_key = "gsk_test"
-        mock_settings.gemini_api_key = "test"
-        mock_settings.claude_api_key = "sk-ant-test"
-        with patch("app.integrations.text_ai_client._try_groq", return_value="groq answer") as mock_groq, \
+        _all_keys(mock_settings)
+        with patch("app.integrations.text_ai_client._try_groq") as mock_groq, \
              patch("app.integrations.text_ai_client._try_gemini") as mock_gemini:
-            text, provider = generate_text("some prompt")
-    assert text == "groq answer"
-    assert provider == "groq"
-    mock_groq.assert_called_once()
+            with pytest.raises(NoAIProviderConfigured, match="No Report AI Provider selected"):
+                generate_text("some prompt")
+    mock_groq.assert_not_called()
     mock_gemini.assert_not_called()
+
+
+def test_selected_provider_without_a_key_gives_a_clear_error_not_a_substitute():
+    text_ai_client.set_preferred_provider("claude")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            _all_keys(mock_settings)
+            mock_settings.claude_api_key = None
+            with patch("app.integrations.text_ai_client._try_groq") as mock_groq:
+                with pytest.raises(NoAIProviderConfigured) as exc_info:
+                    list(text_ai_client.iter_text_with_images_attempts("p", [(b"img", "image/png")], 1024, []))
+            mock_groq.assert_not_called()
+    finally:
+        text_ai_client.set_preferred_provider(None)
+    assert str(exc_info.value) == (
+        "Claude is selected but no Claude API key is configured — add it in Settings. "
+        "No fallback provider was used because Claude was selected."
+    )
+
+
+def test_failure_message_names_provider_and_section():
+    text_ai_client.set_preferred_provider("claude")
+    try:
+        message = text_ai_client.failure_message(
+            "UI/UX analysis",
+            ["Claude returned an empty response", "No fallback provider was used because Claude was selected."],
+        )
+    finally:
+        text_ai_client.set_preferred_provider(None)
+    assert message == (
+        "Claude failed to generate the UI/UX analysis (Claude returned an empty response). "
+        "No fallback provider was used because Claude was selected."
+    )
 
 
 def test_preferred_provider_is_a_strict_pin_not_just_first_priority():
@@ -134,25 +214,45 @@ def test_preferred_provider_vision_is_a_strict_pin_not_just_first_priority():
         text_ai_client.set_preferred_provider(None)
 
 
-def test_preferred_provider_with_no_vision_path_raises_clear_error():
-    # browser_use/openrouter have no vision-capable attempt function at
-    # all. With the old best-effort fallback this silently ran vision
-    # calls on Groq/Gemini/Claude instead, even though something else was
-    # picked. Now that a pin means "only this provider," that combination
-    # must fail with a clear message, not a blank one.
+def test_browser_use_pin_runs_vision_pass_by_browsing_the_page_itself():
+    # 2026-09-28: a Browser Use pin used to fail the UI-Level Fixes pass
+    # outright ("isn't a vision-capable provider"). Browser Use can't take
+    # images but it is a browser agent, so it opens the page instead —
+    # one billed run, no silent substitution with Groq/Gemini/Claude.
     text_ai_client.set_preferred_provider("browser_use")
     try:
         with patch("app.integrations.text_ai_client.settings") as mock_settings:
-            mock_settings.groq_api_key = "gsk_test"
-            mock_settings.gemini_api_key = "test"
-            mock_settings.claude_api_key = "sk-ant-test"
-            with patch("app.integrations.text_ai_client._try_groq_vision") as mock_groq_v:
-                with pytest.raises(NoAIProviderConfigured) as exc_info:
-                    generate_text_with_images("find issues", [(b"img1", "image/png")], max_tokens=1024)
+            mock_settings.browser_use_api_key = "bu_test"
+            with patch("app.integrations.text_ai_client._try_browser_use", return_value='{"issues": []}') as mock_bu, \
+                    patch("app.integrations.text_ai_client._try_groq_vision") as mock_groq_v:
+                results = list(text_ai_client.iter_text_with_images_attempts(
+                    "find issues", [(b"img1", "image/png")], 1024, [], start_url="https://example.com",
+                ))
             mock_groq_v.assert_not_called()
-        assert "browser_use isn't a vision-capable provider" in str(exc_info.value)
+        assert results == [('{"issues": []}', "browser_use")]
+        task, _timeout, start_url = mock_bu.call_args.args
+        assert "Open the website yourself" in task and task.endswith("find issues")
+        assert start_url == "https://example.com"
     finally:
         text_ai_client.set_preferred_provider(None)
+
+
+def test_openrouter_pin_sends_images_to_openrouter():
+    text_ai_client.set_preferred_provider("openrouter")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            mock_settings.openrouter_api_key = "or_test"
+            with patch("app.integrations.text_ai_client._try_openrouter_vision", return_value="ok") as mock_or, \
+                    patch("app.integrations.text_ai_client._cap_image_dimensions", side_effect=lambda b, m: (b, m)):
+                assert generate_text_with_images("find issues", [(b"img1", "image/png")], max_tokens=1024) == ("ok", "openrouter")
+        assert mock_or.call_args.args[1] == [(b"img1", "image/png")]
+    finally:
+        text_ai_client.set_preferred_provider(None)
+
+
+def test_groq_prompt_fits_matches_try_groq_budget():
+    assert text_ai_client.groq_prompt_fits("x" * 4000, 4096)
+    assert not text_ai_client.groq_prompt_fits("x" * 40_000, 4096)
 
 
 def test_attempt_claude_retries_once_on_empty_response_then_succeeds():
@@ -340,6 +440,7 @@ def test_generate_text_with_images_sends_every_image_to_claude():
     # mobile x first-screen/full-page) in ONE vision call, not one call per
     # image — this is the real regression risk of generalizing the
     # single-image path.
+    text_ai_client.set_preferred_provider("claude")  # reset by _reset_provider_selection
     with patch("app.integrations.text_ai_client.settings") as mock_settings, \
          patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
         mock_settings.claude_api_key = "sk-ant-test"
@@ -406,6 +507,7 @@ def test_cap_image_dimensions_falls_back_to_original_bytes_on_decode_failure():
 def test_generate_text_with_image_single_image_wrapper_still_works():
     # Backward-compat: existing single-image callers (semrush_parser,
     # ux_findings_service) must keep working unchanged.
+    text_ai_client.set_preferred_provider("claude")  # reset by _reset_provider_selection
     with patch("app.integrations.text_ai_client.settings") as mock_settings, \
          patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
         mock_settings.claude_api_key = "sk-ant-test"
@@ -457,11 +559,17 @@ def test_job_context_pool_propagates_pin_and_restores_worker_state():
     text_ai_client.set_preferred_provider("claude")
     try:
         with text_ai_client.JobContextThreadPoolExecutor(max_workers=1) as pool:
-            assert pool.submit(text_ai_client._provider_order).result() == ["claude"]
+            assert pool.submit(text_ai_client.pinned_provider).result() == "claude"
             # The worker's own state is restored after the task.
             assert pool.submit(lambda: None).result() is None
         with text_ai_client.JobContextThreadPoolExecutor(max_workers=1) as pool:
             text_ai_client.set_preferred_provider(None)
-            assert pool.submit(text_ai_client._provider_order).result() == text_ai_client._DEFAULT_PROVIDER_ORDER
+            assert pool.submit(text_ai_client.pinned_provider).result() is None
     finally:
         text_ai_client.set_preferred_provider(None)
+
+
+def test_selected_provider_scope_pins_then_clears():
+    with text_ai_client.selected_provider_scope("gemini", None):
+        assert text_ai_client.pinned_provider() == "gemini"
+    assert text_ai_client.pinned_provider() is None

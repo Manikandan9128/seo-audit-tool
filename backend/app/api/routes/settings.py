@@ -158,8 +158,8 @@ def update_claude_api_key(
     current_user: User = Depends(get_current_user),
 ):
     """Saves the key, then immediately makes one real Claude call to confirm
-    it actually works. Company Overview extraction and the AI Summary use
-    Gemini first and fall back to Claude — either key alone is enough."""
+    it actually works. Report AI steps use Claude only when Claude is the
+    selected Report AI Provider."""
     set_claude_api_key(db, payload.claude_api_key)
     test = test_claude_key()
     return {

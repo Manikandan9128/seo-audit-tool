@@ -199,7 +199,7 @@ def _parse(raw: str) -> dict | None:
 
 
 def _call_and_parse(prompt: str, max_tokens: int) -> dict:
-    """Tries every configured provider in order until one parses (2026-09-22,
+    """Takes up to two responses from the selected Report AI Provider until one parses (2026-09-22,
     same fix as structured_data_insights_service, 2026-09-20; see
     core_problem_service.generate_core_problem's docstring for why)."""
     errors: list[str] = []

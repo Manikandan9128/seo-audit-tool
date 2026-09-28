@@ -8,7 +8,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import ReportAISelection, get_current_user, get_db, report_ai_selection
+from app.integrations import text_ai_client
 from app.models.client import Client
 from app.models.domain_rating import DomainRating
 from app.models.semrush_import import SemrushImport
@@ -38,13 +39,15 @@ async def upload_semrush_file(
     file: UploadFile,
     is_own_site: bool = Form(True),
     domain_label: str | None = Form(None),
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     client = _get_owned_client(client_id, db, current_user)
     content = await file.read()
     try:
-        import_type, parsed_data = parse_semrush_file(file.filename or "upload.csv", content)
+        with text_ai_client.selected_provider_scope(ai.provider, ai.claude_model):
+            import_type, parsed_data = parse_semrush_file(file.filename or "upload.csv", content)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
 
@@ -126,6 +129,7 @@ async def upload_semrush_file(
 async def upload_geopulse_file(
     client_id: uuid.UUID,
     file: UploadFile,
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -148,7 +152,8 @@ async def upload_geopulse_file(
             "date range or section if your GeoPulse tool supports it.",
         )
     try:
-        parsed_data = parse_geopulse_file(file.filename or "upload", content)
+        with text_ai_client.selected_provider_scope(ai.provider, ai.claude_model):
+            parsed_data = parse_geopulse_file(file.filename or "upload", content)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
 
@@ -176,6 +181,7 @@ async def upload_geopulse_file(
 async def upload_manual_keyword_cluster_file(
     client_id: uuid.UUID,
     file: UploadFile,
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -192,7 +198,8 @@ async def upload_manual_keyword_cluster_file(
     _get_owned_client(client_id, db, current_user)
     content = await file.read()
     try:
-        parsed_data = parse_manual_keyword_cluster_file(file.filename or "upload.csv", content)
+        with text_ai_client.selected_provider_scope(ai.provider, ai.claude_model):
+            parsed_data = parse_manual_keyword_cluster_file(file.filename or "upload.csv", content)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -242,7 +249,12 @@ def list_semrush_imports(client_id: uuid.UUID, db: Session = Depends(get_db), cu
 
 
 @router.get("/{client_id}/semrush-analysis")
-def semrush_analysis(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def semrush_analysis(
+    client_id: uuid.UUID,
+    ai: ReportAISelection = Depends(report_ai_selection),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Compares uploaded own-site vs. competitor Semrush data and returns
     concrete gaps (traffic, keywords, backlinks) with recommendations."""
     client = _get_owned_client(client_id, db, current_user)
@@ -263,11 +275,17 @@ def semrush_analysis(client_id: uuid.UUID, db: Session = Depends(get_db), curren
         for r in records
     ]
     own_domain = (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
-    return analyze_semrush_data(payload, own_domain=own_domain)
+    with text_ai_client.selected_provider_scope(ai.provider, ai.claude_model):
+        return analyze_semrush_data(payload, own_domain=own_domain)
 
 
 @router.get("/{client_id}/semrush-ai-summary")
-def semrush_ai_summary(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def semrush_ai_summary(
+    client_id: uuid.UUID,
+    ai: ReportAISelection = Depends(report_ai_selection),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Runs the rule-based analysis, then asks Gemini to turn the findings
     into a narrative executive summary + prioritized action list."""
     client = _get_owned_client(client_id, db, current_user)
@@ -288,8 +306,9 @@ def semrush_ai_summary(client_id: uuid.UUID, db: Session = Depends(get_db), curr
         for r in records
     ]
     own_domain = (client.website_url or "").replace("https://", "").replace("http://", "").rstrip("/")
-    analysis = analyze_semrush_data(payload, own_domain=own_domain)
-    return generate_ai_summary(client.name, client.website_url, analysis)
+    with text_ai_client.selected_provider_scope(ai.provider, ai.claude_model):
+        analysis = analyze_semrush_data(payload, own_domain=own_domain)
+        return generate_ai_summary(client.name, client.website_url, analysis)
 
 
 @router.get("/{client_id}/semrush-imports/{import_id}")

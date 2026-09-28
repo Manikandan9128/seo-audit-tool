@@ -42,6 +42,11 @@ class ReportGenerationJob(Base):
     # agency user sees it in the app before deciding whether to regenerate
     # or send the file as-is.
     content_generation_issues: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # The Report AI Provider this build used (2026-09-28) — every AI call in
+    # the job ran on exactly this provider, so the UI can say which one
+    # produced the report and never pass it off as another provider's.
+    ai_provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    claude_model: Mapped[str | None] = mapped_column(String, nullable=True)
     # Set once, the first time this job's file is actually fetched via the
     # /download endpoint — never moved on a later re-download of the same
     # job (2026-09-25: the sidebar's "Downloaded Reports" list needs to

@@ -173,7 +173,7 @@ def _enforce_gap_metrics(data: dict, findings: dict) -> dict | None:
 def generate_core_problem(findings: dict) -> dict:
     """Returns {"thesis": str, "categories": [...]} or {"error": str}.
 
-    Tries every configured provider in order (same fix as
+    Takes up to two responses from the selected Report AI Provider (same fix as
     structured_data_insights_service, 2026-09-20), not just the first one
     to answer — confirmed real 2026-09-22: with OpenRouter added as a
     fallback provider, its auto-router can land on a free model that

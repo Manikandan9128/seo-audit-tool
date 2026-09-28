@@ -53,8 +53,8 @@ def generate_ux_findings(client_name: str, website_url: str, ux_notes: str) -> d
     """Returns {"ui_fixes": [...], "conversion_opportunities": [...]} or
     {"error": str}.
 
-    Tries every configured provider in order, not just the first one to
-    answer (2026-09-22, same fix as structured_data_insights_service,
+    Takes up to two responses from the selected Report AI Provider, not just the first
+    (2026-09-22, same fix as structured_data_insights_service,
     2026-09-20; see core_problem_service.generate_core_problem's docstring
     for why)."""
     prompt = PROMPT_TEMPLATE.format(client_name=client_name, website_url=website_url, ux_notes=ux_notes[:6000])

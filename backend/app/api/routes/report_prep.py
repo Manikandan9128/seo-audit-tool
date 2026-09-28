@@ -25,7 +25,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import ReportAISelection, get_current_user, get_db, report_ai_selection, validate_ai_selection
 from app.api.routes import google_oauth as google_oauth_routes
 from app.api.routes import site_audit as site_audit_routes
 from app.db.session import SessionLocal
@@ -141,7 +141,7 @@ def _run_prep_job(job_id: uuid.UUID, client_id: uuid.UUID, user_id: uuid.UUID, k
     The user's selected AI provider/Claude model is pinned for this thread
     and inherited by every section worker (JobContextThreadPoolExecutor),
     same strict pin as the report-generation job — Company Overview and the
-    site audit's company summary must not fall back to other providers."""
+    site audit's company summary use only that provider."""
     db = SessionLocal()
     text_ai_client.set_preferred_provider(params.get("preferred_provider"))
     text_ai_client.set_claude_model(params.get("claude_model"))
@@ -227,6 +227,7 @@ def start_report_prep_job(
     analytics_end: str = Body("today", embed=True),
     preferred_provider: str | None = Body(None, embed=True),
     claude_model: str | None = Body(None, embed=True),
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -235,10 +236,10 @@ def start_report_prep_job(
     at once never start two runs. The client row lock makes simultaneous
     requests take turns, so both can't see "no active run"."""
     _get_owned_client(client_id, db, current_user)
-    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use", "openrouter"):
-        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', 'openrouter', or omitted")
-    if claude_model is not None and claude_model not in text_ai_client.CLAUDE_MODEL_CHOICES:
-        raise HTTPException(status_code=400, detail=f"claude_model must be one of {sorted(text_ai_client.CLAUDE_MODEL_CHOICES)} or omitted")
+    # Same required Report AI Provider as report generation — body value,
+    # else the X-AI-Provider header; never chosen for the user.
+    selection = validate_ai_selection(preferred_provider or ai.provider, claude_model or ai.claude_model)
+    preferred_provider, claude_model = selection.require(), selection.claude_model
     keys = [k for k in SECTION_KEYS if k in set(sections)]
     unknown = set(sections) - set(SECTION_KEYS)
     if unknown or not keys:

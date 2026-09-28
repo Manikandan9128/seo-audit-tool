@@ -81,7 +81,7 @@ def generate_seo_issues_insights(
     classify_seo_issues returns. Returns {"headline": str, "supporting":
     [str], "takeaway": str} or {"error": str}.
 
-    Tries every configured provider in order (same fix as
+    Takes up to two responses from the selected Report AI Provider (same fix as
     structured_data_insights_service, 2026-09-20), not just the first one
     to answer — see core_problem_service.generate_core_problem's docstring
     for why this matters now that OpenRouter's auto-router is in the mix."""

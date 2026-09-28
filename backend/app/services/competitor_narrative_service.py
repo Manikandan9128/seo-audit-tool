@@ -38,8 +38,7 @@ response is still recovered per-domain (see _parse_batch_result)."""
 import json
 import re
 
-from app.config import settings
-from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, iter_text_attempts
+from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, iter_text_attempts, pinned_provider
 
 BATCH_PROMPT_TEMPLATE = """You are an SEO/growth consultant writing competitive-analysis sections for \
 {client_name} ({client_domain}), comparing them against {competitor_count} competitors. Write ONE independent \
@@ -234,8 +233,9 @@ def _chunk_domains(competitors_facts: dict[str, dict], template_overhead_chars: 
     call, quadrupling Gemini calls for a 4-competitor report and burning
     its daily quota mid-report — later competitors (and the Onboarding
     Breakdown vision call after them) then silently fail once quota's gone.
-    Skip the Groq-sized chunking entirely when Groq isn't configured."""
-    if not settings.groq_api_key:
+    Skip the Groq-sized chunking entirely unless Groq is the selected
+    provider."""
+    if pinned_provider() != "groq":
         return [list(competitors_facts.keys())]
 
     chunks: list[list[str]] = []

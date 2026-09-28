@@ -14,7 +14,7 @@ def _attempts(*items):
     """items: list of (raw_text, provider) tuples to yield in order — same
     generator-mock shape as test_geopulse_ai_service.py/test_core_problem_
     service.py use for iter_text_attempts."""
-    def _gen(prompt, images, max_tokens, errors):
+    def _gen(prompt, images, max_tokens, errors, start_url=None):
         for raw, provider in items:
             yield raw, provider
     return _gen
@@ -186,3 +186,16 @@ def test_validate_caps_at_25_issues():
 def test_validate_empty_input_returns_zero_counts():
     result = validate_ui_audit_issues([], {})
     assert result == {"issues": [], "total_count": 0, "counts_by_priority": {"High": 0, "Medium": 0, "Low": 0}}
+
+
+def test_truncated_answer_keeps_every_complete_issue():
+    # 2026-09-28: an answer cut off mid-list by the provider's output cap
+    # used to fail the whole pass as "did not return valid JSON".
+    truncated = '{"issues": [{"title": "A", "priority": "High"}, {"title": "B", "priority": "Low"}, {"title": "C", "pri'
+
+    def _gen(prompt, images, max_tokens, errors, start_url=None):
+        yield truncated, "claude"
+
+    with patch("app.services.ui_audit_service.iter_text_with_images_attempts", side_effect=_gen):
+        result = generate_ui_audit_issues("Acme", "https://acme.test", None, {}, [(b"png", "image/png")])
+    assert result == {"issues": [{"title": "A", "priority": "High"}, {"title": "B", "priority": "Low"}]}

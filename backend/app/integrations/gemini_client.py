@@ -1,12 +1,11 @@
-from app.config import settings
-from app.integrations.text_ai_client import generate_text
+from app.integrations.text_ai_client import generate_text, selected_provider_ready
 
 
 def summarize_company(website_url: str, page_text: str) -> str | None:
-    """Summarizes what a company does from its homepage text. Tries Gemini
-    first, falls back to Claude. Returns None if no API key is configured or
-    both providers fail."""
-    if (not settings.gemini_api_key and not settings.claude_api_key) or not page_text.strip():
+    """Summarizes what a company does from its homepage text, using the
+    selected Report AI Provider only. Returns None if no provider is
+    selected/configured or the call fails."""
+    if not selected_provider_ready() or not page_text.strip():
         return None
 
     prompt = (

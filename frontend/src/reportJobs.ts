@@ -45,9 +45,11 @@ export interface ReportJobState {
     // Bumped on every new error so the page shows it even when the text repeats.
     errorSeq: number;
     issues: string[] | null;
+    // Report AI Provider the current/last build ran on (job.ai_provider).
+    aiProvider: string | null;
     // Last finished build that hasn't been downloaded in this session —
     // offered as "Download last report" instead of building it again.
-    readyJob: { id: string; createdAt: string } | null;
+    readyJob: { id: string; createdAt: string; aiProvider: string | null } | null;
     downloadedSeq: number;
   };
 }
@@ -58,7 +60,7 @@ const EMPTY: ReportJobState = {
   generate: { jobId: null, sections: {}, pct: null, error: null, errorSeq: 0 },
   download: {
     status: "idle", jobId: null, stage: "", pct: null, error: null, errorSeq: 0,
-    issues: null, readyJob: null, downloadedSeq: 0,
+    issues: null, aiProvider: null, readyJob: null, downloadedSeq: 0,
   },
 };
 
@@ -246,6 +248,7 @@ async function poll(clientId: string, jobId: string) {
         set(clientId, {}, {
           issues: Array.isArray(job.content_generation_issues) && job.content_generation_issues.length
             ? job.content_generation_issues : null,
+          aiProvider: job.ai_provider ?? null,
         });
         await saveJobFile(clientId, jobId);
         return;
@@ -273,7 +276,10 @@ async function poll(clientId: string, jobId: string) {
 
 export async function startDownload(clientId: string, body: any) {
   if (isDownloadActive(clientId)) return;
-  set(clientId, {}, { status: "building", stage: "Starting report build…", pct: 0, error: null, issues: null, readyJob: null });
+  set(clientId, {}, {
+    status: "building", stage: "Starting report build…", pct: 0, error: null, issues: null, readyJob: null,
+    aiProvider: body?.preferred_provider ?? null,
+  });
   try {
     const res = await api.post(`/clients/${clientId}/generate-report/start`, body);
     // The server returns the already-running build (reused: true) instead
@@ -295,10 +301,13 @@ export async function resumeReportJob(clientId: string) {
     const job = (await api.get(`/clients/${clientId}/generate-report/latest`)).data;
     if (!job || isDownloadActive(clientId)) return;
     if (job.status === "pending" || job.status === "running") {
-      set(clientId, {}, { status: "building", jobId: job.id, stage: job.progress_stage || "Queued…", pct: job.progress_pct ?? null });
+      set(clientId, {}, {
+        status: "building", jobId: job.id, stage: job.progress_stage || "Queued…", pct: job.progress_pct ?? null,
+        aiProvider: job.ai_provider ?? null,
+      });
       poll(clientId, job.id);
     } else if (job.status === "done") {
-      set(clientId, {}, { readyJob: { id: job.id, createdAt: job.created_at } });
+      set(clientId, {}, { readyJob: { id: job.id, createdAt: job.created_at, aiProvider: job.ai_provider ?? null } });
     }
   } catch {
     // Nothing to resume; the buttons simply start from idle.

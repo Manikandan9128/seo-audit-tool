@@ -12,7 +12,9 @@ import json
 import logging
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.text_ai_client import (
+    NoAIProviderConfigured, failure_message, generate_text, groq_prompt_fits, iter_text_attempts, pinned_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -222,11 +224,47 @@ def _drop_cross_list_duplicates(aeo_items: list[str], geo_items: list[str]) -> l
     return kept
 
 
+# Sized so one condense call (instructions + chunk + its output) fits
+# Groq's shared per-minute token budget with room to spare.
+_CONDENSE_CHUNK_CHARS = 14_000
+_CONDENSE_MAX_TOKENS = 900
+
+_CONDENSE_PROMPT = """Below is one part of a GeoPulse AI-visibility report. Extract the facts an SEO strategist \
+needs, as short bullet points. Keep exact numbers, percentages, prompt/query wording, AI engine names, \
+competitor and brand names, cited URLs/domains, sentiment, and any "consistency check" or disputed-metric \
+warnings exactly as written. Skip layout text, repeated boilerplate, and page headers. No commentary.
+
+REPORT PART {part} of {total}:
+{chunk}"""
+
+
+def _condense_for_groq(raw_text: str) -> str | None:
+    """A Groq pin can't take a full GeoPulse export (up to 40k chars,
+    ~10k tokens) in one call — Groq's per-minute budget is 7,500 tokens,
+    so _try_groq refused it and the strict pin had nowhere to fall to
+    (2026-09-28: AEO/GEO slides always came out as "check unavailable" on
+    Groq). Condense the export chunk by chunk first; the final prompt then
+    fits. Items are still checked against the FULL raw_text afterwards.
+    Returns None if any chunk fails — the caller then sends the full text
+    and reports Groq's own error."""
+    chunks = [raw_text[i : i + _CONDENSE_CHUNK_CHARS] for i in range(0, len(raw_text), _CONDENSE_CHUNK_CHARS)]
+    notes = []
+    for n, chunk in enumerate(chunks, 1):
+        try:
+            text, _ = generate_text(
+                _CONDENSE_PROMPT.format(part=n, total=len(chunks), chunk=chunk), max_tokens=_CONDENSE_MAX_TOKENS,
+            )
+        except NoAIProviderConfigured as e:
+            logger.warning("GeoPulse condense for Groq failed on part %d/%d: %s", n, len(chunks), e)
+            return None
+        notes.append(f"[Part {n} of {len(chunks)}]\n{text.strip()}")
+    return "\n\n".join(notes)
+
+
 def generate_aeo_geo_content(raw_text: str) -> dict:
-    """Returns {"aeo_items": [...], "geo_items": [...]}. Empty dict on any
-    failure (no AI key, bad JSON, empty input) — caller falls back to the
-    existing generic slide content, same as when no GeoPulse file is
-    uploaded at all.
+    """Returns {"aeo_items": [...], "geo_items": [...]}, or {"error": str}
+    naming the selected provider and why nothing usable came back. Empty
+    dict only for empty input.
 
     2026-09-10: GeoPulse can flag its own headline numbers as disputed
     (an "Automated consistency check failed" banner naming a mismatch with
@@ -258,8 +296,12 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
     else:
         disputed_note = ""
     prompt = PROMPT_TEMPLATE.format(raw_text=raw_text, disputed_metrics_note=disputed_note)
-    # Tries every configured provider in order, not just the first one to
-    # answer (2026-09-22, same fix as structured_data_insights_service,
+    if pinned_provider() == "groq" and not groq_prompt_fits(prompt, 4096):
+        condensed = _condense_for_groq(raw_text)
+        if condensed:
+            prompt = PROMPT_TEMPLATE.format(raw_text=condensed, disputed_metrics_note=disputed_note)
+    # Takes up to two responses from the selected Report AI Provider, not just the first
+    # (2026-09-22, same fix as structured_data_insights_service,
     # 2026-09-20; see core_problem_service.generate_core_problem's
     # docstring for why).
     errors: list[str] = []
@@ -279,13 +321,13 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
             break
     except NoAIProviderConfigured as e:
         logger.warning("GeoPulse AEO/GEO content generation failed: %s", e)
-        return {}
+        return {"error": str(e)}
     if data is None:
         logger.warning(
-            "GeoPulse AEO/GEO content: no provider returned usable JSON (raw_text was %d chars) — %s",
+            "GeoPulse AEO/GEO content: the selected provider returned no usable JSON (raw_text was %d chars) — %s",
             len(raw_text), "; ".join(errors) if errors else "no errors recorded",
         )
-        return {}
+        return {"error": failure_message("AEO/GEO analysis", errors)}
 
     aeo_items = [str(x).strip() for x in (data.get("aeo_items") or []) if str(x).strip()]
     geo_items = [str(x).strip() for x in (data.get("geo_items") or []) if str(x).strip()]
@@ -300,5 +342,8 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
             "by the backstop filters (unsupported claim / spec violation / duplicate)",
             aeo_before, geo_before,
         )
-        return {}
+        return {"error": (
+            f"the AI returned {aeo_before} AEO / {geo_before} GEO recommendation(s), but none were backed "
+            "by the visibility report's own data, so none were shown"
+        )}
     return {"aeo_items": aeo_items, "geo_items": geo_items}

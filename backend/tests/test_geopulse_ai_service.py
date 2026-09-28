@@ -24,20 +24,20 @@ def test_returns_aeo_and_geo_items():
     }
 
 
-def test_returns_empty_dict_when_ai_unavailable():
+def test_returns_provider_error_when_ai_unavailable():
     from app.integrations.text_ai_client import NoAIProviderConfigured
 
     with patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=NoAIProviderConfigured("no key")):
         result = generate_aeo_geo_content("some text")
-    assert result == {}
+    assert result == {"error": "no key"}
 
 
-def test_returns_empty_dict_on_invalid_json():
+def test_returns_error_on_invalid_json():
     with patch(
         "app.services.geopulse_ai_service.iter_text_attempts", side_effect=_attempts(("not json at all", "gemini"))
     ):
         result = generate_aeo_geo_content("some text")
-    assert result == {}
+    assert "error" in result and "aeo_items" not in result
 
 
 def test_returns_empty_dict_for_empty_input():
@@ -45,13 +45,13 @@ def test_returns_empty_dict_for_empty_input():
     assert generate_aeo_geo_content("   ") == {}
 
 
-def test_returns_empty_dict_when_both_lists_empty():
+def test_returns_error_when_both_lists_empty():
     with patch(
         "app.services.geopulse_ai_service.iter_text_attempts",
         side_effect=_attempts(('{"aeo_items": [], "geo_items": []}', "gemini")),
     ):
         result = generate_aeo_geo_content("some text")
-    assert result == {}
+    assert "error" in result and "aeo_items" not in result
 
 
 # 2026-09-10 regression: a real Lumber GeoPulse export flagged its own
@@ -122,14 +122,14 @@ def test_bare_guarantee_claim_dropped_but_explicit_disclaimer_kept():
     assert result["aeo_items"] == ["Answer the missed setup questions directly — a prerequisite for eligibility, not a guarantee of inclusion."]
 
 
-def test_returns_empty_dict_when_all_items_fail_causal_guard():
+def test_returns_error_when_all_items_fail_causal_guard():
     fake_response = """{
       "aeo_items": ["This will increase AI visibility for the brand."],
       "geo_items": ["This will improve ranking in AI engines."]
     }"""
     with patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=_attempts((fake_response, "gemini"))):
         result = generate_aeo_geo_content("some raw geopulse export text")
-    assert result == {}
+    assert "none were backed by the visibility report" in result["error"]
 
 
 def test_prompt_has_no_disputed_metrics_note_when_no_banner():
@@ -143,3 +143,43 @@ def test_prompt_has_no_disputed_metrics_note_when_no_banner():
         generate_aeo_geo_content("lumberfi is mentioned in 52 of 150 AI answers.")
 
     assert "flagged these specific metrics as disputed" not in captured["prompt"]
+
+
+def test_groq_pin_condenses_oversized_export_before_the_final_call():
+    # 2026-09-28: a full export (~10k tokens) never fit Groq's 7,500-token
+    # per-minute budget, so a Groq pin always ended in "check unavailable".
+    import app.integrations.text_ai_client as text_ai_client
+
+    raw_text = "GeoPulse finding. " * 2500  # ~45k chars
+    seen_prompts = []
+
+    def _gen(prompt, max_tokens, errors):
+        seen_prompts.append(prompt)
+        yield '{"aeo_items": ["Answer the pricing prompt GeoPulse shows 0 citations for."], "geo_items": []}', "groq"
+
+    text_ai_client.set_preferred_provider("groq")
+    try:
+        with patch("app.services.geopulse_ai_service.generate_text", return_value=("- condensed fact", "groq")) as mock_gen, \
+                patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=_gen):
+            result = generate_aeo_geo_content(raw_text)
+    finally:
+        text_ai_client.set_preferred_provider(None)
+    assert mock_gen.call_count == 4
+    assert "- condensed fact" in seen_prompts[0] and raw_text not in seen_prompts[0]
+    assert text_ai_client.groq_prompt_fits(seen_prompts[0], 4096)
+    assert result["aeo_items"] == ["Answer the pricing prompt GeoPulse shows 0 citations for."]
+
+
+def test_non_groq_pin_sends_full_export():
+    raw_text = "GeoPulse finding. " * 2500
+    seen_prompts = []
+
+    def _gen(prompt, max_tokens, errors):
+        seen_prompts.append(prompt)
+        yield '{"aeo_items": [], "geo_items": []}', "claude"
+
+    with patch("app.services.geopulse_ai_service.generate_text") as mock_gen, \
+            patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=_gen):
+        generate_aeo_geo_content(raw_text)
+    mock_gen.assert_not_called()
+    assert raw_text in seen_prompts[0]

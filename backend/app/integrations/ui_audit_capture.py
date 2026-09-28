@@ -108,8 +108,12 @@ _PAGE_FACTS_JS = r"""
     // Prefer the largest matching container as the real carousel root —
     // avoids counting a nested "next/prev arrow" wrapper as its own carousel.
     const root = carouselEls.sort((a, b) => rect(b).width * rect(b).height - rect(a).width * rect(a).height)[0];
+    // ":scope > *", not a bare "> *" — querySelectorAll rejects the bare
+    // form as a SyntaxError, which used to throw out of this whole script
+    // and leave page_facts empty on every site with a carousel (2026-09-28,
+    // Geopits).
     const slideCandidates = root.querySelectorAll(
-      '[class*="slide"], [class*="item"], > *'
+      '[class*="slide"], [class*="item"], :scope > *'
     );
     const slideCount = Math.max(1, new Set(Array.from(slideCandidates).map((s) => s.className)).size <= 1
       ? slideCandidates.length

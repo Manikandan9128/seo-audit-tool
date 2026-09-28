@@ -1,5 +1,7 @@
 import axios from "axios";
 
+import { selectionHeaders } from "../aiProvider";
+
 // In dev (Vite on :5173) the API lives on :8000 of the same host.
 // When served from the backend itself (production build, or via a single
 // ngrok tunnel), the API is same-origin under /api.
@@ -13,6 +15,11 @@ api.interceptors.request.use((config) => {
   const token = localStorage.getItem("access_token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  // The Report AI Provider rides on every request, so any backend AI step
+  // (uploads, analysis, Generate/Preview/Download) uses exactly it.
+  for (const [name, value] of Object.entries(selectionHeaders())) {
+    config.headers[name] = value;
   }
   return config;
 });

@@ -96,13 +96,12 @@ def generate_branded_search_insights(
     errors: list[str] = []
     last_raw = ""
     try:
-        # Tries every configured provider in order, not just the first one
-        # to answer (2026-09-22 — same fix as structured_data_insights_service,
+        # Takes up to two responses from the selected Report AI Provider, not just the first one
+        # (2026-09-22 — same fix as structured_data_insights_service,
         # 2026-09-20; see core_problem_service.generate_core_problem's
         # docstring for why this matters with OpenRouter's auto-router in
-        # the mix): a syntactically-invalid or insight-less response from
-        # one provider now falls through to the next instead of failing
-        # the whole section outright.
+        # the mix): a syntactically-invalid or insight-less first response
+        # gets one more try from the SAME selected provider.
         for raw, provider in iter_text_attempts(prompt, max_tokens=1024, errors=errors):
             last_raw = raw
             cleaned = raw.strip()

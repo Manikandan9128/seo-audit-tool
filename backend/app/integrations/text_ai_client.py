@@ -23,6 +23,7 @@ OpenRouter's own error showed 0/50 remaining. Not worth the added
 complexity for a budget too small to matter."""
 
 import threading
+from contextlib import contextmanager
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -60,6 +61,15 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 GEMINI_TIMEOUT_SECONDS = 45
 CLAUDE_TIMEOUT_SECONDS = 60
+# UI-Level Fixes asks Claude for up to 25 evidence-backed issues from 4
+# screenshots in one JSON object (2026-09-28, Geopits): at the caller's
+# 4096-token cap the JSON came back cut off ("claude did not return valid
+# JSON"), and a full-length answer at that size doesn't finish inside the
+# 60s text-call timeout either. Claude vision gets its own floor/timeout;
+# Groq/Gemini vision keep the caller's max_tokens (Groq's TPM budget can't
+# fit a bigger one anyway).
+CLAUDE_VISION_MIN_MAX_TOKENS = 12000
+CLAUDE_VISION_TIMEOUT_SECONDS = 180
 
 
 def _call_with_timeout(fn, timeout_seconds: float, *args, **kwargs):
@@ -71,8 +81,8 @@ def _call_with_timeout(fn, timeout_seconds: float, *args, **kwargs):
     normally comes back near-instantly (this was Google's servers being
     slow to respond, not a fast reject). Raises TimeoutError on expiry,
     which every caller's existing `except Exception` handling already
-    treats the same as any other provider failure — falls through to the
-    next provider instead of hanging the whole pipeline. The orphaned
+    treats the same as any other provider failure — reported as that
+    provider's error instead of hanging the whole pipeline. The orphaned
     thread is abandoned (not killed — Python has no API for that) rather
     than waited on; it either eventually finishes harmlessly in the
     background or the process exits, whichever comes first."""
@@ -112,8 +122,8 @@ def _reserve_groq_budget(needed_tokens: int) -> None:
             # The "used == 0" case lets a single oversized-but-otherwise-
             # allowed call through once nothing else is in the window,
             # rather than looping forever — _try_groq's own too-small-to-
-            # serve-at-all check runs before this and already routes a
-            # request that can never fit to the next provider instead.
+            # serve-at-all check runs before this and already refuses a
+            # request that can never fit.
             if used == 0 or used + needed_tokens <= GROQ_TPM_BUDGET:
                 _groq_usage_window.append((now, needed_tokens))
                 return
@@ -220,7 +230,7 @@ def _try_groq(prompt: str, max_tokens: int) -> str:
         # produce a complete response instead of a guaranteed-truncated one.
         raise RuntimeError(
             f"prompt too large for Groq's shared TPM budget to leave room for the requested "
-            f"output ({safe_max_tokens} available vs {max_tokens} needed) — skipping to next provider"
+            f"output ({safe_max_tokens} available vs {max_tokens} needed)"
         )
     _reserve_groq_budget(estimated_prompt_tokens + safe_max_tokens)
     response = httpx.post(
@@ -290,10 +300,8 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
 # job's thread (e.g. "run this report with Claude, and only Claude") --
 # without threading a preferred_provider parameter through the ~10 call
 # sites between the report-generation route and generate_text(). 2026-09-
-# 28: a pin used to only move that provider to the FRONT of the fallback
-# order, still silently substituting Groq/Gemini on any failure -- "I
-# selected paid Claude" wasn't a real guarantee. See _provider_order()'s
-# docstring for the current strict behavior. Every affected call happens
+# 28: the selection is the ONLY provider used — no provider order, no
+# fallback (see resolve_selected_provider). Every affected call happens
 # synchronously within one dedicated thread per job/request (see
 # _run_generate_report_job, report_preview), so a thread-local is exactly
 # "one preference per in-flight job" with no cross-request leakage risk,
@@ -311,10 +319,24 @@ def set_preferred_provider(name: str | None) -> None:
     _provider_preference.value = name
 
 
+@contextmanager
+def selected_provider_scope(provider: str | None, claude_model: str | None = None):
+    """Pins this thread's AI calls to the user's Report AI Provider for the
+    duration of one request, then clears it so a pooled server thread never
+    carries it into an unrelated request."""
+    set_preferred_provider(provider)
+    set_claude_model(claude_model)
+    try:
+        yield
+    finally:
+        set_preferred_provider(None)
+        set_claude_model(None)
+
+
 # Same thread-local-per-job pattern as _provider_preference above, one
 # level down: which Claude model this job's Claude calls use, independent
-# of whether Claude was even picked as the preferred provider (it still
-# applies on the fallback path). Reset to None (falls back to CLAUDE_MODEL)
+# of the provider choice (only read when Claude is selected). Reset to
+# None (uses CLAUDE_MODEL)
 # in the same finally block that resets the provider preference.
 _claude_model_preference = threading.local()
 
@@ -380,8 +402,7 @@ class JobContextThreadPoolExecutor(ThreadPoolExecutor):
     read the default CLAUDE_MODEL instead of the model the user picked and
     its token usage was never recorded; and report-generation's own nested
     pools (run_site_audit -> summarize_company) called generate_text() with
-    no pin at all, falling back to the Groq -> Gemini -> Claude chain the
-    user had opted out of by selecting a provider. The worker's previous
+    no pin at all, so they ignored the user's selected provider. The worker's previous
     values are restored after each task, since pool threads are reused."""
 
     def submit(self, fn, /, *args, **kwargs):
@@ -515,25 +536,26 @@ BROWSER_USE_API_URL = "https://api.browser-use.com/api/v4/runs"
 BROWSER_USE_MODEL = "gpt-5.6-luna"
 BROWSER_USE_TIMEOUT_SECONDS = 120
 BROWSER_USE_POLL_INTERVAL_SECONDS = 3
+# A vision-replacement run browses the site at two widths before answering.
+BROWSER_USE_VISION_TIMEOUT_SECONDS = 360
 
 
-def _try_browser_use(prompt: str) -> str:
-    """Runs the prompt as a Browser Use Cloud agent run (no startUrl — a
-    plain reasoning task, not browsing a specific site) and polls until it
-    finishes. Much slower and pricier than a chat completion (a real
-    billed agent run, not a token-based call) — not in
-    _DEFAULT_PROVIDER_ORDER, only ever tried when explicitly preferred."""
+def _try_browser_use(prompt: str, timeout_seconds: float = BROWSER_USE_TIMEOUT_SECONDS, start_url: str | None = None) -> str:
+    """Runs the prompt as a Browser Use Cloud agent run and polls until it
+    finishes. A real billed agent run, much slower than a chat completion.
+    With start_url the agent opens that page (the UI-Level Fixes vision
+    replacement); without it, a plain reasoning task."""
     headers = {"X-Browser-Use-API-Key": settings.browser_use_api_key}
     response = httpx.post(
         BROWSER_USE_API_URL,
         headers=headers,
-        json={"task": prompt, "model": BROWSER_USE_MODEL},
+        json={"task": prompt, "model": BROWSER_USE_MODEL, **({"startUrl": start_url} if start_url else {})},
         timeout=30,
     )
     response.raise_for_status()
     run_id = response.json()["id"]
 
-    deadline = time.monotonic() + BROWSER_USE_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         time.sleep(BROWSER_USE_POLL_INTERVAL_SECONDS)
         status_response = httpx.get(f"{BROWSER_USE_API_URL}/{run_id}", headers=headers, timeout=30)
@@ -544,7 +566,7 @@ def _try_browser_use(prompt: str) -> str:
             return (data.get("result") or "").strip()
         if status in ("failed", "cancelled"):
             raise RuntimeError(f"Browser Use run {status}: {data.get('error') or 'no error detail'}")
-    raise TimeoutError(f"Browser Use run did not finish within {BROWSER_USE_TIMEOUT_SECONDS}s")
+    raise TimeoutError(f"Browser Use run did not finish within {timeout_seconds:.0f}s")
 
 
 def _attempt_browser_use(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
@@ -565,6 +587,7 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # churn (deprecated/404ing within hours, see 98e8bf3), the alias doesn't.
 OPENROUTER_MODEL = "openrouter/free"
 OPENROUTER_TIMEOUT_SECONDS = 60
+OPENROUTER_VISION_TIMEOUT_SECONDS = 120
 
 
 def _try_openrouter(prompt: str, max_tokens: int) -> str:
@@ -612,98 +635,109 @@ _PROVIDER_ATTEMPTS = {
     "groq": _attempt_groq, "gemini": _attempt_gemini, "claude": _attempt_claude,
     "browser_use": _attempt_browser_use, "openrouter": _attempt_openrouter,
 }
-# browser_use deliberately excluded from the default order — real billed
-# agent run, seconds-to-minutes latency, not a fit to try on every report
-# by default. Only reached via set_preferred_provider("browser_use").
-# openrouter likewise excluded: its free tier (50 requests/day) was already
-# tried in the default chain and removed (4ceb14d) for running out mid-
-# report — re-added 2026-09-23 as an explicit pick only.
-_DEFAULT_PROVIDER_ORDER = ["groq", "gemini", "claude"]
+PROVIDER_LABELS = {
+    "groq": "Groq", "gemini": "Gemini", "claude": "Claude", "browser_use": "Browser Use", "openrouter": "OpenRouter",
+}
 
 
-def _provider_order() -> list[str]:
-    """2026-09-28: an explicit preference is now a STRICT pin, not just a
-    priority bump. Before this, set_preferred_provider("claude") still
-    silently fell through to Groq/Gemini on any Claude failure — "I
-    selected paid Claude" wasn't a real guarantee, it was only a
-    first-attempt preference, confirmed surprising to the user in
-    practice. With no preference set (None), the old best-effort
-    multi-provider chain (try Groq, then Gemini, then Claude) is
-    unchanged."""
-    preferred = getattr(_provider_preference, "value", None)
-    return [preferred] if preferred else _DEFAULT_PROVIDER_ORDER
+def _provider_key(provider: str) -> str | None:
+    return {
+        "groq": settings.groq_api_key, "gemini": settings.gemini_api_key, "claude": settings.claude_api_key,
+        "browser_use": settings.browser_use_api_key, "openrouter": settings.openrouter_api_key,
+    }[provider]
+
+
+def resolve_selected_provider() -> str:
+    """The ONE provider every AI call in this request/job uses — the user's
+    Report AI Provider selection (2026-09-28 spec). There is no provider
+    order and no automatic choice: with nothing selected, or the selected
+    provider's key missing, this raises instead of picking another one.
+    Every caller already treats NoAIProviderConfigured as "this section's
+    AI step failed", so the message reaches the job's issue list."""
+    provider = getattr(_provider_preference, "value", None)
+    if not provider:
+        raise NoAIProviderConfigured(
+            "No Report AI Provider selected — pick one in the Report AI Provider dropdown. "
+            "No provider is chosen automatically."
+        )
+    if not _provider_key(provider):
+        label = PROVIDER_LABELS[provider]
+        raise NoAIProviderConfigured(
+            f"{label} is selected but no {label} API key is configured — add it in Settings. "
+            f"No fallback provider was used because {label} was selected."
+        )
+    return provider
+
+
+def selected_provider_ready() -> bool:
+    """Whether AI steps can run at all this request: a provider is
+    selected and its key is configured. Replaces the old "any key
+    configured" gates, which quietly assumed a provider order."""
+    try:
+        resolve_selected_provider()
+    except NoAIProviderConfigured:
+        return False
+    return True
+
+
+def failure_message(section: str, errors: list[str]) -> str:
+    """User-facing error for an AI step that failed on the selected
+    provider — names the provider and the report section, and says no
+    other provider was tried."""
+    provider = pinned_provider()
+    if not provider:
+        try:
+            resolve_selected_provider()
+        except NoAIProviderConfigured as e:
+            return str(e)
+    label = PROVIDER_LABELS[provider]
+    reasons = " | ".join(e for e in errors if not e.startswith("No fallback provider")) or "no usable response"
+    return f"{label} failed to generate the {section} ({reasons}). No fallback provider was used because {label} was selected."
+
+
+def _no_fallback_note(provider: str) -> str:
+    label = PROVIDER_LABELS[provider]
+    return f"No fallback provider was used because {label} was selected."
+
+
+def pinned_provider() -> str | None:
+    """The selected provider for this job's thread, or None if none set."""
+    return getattr(_provider_preference, "value", None)
+
+
+def groq_prompt_fits(prompt: str, max_tokens: int) -> bool:
+    """Same budget check _try_groq applies before refusing a call — lets a
+    caller with a big prompt shrink it BEFORE a Groq pin turns the refusal
+    into a hard failure."""
+    safe_max_tokens = max(256, min(max_tokens, GROQ_TPM_BUDGET - len(prompt) // 4))
+    return safe_max_tokens >= max_tokens // 2
 
 
 def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
-    """Same provider order/fallback as generate_text, but yields (text,
-    provider) for EVERY configured provider that returned a non-empty raw
-    response, instead of stopping at the first one (generate_text() calls
-    this and returns just the first yield, unchanged behavior for every
-    existing caller).
-
-    Exists for a caller whose OWN parse of that text can turn out
-    semantically empty even though the provider responded successfully —
-    confirmed real (2026-09-20, Lumber + BharatBenz reports both hit this
-    on the Structured Data & Schema Validator's Key Insights): Groq
-    (first in the default order) returned syntactically valid JSON with an
-    empty `{"insights": []}`, which generate_text() correctly counts as
-    success (non-empty raw text) — but that's an inadequate result for the
-    caller's actual need, and generate_text() has no way to know that,
-    since it doesn't parse the caller's business-logic JSON shape at all.
-    A caller who wants "try the next provider if MY parse of this came back
-    empty" iterates this generator instead of calling generate_text() once.
-
-    `errors` is appended to by the same _attempt_* functions generate_text()
-    uses — pass the same list in both to see every attempt's failure
-    reason if every yield turns out inadequate too. Raises
-    NoAIProviderConfigured (on first iteration) only when no provider key
-    is configured at all; yields nothing if every configured provider's
-    raw call itself failed or returned empty (same as generate_text()
-    raising NoAIProviderConfigured with `errors` joined).
-
-    2026-09-28: a STRICT pin (_provider_order() returning exactly one
-    provider) gets that provider called twice, not once, before giving up
-    — confirmed real: with no pin, a provider whose raw response fails the
-    caller's own JSON parse (this function's whole reason to exist) simply
-    falls through to the next provider in the default 3-provider chain,
-    but a strict pin has no "next provider" to fall to, so a single bad-
-    JSON response from the pinned provider failed outright even though the
-    same provider asked again often just succeeds (same one-request-is-a-
-    roll reasoning _attempt_claude's own internal retry already applies to
-    transport failures — this extends it to the caller-parse-rejected-it
-    case a pin otherwise has no recovery from). A caller that accepts the
-    first yield (the normal case) never sees the second attempt at all,
-    since this generator is lazy and only produces it if asked."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key or settings.openrouter_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, Claude, Browser Use, or OpenRouter API key configured — add one in Settings")
-    order = _provider_order()
-    attempts_per_provider = 2 if len(order) == 1 else 1
-    for provider in order:
-        for _ in range(attempts_per_provider):
-            text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
-            if text:
-                yield text, provider
+    """Yields (text, provider) from the selected provider only (see
+    resolve_selected_provider) — up to two responses, so a caller whose own
+    parse rejects the first one (bad JSON, semantically empty) gets a second
+    try from the SAME provider. Never moves to another provider. When both
+    tries are exhausted, `errors` ends with a "No fallback provider was
+    used" note naming the selected provider."""
+    provider = resolve_selected_provider()
+    for _ in range(2):
+        text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
+        if text:
+            yield text, provider
+    errors.append(_no_fallback_note(provider))
 
 
 def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
-    """Returns (text, provider_used) — 'groq', 'gemini', or 'claude'. With
-    no preference set, tries each default-order provider in turn, falling
-    through to the next on any failure (not configured, empty response,
-    request error). With a preference set (set_preferred_provider), this
-    is now a STRICT pin (2026-09-28, see _provider_order()'s docstring) —
-    only that one provider is tried, no fallback. Raises
-    NoAIProviderConfigured if no key is set at all, or if every attempted
-    provider's call failed (message includes each provider's error).
-    max_tokens only affects the Groq/Claude paths — Gemini has no
-    equivalent cap exposed here and just returns whatever it generates."""
-    if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key or settings.openrouter_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, Claude, Browser Use, or OpenRouter API key configured — add one in Settings")
-
+    """Returns (text, provider) from the selected provider only. Raises
+    NoAIProviderConfigured with that provider's error (plus a "No fallback
+    provider was used" note) if it fails — never tries another provider."""
+    provider = resolve_selected_provider()
     errors: list[str] = []
-    for provider in _provider_order():
-        text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
-        if text:
-            return text, provider
+    text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
+    if text:
+        return text, provider
+    errors.append(_no_fallback_note(provider))
 
     # " / " used to join these (confirmed real, 2026-09-19): a raw provider
     # error can itself legitimately contain " / " (Groq's own org id in its
@@ -752,7 +786,7 @@ def _try_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: i
     if safe_max_tokens < max_tokens // 2:
         raise RuntimeError(
             f"prompt+image(s) too large for Groq's shared TPM budget to leave room for the requested "
-            f"output ({safe_max_tokens} available vs {max_tokens} needed) — skipping to next provider"
+            f"output ({safe_max_tokens} available vs {max_tokens} needed)"
         )
     content = [{"type": "text", "text": prompt}] + [
         {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"}}
@@ -840,11 +874,17 @@ def _try_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens:
     ] + [{"type": "text", "text": prompt}]
     response = client.messages.create(
         model=_current_claude_model(),
-        max_tokens=max_tokens,
+        max_tokens=max(max_tokens, CLAUDE_VISION_MIN_MAX_TOKENS),
         messages=[{"role": "user", "content": content}],
     )
     _record_claude_usage("vision", response.usage.input_tokens, response.usage.output_tokens)
-    return "".join(block.text for block in response.content if block.type == "text").strip()
+    text = "".join(block.text for block in response.content if block.type == "text").strip()
+    if not text or response.stop_reason == "max_tokens":
+        # Same stop_reason surfacing as _try_claude — an empty or cut-off
+        # answer is otherwise indistinguishable from a refusal in the job's
+        # issues list.
+        raise RuntimeError(f"{'empty' if not text else 'truncated'} content, stop_reason={response.stop_reason}")
+    return text
 
 
 def _attempt_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
@@ -923,7 +963,7 @@ def _attempt_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tok
     if not settings.claude_api_key:
         return None
     try:
-        text = _call_with_timeout(_try_claude_vision, CLAUDE_TIMEOUT_SECONDS, prompt, images, max_tokens)
+        text = _call_with_timeout(_try_claude_vision, CLAUDE_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
         if text:
             return text
         errors.append("Claude returned an empty response")
@@ -932,92 +972,101 @@ def _attempt_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tok
     return None
 
 
+def _try_openrouter_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int) -> str:
+    # openrouter/free routes to a free model that supports the request's
+    # input modalities, so image parts steer it to a vision-capable one.
+    content = [{"type": "text", "text": prompt}] + [
+        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"}}
+        for image_bytes, mime_type in images
+    ]
+    response = httpx.post(
+        OPENROUTER_API_URL,
+        headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+        json={"model": OPENROUTER_MODEL, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens},
+        timeout=OPENROUTER_VISION_TIMEOUT_SECONDS,
+    )
+    if response.status_code >= 400:
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase} for url '{response.url}': {response.text[:300]}",
+            request=response.request,
+            response=response,
+        )
+    data = response.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
+
+
+def _attempt_openrouter_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
+    if not settings.openrouter_api_key:
+        return None
+    try:
+        text = _call_with_timeout(_try_openrouter_vision, OPENROUTER_VISION_TIMEOUT_SECONDS, prompt, images, max_tokens)
+        if text:
+            return text
+        errors.append("OpenRouter vision returned an empty response")
+    except Exception as e:
+        errors.append(f"OpenRouter vision request failed: {str(e)[:300]}")
+    return None
+
+
+def _attempt_browser_use_vision(
+    prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str], start_url: str | None = None,
+) -> str | None:
+    """Browser Use takes no image input, but it IS a browser agent — it
+    opens the page itself instead of reading our screenshots (2026-09-28:
+    a Browser Use pin used to fail the whole UI-Level Fixes pass)."""
+    if not settings.browser_use_api_key:
+        return None
+    task = (
+        "You cannot see the screenshots this task mentions. Open the website yourself instead — look at the "
+        "first screen and scroll the full homepage at desktop width, then again at a mobile-width viewport — "
+        "and base every finding on what you actually see there.\n\n" + prompt
+    )
+    try:
+        text = _try_browser_use(task, BROWSER_USE_VISION_TIMEOUT_SECONDS, start_url)
+        if text:
+            return text
+        errors.append("Browser Use returned an empty response")
+    except Exception as e:
+        errors.append(f"Browser Use request failed: {str(e)[:300]}")
+    return None
+
+
 _VISION_PROVIDER_ATTEMPTS = {
     "groq": _attempt_groq_vision,
     "gemini": _attempt_gemini_vision,
     "claude": _attempt_claude_vision,
+    "openrouter": _attempt_openrouter_vision,
+    "browser_use": _attempt_browser_use_vision,
 }
 
 
-def iter_text_with_images_attempts(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]):
-    """Vision-call counterpart to iter_text_attempts above — yields (text,
-    provider) for EVERY configured vision-capable provider that returned a
-    non-empty raw response, instead of stopping at the first one.
-
-    2026-09-28: generate_text_with_images() below used to stop at the first
-    provider with ANY non-empty response, so a caller whose OWN JSON parse
-    of that text then failed had nowhere left to go — confirmed real (UI-
-    Level Fixes vision pass surfacing "AI did not return valid JSON" with
-    working, paid Gemini and Claude keys configured, because Groq vision
-    answered first with syntactically-broken JSON and nothing downstream
-    ever got a chance at Gemini/Claude). Every text-only AI-generated slide
-    in this codebase already retries the next provider on a bad JSON parse
-    (see company_overview_service.py, core_problem_service.py, etc. — this
-    just brings the vision path to parity.
-
-    Raises NoAIProviderConfigured (on first iteration) only when no vision-
-    capable provider key is configured at all; yields nothing if every
-    configured provider's raw call itself failed or returned empty (same
-    as generate_text_with_images() raising NoAIProviderConfigured with
-    `errors` joined)."""
-    if not (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
+def iter_text_with_images_attempts(
+    prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str], start_url: str | None = None,
+):
+    """Vision counterpart to iter_text_attempts — screenshots go to the
+    selected provider only, never another one. Every provider in the Report
+    AI Provider dropdown has a vision path; Browser Use takes no images, so
+    its agent opens `start_url` itself instead."""
+    provider = resolve_selected_provider()
     images = [_cap_image_dimensions(b, m) for b, m in images]
-    order = _provider_order()
-    preferred = getattr(_provider_preference, "value", None)
-    if preferred and preferred not in _VISION_PROVIDER_ATTEMPTS:
-        # Strict pin (2026-09-28) on a provider with no vision path
-        # (browser_use/openrouter) — with the old best-effort fallback
-        # this silently ran vision calls on Groq/Gemini/Claude instead,
-        # even though the user picked something else. Now that a pin
-        # means "only this provider, no substitution," that combination
-        # can't produce a vision result at all — say so clearly instead
-        # of yielding nothing with no explanation.
-        raise NoAIProviderConfigured(
-            f"{preferred} isn't a vision-capable provider — this pass needs Groq, Gemini, or Claude. "
-            "Pick one of those, or leave provider selection on auto."
-        )
-    # Same two-tries-for-a-strict-pin reasoning as iter_text_attempts above
-    # — a strict pin has no next provider to fall to, so give the one
-    # pinned provider a second independent vision call before giving up,
-    # instead of one bad-JSON response ending the whole pass.
-    attempts_per_provider = 2 if len(order) == 1 else 1
-    for provider in order:
-        if provider not in _VISION_PROVIDER_ATTEMPTS:
-            continue
-        for _ in range(attempts_per_provider):
+    # Two tries on the selected provider — there is no other provider to
+    # move to, and one bad-JSON response shouldn't end the whole pass.
+    # Browser Use gets one: each try is a billed agent run lasting minutes.
+    for _ in range(1 if provider == "browser_use" else 2):
+        if provider == "browser_use":
+            text = _attempt_browser_use_vision(prompt, images, max_tokens, errors, start_url)
+        else:
             text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
-            if text:
-                yield text, provider
+        if text:
+            yield text, provider
+    errors.append(_no_fallback_note(provider))
 
 
 def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_tokens: int = 2048) -> tuple[str, str]:
-    """Same fallback shape as generate_text(), but for a prompt grounded in
-    one or more real screenshots (e.g. the client's own homepage at
-    several viewports) instead of text alone. `images` is a list of
-    (image_bytes, mime_type) pairs, sent together in a single vision call
-    — not one call per image. With no preference set, GROQ_MODEL itself is
-    text-only, but the same free Groq key also reaches Groq's vision
-    models (see GROQ_VISION_MODELS/_try_groq_vision above), tried first
-    for the same fast-recovery-budget reason generate_text() tries Groq
-    first — Gemini, then Claude follow.
-
-    Respects set_preferred_provider() same as generate_text() does. With a
-    preference set, this is a STRICT pin (2026-09-28, see
-    _provider_order()) — only that provider is tried, no fallback to
-    Groq/Gemini/Claude on failure. (Earlier, 2026-09-26 fix: a job's pin
-    used to not reach vision calls at all, always going Groq→Gemini→Claude
-    regardless of the pick — confirmed real, Geopits regen 2026-09-26.
-    That's fixed; the pin now reaches vision calls, and as of today it's
-    strict rather than just a priority bump.)
-
-    For a caller that can tell an inadequate response from a good one on
-    its own terms (e.g. it parses JSON out of the text) — iterate
-    iter_text_with_images_attempts() instead, same as iter_text_attempts
-    vs generate_text().
-
-    Raises NoAIProviderConfigured if no key is set or the attempted
-    provider's call fails."""
+    """Same as generate_text(), for a prompt grounded in screenshots.
+    `images` is a list of (image_bytes, mime_type) pairs sent together in
+    one call, to the selected provider only. For a caller that parses the
+    answer itself, iterate iter_text_with_images_attempts() instead."""
     errors: list[str] = []
     for text, provider in iter_text_with_images_attempts(prompt, images, max_tokens, errors):
         return text, provider

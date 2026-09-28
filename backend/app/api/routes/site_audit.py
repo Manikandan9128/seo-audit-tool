@@ -17,7 +17,7 @@ from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from sqlalchemy.orm import Session, defer
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import ReportAISelection, get_current_user, get_db, report_ai_selection, validate_ai_selection
 from app.config import settings
 from app.db.session import SessionLocal
 from app.integrations import google_oauth, text_ai_client
@@ -100,10 +100,16 @@ def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
 
 
 @router.post("/{client_id}/site-audit")
-def site_audit(client_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def site_audit(
+    client_id: uuid.UUID,
+    ai: ReportAISelection = Depends(report_ai_selection),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     client = _get_owned_client(client_id, db, current_user)
     try:
-        result = run_site_audit(client.website_url)
+        with text_ai_client.selected_provider_scope(ai.provider, ai.claude_model):
+            result = run_site_audit(client.website_url)
     except Exception as e:
         logger.exception("Site audit failed for client %s (%s)", client_id, client.website_url)
         raise HTTPException(status_code=502, detail=f"Site audit failed: {str(e)[:300]}") from e
@@ -320,6 +326,7 @@ def pagespeed(
 def company_overview(
     client_id: uuid.UUID,
     force: bool = False,
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -336,7 +343,8 @@ def company_overview(
     client = _get_owned_client(client_id, db, current_user)
     if not force and client.company_overview_cache:
         return client.company_overview_cache
-    result = extract_company_overview(client.website_url)
+    with text_ai_client.selected_provider_scope(ai.provider, ai.claude_model):
+        result = extract_company_overview(client.website_url)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
     client.company_overview_cache = result
@@ -1532,7 +1540,7 @@ def _gather_report_data(
         # and repeated calls were burning through Gemini's free-tier quota
         # for no benefit. Only refreshed via the explicit refresh endpoint.
         company_overview_result = client.company_overview_cache
-    elif include_company_overview and (settings.gemini_api_key or settings.claude_api_key):
+    elif include_company_overview and text_ai_client.selected_provider_ready():
         progress("Reading company overview...", 5)
         result = extract_company_overview(client.website_url)
         if "error" not in result:
@@ -2153,26 +2161,25 @@ def _gather_report_data(
     # render. Multiple uploads get concatenated so the AI sees everything.
     geopulse_rows = _all_rows("geopulse", own_only=True)
     geopulse_analysis_result = None
-    if geopulse_rows and (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key):
+    if geopulse_rows:
         combined_geopulse_text = "\n\n---\n\n".join(
             r.get("raw_text", "") for r in geopulse_rows if r.get("raw_text")
         )
-        geopulse_error = "the AI returned no usable result"
         try:
-            geopulse_analysis_result = generate_aeo_geo_content(combined_geopulse_text) or None
+            geopulse_result = generate_aeo_geo_content(combined_geopulse_text)
         except Exception as e:
-            geopulse_error = str(e)
             logger.warning("GeoPulse AEO/GEO content generation failed for client %s: %s", client.id, e)
-        if not geopulse_analysis_result:
+            geopulse_result = {"error": str(e)}
+        if geopulse_result.get("aeo_items") or geopulse_result.get("geo_items"):
+            geopulse_analysis_result = geopulse_result
+        else:
             # A visibility check WAS uploaded but produced nothing usable —
             # distinct from "never uploaded" so the slide can say so
             # instead of implying the check was never run.
             geopulse_analysis_result = {"uploaded_but_unavailable": True}
-            content_issues.append("AEO/GEO slides: the AI visibility-check file couldn't be analysed this run.")
-            # `e` only exists inside the except block — an empty (not raised)
-            # result used to crash the whole report here with "cannot access
-            # local variable 'e'" (BharatBenz, 2026-09-23).
-            content_issues.append(f"AEO/GEO content (GeoPulse): {geopulse_error}")
+            content_issues.append(
+                f"AEO/GEO (GeoPulse): {geopulse_result.get('error') or 'the uploaded file had no readable text'}"
+            )
 
     # Competitor Analysis comparison table: prefer Domain Overview rows (own +
     # competitors) when uploaded — they carry DR/backlinks/top-countries/
@@ -2364,17 +2371,11 @@ def _gather_report_data(
     # site itself couldn't be reached) — build_report's own "note"
     # fallback covers that gap, same as the old pipeline.
     ui_audit_result = None
-    vision_key_configured = bool(settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key)
-    if not vision_key_configured:
-        # 2026-09-10: previously indistinguishable in the logs from a
-        # capture failure below — this case is deterministic (no vision-
-        # capable key configured at all, so capture is never even
-        # attempted) and needs a different fix (add a Groq/Gemini/Claude
-        # key) than a capture failure (bot-blocked/timed-out) does.
-        logger.warning(
-            "Skipping UI-Level Fixes analysis for %s — no Groq, Gemini, or Claude API key configured.",
-            own_website_domain,
-        )
+    if not text_ai_client.selected_provider_ready():
+        try:
+            text_ai_client.resolve_selected_provider()
+        except text_ai_client.NoAIProviderConfigured as e:
+            content_issues.append(f"UI-Level Fixes: {e}")
     else:
         capture = capture_ui_audit(client.website_url)
         if not capture or not capture.get("desktop"):
@@ -2419,7 +2420,7 @@ def _gather_report_data(
             ai_result = generate_ui_audit_issues(client.name, client.website_url, company_overview_result, page_facts, images)
             if ai_result.get("error"):
                 logger.warning("UI-Level Fixes vision pass failed for %s: %s", client.website_url, ai_result["error"])
-                content_issues.append(f"UI-Level Fixes (vision pass): {ai_result['error']}")
+                content_issues.append(f"UI-Level Fixes: {ai_result['error']}")
             else:
                 validated = validate_ui_audit_issues(ai_result.get("issues") or [], page_facts)
                 sheet_export = export_full_issue_list(client.name, validated["issues"], db)
@@ -2448,7 +2449,7 @@ def _gather_report_data(
     # the slide itself renders (classify_seo_issues), so the AI never reasons
     # about a number the reader can't also see on the table.
     seo_issues_ai_insights = None
-    if site_audit_issues_rows and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
+    if site_audit_issues_rows and text_ai_client.selected_provider_ready():
         progress("Generating SEO Issues insights...", 62)
         error_entries, warning_entries = classify_seo_issues(site_audit_issues_rows)
         page_totals = _canonical_page_totals(site_audit_pages_rows, None)
@@ -2536,7 +2537,7 @@ def _gather_report_data(
             page_query_rows=page_query_rows, brand_tokens=brand_tokens,
         )
 
-        if settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key:
+        if text_ai_client.selected_provider_ready():
             progress("Analyzing branded vs non-branded search...", 70)
             top_branded = sorted(branded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
             top_nonbranded = sorted(nonbranded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
@@ -2663,7 +2664,7 @@ def _gather_report_data(
             core_problem_backlink_summary["authority_score"] = own_domain_rating
 
     core_problem_result = None
-    if settings.gemini_api_key or settings.claude_api_key:
+    if text_ai_client.selected_provider_ready():
         progress("Diagnosing core problem...", 75)
         core_problem_findings = {
             "homepage_issues": site_audit_result.get("issues", []),
@@ -2728,7 +2729,7 @@ def _gather_report_data(
     # about a schema type or count the reader can't also see on the table.
     schema_ai_insights = None
     schema_impact = None
-    if schema_validation_result and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
+    if schema_validation_result and text_ai_client.selected_provider_ready():
         schema_parts = build_schema_report_parts(schema_validation_result)
         pageviews_by_page_type = {
             r["page_type"]: r["pageviews"] for r in (schema_validation_result.get("by_page_type") or [])
@@ -2847,6 +2848,19 @@ def _gather_report_data(
     }
 
 
+def _request_ai_selection(
+    preferred_provider: str | None, claude_model: str | None, header_selection: ReportAISelection,
+) -> ReportAISelection:
+    """The Report AI Provider for a Generate/Preview/Download request — the
+    body's explicit value, else the X-AI-Provider header every frontend
+    request carries. Required: these endpoints never pick a provider."""
+    selection = validate_ai_selection(
+        preferred_provider or header_selection.provider, claude_model or header_selection.claude_model,
+    )
+    selection.require()
+    return selection
+
+
 @router.post("/{client_id}/report-preview")
 def report_preview(
     client_id: uuid.UUID,
@@ -2857,6 +2871,9 @@ def report_preview(
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
     semrush_source: str | None = Body(default=None),
+    preferred_provider: str | None = Body(default=None),
+    claude_model: str | None = Body(default=None),
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2867,16 +2884,21 @@ def report_preview(
     semrush_source: None/"manual" (uploaded CSVs, the default) or "mcp"
     (the client's fetched Semrush MCP snapshot)."""
     client = _get_owned_client(client_id, db, current_user)
+    selection = _request_ai_selection(preferred_provider, claude_model, ai)
     semrush_mcp_data_service.set_active_snapshot(_semrush_snapshot_for(semrush_source, client_id, db))
     try:
-        data = _gather_report_data(
-            client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-            company_overview_override, competitor_analysis_override, ux_notes,
-        )
+        with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model):
+            data = _gather_report_data(
+                client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
+                company_overview_override, competitor_analysis_override, ux_notes,
+            )
     finally:
         semrush_mcp_data_service.set_active_snapshot(None)
     data = _scrub_report_data(data)
-    return {"client_name": client.name, "website_url": client.website_url, **data}
+    return {
+        "client_name": client.name, "website_url": client.website_url,
+        "ai_provider": selection.provider, "claude_model": selection.claude_model, **data,
+    }
 
 
 def _semrush_snapshot_for(semrush_source: str | None, client_id: uuid.UUID, db: Session) -> dict | None:
@@ -2974,7 +2996,7 @@ def _build_pptx_for_client(
     # falls back to the static per-category slides automatically inside
     # build_report when this is None or a category comes back empty.
     next_steps_ai = None
-    if settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key:
+    if text_ai_client.selected_provider_ready():
         progress("Writing tailored recommendations...", 90)
         client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
         findings = _build_next_steps_findings(data, competitor_narratives)
@@ -3143,6 +3165,9 @@ def generate_report(
     company_overview_override: dict | None = Body(default=None),
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
+    preferred_provider: str | None = Body(default=None),
+    claude_model: str | None = Body(default=None),
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3155,10 +3180,12 @@ def generate_report(
     # (unlike the /start job, which surfaces it via its JSON status) — this
     # legacy synchronous path is kept for backward compatibility only, not
     # used by the current frontend (which always uses /start + polling).
-    pptx_bytes, filename, _content_issues = _build_pptx_for_client(
-        client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-        company_overview_override, competitor_analysis_override, ux_notes,
-    )
+    selection = _request_ai_selection(preferred_provider, claude_model, ai)
+    with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model):
+        pptx_bytes, filename, _content_issues = _build_pptx_for_client(
+            client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
+            company_overview_override, competitor_analysis_override, ux_notes,
+        )
     return Response(
         content=pptx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -3204,17 +3231,14 @@ def _run_generate_report_job(
     request waiting on it past a gateway's timeout."""
     db = SessionLocal()
     progress_db = SessionLocal()
-    # Strictly pins this job's AI calls to one provider (2026-09-28: no
-    # fallback to the others on failure — see text_ai_client._provider_
-    # order()'s docstring for why) — this thread runs the whole job start
-    # to finish, so a thread-local set here is visible to every
-    # generate_text() call this job makes, with nothing to thread through
-    # the ~10 call sites in between. Reset in finally since threading.
-    # Thread doesn't tear the thread down between jobs on some deployments.
+    # Pins every AI call this job makes to the selected Report AI Provider
+    # — the only provider used, no fallback (text_ai_client.resolve_
+    # selected_provider). This thread runs the whole job, so a thread-local
+    # set here reaches every generate_text() call; nested pools inherit it
+    # via JobContextThreadPoolExecutor. Reset in finally.
     text_ai_client.set_preferred_provider(preferred_provider)
     # Which Claude model this job's Claude calls use (2026-09-25), same
-    # thread-local-per-job pattern — applies whether Claude is the
-    # preferred provider or only reached on the fallback path.
+    # thread-local-per-job pattern.
     text_ai_client.set_claude_model(claude_model)
     # Real per-report Claude token usage (2026-09-25) — same thread-local
     # lifecycle as set_preferred_provider right above: reset at the start
@@ -3301,27 +3325,22 @@ def start_generate_report_job(
     preferred_provider: str | None = Body(default=None),
     claude_model: str | None = Body(default=None),
     semrush_source: str | None = Body(default=None),
+    ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Kicks off a background PPTX build and returns a job id to poll —
     avoids blocking on a single long request that could outlast the hosting
-    gateway's timeout. preferred_provider ('groq'/'gemini'/'claude'/
-    'browser_use'/'openrouter') strictly pins every AI call this job makes,
-    including calls from its nested thread pools, to that one provider, with
-    no fallback to the others (None keeps the default Groq -> Gemini ->
-    Claude chain). 'browser_use' runs a real Browser Use Cloud agent run per
-    AI call this job makes, which is much slower per call (a billed agent
-    run, not a token completion) than the other three.
-    claude_model (2026-09-25) picks which Claude model any Claude call this
-    job makes uses — see text_ai_client.CLAUDE_MODEL_CHOICES for the valid
-    ids; applies whether or not Claude is the preferred_provider, since a
-    fallback call still reaches Claude on the other two providers' failure."""
+    gateway's timeout. Every AI call the job makes, including from its
+    nested thread pools, uses exactly the selected Report AI Provider
+    (preferred_provider in the body, else the X-AI-Provider header) — no
+    provider order, no fallback. Required: without one the request is
+    refused rather than a provider picked for the user. claude_model picks
+    the Claude model when Claude is selected (text_ai_client.
+    CLAUDE_MODEL_CHOICES)."""
     _get_owned_client(client_id, db, current_user)
-    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use", "openrouter"):
-        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', 'openrouter', or omitted")
-    if claude_model is not None and claude_model not in text_ai_client.CLAUDE_MODEL_CHOICES:
-        raise HTTPException(status_code=400, detail=f"claude_model must be one of {sorted(text_ai_client.CLAUDE_MODEL_CHOICES)} or omitted")
+    selection = _request_ai_selection(preferred_provider, claude_model, ai)
+    preferred_provider, claude_model = selection.provider, selection.claude_model
     # One build per client at a time: a double click, a second tab, or a
     # page that lost track of its job after navigation/refresh gets the
     # build already in progress instead of starting a duplicate. The client
@@ -3331,9 +3350,22 @@ def start_generate_report_job(
     active = _active_report_job(db, client_id)
     if active:
         db.commit()
+        if active.ai_provider and active.ai_provider != preferred_provider:
+            # Never hand back a build running on a different provider as
+            # if it were the one just requested.
+            label = text_ai_client.PROVIDER_LABELS[active.ai_provider]
+            raise HTTPException(
+                status_code=409,
+                detail=f"A report for this client is already generating with {label}. "
+                f"Wait for it to finish, then generate again with "
+                f"{text_ai_client.PROVIDER_LABELS[preferred_provider]}.",
+            )
         return {"job_id": active.id, "reused": True}
     semrush_snapshot = _semrush_snapshot_for(semrush_source, client_id, db)
-    job = ReportGenerationJob(client_id=client_id, status="pending")
+    job = ReportGenerationJob(
+        client_id=client_id, status="pending", ai_provider=preferred_provider,
+        claude_model=claude_model if preferred_provider == "claude" else None,
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -3376,6 +3408,8 @@ def _report_job_status(job: ReportGenerationJob) -> dict:
         "progress_stage": job.progress_stage,
         "progress_pct": job.progress_pct,
         "content_generation_issues": job.content_generation_issues,
+        "ai_provider": job.ai_provider,
+        "claude_model": job.claude_model,
         "created_at": job.created_at,
     }
 

@@ -14,7 +14,7 @@ import json
 import logging
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_with_images_attempts
+from app.integrations.text_ai_client import NoAIProviderConfigured, failure_message, iter_text_with_images_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,29 @@ def _company_context(company_profile: dict | None) -> str:
     return " ".join(parts) or f"Company: {name}" if name else ""
 
 
+def _salvage_truncated_issues(text: str) -> dict | None:
+    """Keeps every complete issue object from an answer cut off mid-list
+    (2026-09-28: a 25-issue answer can run past a provider's output cap —
+    Groq's shared TPM budget especially — and the whole pass used to fail
+    as "did not return valid JSON" even though most issues were intact)."""
+    array_start = text.find("[", text.find('"issues"'))
+    if text.find('"issues"') == -1 or array_start == -1:
+        return None
+    decoder = json.JSONDecoder()
+    issues, pos = [], array_start + 1
+    while True:
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(text) or text[pos] != "{":
+            break
+        try:
+            obj, pos = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            break
+        issues.append(obj)
+    return {"issues": issues} if issues else None
+
+
 def generate_ui_audit_issues(
     client_name: str, website_url: str, company_profile: dict | None,
     page_facts: dict, images: list[tuple[bytes, str]],
@@ -106,17 +129,17 @@ def generate_ui_audit_issues(
         except json.JSONDecodeError:
             pass
         start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start == -1 or end <= start:
-            return None
-        try:
-            return json.loads(cleaned[start : end + 1])
-        except json.JSONDecodeError:
-            return None
+        if start != -1 and end > start:
+            try:
+                return json.loads(cleaned[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+        return _salvage_truncated_issues(cleaned)
 
     errors: list[str] = []
     last_raw = None
     try:
-        for raw, provider in iter_text_with_images_attempts(prompt, images, 4096, errors):
+        for raw, provider in iter_text_with_images_attempts(prompt, images, 4096, errors, start_url=website_url):
             last_raw = raw
             data = _parse(raw)
             if data is None:
@@ -129,9 +152,8 @@ def generate_ui_audit_issues(
     except NoAIProviderConfigured as e:
         return {"error": str(e)}
 
-    if last_raw is None:
-        return {"error": " / ".join(errors) if errors else "No vision-capable provider responded"}
-    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}
+    error = failure_message("UI/UX analysis", errors)
+    return {"error": error} if last_raw is None else {"error": error, "raw": last_raw[:500]}
 
 
 def _truncate(text: str, max_len: int) -> str:

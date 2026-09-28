@@ -67,8 +67,8 @@ def generate_business_themes(
         unclassified=UNCLASSIFIED_THEME,
         keyword_list="\n".join(f"- {k}" for k in keywords),
     )
-    # Tries every configured provider in order, not just the first one to
-    # answer (2026-09-22, same fix as structured_data_insights_service,
+    # Takes up to two responses from the selected Report AI Provider, not just the first
+    # (2026-09-22, same fix as structured_data_insights_service,
     # 2026-09-20; see core_problem_service.generate_core_problem's
     # docstring for why).
     errors: list[str] = []
