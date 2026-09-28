@@ -214,7 +214,11 @@ def test_ambiguous_relevance_excluded_from_table_with_review_note():
     assert "clearly relevant" in table_text
     assert "unsure keyword" not in table_text
     insights_text = _slide_text(slides[-1])
-    assert "manual relevance review" in insights_text
+    # 2026-09-28 Competitor Keyword Gap rule: "manual relevance review" is
+    # banned internal-process language — client-safe wording keeps the
+    # same finding (this specific keyword is borderline) without it.
+    assert "manual relevance review" not in insights_text
+    assert "unclear relevance to your business" in insights_text
     assert "unsure keyword" in insights_text
 
 

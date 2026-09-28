@@ -6043,6 +6043,28 @@ def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int,
             f"Highest-volume Shared keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
             f"you and {_gap_row_competitors_text(top)} both rank."
         )
+        # 2026-09-28 Competitor Keyword Gap rule: Key Insights should
+        # surface "meaningful Shared ranking weaknesses", not just that
+        # both sides rank at all — your_position/competitor position are
+        # already on every row, just not compared before now. Only
+        # surfaced past a real gap (>=5 positions), so a 1-2 spot
+        # difference (noise, not a weakness) never shows.
+        weakest, weakest_gap = None, 0
+        for r in status_rows:
+            your_pos = r.get("your_position")
+            cps = [cp for cp in (r.get("competitor_positions") or []) if cp.get("position")]
+            if not your_pos or not cps:
+                continue
+            best = min(cps, key=lambda cp: cp["position"])
+            gap = your_pos - best["position"]
+            if gap > weakest_gap:
+                weakest, weakest_gap = (r, best, your_pos), gap
+        if weakest and weakest_gap >= 5:
+            r, best, your_pos = weakest
+            insights.append(
+                f"Weakest Shared ranking: \"{r['keyword']}\" — you rank #{your_pos} while "
+                f"{best['competitor']} ranks #{best['position']}, a {weakest_gap}-position gap worth closing."
+            )
     elif status == "Untapped":
         insights.append(
             f"Highest-volume Untapped keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
@@ -6450,10 +6472,15 @@ def add_keyword_gap_slides(
         "showing the scale of the competitive gap."
     )
     if ambiguous_rows:
+        # 2026-09-28 Competitor Keyword Gap rule: "manual relevance review"
+        # is the banned internal-process label, and "could not confidently
+        # judge" exposes the AI classification step — kept the underlying
+        # finding (these specific keywords are borderline for this
+        # business), dropped the process description.
         review_examples = ", ".join(f"\"{r.get('keyword')}\"" for r in ambiguous_rows[:3])
-        overview_insights.append(f"Needs manual relevance review: {review_examples} — could not confidently judge against the client's business.")
+        overview_insights.append(f"Keywords with unclear relevance to your business: {review_examples}.")
     if kd_unavailable_count:
-        overview_insights.append(f"{kd_unavailable_count} keyword(s) excluded — KD_UNAVAILABLE (keyword difficulty missing in the source export).")
+        overview_insights.append(f"{kd_unavailable_count} keyword(s) excluded — keyword difficulty wasn't available in the source export.")
 
     insights_by_category: dict[str, list[str]] = {}
     for category in ("Missing", "Shared", "Untapped"):
