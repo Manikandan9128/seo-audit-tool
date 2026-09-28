@@ -880,6 +880,38 @@ _VISION_PROVIDER_ATTEMPTS = {
 }
 
 
+def iter_text_with_images_attempts(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]):
+    """Vision-call counterpart to iter_text_attempts above — yields (text,
+    provider) for EVERY configured vision-capable provider that returned a
+    non-empty raw response, instead of stopping at the first one.
+
+    2026-09-28: generate_text_with_images() below used to stop at the first
+    provider with ANY non-empty response, so a caller whose OWN JSON parse
+    of that text then failed had nowhere left to go — confirmed real (UI-
+    Level Fixes vision pass surfacing "AI did not return valid JSON" with
+    working, paid Gemini and Claude keys configured, because Groq vision
+    answered first with syntactically-broken JSON and nothing downstream
+    ever got a chance at Gemini/Claude). Every text-only AI-generated slide
+    in this codebase already retries the next provider on a bad JSON parse
+    (see company_overview_service.py, core_problem_service.py, etc. — this
+    just brings the vision path to parity.
+
+    Raises NoAIProviderConfigured (on first iteration) only when no vision-
+    capable provider key is configured at all; yields nothing if every
+    configured provider's raw call itself failed or returned empty (same
+    as generate_text_with_images() raising NoAIProviderConfigured with
+    `errors` joined)."""
+    if not (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
+        raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
+    images = [_cap_image_dimensions(b, m) for b, m in images]
+    for provider in _provider_order():
+        if provider not in _VISION_PROVIDER_ATTEMPTS:
+            continue  # preferred_provider can be "browser_use"/"openrouter" — no vision path for those
+        text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
+        if text:
+            yield text, provider
+
+
 def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_tokens: int = 2048) -> tuple[str, str]:
     """Same fallback shape as generate_text(), but for a prompt grounded in
     one or more real screenshots (e.g. the client's own homepage at
@@ -902,19 +934,15 @@ def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_
     "Groq vision request failed" / "Gemini free-tier daily quota
     exceeded" before ever reaching Claude).
 
+    For a caller that can tell an inadequate response from a good one on
+    its own terms (e.g. it parses JSON out of the text) — iterate
+    iter_text_with_images_attempts() instead, same as iter_text_attempts
+    vs generate_text().
+
     Raises NoAIProviderConfigured if no key is set or every call fails."""
-    if not (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
-        raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
-
-    images = [_cap_image_dimensions(b, m) for b, m in images]
     errors: list[str] = []
-    for provider in _provider_order():
-        if provider not in _VISION_PROVIDER_ATTEMPTS:
-            continue  # preferred_provider can be "browser_use"/"openrouter" — no vision path for those
-        text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
-        if text:
-            return text, provider
-
+    for text, provider in iter_text_with_images_attempts(prompt, images, max_tokens, errors):
+        return text, provider
     raise NoAIProviderConfigured(" / ".join(errors))
 
 

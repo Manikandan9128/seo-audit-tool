@@ -14,7 +14,7 @@ import json
 import logging
 import re
 
-from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text_with_images
+from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_with_images_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -83,33 +83,55 @@ def generate_ui_audit_issues(
     the order the prompt describes: desktop first-screen, desktop
     full-page, mobile first-screen, mobile full-page. Returns
     {"issues": [...]} (raw, NOT yet validated — see validate_ui_audit_
-    issues) or {"error": str}."""
+    issues) or {"error": str}.
+
+    2026-09-28: loops every configured vision-capable provider's response
+    (iter_text_with_images_attempts) instead of taking only the first
+    non-empty one — a provider can answer successfully (billed, no error)
+    with text that just isn't valid JSON, and this pass used to stop right
+    there even with other working/paid keys configured. Same pattern every
+    text-only AI-generated slide in this codebase already uses."""
     if not images:
         return {"error": "No screenshots captured — cannot run the UI audit vision pass."}
     prompt = _PROMPT_TEMPLATE.format(
         client_name=client_name, website_url=website_url, company_context=_company_context(company_profile),
         page_facts_json=json.dumps(page_facts, separators=(",", ":"))[:12000], max_issues=_MAX_ISSUES,
     )
+
+    def _parse(raw: str) -> dict | None:
+        cleaned = raw.strip()
+        cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            return json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+
+    errors: list[str] = []
+    last_raw = None
     try:
-        raw, _provider = generate_text_with_images(prompt, images, max_tokens=4096)
+        for raw, provider in iter_text_with_images_attempts(prompt, images, 4096, errors):
+            last_raw = raw
+            data = _parse(raw)
+            if data is None:
+                errors.append(f"{provider} did not return valid JSON")
+                continue
+            if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
+                errors.append(f"{provider} response missing an 'issues' array")
+                continue
+            return {"issues": data["issues"]}
     except NoAIProviderConfigured as e:
         return {"error": str(e)}
 
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start == -1 or end <= start:
-            return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-        try:
-            data = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError:
-            return {"error": "AI did not return valid JSON", "raw": raw[:500]}
-    if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
-        return {"error": "AI response missing an 'issues' array", "raw": raw[:500]}
-    return {"issues": data["issues"]}
+    if last_raw is None:
+        return {"error": " / ".join(errors) if errors else "No vision-capable provider responded"}
+    return {"error": " | ".join(errors) if errors else "AI did not return valid JSON", "raw": last_raw[:500]}
 
 
 def _truncate(text: str, max_len: int) -> str:

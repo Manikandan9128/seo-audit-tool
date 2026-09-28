@@ -10,18 +10,28 @@ def _images():
     return [(b"d1", "image/png"), (b"d2", "image/png"), (b"m1", "image/png"), (b"m2", "image/png")]
 
 
+def _attempts(*items):
+    """items: list of (raw_text, provider) tuples to yield in order — same
+    generator-mock shape as test_geopulse_ai_service.py/test_core_problem_
+    service.py use for iter_text_attempts."""
+    def _gen(prompt, images, max_tokens, errors):
+        for raw, provider in items:
+            yield raw, provider
+    return _gen
+
+
 # --- generate_ui_audit_issues -------------------------------------------------
 
 def test_generate_issues_parses_valid_response():
     response = json.dumps({"issues": [{"title": "No clear CTA", "evidence": "0 CTAs above the fold", "where": "Hero"}]})
-    with patch(f"{_MOD}.generate_text_with_images", return_value=(response, "claude")):
+    with patch(f"{_MOD}.iter_text_with_images_attempts", side_effect=_attempts((response, "claude"))):
         result = generate_ui_audit_issues("Acme", "acme.com", None, {}, _images())
     assert result["issues"][0]["title"] == "No clear CTA"
 
 
 def test_generate_issues_strips_markdown_fences():
     response = "```json\n" + json.dumps({"issues": []}) + "\n```"
-    with patch(f"{_MOD}.generate_text_with_images", return_value=(response, "groq")):
+    with patch(f"{_MOD}.iter_text_with_images_attempts", side_effect=_attempts((response, "groq"))):
         result = generate_ui_audit_issues("Acme", "acme.com", None, {}, _images())
     assert result["issues"] == []
 
@@ -32,22 +42,35 @@ def test_generate_issues_requires_images():
 
 
 def test_generate_issues_returns_error_on_malformed_json():
-    with patch(f"{_MOD}.generate_text_with_images", return_value=("not json at all", "groq")):
+    with patch(f"{_MOD}.iter_text_with_images_attempts", side_effect=_attempts(("not json at all", "groq"))):
         result = generate_ui_audit_issues("Acme", "acme.com", None, {}, _images())
     assert "error" in result
 
 
 def test_generate_issues_returns_error_when_issues_key_missing():
-    with patch(f"{_MOD}.generate_text_with_images", return_value=(json.dumps({"other": []}), "groq")):
+    with patch(f"{_MOD}.iter_text_with_images_attempts", side_effect=_attempts((json.dumps({"other": []}), "groq"))):
         result = generate_ui_audit_issues("Acme", "acme.com", None, {}, _images())
     assert "error" in result
 
 
 def test_generate_issues_returns_error_when_no_provider_configured():
     from app.integrations.text_ai_client import NoAIProviderConfigured
-    with patch(f"{_MOD}.generate_text_with_images", side_effect=NoAIProviderConfigured("no key")):
+    with patch(f"{_MOD}.iter_text_with_images_attempts", side_effect=NoAIProviderConfigured("no key")):
         result = generate_ui_audit_issues("Acme", "acme.com", None, {}, _images())
     assert result["error"] == "no key"
+
+
+def test_generate_issues_falls_through_to_next_provider_on_bad_json(monkeypatch):
+    # 2026-09-28 fix: Groq vision answering first with broken JSON must not
+    # kill the whole pass when a working Gemini/Claude key is also
+    # configured — the real bug this fork fixed.
+    response = json.dumps({"issues": [{"title": "No clear CTA", "evidence": "0 CTAs above the fold", "where": "Hero"}]})
+    with patch(
+        f"{_MOD}.iter_text_with_images_attempts",
+        side_effect=_attempts(("not json at all", "groq"), (response, "claude")),
+    ):
+        result = generate_ui_audit_issues("Acme", "acme.com", None, {}, _images())
+    assert result["issues"][0]["title"] == "No clear CTA"
 
 
 # --- validate_ui_audit_issues -------------------------------------------------
