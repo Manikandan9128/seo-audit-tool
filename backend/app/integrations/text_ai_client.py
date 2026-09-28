@@ -624,13 +624,30 @@ def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
     NoAIProviderConfigured (on first iteration) only when no provider key
     is configured at all; yields nothing if every configured provider's
     raw call itself failed or returned empty (same as generate_text()
-    raising NoAIProviderConfigured with `errors` joined)."""
+    raising NoAIProviderConfigured with `errors` joined).
+
+    2026-09-28: a STRICT pin (_provider_order() returning exactly one
+    provider) gets that provider called twice, not once, before giving up
+    — confirmed real: with no pin, a provider whose raw response fails the
+    caller's own JSON parse (this function's whole reason to exist) simply
+    falls through to the next provider in the default 3-provider chain,
+    but a strict pin has no "next provider" to fall to, so a single bad-
+    JSON response from the pinned provider failed outright even though the
+    same provider asked again often just succeeds (same one-request-is-a-
+    roll reasoning _attempt_claude's own internal retry already applies to
+    transport failures — this extends it to the caller-parse-rejected-it
+    case a pin otherwise has no recovery from). A caller that accepts the
+    first yield (the normal case) never sees the second attempt at all,
+    since this generator is lazy and only produces it if asked."""
     if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key or settings.openrouter_api_key):
         raise NoAIProviderConfigured("No Groq, Gemini, Claude, Browser Use, or OpenRouter API key configured — add one in Settings")
-    for provider in _provider_order():
-        text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
-        if text:
-            yield text, provider
+    order = _provider_order()
+    attempts_per_provider = 2 if len(order) == 1 else 1
+    for provider in order:
+        for _ in range(attempts_per_provider):
+            text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
+            if text:
+                yield text, provider
 
 
 def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
@@ -925,12 +942,18 @@ def iter_text_with_images_attempts(prompt: str, images: list[tuple[bytes, str]],
             f"{preferred} isn't a vision-capable provider — this pass needs Groq, Gemini, or Claude. "
             "Pick one of those, or leave provider selection on auto."
         )
+    # Same two-tries-for-a-strict-pin reasoning as iter_text_attempts above
+    # — a strict pin has no next provider to fall to, so give the one
+    # pinned provider a second independent vision call before giving up,
+    # instead of one bad-JSON response ending the whole pass.
+    attempts_per_provider = 2 if len(order) == 1 else 1
     for provider in order:
         if provider not in _VISION_PROVIDER_ATTEMPTS:
             continue
-        text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
-        if text:
-            yield text, provider
+        for _ in range(attempts_per_provider):
+            text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
+            if text:
+                yield text, provider
 
 
 def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_tokens: int = 2048) -> tuple[str, str]:
