@@ -92,6 +92,69 @@ def test_first_successful_provider_short_circuits_the_rest():
     mock_gemini.assert_not_called()
 
 
+def test_preferred_provider_is_a_strict_pin_not_just_first_priority():
+    # 2026-09-28: a preference used to only move that provider to the
+    # FRONT of the fallback order — Claude failing still silently fell
+    # through to Groq, so "I selected paid Claude" wasn't a real
+    # guarantee. Groq and Gemini are both configured and would happily
+    # answer here; with Claude pinned and failing, neither should ever be
+    # called, and the whole call should fail rather than substitute one.
+    text_ai_client.set_preferred_provider("claude")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            mock_settings.groq_api_key = "gsk_test"
+            mock_settings.gemini_api_key = "test"
+            mock_settings.claude_api_key = "sk-ant-test"
+            with patch("app.integrations.text_ai_client._try_groq", return_value="groq answer") as mock_groq, \
+                 patch("app.integrations.text_ai_client._try_gemini", return_value="gemini answer") as mock_gemini, \
+                 patch("app.integrations.text_ai_client._try_claude", side_effect=Exception("Claude overloaded")):
+                with pytest.raises(NoAIProviderConfigured):
+                    generate_text("some prompt")
+            mock_groq.assert_not_called()
+            mock_gemini.assert_not_called()
+    finally:
+        text_ai_client.set_preferred_provider(None)
+
+
+def test_preferred_provider_vision_is_a_strict_pin_not_just_first_priority():
+    text_ai_client.set_preferred_provider("claude")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            mock_settings.groq_api_key = "gsk_test"
+            mock_settings.gemini_api_key = "test"
+            mock_settings.claude_api_key = "sk-ant-test"
+            with patch("app.integrations.text_ai_client._try_groq_vision", return_value="groq answer") as mock_groq_v, \
+                 patch("app.integrations.text_ai_client._try_gemini_vision", return_value="gemini answer") as mock_gemini_v, \
+                 patch("app.integrations.text_ai_client._try_claude_vision", side_effect=Exception("Claude overloaded")):
+                with pytest.raises(NoAIProviderConfigured):
+                    generate_text_with_images("find issues", [(b"img1", "image/png")], max_tokens=1024)
+            mock_groq_v.assert_not_called()
+            mock_gemini_v.assert_not_called()
+    finally:
+        text_ai_client.set_preferred_provider(None)
+
+
+def test_preferred_provider_with_no_vision_path_raises_clear_error():
+    # browser_use/openrouter have no vision-capable attempt function at
+    # all. With the old best-effort fallback this silently ran vision
+    # calls on Groq/Gemini/Claude instead, even though something else was
+    # picked. Now that a pin means "only this provider," that combination
+    # must fail with a clear message, not a blank one.
+    text_ai_client.set_preferred_provider("browser_use")
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings:
+            mock_settings.groq_api_key = "gsk_test"
+            mock_settings.gemini_api_key = "test"
+            mock_settings.claude_api_key = "sk-ant-test"
+            with patch("app.integrations.text_ai_client._try_groq_vision") as mock_groq_v:
+                with pytest.raises(NoAIProviderConfigured) as exc_info:
+                    generate_text_with_images("find issues", [(b"img1", "image/png")], max_tokens=1024)
+            mock_groq_v.assert_not_called()
+        assert "browser_use isn't a vision-capable provider" in str(exc_info.value)
+    finally:
+        text_ai_client.set_preferred_provider(None)
+
+
 def test_attempt_claude_retries_once_on_empty_response_then_succeeds():
     # Regression (confirmed real, Geopits Core Problem slide, 2026-09-24):
     # a paid Claude key can still answer with a 200 and zero text (safety

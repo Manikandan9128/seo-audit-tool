@@ -243,10 +243,11 @@ export default function ClientDetailPage() {
   }, [dl.downloadedSeq]);
 
   // "" = default automatic order (Groq, then Gemini, then Claude — see
-  // text_ai_client.py). Picking one here pins it first for this report's
-  // AI calls; still falls back to the others on failure, same as the
-  // default order does. Only keys actually configured in Settings are
-  // offered — no point letting someone pick a provider with no key.
+  // text_ai_client.py). Picking one here STRICTLY pins this report's AI
+  // calls to that provider only (2026-09-28) — no fallback to the others
+  // on failure, so a selected paid key is never silently substituted with
+  // a free one. Only keys actually configured in Settings are offered —
+  // no point letting someone pick a provider with no key.
   const [preferredProvider, setPreferredProvider] = useState("");
   const [claudeModel, setClaudeModel] = useState("claude-sonnet-5");
   const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
@@ -754,7 +755,7 @@ export default function ClientDetailPage() {
               <select
                 value={preferredProvider}
                 onChange={(e) => setPreferredProvider(e.target.value)}
-                title="AI provider for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — still falls back to the others on failure"
+                title="AI provider for this report's AI sections (Company Overview, Core Problem, competitor narratives, Next Steps) — strict pin, no fallback to the others on failure"
                 style={{ marginRight: 8 }}
               >
                 {availableProviders.map((p) => (

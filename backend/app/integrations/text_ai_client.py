@@ -286,11 +286,15 @@ def _try_claude(prompt: str, max_tokens: int) -> str:
     return text
 
 
-# Lets a caller pin one provider first for the lifetime of a single job's
-# thread (e.g. "run this report with Claude") without threading a
-# preferred_provider parameter through the ~10 call sites between the
-# report-generation route and generate_text() — every one of those calls
-# happens synchronously within one dedicated thread per job/request (see
+# Lets a caller STRICTLY pin one provider for the lifetime of a single
+# job's thread (e.g. "run this report with Claude, and only Claude") --
+# without threading a preferred_provider parameter through the ~10 call
+# sites between the report-generation route and generate_text(). 2026-09-
+# 28: a pin used to only move that provider to the FRONT of the fallback
+# order, still silently substituting Groq/Gemini on any failure -- "I
+# selected paid Claude" wasn't a real guarantee. See _provider_order()'s
+# docstring for the current strict behavior. Every affected call happens
+# synchronously within one dedicated thread per job/request (see
 # _run_generate_report_job, report_preview), so a thread-local is exactly
 # "one preference per in-flight job" with no cross-request leakage risk,
 # as long as callers reset it when done (set_preferred_provider(None) in a
@@ -583,8 +587,16 @@ _DEFAULT_PROVIDER_ORDER = ["groq", "gemini", "claude"]
 
 
 def _provider_order() -> list[str]:
+    """2026-09-28: an explicit preference is now a STRICT pin, not just a
+    priority bump. Before this, set_preferred_provider("claude") still
+    silently fell through to Groq/Gemini on any Claude failure — "I
+    selected paid Claude" wasn't a real guarantee, it was only a
+    first-attempt preference, confirmed surprising to the user in
+    practice. With no preference set (None), the old best-effort
+    multi-provider chain (try Groq, then Gemini, then Claude) is
+    unchanged."""
     preferred = getattr(_provider_preference, "value", None)
-    return [preferred] + [p for p in _DEFAULT_PROVIDER_ORDER if p != preferred] if preferred else _DEFAULT_PROVIDER_ORDER
+    return [preferred] if preferred else _DEFAULT_PROVIDER_ORDER
 
 
 def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
@@ -622,26 +634,21 @@ def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
 
 
 def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
-    """Returns (text, provider_used) — 'groq', 'gemini', or 'claude'. Tries
-    each configured provider in order, falling through to the next on any
-    failure (not configured, empty response, request error). Default order
-    is Groq, Gemini, Claude — see set_preferred_provider() to move one
-    provider to the front of that order for the current thread (e.g. one
-    report-generation job). Raises NoAIProviderConfigured if no key is set
-    at all, or if every configured provider's call failed (message
-    includes each provider's error). max_tokens only affects the
-    Groq/Claude paths — Gemini has no equivalent cap exposed here and just
-    returns whatever it generates."""
+    """Returns (text, provider_used) — 'groq', 'gemini', or 'claude'. With
+    no preference set, tries each default-order provider in turn, falling
+    through to the next on any failure (not configured, empty response,
+    request error). With a preference set (set_preferred_provider), this
+    is now a STRICT pin (2026-09-28, see _provider_order()'s docstring) —
+    only that one provider is tried, no fallback. Raises
+    NoAIProviderConfigured if no key is set at all, or if every attempted
+    provider's call failed (message includes each provider's error).
+    max_tokens only affects the Groq/Claude paths — Gemini has no
+    equivalent cap exposed here and just returns whatever it generates."""
     if not (settings.gemini_api_key or settings.groq_api_key or settings.claude_api_key or settings.browser_use_api_key or settings.openrouter_api_key):
         raise NoAIProviderConfigured("No Groq, Gemini, Claude, Browser Use, or OpenRouter API key configured — add one in Settings")
 
-    preferred = getattr(_provider_preference, "value", None)
-    order = _DEFAULT_PROVIDER_ORDER
-    if preferred:
-        order = [preferred] + [p for p in _DEFAULT_PROVIDER_ORDER if p != preferred]
-
     errors: list[str] = []
-    for provider in order:
+    for provider in _provider_order():
         text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
         if text:
             return text, provider
@@ -904,9 +911,23 @@ def iter_text_with_images_attempts(prompt: str, images: list[tuple[bytes, str]],
     if not (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
         raise NoAIProviderConfigured("No Groq, Gemini, or Claude API key configured — vision calls need one of these")
     images = [_cap_image_dimensions(b, m) for b, m in images]
-    for provider in _provider_order():
+    order = _provider_order()
+    preferred = getattr(_provider_preference, "value", None)
+    if preferred and preferred not in _VISION_PROVIDER_ATTEMPTS:
+        # Strict pin (2026-09-28) on a provider with no vision path
+        # (browser_use/openrouter) — with the old best-effort fallback
+        # this silently ran vision calls on Groq/Gemini/Claude instead,
+        # even though the user picked something else. Now that a pin
+        # means "only this provider, no substitution," that combination
+        # can't produce a vision result at all — say so clearly instead
+        # of yielding nothing with no explanation.
+        raise NoAIProviderConfigured(
+            f"{preferred} isn't a vision-capable provider — this pass needs Groq, Gemini, or Claude. "
+            "Pick one of those, or leave provider selection on auto."
+        )
+    for provider in order:
         if provider not in _VISION_PROVIDER_ATTEMPTS:
-            continue  # preferred_provider can be "browser_use"/"openrouter" — no vision path for those
+            continue
         text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
         if text:
             yield text, provider
@@ -917,29 +938,28 @@ def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_
     one or more real screenshots (e.g. the client's own homepage at
     several viewports) instead of text alone. `images` is a list of
     (image_bytes, mime_type) pairs, sent together in a single vision call
-    — not one call per image. GROQ_MODEL itself is text-only, but the same
-    free Groq key also reaches Groq's vision models (see GROQ_VISION_
-    MODELS/_try_groq_vision above), tried first for the same fast-
-    recovery-budget reason generate_text() tries Groq first — Gemini,
-    then Claude follow as before.
+    — not one call per image. With no preference set, GROQ_MODEL itself is
+    text-only, but the same free Groq key also reaches Groq's vision
+    models (see GROQ_VISION_MODELS/_try_groq_vision above), tried first
+    for the same fast-recovery-budget reason generate_text() tries Groq
+    first — Gemini, then Claude follow.
 
-    Respects set_preferred_provider() same as generate_text() does
-    (2026-09-26 fix): before this, a job's preferred-provider pin only
-    ever reached text calls — every vision call (UI-Level Fixes,
-    Onboarding Breakdown) silently ignored it and always went Groq then
-    Gemini then Claude regardless, so picking "Claude" for a job still
-    burned through Groq/Gemini's free-tier failures first on every vision
-    call (confirmed real, Geopits regen 2026-09-26: user had picked
-    Claude, but the UI-Level Fixes vision pass still hit
-    "Groq vision request failed" / "Gemini free-tier daily quota
-    exceeded" before ever reaching Claude).
+    Respects set_preferred_provider() same as generate_text() does. With a
+    preference set, this is a STRICT pin (2026-09-28, see
+    _provider_order()) — only that provider is tried, no fallback to
+    Groq/Gemini/Claude on failure. (Earlier, 2026-09-26 fix: a job's pin
+    used to not reach vision calls at all, always going Groq→Gemini→Claude
+    regardless of the pick — confirmed real, Geopits regen 2026-09-26.
+    That's fixed; the pin now reaches vision calls, and as of today it's
+    strict rather than just a priority bump.)
 
     For a caller that can tell an inadequate response from a good one on
     its own terms (e.g. it parses JSON out of the text) — iterate
     iter_text_with_images_attempts() instead, same as iter_text_attempts
     vs generate_text().
 
-    Raises NoAIProviderConfigured if no key is set or every call fails."""
+    Raises NoAIProviderConfigured if no key is set or the attempted
+    provider's call fails."""
     errors: list[str] = []
     for text, provider in iter_text_with_images_attempts(prompt, images, max_tokens, errors):
         return text, provider

@@ -3192,12 +3192,13 @@ def _run_generate_report_job(
     request waiting on it past a gateway's timeout."""
     db = SessionLocal()
     progress_db = SessionLocal()
-    # Pins this job's AI calls to one provider first (still falls back to
-    # the others on failure) — this thread runs the whole job start to
-    # finish, so a thread-local set here is visible to every generate_text()
-    # call this job makes, with nothing to thread through the ~10 call
-    # sites in between. Reset in finally since threading.Thread doesn't
-    # tear the thread down between jobs on some deployments.
+    # Strictly pins this job's AI calls to one provider (2026-09-28: no
+    # fallback to the others on failure — see text_ai_client._provider_
+    # order()'s docstring for why) — this thread runs the whole job start
+    # to finish, so a thread-local set here is visible to every
+    # generate_text() call this job makes, with nothing to thread through
+    # the ~10 call sites in between. Reset in finally since threading.
+    # Thread doesn't tear the thread down between jobs on some deployments.
     text_ai_client.set_preferred_provider(preferred_provider)
     # Which Claude model this job's Claude calls use (2026-09-25), same
     # thread-local-per-job pattern — applies whether Claude is the
