@@ -46,7 +46,7 @@ from app.services import ga4_service, gsc_service
 from app.services.company_overview_service import extract_company_overview, fetch_homepage_text
 from app.services.core_problem_service import generate_core_problem
 from app.services.seo_issues_insights_service import generate_seo_issues_insights
-from app.services.structured_data_insights_service import generate_structured_data_insights
+from app.services.structured_data_insights_service import generate_schema_implementation_impact, generate_structured_data_insights
 from app.services.branded_search_insights_service import generate_branded_search_insights
 from app.services.geopulse_ai_service import generate_aeo_geo_content
 from app.services.google_sheets_service import create_combined_keyword_sheet
@@ -2715,6 +2715,7 @@ def _gather_report_data(
     # itself renders (build_schema_report_parts), so the AI never reasons
     # about a schema type or count the reader can't also see on the table.
     schema_ai_insights = None
+    schema_impact = None
     if schema_validation_result and (settings.groq_api_key or settings.gemini_api_key or settings.claude_api_key):
         schema_parts = build_schema_report_parts(schema_validation_result)
         pageviews_by_page_type = {
@@ -2729,6 +2730,19 @@ def _gather_report_data(
         else:
             logger.warning("Structured Data insights generation failed for client %s: %s", client.id, schema_insights_candidate["error"])
             content_issues.append(f"Structured Data insights: {schema_insights_candidate['error']}")
+
+        # 2026-09-28 spec sections 12-27: "Implementation Impact" — a
+        # separate section explaining WHY the applicable schema
+        # opportunities matter, never WHAT to do (schema_ai_insights above
+        # already carries every actionable "Fix: ..." line). Same part1/
+        # part2 numbers, own dedicated prompt/fallback (structured_data_
+        # insights_service.generate_schema_implementation_impact).
+        schema_impact_candidate = generate_schema_implementation_impact(schema_parts["part1"], schema_parts["part2"])
+        if "error" not in schema_impact_candidate:
+            schema_impact = schema_impact_candidate
+        else:
+            logger.warning("Structured Data implementation impact generation failed for client %s: %s", client.id, schema_impact_candidate["error"])
+            content_issues.append(f"Structured Data implementation impact: {schema_impact_candidate['error']}")
 
     # Universal SEO Audit Engine spec (2026-09-20) section 31: structured
     # Issue/Evidence/Affected URLs/Impact/Action/Priority records — the real
@@ -2792,6 +2806,7 @@ def _gather_report_data(
         "page_wise_ai": page_wise_ai,
         "page_wise_exclude_paths": page_wise_exclude_paths or None,
         "schema_ai_insights": schema_ai_insights,
+        "schema_impact": schema_impact,
         "branded_vs_nonbranded_comparison": branded_vs_nonbranded_comparison,
         "branded_vs_nonbranded_narrative": branded_vs_nonbranded_narrative,
         "branded_vs_nonbranded_ai_insights": branded_vs_nonbranded_ai_insights,

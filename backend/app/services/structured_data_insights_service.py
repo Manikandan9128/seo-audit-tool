@@ -138,6 +138,203 @@ def _deterministic_schema_insights(part2: list[dict], eligibility_notes: dict[st
     return [text for _rank, _impact, text in items][:4]
 
 
+IMPLEMENTATION_IMPACT_PROMPT = """You are an SEO consultant writing the "Implementation Impact" section of a \
+"Structured data & schema validator" slide for a client audit report. Below are the same two tables the Key \
+Insights section already covers — this section does NOT repeat those findings. It explains WHY the applicable \
+schema opportunities matter for THIS website's business, not what to do about them (Key Insights already carries \
+every actionable fix).
+
+Part 1 — Applicable schema by page type:
+{part1}
+
+Part 2 — Validation results (Schema Type | Applicable | Present | Valid | Invalid | Missing | Coverage %):
+{part2}
+
+STRICT RULES:
+1. This is NOT a recommendation list. Never use a directive verb: Add, Implement, Create, Fix, Deploy, Update, \
+Optimize, Configure, or any equivalent instruction. Explain the value of the structured representation, not the \
+action of building it.
+2. NEVER include a number of any kind — no page counts, percentages, coverage figures, or counts. Every number \
+already lives in the tables above; this section is prose only.
+3. Write 3-4 points when the data genuinely supports that many distinct opportunities. Write fewer when fewer \
+exist. Never pad with a filler point to hit a count.
+4. Each point must be a DISTINCT schema/content-type opportunity actually present in the tables above — never \
+invent one, never reuse the same fixed set of categories for every website. Only cover a schema type that \
+genuinely appears as Missing, Invalid, or (rarely, as a real strength worth naming) a confirmed Valid win in Part \
+2 above — skip a type that's Not Applicable or absent from the tables.
+5. A schema already Valid must never be described as a gap or as something to build — only mention it (at most \
+once) as an existing strength, and only when it's genuinely meaningful, not simply because it's the only row \
+available.
+6. Never write a generic SEO claim: "improves SEO", "improves rankings", "increases traffic", "improves CTR", \
+"increases conversions", "helps Google rank the page". Never guarantee an outcome (rankings, traffic, CTR, \
+conversions, leads, rich results, enhanced search appearance, AI visibility). Use precise language instead: \
+clarifies, strengthens understanding of, makes ... explicit, establishes relationships between, structures \
+content, signals the structure/purpose of, connects ... with, supports applicable search features, strengthens \
+entity understanding.
+7. Vary sentence construction. Do not open two points with the same phrase. Do not use "Provides", "Helps", \
+"Improves", or "Supports" as an opening word more than once in the whole section — before finalizing, compare \
+every point's opening phrase and rewrite any repeats.
+8. Each point should read as a distinct business/search implication for THIS website, not a schema dictionary \
+definition. Format each as a short label (the content/schema type, e.g. "Product Pages", "Job Listings") followed \
+by one concise sentence.
+9. Never mention AI, confidence scores, validation methodology, clustering, review queues, or any other backend \
+process — this is client-facing prose only.
+10. Never mention that you are an AI, a language model, or any tool by name.
+
+Return ONLY valid JSON, no markdown fences, no commentary:
+{{
+  "impact": [{{"label": string, "text": string}}]
+}}
+"""
+
+
+# Static reference sentence per clean schema type (spec section 15, verbatim
+# examples) — used both as the deterministic fallback and, informally, as
+# the style anchor the AI prompt above draws from. Kept independent of the
+# numbers in part1/part2 (no page counts, no directive verbs) so it can
+# never violate the no-numbers/no-directive-language rules even as a raw
+# static lookup.
+_SCHEMA_IMPACT_LABELS: dict[str, tuple[str, str]] = {
+    "Article": ("Editorial Content", "Clarifies the site's editorial content and its relationship to the topics being covered."),
+    "BlogPosting": ("Editorial Content", "Clarifies the site's editorial content and its relationship to the topics being covered."),
+    "NewsArticle": ("News Content", "Clarifies the site's news content and its relationship to the topics being covered."),
+    "Product": ("Product Pages", "Makes important product attributes easier for search engines to interpret and associate with the offering."),
+    "Service": ("Service Pages", "Strengthens the semantic understanding of the site's service offerings and their relationship to the business."),
+    "JobPosting": ("Job Listings", "Makes individual employment opportunities easier to interpret within applicable job-search experiences."),
+    "Organization": ("Organization", "Strengthens the machine-readable identity of the business and its relationship to the website."),
+    "LocalBusiness": ("Local Presence", "Clarifies the business, location, and local attributes represented on applicable pages."),
+    "WebSite": ("Site Identity", "Establishes clearer machine-readable context around the website and its overall identity."),
+    "BreadcrumbList": ("Page Hierarchy", "Establishes clearer relationships between pages and their position within the site's structure."),
+    "FAQPage": ("FAQ Content", "Structures qualifying question-and-answer content so its format and relationships are easier for search engines to interpret."),
+    "HowTo": ("Instructional Content", "Adds clearer structured context around qualifying step-by-step instructional content."),
+    "VideoObject": ("Video Content", "Strengthens the machine-readable understanding of video content and its associated information."),
+    "Event": ("Events", "Clarifies key event information and its relationship to applicable search experiences."),
+    "Review": ("Reviews & Ratings", "Makes genuine review and rating information more explicit within the context of the associated offering."),
+    "AggregateRating": ("Reviews & Ratings", "Makes genuine review and rating information more explicit within the context of the associated offering."),
+    "Recipe": ("Recipe Content", "Clarifies recipe-specific information and its relationship to the content being presented."),
+    "Course": ("Course Content", "Strengthens the structured understanding of educational course information and its relationship to the offering."),
+    "SoftwareApplication": ("Software/App Pages", "Makes important software or application attributes easier for search engines to interpret."),
+    "Person": ("Individual Profiles", "Clarifies the identity of an individual and their relationship to the organization or content represented on the site."),
+    "ImageObject": ("Image Assets", "Adds clearer structured context around important image assets and their associated information."),
+}
+# Priority order for the deterministic fallback — mirrors the table's own
+# content-importance ordering (_PAGE_TYPE_DISPLAY_ORDER), then site-wide,
+# then anything else detected. Never page-count based (spec section 21).
+_SCHEMA_IMPACT_PRIORITY = [
+    "Article", "BlogPosting", "NewsArticle", "Product", "Service", "JobPosting", "LocalBusiness", "Event",
+    "FAQPage", "HowTo", "VideoObject", "Recipe", "Course", "SoftwareApplication", "Review", "AggregateRating",
+    "Person", "ImageObject", "Organization", "WebSite", "BreadcrumbList",
+]
+
+
+def _clean_schema_type(schema_type: str) -> str:
+    return schema_type[:-len(" (detected)")] if schema_type.endswith(" (detected)") else schema_type
+
+
+def _is_gap_row(row: dict) -> bool:
+    if row.get("site_level"):
+        return row.get("present") == "No" or row.get("valid") == "No"
+    missing = row.get("missing")
+    invalid = row.get("invalid")
+    return bool((isinstance(missing, int) and missing > 0) or (isinstance(invalid, int) and invalid > 0))
+
+
+def _is_meaningful_win_row(row: dict) -> bool:
+    if row.get("site_level"):
+        return row.get("present") == "Yes" and row.get("valid") == "Yes"
+    return row.get("invalid") == 0 and row.get("coverage_pct") == 100 and row.get("missing") == 0
+
+
+def _deterministic_schema_impact(part2: list[dict]) -> list[dict]:
+    """Non-AI fallback, same "must never fully disappear" discipline as
+    _deterministic_schema_insights above. Only ever covers schema types that
+    genuinely appear in part2 as a real gap (Missing/Invalid) or, when there
+    aren't at least 2 real gaps, one genuinely meaningful Valid win — never
+    the same fixed categories for every website, never numbers, never
+    directive language (the static label/text pairs above are written
+    number-free and directive-free by construction)."""
+    gap_types: list[str] = []
+    win_types: list[str] = []
+    seen: set[str] = set()
+    for row in part2:
+        clean = _clean_schema_type(row["schema_type"])
+        if clean in seen:
+            continue
+        if _is_gap_row(row):
+            gap_types.append(clean)
+            seen.add(clean)
+        elif _is_meaningful_win_row(row):
+            win_types.append(clean)
+            seen.add(clean)
+
+    def _rank(t: str) -> int:
+        try:
+            return _SCHEMA_IMPACT_PRIORITY.index(t)
+        except ValueError:
+            return len(_SCHEMA_IMPACT_PRIORITY)
+
+    gap_types.sort(key=_rank)
+    win_types.sort(key=_rank)
+
+    selected = gap_types[:4]
+    if len(selected) < 2 and win_types:
+        for w in win_types:
+            if w not in selected:
+                selected.append(w)
+                break
+    selected = selected[:4]
+
+    impact = []
+    for t in selected:
+        label, text = _SCHEMA_IMPACT_LABELS.get(t, (t, f"Strengthens the machine-readable understanding of {t} and its relationship to the website."))
+        impact.append({"label": label, "text": text})
+    return impact
+
+
+def generate_schema_implementation_impact(part1: list[dict], part2: list[dict]) -> dict:
+    """Returns {"impact": [{"label": str, "text": str}]} or {"error": str}.
+    2026-09-28 Structured Data & Schema spec sections 12-27: a section
+    distinct from Key Insights that explains WHY the applicable schema
+    opportunities matter for this website's business, never WHAT to do
+    (Key Insights already carries every "Fix: ..." action) — no numbers, no
+    directive verbs, 3-4 website-specific points, never padded, never the
+    same fixed categories for every site. Same cross-provider retry +
+    deterministic-fallback discipline as generate_structured_data_insights
+    above (Impact must never fully disappear when every configured
+    provider fails)."""
+    if not part2:
+        return {"error": "No schema data to analyze"}
+
+    prompt = IMPLEMENTATION_IMPACT_PROMPT.format(part1=json.dumps(part1, indent=2), part2=json.dumps(part2, indent=2))
+    errors: list[str] = []
+    empty_from: list[str] = []
+    try:
+        for raw, provider in iter_text_attempts(prompt, max_tokens=1024, errors=errors):
+            cleaned = raw.strip()
+            cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                errors.append(f"{provider} returned invalid JSON: {cleaned[:200]}")
+                continue
+            impact = [
+                item for item in (data.get("impact") or [])
+                if isinstance(item, dict) and item.get("label") and item.get("text")
+            ][:4]
+            if impact:
+                return {"impact": impact}
+            empty_from.append(provider)
+    except NoAIProviderConfigured:
+        pass  # fall through to the deterministic pass below
+
+    fallback = _deterministic_schema_impact(part2)
+    if fallback:
+        return {"impact": fallback, "fallback": True}
+    if empty_from:
+        return {"error": f"Model returned no impact points (tried: {', '.join(empty_from)})"}
+    return {"error": " | ".join(errors) if errors else "Model returned no impact points"}
+
+
 def generate_structured_data_insights(
     part1: list[dict], part2: list[dict], pageviews_by_page_type: dict[str, int], eligibility_notes: dict[str, str]
 ) -> dict:

@@ -3070,6 +3070,77 @@ def add_schema_combined_slide(prs: Presentation, schema_validation: dict, schema
     return slide
 
 
+_IMPACT_DIRECTIVE_RE = re.compile(
+    r"\b(add|implement|create|fix|deploy|update|optimize|configure)\b", re.IGNORECASE
+)
+_IMPACT_NUMBER_RE = re.compile(r"\d")
+
+
+def add_schema_implementation_impact_slide(prs: Presentation, schema_impact: dict | None):
+    """"Implementation Impact" — a separate slide from the Structured Data &
+    Schema Validator's tables/Key Insights (2026-09-28 spec sections 12-27):
+    explains WHY the applicable schema opportunities matter for this
+    website's business, never WHAT to do (Key Insights already carries every
+    actionable "Fix: ..." line) — no numbers, no directive language, 3-4
+    website-specific points, never padded. A separate slide rather than a
+    third block on the combined slide — that slide already carries two full
+    tables plus up to 5 Key Insights bullets; a third section risked
+    overflow/overlap (see no_overlap_content_fits_page standing rule).
+
+    Defensively strips any directive verb or digit a model might still slip
+    in despite the prompt's explicit ban — same belt-and-suspenders pattern
+    as _drop_contradicting_schema_insights above, since nothing upstream of
+    rendering otherwise verifies a model actually followed those rules."""
+    items = [item for item in ((schema_impact or {}).get("impact") or []) if item.get("label") and item.get("text")]
+    if not items:
+        return None
+
+    clean_items = []
+    for item in items:
+        text = item["text"]
+        if _IMPACT_DIRECTIVE_RE.search(text) or _IMPACT_NUMBER_RE.search(text):
+            continue
+        clean_items.append(item)
+    if not clean_items:
+        return None
+    clean_items = clean_items[:4]
+
+    slide = _blank_slide(prs)
+    _content_header(slide, "Structured Data & Schema Validator — Implementation Impact")
+
+    left, width = Inches(0.6), Inches(12.1)
+    top = Inches(1.1)
+    max_y = SLIDE_H - Inches(0.5)
+    card = _card(slide, left, top, width, max_y - top)
+
+    y = top + Inches(0.3)
+    for item in clean_items:
+        label, text = item["label"], item["text"]
+        label_box = slide.shapes.add_textbox(left + Inches(0.35), y, width - Inches(0.7), Inches(0.28))
+        lp = label_box.text_frame.paragraphs[0]
+        lrun = lp.add_run()
+        lrun.text = label
+        lrun.font.size = Pt(14)
+        lrun.font.bold = True
+        lrun.font.color.rgb = _accent()
+        y += Inches(0.3)
+
+        lines = _wrap_lines(text, width - Inches(0.9), size_pt=13)
+        line_h = Inches(0.24)
+        text_box = slide.shapes.add_textbox(left + Inches(0.35), y, width - Inches(0.7), line_h * lines)
+        tf = text_box.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(13)
+        run.font.color.rgb = TEXT_DARK
+        y += line_h * lines + Inches(0.3)
+
+    card.height = min(card.height, y - Inches(0.15) - top)
+    return slide
+
+
 _SCHEMA_POSITIVE_CLAIM_RE = re.compile(
     r"valid win|present:?\s*yes|valid:?\s*yes|no action needed|already (?:in place|implemented|present)|is (?:present|implemented|valid)|correctly implemented",
     re.IGNORECASE,
@@ -9784,6 +9855,7 @@ def build_report(
     keyword_strategy: dict | None = None,
     ui_audit: dict | None = None,
     traffic_capture_rate: float | None = None,
+    schema_impact: dict | None = None,
 ) -> bytes:
     if brand_color_hex:
         try:
@@ -9814,6 +9886,7 @@ def build_report(
             keyword_strategy=keyword_strategy,
             ui_audit=ui_audit,
             traffic_capture_rate=traffic_capture_rate,
+            schema_impact=schema_impact,
         )
     finally:
         _theme["footer"] = ""
@@ -9868,6 +9941,7 @@ def _build_report(
     keyword_strategy: dict | None = None,
     ui_audit: dict | None = None,
     traffic_capture_rate: float | None = None,
+    schema_impact: dict | None = None,
 ) -> bytes:
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -9946,6 +10020,7 @@ def _build_report(
         # add_tech_fixes_slide(prs, page_audit, analytics, site_audit_pages_rows, page_wise_ai, page_wise_exclude_paths)
         if schema_validation and schema_validation.get("total_pages"):
             add_schema_combined_slide(prs, schema_validation, schema_ai_insights)
+            add_schema_implementation_impact_slide(prs, schema_impact)
         elif structured_data_rows:
             add_structured_data_slide(prs, structured_data_rows, site_audit_pages_rows)
 
