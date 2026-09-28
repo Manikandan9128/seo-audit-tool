@@ -28,7 +28,7 @@ def test_uses_pipeline_existing_page_action_when_present():
     ]
     slide = add_content_seo_next_steps_slide(_prs(), rows)
     text = _slide_text(slide)
-    assert "optimize the existing page (https://example.com/payroll)" in text
+    assert "Optimize https://example.com/payroll for these keywords instead of creating a new page" in text
 
 
 def test_falls_back_to_heuristic_when_pipeline_action_absent():
@@ -37,7 +37,7 @@ def test_falls_back_to_heuristic_when_pipeline_action_absent():
     ]
     slide = add_content_seo_next_steps_slide(_prs(), rows)
     text = _slide_text(slide)
-    assert "create a new page — no existing page covers this topic closely enough" in text
+    assert "Create a new page — no existing page covers this topic closely enough" in text
 
 
 def test_cannibalization_note_shown_once_per_url_not_per_cluster():
@@ -51,7 +51,7 @@ def test_cannibalization_note_shown_once_per_url_not_per_cluster():
     ]
     slide = add_content_seo_next_steps_slide(_prs(), rows)
     text = _slide_text(slide)
-    assert text.count("Potential cannibalization") == 1
+    assert text.count("One page is targeting several topics") == 1 and "Potential cannibalization" not in text
 
 
 # --- Content SEO spec 2026-09-23 -------------------------------------------
@@ -81,14 +81,14 @@ def test_evidence_includes_ranking_and_gsc_when_supplied():
     rows = [{"keyword": "payroll software", "search_volume": 900, "position": 14, "gsc_impressions": 1200, "gsc_clicks": 30,
              "intent": "Commercial", "cluster": "Payroll Software", "existing_page_action": "Create New Page"}]
     text = _slide_text(add_content_seo_next_steps_slide(_prs(), rows))
-    assert "ranking #14" in text and "1,200 Search Console impressions" in text
+    assert "Best current ranking: #14" in text and "1,200 Search Console impressions" in text
 
 
 def test_existing_page_action_without_url_is_treated_as_new_page():
     rows = [{"keyword": "payroll software", "search_volume": 900, "intent": "Commercial", "cluster": "Payroll Software",
              "existing_page_action": "Optimize Existing Page", "existing_page_url": None}]
     text = _slide_text(add_content_seo_next_steps_slide(_prs(), rows))
-    assert "None" not in text and "create a new page" in text
+    assert "None" not in text and "Create a new page" in text
 
 
 def test_duplicate_slashes_in_existing_url_are_collapsed():

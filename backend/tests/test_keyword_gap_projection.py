@@ -244,8 +244,13 @@ def test_key_insights_include_actionable_implication_for_missing_keywords():
         _gap_row("missing kw", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
     ]}
     slides = add_keyword_gap_slides(_prs(), analysis)
+    # The actionable next step lives once, on the Executive Summary ("start
+    # with <keyword>") — the Key Insights slide no longer repeats it as a
+    # generic "start there" line (2026-09-28 deck-wide dedup).
+    exec_text = " ".join(_slide_text(s) for s in slides[:-1])
+    assert 'start with "missing kw"' in exec_text
     text = _slide_text(slides[-1])
-    assert "strongest immediate content targets" in text
+    assert "strongest immediate content targets" not in text
     # Rule 6: never an unsupported strategic claim.
     for banned in ("will generate", "will increase conversions", "best opportunity", "create a page immediately"):
         assert banned not in text.lower()

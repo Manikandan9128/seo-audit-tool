@@ -230,7 +230,7 @@ def test_content_seo_slide_shows_cannibalization_and_omits_internal_review_queue
     # must NOT render its own "Human review queue" bullet on the client
     # deck — that named an internal workflow artifact (the Sheet's Review
     # Queue tab) and told the client to go inspect it.
-    assert "Cannibalization (High risk)" in text and "Human review queue" not in text and "Review Queue tab" not in text
+    assert "High risk: " in text and "pages compete for" in text and "Human review queue" not in text and "Review Queue tab" not in text
     assert _audit_slide_geometry(prs) == []
 
 

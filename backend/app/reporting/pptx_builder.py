@@ -2405,11 +2405,14 @@ def _seo_issues_insights_section(slide, top, insights_ai: dict, priority_shortli
             _textbox(slide, left, y, width, line_h * lines, headline, size=12.5, bold=True, color=TEXT_DARK)
             y += item_h
 
-    for point in (insights_ai.get("supporting") or [])[:4]:
+    supporting = slide_insights(insights_ai.get("supporting"), anchors=(headline, insights_ai.get("takeaway")))
+    _register_deck_insights([t for t in (headline, insights_ai.get("takeaway")) if t])
+    for point in supporting[:4]:
         lines = _wrap_lines(point, width - Inches(0.18), size_pt=11)
         item_h = line_h * lines + Inches(0.08)
         if y + item_h > max_y:
             break
+        _register_deck_insights([point])
         _icon_dot(slide, left, y + Inches(0.07), Inches(0.08), _accent())
         _textbox(slide, left + Inches(0.18), y, width - Inches(0.18), line_h * lines, point, size=11)
         y += item_h
@@ -3831,19 +3834,131 @@ def _is_duplicate_insight(a: set[str], b: set[str]) -> bool:
     return overlap / len(a | b) >= 0.6 or overlap / min(len(a), len(b)) >= 0.85
 
 
+# Word overlap alone misses a reworded repeat (2026-09-28, Geopits Traffic
+# Breakdown: three Referral bullets all built on "37.5% bounce rate, 35.2
+# points below the 72.7% average", phrased "below" / "better than" and
+# reordered, sailed through). Two insights stating the same FACTS are the
+# same finding however they're worded: same distinctive numbers, or the
+# same named keyword/site with the same number.
+_FACT_NUMBER_RE = re.compile(r"#?\d[\d,]*(?:\.\d+)?%?")
+_QUOTED_RE = re.compile(r"[\"“]([^\"”]{3,}?)[\"”]")
+_DOMAIN_RE = re.compile(r"\b[a-z0-9][a-z0-9-]*\.(?:com|net|org|io|co|in|ai|dev|app|us|uk)\b", re.IGNORECASE)
+
+
+def _insight_facts(text: str) -> tuple[set[str], set[str], set[str]]:
+    """(distinctive numbers, quoted keywords, domains). A plain integer
+    under 100 is left out ("8 keyword(s)", "KD under 30", "DR 66") — too
+    common to identify a finding; percentages, decimals, ranks (#9) and
+    larger counts are kept."""
+    numbers = set()
+    for raw in _FACT_NUMBER_RE.findall(text or ""):
+        value = raw.replace(",", "")
+        if value.startswith("#") or "%" in value or "." in value or (value.isdigit() and int(value) >= 100):
+            numbers.add(value.lstrip("#"))
+    quoted = {q.strip().lower() for q in _QUOTED_RE.findall(text or "")}
+    domains = {d.lower() for d in _DOMAIN_RE.findall(text or "")}
+    return numbers, quoted, domains
+
+
+def _same_finding(a: tuple, b: tuple) -> bool:
+    """Same finding: 3+ shared distinctive numbers; or the same quoted
+    keyword with a shared number; or the same keyword/site with 2+ shared
+    numbers. A competitor domain alone recurs across many slides, so it
+    only counts alongside two matching numbers."""
+    shared_numbers = len(a[0] & b[0])
+    shared_quoted = bool(a[1] & b[1])
+    shared_domain = bool(a[2] & b[2])
+    return (
+        shared_numbers >= 3
+        or (shared_quoted and shared_numbers >= 1)
+        or ((shared_quoted or shared_domain) and shared_numbers >= 2)
+    )
+
+
+def _richer(a: str, b: str) -> bool:
+    """True when a says more than b (more facts, then more words)."""
+    fa, fb = _insight_facts(a), _insight_facts(b)
+    return (sum(map(len, fa)), len(a)) > (sum(map(len, fb)), len(b))
+
+
 def client_facing_insights(insights: list[str] | None) -> list[str]:
+    """Same-slide pass: drops internal-process sentences, and keeps ONE
+    version of each finding — the richer one, in the first one's place."""
     out: list[str] = []
-    seen: list[set[str]] = []
+    seen: list[tuple[set[str], tuple]] = []
     for item in insights or []:
         text = _strip_internal_process(str(item or "").strip())
         if not text:
             continue
-        tokens = _insight_tokens(text)
-        if any(_is_duplicate_insight(tokens, prev) for prev in seen):
-            continue
-        out.append(text)
-        seen.append(tokens)
+        tokens, facts = _insight_tokens(text), _insight_facts(text)
+        match = next(
+            (i for i, (prev_tokens, prev_facts) in enumerate(seen)
+             if _is_duplicate_insight(tokens, prev_tokens) or _same_finding(facts, prev_facts)),
+            None,
+        )
+        if match is None:
+            out.append(text)
+            seen.append((tokens, facts))
+        elif _richer(text, out[match]):
+            out[match] = text
+            seen[match] = (tokens, facts)
     return out
+
+
+# Deck-wide pass (2026-09-28): a finding already stated on an EARLIER slide
+# (e.g. the Competitor Keyword Gap Executive Summary's action items) is not
+# repeated on a later one (the gap Key Insights slide). Active only while
+# build_report is assembling a deck; slide builders called on their own
+# (tests, previews) see no registry and skip this pass.
+_deck_insights = threading.local()
+
+
+def _reset_deck_insights(active: bool) -> None:
+    _deck_insights.facts = [] if active else None
+    _deck_insights.cluster_totals = {} if active else None
+
+
+def _drop_stated_earlier(insights: list[str]) -> list[str]:
+    earlier = getattr(_deck_insights, "facts", None)
+    if not earlier:
+        return insights
+    return [text for text in insights if not any(_same_finding(_insight_facts(text), prev) for prev in earlier)]
+
+
+def _register_deck_insights(insights) -> None:
+    earlier = getattr(_deck_insights, "facts", None)
+    if earlier is None:
+        return
+    earlier.extend(_insight_facts(text) for text in insights)
+
+
+# Target Keywords' per-cluster totals (keyword count, combined searches),
+# recorded as those slides render so Content SEO Next Steps quotes the SAME
+# numbers for the same topic (2026-09-28: slide 20 read "Managed services:
+# 8 keywords, 1,320 searches" while Content SEO said "7 keywords, 1,460").
+def _register_cluster_totals(name: str, count: int, volume: float) -> None:
+    totals = getattr(_deck_insights, "cluster_totals", None)
+    if totals is not None and name:
+        totals[name.strip().lower()] = (count, volume)
+
+
+def _cluster_totals(name: str) -> tuple[int, float] | None:
+    totals = getattr(_deck_insights, "cluster_totals", None)
+    return (totals or {}).get((name or "").strip().lower())
+
+
+def slide_insights(items, anchors=()) -> list[str]:
+    """The one dedup entry point for any slide's insight bullets, whatever
+    renders them: client-facing filter + one version per finding on this
+    slide, minus anything already said by this slide's `anchors` (its
+    headline/takeaway) or by an earlier slide. Callers register what they
+    actually draw with _register_deck_insights."""
+    anchor_facts = [_insight_facts(a) for a in anchors if a]
+    kept = [
+        text for text in client_facing_insights(list(items or []))
+        if not any(_same_finding(_insight_facts(text), facts) for facts in anchor_facts)
+    ]
+    return _drop_stated_earlier(kept)
 
 
 def _insights_strip(slide, left, top, width, insights, title="Key Insights", max_y=None, max_items=5):
@@ -3858,7 +3973,7 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     one text-list renderer in the file with no truncate-rather-than-overflow
     guard; every AI-bullet slide already stops before its card boundary the
     same way this now does."""
-    insights = client_facing_insights(insights)
+    insights = _drop_stated_earlier(client_facing_insights(insights))
     if not insights:
         return top
     if max_y is None:
@@ -3889,6 +4004,7 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     if not fitted:
         return top
 
+    _register_deck_insights(item for item, _, _ in fitted)
     _textbox(slide, left, top, width, Inches(0.24), title.upper(), size=9.5, bold=True, color=_accent())
     y = top + heading_h
     for item, lines, item_h in fitted:
@@ -6100,10 +6216,15 @@ def add_keyword_gap_insights_slide(
     with nothing to say. overview_insights (off-topic/relevant/split,
     ambiguous-review, KD-unavailable) render above the columns since they
     describe the whole analysis, not one status."""
-    overview_insights = client_facing_insights(overview_insights)
-    insights_by_category = {cat: client_facing_insights(items)[:3] for cat, items in insights_by_category.items()}
+    overview_insights = _drop_stated_earlier(client_facing_insights(overview_insights))
+    insights_by_category = {
+        cat: _drop_stated_earlier(client_facing_insights(items))[:3] for cat, items in insights_by_category.items()
+    }
     if not overview_insights and not any(insights_by_category.values()):
         return None
+    _register_deck_insights(overview_insights[:3])
+    for items in insights_by_category.values():
+        _register_deck_insights(items)
 
     slide = _blank_slide(prs)
     _content_header(slide, "Competitor Keyword Gap — Key Insights")
@@ -6163,10 +6284,9 @@ def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int,
             f"Highest-volume Missing keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
             f"ranking competitors: {_gap_row_competitors_text(top)}."
         )
-        insights.append(
-            "High-volume Missing keywords where a competitor already has a relevant ranking page are the "
-            "strongest immediate content targets — start there."
-        )
+        # (The generic "high-volume Missing keywords … start there" line was
+        # removed 2026-09-28: it only repeated the Executive Summary's
+        # "Close the Missing-Keyword Gap … start with" action item.)
     elif status == "Shared":
         insights.append(
             f"Highest-volume Shared keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
@@ -6486,6 +6606,7 @@ def add_keyword_gap_executive_summary_slide(
 
     row_w = Inches(12.1)
     for heading, sentence in _gap_exec_action_items(by_category, counts, total_relevant, client_name):
+        _register_deck_insights([sentence])
         lines = _wrap_lines(sentence, row_w, size_pt=12)
         item_h = Inches(0.3) + Inches(0.19) * lines + Inches(0.24)
         if action_top + item_h > max_y:
@@ -6744,12 +6865,12 @@ def add_competitor_best_at_slide(prs: Presentation, competitor_domain: str, narr
     bullets_max_y = card_top + card_height - Inches(0.15)
     chars_per_line = max(20, int(text_width / 914400 * 14))
     line_h = Inches(0.24)
-    for raw_item in best_at[:6]:
-        item = _strip_trailing_url_citation(raw_item)
+    for item in slide_insights(_strip_trailing_url_citation(raw_item) for raw_item in best_at)[:6]:
         lines = max(1, -(-len(item) // chars_per_line))
         item_h = line_h * lines + Inches(0.08)
         if y + item_h > bullets_max_y:
             break
+        _register_deck_insights([item])
         _icon_dot(slide, Inches(0.9), y + Inches(0.08), Inches(0.09), DEFAULT_ACCENT)
         _textbox(slide, Inches(1.15), y, text_width - Inches(0.25), line_h * lines, item, size=12.5)
         y += item_h
@@ -6824,8 +6945,13 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
             _textbox(slide, Inches(0.9), y, text_width, h_h, headline_text, size=15, bold=True, color=DEFAULT_ACCENT)
             y += h_h + Inches(0.18)
 
+    shown_on_slide: list[str] = [headline] if headline else []
+
     def _section(label: str, label_color, bullets: list[str], dot_color=None) -> None:
         nonlocal y
+        # Evidence / Why it matters / Gap / Opportunity must not restate
+        # each other, the headline, or an earlier slide.
+        bullets = slide_insights(bullets, anchors=shown_on_slide)
         if not bullets or y >= max_y:
             return
         # Whole section or nothing — precompute the full block height (label
@@ -6842,6 +6968,8 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
             return
         _textbox(slide, Inches(0.9), y, text_width, Inches(0.22), label, size=10.5, bold=True, color=label_color)
         y += Inches(0.26)
+        shown_on_slide.extend(bullets)
+        _register_deck_insights(bullets)
         for bullet, item_h in zip(bullets, item_heights):
             lines = _wrapped(bullet)
             if dot_color:
@@ -7219,6 +7347,12 @@ def _render_target_keyword_slides(prs: Presentation, categories: list[dict], tra
             if n:
                 y += _TK_SECTION_GAP
             y = _draw_target_keyword_section(slide, y, name, rows)
+        for cluster in entry["sections"]:
+            full_rows = cluster[0].get("rows") or []
+            _register_cluster_totals(
+                cluster[0].get("name") or cluster[1], len(full_rows),
+                sum(_num(str(r[1]).replace(",", "")) for r in full_rows if len(r) > 1),
+            )
         # Insights ride on a cluster's first slide only; a shared slide
         # carries each cluster's lead line.
         clusters_here = [s[0] for s in entry["sections"]]
@@ -8626,11 +8760,16 @@ def add_ux_findings_slides(prs: Presentation, ux_findings: dict) -> list:
     return slides
 
 
-def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None, items: list[str]):
+def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None, items: list):
     """Shared renderer for the 4 Next Steps category slides (Local/Technical/
     Content/Conversion SEO) and the split AEO/GEO slides — one full-width
     numbered list, roomier per item than the old combined roadmap slide
-    since each slide now covers only one category."""
+    since each slide now covers only one category.
+
+    An item is a plain string, or a (heading, body) pair: a short bold
+    heading saying WHAT to do, then one or two plain sentences with the
+    evidence (2026-09-28: one long run-on sentence per item was hard to
+    read on the Content SEO slide)."""
     if not items:
         return None
     slide = _blank_slide(prs)
@@ -8644,9 +8783,13 @@ def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None,
     _card(slide, Inches(0.6), card_top, Inches(12.1), card_bottom - card_top)
     y = card_top + Inches(0.25)
     for i, item in enumerate(items, start=1):
-        lines = _wrap_lines(item, Inches(11.0), size_pt=13)
-        line_h = Inches(13 * 0.02) * lines
-        if y + line_h > card_bottom - Inches(0.15):
+        heading, body = item if isinstance(item, tuple) else (None, item)
+        heading_lines = _wrap_lines(heading, Inches(11.0), size_pt=13) if heading else 0
+        body_size = 12 if heading else 13
+        body_lines = _wrap_lines(body, Inches(11.0), size_pt=body_size) if body else 0
+        heading_h = Inches(13 * 0.02) * heading_lines
+        body_h = Inches(body_size * 0.02) * body_lines
+        if y + heading_h + body_h > card_bottom - Inches(0.15):
             break
         num = slide.shapes.add_textbox(Inches(0.85), y, Inches(0.4), Inches(0.3))
         p = num.text_frame.paragraphs[0]
@@ -8655,8 +8798,13 @@ def _next_steps_category_slide(prs: Presentation, title: str, intro: str | None,
         r.font.bold = True
         r.font.size = Pt(13)
         r.font.color.rgb = _accent()
-        _textbox(slide, Inches(1.25), y, Inches(11.0), line_h, item, size=13)
-        y += line_h + Inches(0.22)
+        if heading:
+            _textbox(slide, Inches(1.25), y, Inches(11.0), heading_h, heading, size=13, bold=True, color=TEXT_DARK)
+            y += heading_h + Inches(0.04)
+        if body:
+            _textbox(slide, Inches(1.25), y, Inches(11.0), body_h, body, size=body_size)
+            y += body_h
+        y += Inches(0.22)
     return slide
 
 
@@ -9299,6 +9447,9 @@ def _content_seo_cluster_evidence(rows: list[dict]) -> str | None:
     means no recommendation (spec section 6: "No action when evidence does
     not support an opportunity")."""
     volume = sum(_num(r.get("search_volume")) for r in rows)
+    registered = _cluster_totals((rows[0].get("cluster") or "") if rows else "")
+    if registered:
+        volume = registered[1]
     positions = []
     for r in rows:
         raw = r.get("current_position") if r.get("current_position") not in (None, "") else r.get("position")
@@ -9310,10 +9461,107 @@ def _content_seo_cluster_evidence(rows: list[dict]) -> str | None:
     if volume:
         parts.append(f"{int(volume):,} combined monthly searches")
     if positions:
-        parts.append(f"currently ranking #{int(min(positions))} at best")
+        parts.append(f"best current ranking #{int(min(positions))}")
     if impressions:
         parts.append(f"{int(impressions):,} Search Console impressions" + (f" / {int(clicks):,} clicks" if clicks else ""))
     return ", ".join(parts) or None
+
+
+# Content SEO items (2026-09-28 readability rewrite): a short heading that
+# says WHAT to do, then plain sentences with the evidence and the next step.
+_CONTENT_FORMAT_COPY = {
+    "Blog / Guide": (
+        "Publish guides for the top question-style searches",
+        "People searching these want answers, so a blog post or guide fits best.",
+    ),
+    "Landing Page": (
+        "Build dedicated pages for buyer searches",
+        "People searching these are looking for a provider, so a dedicated service or product page fits best.",
+    ),
+    "Comparison / Alternative": (
+        "Create comparison pages",
+        "People searching these are comparing options, so a dedicated comparison page fits best.",
+    ),
+}
+
+
+def _content_seo_topic_item(label: str, rows: list[dict], sample: dict) -> tuple[str, str]:
+    registered = _cluster_totals(label)
+    count = registered[0] if registered else len(rows)
+    volume = registered[1] if registered else sum(_num(r.get("search_volume")) for r in rows)
+    best = _content_seo_best_position(rows)
+    impressions = sum(_num(r.get("gsc_impressions")) for r in rows)
+    primary = next((r.get("keyword") for r in rows if r.get("primary_or_secondary") == "Primary"), None)
+
+    facts = f"{count} keyword{'s' if count != 1 else ''}"
+    if volume:
+        facts += f", {int(volume):,} searches a month"
+    if primary:
+        facts += f"; main keyword \"{primary}\""
+    facts += "."
+    if best:
+        facts += f" Best current ranking: #{best}."
+    if impressions:
+        facts += f" {int(impressions):,} Search Console impressions."
+
+    pipeline_action = sample.get("existing_page_action") or ""
+    url = normalize_source_url(sample.get("existing_page_url"))
+    if url and pipeline_action == "Optimize Existing Page":
+        short, step = "improve the existing page", f"optimize {url} for these keywords instead of creating a new page."
+    elif url and pipeline_action == "Expand Existing Page":
+        short, step = "expand the existing page", f"add the missing subtopics to {url}, which only partly covers this topic."
+    elif url and pipeline_action.startswith("Consolidate"):
+        short, step = "make one page the main page", f"make {url} the single main page for this topic."
+    elif pipeline_action.startswith("Differentiate or Redirect"):
+        other = pipeline_action.split("into", 1)[-1].strip().strip('"')
+        if best and best <= 3:
+            # Never advise redirecting/merging a page already in the top 3.
+            short = "protect the current ranking"
+            step = (f"keep this page, and make its content clearly different from the \"{other}\" topic so the "
+                    f"two don't compete.")
+        else:
+            short = "separate it from a related topic"
+            step = (f"make the content clearly different from the \"{other}\" topic, or merge it into that topic's "
+                    f"page — both currently point to the same best-matching page.")
+    else:
+        short, step = "create a new page", "create a new page — no existing page covers this topic closely enough."
+    if sample.get("decision") and sample.get("decision_reason"):
+        # §53 strategy-layer decision (REDIRECT / SECONDARY TARGET …) wins.
+        short = sample["decision"].lower()
+        reason = sample["decision_reason"].rstrip(".")
+        step = f"{reason[0].lower()}{reason[1:]}" + (f" ({sample['content_gap_type']})" if sample.get("content_gap_type") else "") + "."
+
+    # Client-facing priority only — no raw score; "Human Review" (internal
+    # flag) gets no label.
+    tier = sample.get("roadmap_priority")
+    tier_text = f"{tier} priority: " if tier in ("High", "Medium", "Low") else ""
+    return f"{tier_text}{label} — {short}", f"{facts} Next step: {step[0].upper()}{step[1:]}"
+
+
+def _content_seo_shared_page_item(note: str) -> tuple[str, str]:
+    """One existing page is the best match for several topics — rebuilt as
+    a plain sentence from the upstream note, without its internal
+    "confirm this is the right existing URL" ask."""
+    m = re.match(r"Potential cannibalization: (\S+) is also the best existing-page match for \d+ other "
+                 r"cluster\(s\) \((.*?)\)", note or "")
+    if not m:
+        return "One page is targeting several topics", note
+    url, topics = m.group(1), [t.strip() for t in m.group(2).split(",") if t.strip()]
+    named = " and ".join(f"\"{t}\"" for t in topics[:3]) + (f" (+{len(topics) - 3} more)" if len(topics) > 3 else "")
+    return (
+        "One page is targeting several topics",
+        f"{url} is the best existing match for this topic and also for {named}. Consolidate them onto one page, "
+        "or make each page's content clearly different so they don't compete.",
+    )
+
+
+def _content_seo_best_position(rows: list[dict]) -> int | None:
+    positions = [
+        _num(r.get("current_position") if r.get("current_position") not in (None, "") else r.get("position"))
+        for r in rows
+    ]
+    positions = [p for p in positions if p > 0]
+    return int(min(positions)) if positions else None
 
 
 def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict] | None, keyword_strategy: dict | None = None):
@@ -9345,15 +9593,25 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
                 examples.append(keyword)
 
         category_action = {label: action for label, _signals, action in _KEYWORD_PAGE_CATEGORIES}
-        for label, count in sorted(category_counts.items(), key=lambda kv: -category_volume.get(kv[0], 0)):
-            vol = category_volume.get(label, 0)
-            if not vol or label not in category_action:
+        # Content-format line (2026-09-28 rewrite): names the format and its
+        # highest-demand searches, with each one's own volume. No
+        # whole-dataset keyword count or search total here — that figure
+        # used a different keyword population from Target Keywords and the
+        # Keyword Gap, so it read as a conflicting "444 keywords / 190,000
+        # searches" next to their authoritative totals.
+        for label, _count in sorted(category_counts.items(), key=lambda kv: -category_volume.get(kv[0], 0)):
+            if not category_volume.get(label) or label not in category_action:
                 continue
-            example_text = ", ".join(f"\"{e}\"" for e in category_examples.get(label, []))
-            items.append(
-                f"{count} relevant keyword(s) call for {label.lower()} content, {int(vol):,} combined monthly searches "
-                f"(e.g. {example_text}) — {category_action[label]}."
-            )
+            top = sorted(
+                (r for r in rows if (r.get("page_category") or _classify_keyword_page_category(r["keyword"], r.get("intent"))) == label
+                 and _num(r.get("search_volume")) > 0),
+                key=lambda r: -_num(r.get("search_volume")),
+            )[:2]
+            if not top:
+                continue
+            examples = " and ".join(f"\"{r['keyword']}\" ({int(_num(r['search_volume'])):,}/month)" for r in top)
+            heading, why = _CONTENT_FORMAT_COPY.get(label, (f"Create {label.lower()} content", ""))
+            items.append((heading, f"The biggest searches here are {examples}. {why}".strip()))
 
         n_category = len(items)
         cluster_rows: dict[str, list[dict]] = {}
@@ -9390,33 +9648,7 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
             if not evidence:
                 continue
             sample = crow[0]
-            pipeline_action = sample.get("existing_page_action") or ""
-            existing_url = normalize_source_url(sample.get("existing_page_url"))
-            if existing_url and pipeline_action == "Optimize Existing Page":
-                action = f"optimize the existing page ({existing_url}) for this topic rather than creating a new one"
-            elif existing_url and pipeline_action == "Expand Existing Page":
-                action = f"expand the existing page ({existing_url}), which already partly covers this topic"
-            elif existing_url and pipeline_action.startswith("Consolidate"):
-                action = f"make {existing_url} the single primary page for this topic"
-            elif pipeline_action.startswith("Differentiate or Redirect"):
-                action = pipeline_action[0].lower() + pipeline_action[1:]
-            else:
-                action = "create a new page — no existing page covers this topic closely enough"
-            if sample.get("decision") and sample.get("decision_reason"):
-                # §53 decision from the strategy layer (REDIRECT / SECONDARY
-                # TARGET / NO TARGET...) replaces the plain match-strength text.
-                action = f"{sample['decision'].lower()} — {sample['decision_reason'][0].lower()}{sample['decision_reason'][1:].rstrip('.')}"
-                if sample.get("content_gap_type"):
-                    action += f" ({sample['content_gap_type']})"
-            # Client-facing priority tag only — no raw opportunity score, and
-            # "Human Review" (an internal not-confident-enough flag, not a
-            # claim to make to the client) gets no tag at all (2026-09-28 Key
-            # Insights rule: no confidence scores/internal scoring exposed).
-            tier = sample.get("roadmap_priority")
-            tier_text = f"[{tier} priority] " if tier in ("High", "Medium", "Low") else ""
-            primary = next((r.get("keyword") for r in crow if r.get("primary_or_secondary") == "Primary"), None)
-            primary_text = f" (primary keyword \"{primary}\")" if primary else ""
-            items.append(f"{tier_text}\"{label}\" topic{primary_text} — {len(crow)} keyword(s), {evidence}; {action}.")
+            items.append(_content_seo_topic_item(label, crow, sample))
 
         # Cannibalization notes — already computed upstream per cluster
         # (cannibalization_status), one bullet per affected existing URL
@@ -9430,18 +9662,30 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
             if note and url and url not in cannibal_notes_by_url:
                 cannibal_notes_by_url[url] = note
         n_clusters = len(items)
-        items.extend(cannibal_notes_by_url.values())
+        items.extend(_content_seo_shared_page_item(note) for note in cannibal_notes_by_url.values())
     else:
         n_category = n_clusters = len(items)
     strategy = keyword_strategy or {}
-    extra: list[str] = []
+    extra: list = []
     # §24/§58: real Search Console evidence of two own pages splitting one
     # query — preferred URL + the spec's action, highest risk first.
     for c in [c for c in strategy.get("cannibalization") or [] if c.get("risk") in ("High", "Medium")][:2]:
-        extra.append(
-            f"Cannibalization ({c['risk']} risk): \"{c['query']}\" is split across {len(c['other_urls']) + 1} pages — "
-            f"{c['action'].lower()}, keeping {c['preferred_url']} as the preferred page. {c['evidence']}"
-        )
+        others = c.get("other_urls") or []
+        shown = ", ".join(others[:3]) + (f" (+{len(others) - 3} more)" if len(others) > 3 else "")
+        verb = "merge" if c["action"].lower().startswith("merge") else "rewrite the titles and content of"
+        if c.get("source") == "Duplicate titles":
+            # Title overlap between crawled pages, not a search query — say
+            # so plainly instead of quoting a placeholder "query".
+            extra.append((
+                f"{c['risk']} risk: {len(others) + 1} pages have near-identical titles",
+                f"Search engines may struggle to tell these pages apart. Keep {c['preferred_url']} as the main page "
+                f"and {verb} the others: {shown}.",
+            ))
+        else:
+            extra.append((
+                f"{c['risk']} risk: {len(others) + 1} pages compete for \"{c['query']}\"",
+                f"Keep {c['preferred_url']} as the main page for this search and {verb} the others: {shown}.",
+            ))
     # §62 originally also surfaced a "Human review queue" summary bullet
     # here — dropped 2026-09-28 (universal PPT refinement rule): it named
     # an internal workflow artifact ("Review Queue tab") and told the
@@ -9455,7 +9699,7 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
         # then the cannibalization evidence, then everything else.
         category, clusters, notes = items[:n_category], items[n_category:n_clusters], items[n_clusters:]
         items = category[:1] + clusters[:2] + extra + clusters[2:] + category[1:] + notes
-    intro = "Where to focus content production, based on the keyword research and clustering above."
+    intro = "Where to focus content, based on the keyword research earlier in this report."
     return _next_steps_category_slide(prs, "Next Steps: Content SEO", intro, items)
 
 
@@ -9786,6 +10030,7 @@ def build_report(
     domain = website_url.replace("https://", "").replace("http://", "").rstrip("/")
     _theme["footer"] = f"{client_name}  ·  {domain}"
 
+    _reset_deck_insights(active=True)
     try:
         return _build_report(
             client_name, website_url, site_audit, page_audit, psi_mobile, psi_desktop,
@@ -9807,6 +10052,7 @@ def build_report(
             schema_impact=schema_impact,
         )
     finally:
+        _reset_deck_insights(active=False)
         _theme["footer"] = ""
         _theme["accent"] = DEFAULT_ACCENT
 

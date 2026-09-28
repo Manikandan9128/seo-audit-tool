@@ -447,7 +447,7 @@ def cannibalization_similarity(cannibalization: list[dict], site_model: dict | N
             "other_urls": [d["other_url"] for d in dupes],
             "risk": "Medium", "action": "Merge" if best_similarity >= 0.9 else "Differentiate", "impressions": 0,
             "similarity": best_similarity, "source": "Duplicate titles",
-            "evidence": f"{len(dupes)} other {dupes[0]['page_type']} page(s) with near-identical titles: {others}.",
+            "evidence": f"Near-identical titles on {len(dupes)} more page{'s' if len(dupes) != 1 else ''}: {others}.",
         })
     return cannibalization
 

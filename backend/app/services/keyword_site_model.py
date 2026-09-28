@@ -184,6 +184,11 @@ def _topic_token(title: str) -> str | None:
     return tokens[-1] if tokens else None
 
 
+_PAGINATION_RE = re.compile(
+    r"[?&][\w-]*(?:page|paged|pg|pagenum|offset|start)=\d+|/page/\d+/?(?:$|[?#])", re.IGNORECASE,
+)
+
+
 def _duplicate_titles(pages: list[dict], limit: int = 15) -> list[dict]:
     """§24/§58 — live pages of the SAME type whose titles are near-identical
     (token Jaccard >= 0.8, boilerplate words shared by >15% of titles
@@ -194,7 +199,10 @@ def _duplicate_titles(pages: list[dict], limit: int = 15) -> list[dict]:
     out = []
     by_type: dict[str, list[dict]] = {}
     for p in pages:
-        if p["page_type"] not in ("home", "utility"):
+        # Paginated listing pages (page 2, 3 … of a blog index) share one
+        # title by design — never cannibalization (2026-09-28: a Geopits
+        # deck flagged 13 "?8d31a6fe_page=N" blog index pages).
+        if p["page_type"] not in ("home", "utility") and not _PAGINATION_RE.search(p["url"] or ""):
             by_type.setdefault(p["page_type"], []).append(p)
     for group in by_type.values():
         for i, a in enumerate(group):
