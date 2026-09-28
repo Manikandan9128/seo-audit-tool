@@ -357,7 +357,16 @@ export default function ClientDetailPage() {
     // Semrush MCP (behind SEMRUSH_MCP_ENABLED, off) still fetches from the page.
     if (source === "mcp") fetchSemrushMcpData(database);
     if (sections.length) {
-      await startGenerate(clientId!, { sections, analytics_start: analyticsStart, analytics_end: analyticsEnd });
+      // Same strict provider pin as the download build — the AI calls this
+      // run makes (Company Overview, company summary) use only the
+      // selected provider/model, no fallback chain.
+      await startGenerate(clientId!, {
+        sections,
+        analytics_start: analyticsStart,
+        analytics_end: analyticsEnd,
+        ...(preferredProvider ? { preferred_provider: preferredProvider } : {}),
+        ...(preferredProvider === "claude" && claudeModel ? { claude_model: claudeModel } : {}),
+      });
     }
   }
 

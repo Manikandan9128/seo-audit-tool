@@ -29,6 +29,8 @@ from app.api.deps import get_current_user, get_db
 from app.api.routes import google_oauth as google_oauth_routes
 from app.api.routes import site_audit as site_audit_routes
 from app.db.session import SessionLocal
+from app.integrations import text_ai_client
+from app.integrations.text_ai_client import JobContextThreadPoolExecutor
 from app.models.client import Client
 from app.models.report_prep_job import ReportPrepJob
 from app.models.user import User
@@ -92,7 +94,7 @@ def _section_pagespeed(client_id, db, user, _params):
 
     # Both strategies in parallel, and either failing fails the section —
     # same as the page's Promise.all.
-    with concurrent.futures.ThreadPoolExecutor(2) as ex:
+    with JobContextThreadPoolExecutor(2) as ex:
         mobile, desktop = ex.submit(one, "mobile"), ex.submit(one, "desktop")
         return {"mobile": mobile.result(), "desktop": desktop.result()}
 
@@ -134,15 +136,22 @@ def _run_section(key: str, client_id: uuid.UUID, user_id: uuid.UUID, params: dic
 def _run_prep_job(job_id: uuid.UUID, client_id: uuid.UUID, user_id: uuid.UUID, keys: list[str], params: dict) -> None:
     """Runs every requested section in parallel (as the browser did) and
     saves each result as it lands. Only this thread writes the row; waiting
-    in HEARTBEAT_SECONDS slices keeps updated_at fresh while sections run."""
+    in HEARTBEAT_SECONDS slices keeps updated_at fresh while sections run.
+
+    The user's selected AI provider/Claude model is pinned for this thread
+    and inherited by every section worker (JobContextThreadPoolExecutor),
+    same strict pin as the report-generation job — Company Overview and the
+    site audit's company summary must not fall back to other providers."""
     db = SessionLocal()
+    text_ai_client.set_preferred_provider(params.get("preferred_provider"))
+    text_ai_client.set_claude_model(params.get("claude_model"))
     try:
         job = db.get(ReportPrepJob, job_id)
         sections = {k: {"status": "running", "data": None, "error": None} for k in keys}
         job.status, job.sections, job.progress_pct = "running", sections, 0
         db.commit()
 
-        with concurrent.futures.ThreadPoolExecutor(len(keys)) as ex:
+        with JobContextThreadPoolExecutor(len(keys)) as ex:
             futures = {ex.submit(_run_section, k, client_id, user_id, params): k for k in keys}
             pending = set(futures)
             while pending:
@@ -169,6 +178,8 @@ def _run_prep_job(job_id: uuid.UUID, client_id: uuid.UUID, user_id: uuid.UUID, k
             job.error = f"Generate Report failed: {type(e).__name__}: {str(e)[:300]}"
             db.commit()
     finally:
+        text_ai_client.set_preferred_provider(None)
+        text_ai_client.set_claude_model(None)
         db.close()
 
 
@@ -214,6 +225,8 @@ def start_report_prep_job(
     sections: list[str] = Body(..., embed=True),
     analytics_start: str = Body("30daysAgo", embed=True),
     analytics_end: str = Body("today", embed=True),
+    preferred_provider: str | None = Body(None, embed=True),
+    claude_model: str | None = Body(None, embed=True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -222,6 +235,10 @@ def start_report_prep_job(
     at once never start two runs. The client row lock makes simultaneous
     requests take turns, so both can't see "no active run"."""
     _get_owned_client(client_id, db, current_user)
+    if preferred_provider is not None and preferred_provider not in ("groq", "gemini", "claude", "browser_use", "openrouter"):
+        raise HTTPException(status_code=400, detail="preferred_provider must be 'groq', 'gemini', 'claude', 'browser_use', 'openrouter', or omitted")
+    if claude_model is not None and claude_model not in text_ai_client.CLAUDE_MODEL_CHOICES:
+        raise HTTPException(status_code=400, detail=f"claude_model must be one of {sorted(text_ai_client.CLAUDE_MODEL_CHOICES)} or omitted")
     keys = [k for k in SECTION_KEYS if k in set(sections)]
     unknown = set(sections) - set(SECTION_KEYS)
     if unknown or not keys:
@@ -244,7 +261,10 @@ def start_report_prep_job(
     db.refresh(job)
     threading.Thread(
         target=_run_prep_job,
-        args=(job.id, client_id, current_user.id, keys, {"analytics_start": analytics_start, "analytics_end": analytics_end}),
+        args=(job.id, client_id, current_user.id, keys, {
+            "analytics_start": analytics_start, "analytics_end": analytics_end,
+            "preferred_provider": preferred_provider, "claude_model": claude_model,
+        }),
         daemon=True,
     ).start()
     return {"job_id": job.id, "reused": False}

@@ -154,7 +154,10 @@ async function pollGenerate(clientId: string, jobId: string) {
   }
 }
 
-export async function startGenerate(clientId: string, body: { sections: string[]; analytics_start: string; analytics_end: string }) {
+export async function startGenerate(
+  clientId: string,
+  body: { sections: string[]; analytics_start: string; analytics_end: string; preferred_provider?: string; claude_model?: string },
+) {
   if (get(clientId).generating) return;
   setGen(clientId, { generating: true }, { error: null });
   try {

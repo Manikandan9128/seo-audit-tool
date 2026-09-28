@@ -76,7 +76,7 @@ def _call_with_timeout(fn, timeout_seconds: float, *args, **kwargs):
     thread is abandoned (not killed — Python has no API for that) rather
     than waited on; it either eventually finishes harmlessly in the
     background or the process exits, whichever comes first."""
-    pool = ThreadPoolExecutor(max_workers=1)
+    pool = JobContextThreadPoolExecutor(max_workers=1)
     future = pool.submit(fn, *args, **kwargs)
     try:
         return future.result(timeout=timeout_seconds)
@@ -369,6 +369,41 @@ def get_claude_token_usage() -> dict:
         "input_tokens": sum(c["input_tokens"] for c in calls),
         "output_tokens": sum(c["output_tokens"] for c in calls),
     }
+
+
+class JobContextThreadPoolExecutor(ThreadPoolExecutor):
+    """ThreadPoolExecutor whose tasks inherit the submitting thread's job
+    context: the strict provider pin, the Claude model choice, and the
+    Claude token-usage list. All three are thread-locals, so a plain pool
+    worker saw none of them — confirmed real (2026-09-28): every provider
+    call runs inside _call_with_timeout's worker thread, so _try_claude
+    read the default CLAUDE_MODEL instead of the model the user picked and
+    its token usage was never recorded; and report-generation's own nested
+    pools (run_site_audit -> summarize_company) called generate_text() with
+    no pin at all, falling back to the Groq -> Gemini -> Claude chain the
+    user had opted out of by selecting a provider. The worker's previous
+    values are restored after each task, since pool threads are reused."""
+
+    def submit(self, fn, /, *args, **kwargs):
+        context = (
+            getattr(_provider_preference, "value", None),
+            getattr(_claude_model_preference, "value", None),
+            getattr(_claude_token_usage, "calls", None),
+        )
+
+        def run():
+            previous = (
+                getattr(_provider_preference, "value", None),
+                getattr(_claude_model_preference, "value", None),
+                getattr(_claude_token_usage, "calls", None),
+            )
+            _provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls = context
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls = previous
+
+        return super().submit(run)
 
 
 def _attempt_groq(prompt: str, max_tokens: int, errors: list[str]) -> str | None:

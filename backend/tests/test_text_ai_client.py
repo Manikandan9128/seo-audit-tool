@@ -431,3 +431,37 @@ def test_claude_token_usage_is_inert_without_a_reset_first():
         assert text_ai_client.get_claude_token_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0}
     finally:
         text_ai_client._claude_token_usage.calls = calls
+
+
+def test_claude_model_and_usage_survive_the_timeout_worker_thread():
+    # Regression (2026-09-28): every provider call runs inside
+    # _call_with_timeout's worker thread, so the thread-local model choice
+    # and token-usage list were invisible there — the selected model was
+    # silently replaced by the default and usage was never recorded.
+    text_ai_client.set_claude_model("claude-haiku-4-5-20251001")
+    text_ai_client.reset_claude_token_usage()
+    try:
+        with patch("app.integrations.text_ai_client.settings") as mock_settings, \
+             patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
+            mock_settings.claude_api_key = "sk-ant-test"
+            mock_anthropic.return_value.messages.create.return_value = _fake_claude_response("answer", 10, 5)
+            text_ai_client._call_with_timeout(text_ai_client._try_claude, 5, "prompt", 1024)
+        _, kwargs = mock_anthropic.return_value.messages.create.call_args
+        assert kwargs["model"] == "claude-haiku-4-5-20251001"
+        assert text_ai_client.get_claude_token_usage()["calls"] == 1
+    finally:
+        text_ai_client.set_claude_model(None)
+
+
+def test_job_context_pool_propagates_pin_and_restores_worker_state():
+    text_ai_client.set_preferred_provider("claude")
+    try:
+        with text_ai_client.JobContextThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(text_ai_client._provider_order).result() == ["claude"]
+            # The worker's own state is restored after the task.
+            assert pool.submit(lambda: None).result() is None
+        with text_ai_client.JobContextThreadPoolExecutor(max_workers=1) as pool:
+            text_ai_client.set_preferred_provider(None)
+            assert pool.submit(text_ai_client._provider_order).result() == text_ai_client._DEFAULT_PROVIDER_ORDER
+    finally:
+        text_ai_client.set_preferred_provider(None)

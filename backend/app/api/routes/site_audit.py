@@ -8,7 +8,7 @@ import uuid
 from types import SimpleNamespace
 from urllib.parse import urlparse
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import wait
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -21,6 +21,7 @@ from app.api.deps import get_current_user, get_db
 from app.config import settings
 from app.db.session import SessionLocal
 from app.integrations import google_oauth, text_ai_client
+from app.integrations.text_ai_client import JobContextThreadPoolExecutor
 from app.integrations.crypto import decrypt, encrypt
 from app.integrations.pagespeed_client import run_pagespeed
 from app.integrations.screenshot_client import capture_homepage_screenshots
@@ -1228,7 +1229,7 @@ def _generate_competitor_narratives(
     # and run concurrently first so N-1 fetch durations overlap instead of
     # each one stacking onto the already-serial AI critical path.
     homepage_texts: dict[str, str | None] = {}
-    with ThreadPoolExecutor(max_workers=min(5, len(domains))) as pool:
+    with JobContextThreadPoolExecutor(max_workers=min(5, len(domains))) as pool:
         futures = {pool.submit(fetch_homepage_text, d): d for d in domains}
         for future, domain in futures.items():
             try:
@@ -1563,7 +1564,7 @@ def _gather_report_data(
     # exactly what the 15-minute stale-job watchdog is built to catch, but
     # can't catch a hang inside a single `.result()` call with no timeout.
     crawl_deadline = 300.0
-    pool = ThreadPoolExecutor(max_workers=3)
+    pool = JobContextThreadPoolExecutor(max_workers=3)
     site_audit_future = pool.submit(run_site_audit, client.website_url)
     page_audit_future = pool.submit(asyncio.run, run_multi_page_audit_async(client.website_url, page_limit=20))
     tech_stack_future = pool.submit(detect_tech_stack, client.website_url)
@@ -1601,7 +1602,7 @@ def _gather_report_data(
         # stuck thread .result(timeout=...) just gave up on. shutdown(wait=
         # False) below abandons any still-running thread instead — it either
         # finishes harmlessly in the background or the process exits first.
-        pool = ThreadPoolExecutor(max_workers=2)
+        pool = JobContextThreadPoolExecutor(max_workers=2)
         mobile_future = pool.submit(run_pagespeed, client.website_url, "mobile")
         desktop_future = pool.submit(run_pagespeed, client.website_url, "desktop")
         # Confirmed real bug (twice now): calling .result(timeout=340) on
@@ -1698,7 +1699,7 @@ def _gather_report_data(
             # shutdown(wait=True), which would block on the very same
             # stuck thread wait(timeout=...) below just gave up on.
             analytics_deadline = 120.0
-            pool = ThreadPoolExecutor(max_workers=6)
+            pool = JobContextThreadPoolExecutor(max_workers=6)
             if client.ga4_property_id:
                 # Real ISO dates (ga4_start/ga4_end), not GA4's relative
                 # "30daysAgo"/"today" keywords — those resolved "today"
@@ -1805,7 +1806,7 @@ def _gather_report_data(
                         # Same hang risk and same fix as the analytics job
                         # pool above — a lone, uncaught synchronous GA4 call
                         # here can't be left unbounded either.
-                        spike_pool = ThreadPoolExecutor(max_workers=1)
+                        spike_pool = JobContextThreadPoolExecutor(max_workers=1)
                         spike_future = spike_pool.submit(
                             ga4_service.get_traffic_spike_breakdown,
                             creds, client.ga4_property_id, analytics["traffic_overview"]["rows"],
@@ -3295,12 +3296,12 @@ def start_generate_report_job(
     """Kicks off a background PPTX build and returns a job id to poll —
     avoids blocking on a single long request that could outlast the hosting
     gateway's timeout. preferred_provider ('groq'/'gemini'/'claude'/
-    'browser_use'/'openrouter', or None for the default Groq-first order) tries that AI
-    provider first for every AI call this job makes, still falling back to
-    the others (Groq, Gemini, Claude — never Browser Use/OpenRouter, see
-    _DEFAULT_PROVIDER_ORDER) on failure. 'browser_use' runs a real Browser
-    Use Cloud agent run per AI call this job makes — much slower per call
-    (a billed agent run, not a token completion) than the other three.
+    'browser_use'/'openrouter') strictly pins every AI call this job makes,
+    including calls from its nested thread pools, to that one provider, with
+    no fallback to the others (None keeps the default Groq -> Gemini ->
+    Claude chain). 'browser_use' runs a real Browser Use Cloud agent run per
+    AI call this job makes, which is much slower per call (a billed agent
+    run, not a token completion) than the other three.
     claude_model (2026-09-25) picks which Claude model any Claude call this
     job makes uses — see text_ai_client.CLAUDE_MODEL_CHOICES for the valid
     ids; applies whether or not Claude is the preferred_provider, since a
