@@ -8902,11 +8902,19 @@ _GOALS_TIMEFRAME = "Next 6–12 months"
 
 
 def _goals_report_period(analytics: dict | None) -> str | None:
-    """The GA4/GSC report period as supplied, only when it's real ISO dates
+    """The GA4 report period as supplied, only when it's real ISO dates
     (never a relative placeholder like "30daysAgo" and never a template
-    date)."""
+    date). 2026-09-28 cross-section consistency audit: this previously read
+    date_range["start"]/["end"], keys `_gather_report_data` never actually
+    sets (only ga4_start/end, gsc_start/end, channel_breakdown_start/end
+    exist) -- so this always returned None and the Goals & Targets slide's
+    "Baselines from the report period X" label never once rendered, always
+    silently falling back to the generic "latest measured values" text.
+    Reading ga4_start/ga4_end instead -- the same key _ga4_date_span uses
+    everywhere else the GA4 window is shown, and what the KPIs below are
+    actually baselined against."""
     date_range = (analytics or {}).get("date_range") or {}
-    start, end = date_range.get("start"), date_range.get("end")
+    start, end = date_range.get("ga4_start"), date_range.get("ga4_end")
     if not (start and end and re.match(r"^\d{4}-\d{2}-\d{2}$", str(start)) and re.match(r"^\d{4}-\d{2}-\d{2}$", str(end))):
         return None
     from datetime import datetime as _datetime

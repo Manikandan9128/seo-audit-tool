@@ -52,8 +52,13 @@ def test_rankings_count_only_validated_keywords():
 
 
 def test_report_period_only_from_real_iso_dates():
-    assert _goals_report_period({"date_range": {"start": "30daysAgo", "end": "today"}}) is None
-    assert _goals_report_period({"date_range": {"start": "2026-08-01", "end": "2026-08-31"}}) == "01 Aug 2026 – 31 Aug 2026"
+    # 2026-09-28 cross-section consistency fix: date_range only ever carries
+    # ga4_start/ga4_end (plus gsc_*/channel_breakdown_*) in real data, never
+    # a plain "start"/"end" pair — this used to read the wrong keys and
+    # always return None, so the Goals slide's report-period label never
+    # rendered.
+    assert _goals_report_period({"date_range": {"ga4_start": "30daysAgo", "ga4_end": "today"}}) is None
+    assert _goals_report_period({"date_range": {"ga4_start": "2026-08-01", "ga4_end": "2026-08-31"}}) == "01 Aug 2026 – 31 Aug 2026"
 
 
 def test_full_goals_slide_fits_page():
