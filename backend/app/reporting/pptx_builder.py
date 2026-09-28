@@ -1715,7 +1715,7 @@ def add_company_overview_extracted_slide(prs: Presentation, client_name: str, ov
     footer. Chips pack more into less vertical space than a bullet list."""
     slide = _blank_slide(prs)
     _content_header(slide, overview.get("company_name") or client_name, eyebrow="Company Overview")
-    _textbox(slide, Inches(9.6), Inches(0.4), Inches(3.3), Inches(0.3), "Source: site crawl + Gemini", size=10, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
+    _textbox(slide, Inches(9.6), Inches(0.4), Inches(3.3), Inches(0.3), "Source: site crawl + AI analysis", size=10, color=TEXT_MUTED, align=PP_ALIGN.RIGHT)
 
     top = Inches(1.15)
     height = Inches(5.55)
@@ -6035,8 +6035,8 @@ def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int,
             f"ranking competitors: {_gap_row_competitors_text(top)}."
         )
         insights.append(
-            "Prioritize validation of high-volume Missing keywords where competitors already have a relevant "
-            "ranking page before treating any of them as a confirmed SEO target."
+            "High-volume Missing keywords where a competitor already has a relevant ranking page are the "
+            "strongest immediate content targets — start there."
         )
     elif status == "Shared":
         insights.append(
@@ -6774,17 +6774,20 @@ def _validated_strategic_cluster_insights(c: dict) -> list[str]:
     ranking = c.get("ranking_evidence")
     if target and ranking:
         target_text += f" (already ranks #{ranking['position']} for {ranking['keywords']} of these keywords)"
-    priority_text = (
-        f" Priority {c['roadmap_priority']} (opportunity {c.get('opportunity')}/100)." if c.get("roadmap_priority") else ""
-    )
+    # Client-facing priority phrasing, not the internal tier label or raw
+    # 0-100 opportunity/confidence scores those numbers come from (2026-09-28
+    # Key Insights rule: no confidence scores, no internal scoring exposed
+    # to the client). "Human Review" is an internal not-confident-enough
+    # flag, not a claim to make to the client, so it gets no priority text.
+    _tier_phrase = {"High": " This is a high-priority opportunity.", "Medium": " This is a medium-priority opportunity.", "Low": " This is a lower-priority opportunity."}
+    priority_text = _tier_phrase.get(c.get("roadmap_priority"), "")
     page_type = c.get("recommended_page_type") or "dedicated page"
     if c.get("cluster_type"):
         page_type = f"{page_type} ({c['cluster_type']})"
     gap_text = f" Gap: {c['content_gap_type']}." if c.get("content_gap_type") and not target else ""
     out.append(
         f"Target: {page_type} — {target_text}. "
-        f"Action: {c.get('decision') or c.get('recommended_action')}.{gap_text} "
-        f"Confidence {c.get('confidence_level')} ({c.get('confidence')}/100).{priority_text}"
+        f"Action: {c.get('decision') or c.get('recommended_action')}.{gap_text}{priority_text}"
     )
     if c.get("primary_keyword"):
         # §55/§66-D: the page's one primary keyword and the searcher's need.
@@ -7572,13 +7575,17 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         # to guarantee survives that cut, ahead of the narrower "are the
         # page formats consistent" validation check.
         if top.get("cluster_confidence") is not None:
-            priority_text = (
-                f" Priority {top['roadmap_priority']} (opportunity {top.get('cluster_opportunity')}/100)."
-                if top.get("roadmap_priority") else ""
-            )
+            # Client-facing grouping rationale, not the internal confidence
+            # score/tier label those numbers come from (2026-09-28 Key
+            # Insights rule: no confidence scores, no internal scoring
+            # exposed to the client). Still guaranteed non-empty here
+            # whenever cluster_confidence is computed, same as before —
+            # only the wording changed, not whether this line survives the
+            # vertical-space cut described above.
+            _tier_phrase = {"High": " This is a high-priority opportunity.", "Medium": " This is a medium-priority opportunity.", "Low": " This is a lower-priority opportunity."}
+            priority_text = _tier_phrase.get(top.get("roadmap_priority"), "")
             out.append(
-                f"Confidence: {top.get('cluster_confidence_level')} ({top.get('cluster_confidence')}/100) — "
-                f"{top.get('cluster_reason') or 'grouped by shared entity and intent'}.{priority_text}"
+                f"{(top.get('cluster_reason') or 'Grouped by shared entity and intent').rstrip('.').capitalize()}.{priority_text}"
             )
         # §22 page type (strategy layer) when computed, else the pipeline's
         # coarse page category; §29 cluster type alongside it.
@@ -9320,9 +9327,12 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
                 action = f"{sample['decision'].lower()} — {sample['decision_reason'][0].lower()}{sample['decision_reason'][1:].rstrip('.')}"
                 if sample.get("content_gap_type"):
                     action += f" ({sample['content_gap_type']})"
+            # Client-facing priority tag only — no raw opportunity score, and
+            # "Human Review" (an internal not-confident-enough flag, not a
+            # claim to make to the client) gets no tag at all (2026-09-28 Key
+            # Insights rule: no confidence scores/internal scoring exposed).
             tier = sample.get("roadmap_priority")
-            tier_label = "Needs human review" if tier == "Human Review" else f"{tier} priority"
-            tier_text = f"[{tier_label}, opportunity {sample.get('cluster_opportunity')}/100] " if tier else ""
+            tier_text = f"[{tier} priority] " if tier in ("High", "Medium", "Low") else ""
             primary = next((r.get("keyword") for r in crow if r.get("primary_or_secondary") == "Primary"), None)
             primary_text = f" (primary keyword \"{primary}\")" if primary else ""
             items.append(f"{tier_text}\"{label}\" topic{primary_text} — {len(crow)} keyword(s), {evidence}; {action}.")
@@ -9351,20 +9361,17 @@ def add_content_seo_next_steps_slide(prs: Presentation, keyword_rows: list[dict]
             f"Cannibalization ({c['risk']} risk): \"{c['query']}\" is split across {len(c['other_urls']) + 1} pages — "
             f"{c['action'].lower()}, keeping {c['preferred_url']} as the preferred page. {c['evidence']}"
         )
-    # §62: one line summarising what needs a person's decision.
-    queue = strategy.get("review_queue") or []
-    if queue and items:
-        by_type = Counter(q["type"] for q in queue)
-        extra.append(
-            f"Human review queue: {len(queue)} item(s) — "
-            + ", ".join(f"{n} {t.lower()}" for t, n in by_type.most_common(4))
-            + " — full list in the keyword Sheet's Review Queue tab."
-        )
+    # §62 originally also surfaced a "Human review queue" summary bullet
+    # here — dropped 2026-09-28 (universal PPT refinement rule): it named
+    # an internal workflow artifact ("Review Queue tab") and told the
+    # client to go inspect it, which is backend process exposure, not a
+    # client-facing insight. The underlying keywords still get a bullet
+    # once they clear classification; nothing about that pipeline changed,
+    # only this exposed status summary was removed.
     if extra:
         # The slide shows as many items as fit, so the order decides what a
-        # reader sees: the biggest format line, the top two roadmap topics, then
-        # the cannibalization evidence and the review-queue summary, then
-        # everything else.
+        # reader sees: the biggest format line, the top two roadmap topics,
+        # then the cannibalization evidence, then everything else.
         category, clusters, notes = items[:n_category], items[n_category:n_clusters], items[n_clusters:]
         items = category[:1] + clusters[:2] + extra + clusters[2:] + category[1:] + notes
     intro = "Where to focus content production, based on the keyword research and clustering above."

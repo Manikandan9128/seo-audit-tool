@@ -298,7 +298,10 @@ def test_manual_cluster_enrichment_flags_intent_mismatch_and_split_without_rewri
     text = _slide_text(slides[0])
     assert "Intent corrected:" in text
     assert "Removed from this cluster:" in text
-    assert "Confidence" in text
+    # 2026-09-28 Key Insights rule: no raw confidence score exposed to the
+    # client — the Target/Action line (which used to carry "Confidence ...")
+    # must still render.
+    assert "Target:" in text and "Action:" in text
     assert "Every keyword here carries commercial" not in text
 
 

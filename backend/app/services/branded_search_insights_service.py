@@ -43,7 +43,8 @@ Top branded queries this period (for spotting cannibalization only):
 Top non-branded queries this period (for spotting cannibalization only):
 {top_nonbranded_queries}
 
-Write 3-5 Key Insights bullets:
+Write 2-4 Key Insights bullets — fewer if fewer of the numbered conditions below are actually met; never pad to \
+hit a count, and skip any point whose own instruction below says to skip it:
 1. The branded-dependency finding, building on the headline above rather than repeating it word for word — add \
 what it implies for the business (healthy diversification vs. over-reliance on brand recognition alone).
 2. The demand-gap estimate — if one is given above, restate its number exactly (never recompute or round \

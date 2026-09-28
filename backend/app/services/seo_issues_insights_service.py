@@ -19,7 +19,8 @@ pages with at least one issue.
 Turn this raw data into a client-facing "Insights" section with the following structure:
 Headline insight - One sentence stating the % and count of pages affected, framed as a severity statement \
 (systemic vs. isolated).
-Supporting insights (3-4 bullets) - For the highest-impact errors/warnings, don't just restate the number. \
+Supporting insights (2-4 bullets — fewer if fewer high-impact errors/warnings exist, never pad to hit a count) - \
+For the highest-impact errors/warnings, don't just restate the number. \
 Explain the likely root cause (e.g., templating issue, migration artifact, shared theme/script, URL parameters) \
 and why it matters for rankings, crawl budget, UX, or Core Web Vitals. Group related issues together where they \
 likely share a cause.

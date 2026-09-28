@@ -219,7 +219,11 @@ def test_content_seo_next_steps_follow_the_roadmap_not_volume():
     ]
     text = _text(add_content_seo_next_steps_slide(_prs(), rows))
     assert text.index('"Strong" topic') < text.index('"Doubtful" topic')
-    assert "[High priority, opportunity 80/100]" in text and "[Needs human review" in text
+    # 2026-09-28 Key Insights rule: no raw confidence/opportunity scores and
+    # no internal "Human Review" workflow status exposed to the client —
+    # the priority tag still shows for a scored tier, but Human Review gets
+    # no tag at all rather than a client-visible "needs review" flag.
+    assert "[High priority]" in text and "opportunity 80/100" not in text and "Needs human review" not in text
     assert 'primary keyword "small strong"' in text
 
 

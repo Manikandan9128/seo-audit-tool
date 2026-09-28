@@ -38,7 +38,8 @@ Google rich-result eligibility notes (only listed for a type that is NOT fully e
 or unverified; a type with no note here is assumed eligible):
 {eligibility_notes}
 
-Write as many Key Insights bullets as the data actually supports (typically 3-5), each covering ONE schema gap \
+Write as many Key Insights bullets as the data actually supports (typically 2-4, never padded to hit a count), \
+each covering ONE schema gap \
 or ONE confirmed win. Every bullet must follow ISSUE -> EVIDENCE -> ACTION:
 - ISSUE: name the schema type and whether it's Missing, Invalid, or a confirmed Valid win.
 - EVIDENCE: cite the exact Applicable/Present/Valid/Invalid/Missing numbers (or Yes/No for site-level) behind it.

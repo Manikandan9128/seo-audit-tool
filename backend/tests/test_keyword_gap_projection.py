@@ -242,7 +242,7 @@ def test_key_insights_include_actionable_implication_for_missing_keywords():
     ]}
     slides = add_keyword_gap_slides(_prs(), analysis)
     text = _slide_text(slides[-1])
-    assert "Prioritize validation of high-volume Missing keywords" in text
+    assert "strongest immediate content targets" in text
     # Rule 6: never an unsupported strategic claim.
     for banned in ("will generate", "will increase conversions", "best opportunity", "create a page immediately"):
         assert banned not in text.lower()

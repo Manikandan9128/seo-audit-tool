@@ -215,7 +215,7 @@ def test_full_strategy_page_map_and_sheet_outputs():
     assert tabs["Page Map"][0][0] == "Priority"
 
 
-def test_content_seo_slide_shows_cannibalization_and_review_queue_and_fits():
+def test_content_seo_slide_shows_cannibalization_and_omits_internal_review_queue_and_fits():
     rows = []
     for i in range(6):
         rows += [{"keyword": f"topic{i} widget", "cluster": f"Topic {i}", "search_volume": 900 - i, "relevance_status": "Relevant",
@@ -226,7 +226,11 @@ def test_content_seo_slide_shows_cannibalization_and_review_queue_and_fits():
                 "review_queue": [{"type": "Mixed intent", "item": "X", "detail": ""}]}
     prs = _prs()
     text = _text(add_content_seo_next_steps_slide(prs, rows, strategy))
-    assert "Cannibalization (High risk)" in text and "Human review queue" in text
+    # 2026-09-28 universal PPT refinement rule: a non-empty review_queue
+    # must NOT render its own "Human review queue" bullet on the client
+    # deck — that named an internal workflow artifact (the Sheet's Review
+    # Queue tab) and told the client to go inspect it.
+    assert "Cannibalization (High risk)" in text and "Human review queue" not in text and "Review Queue tab" not in text
     assert _audit_slide_geometry(prs) == []
 
 
