@@ -214,12 +214,11 @@ def test_ambiguous_relevance_excluded_from_table_with_review_note():
     assert "clearly relevant" in table_text
     assert "unsure keyword" not in table_text
     insights_text = _slide_text(slides[-1])
-    # 2026-09-28 Competitor Keyword Gap rule: "manual relevance review" is
-    # banned internal-process language — client-safe wording keeps the
-    # same finding (this specific keyword is borderline) without it.
-    assert "manual relevance review" not in insights_text
-    assert "unclear relevance to your business" in insights_text
-    assert "unsure keyword" in insights_text
+    # 2026-09-28 Competitor Keyword Gap client-facing filter: the deck shows
+    # only the final validated dataset — an unconfirmed-relevance keyword
+    # is never listed, and no review/relevance language appears.
+    for banned in ("manual relevance review", "unclear relevance", "review", "unsure keyword"):
+        assert banned not in insights_text
 
 
 def test_zero_or_missing_volume_rows_excluded():
@@ -252,7 +251,7 @@ def test_key_insights_include_actionable_implication_for_missing_keywords():
         assert banned not in text.lower()
 
 
-def test_gap_scale_insight_adds_interpretation_not_just_counts():
+def test_gap_overview_insight_interprets_demand_not_restates_counts():
     analysis = {
         "keyword_gap_rows": [
             _gap_row("missing kw", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
@@ -261,14 +260,12 @@ def test_gap_scale_insight_adds_interpretation_not_just_counts():
     }
     slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
     text = _slide_text(slides[-1])
-    assert "showing the scale of the competitive gap" in text
+    assert "Missing keywords carry 100% of the 1,000 combined monthly searches" in text
 
 
-def test_off_topic_count_and_split_stated_in_insights():
-    # 2026-09-23: the gap-scale bullet's "unrelated to {client}'s business"
-    # framing was dropped (shortened to reduce PowerPoint line-wrap risk) —
-    # the off-topic count and Shared/Missing/Untapped split are what this
-    # test actually cares about.
+def test_counts_live_on_exec_summary_not_repeated_in_insights():
+    # 2026-09-28 Key Insights rule: no insight that only restates a KPI —
+    # the relevant/off-topic/split counts are the Executive Summary cards.
     analysis = {
         "keyword_gap_rows": [
             _gap_row("shared kw", 1000, 40, your_position=5, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Shared"),
@@ -278,11 +275,21 @@ def test_off_topic_count_and_split_stated_in_insights():
         "keyword_gap_off_topic_count": 4,
     }
     slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
-    text = _slide_text(slides[-1])
-    assert "4 off-topic / competitor-brand excluded" in text
-    assert "1 Shared / 1 Missing / 1 Untapped" in text
-    assert "3 relevant keyword" in text
-    assert "1 Shared / 1 Missing / 1 Untapped" in text
+    exec_text = _slide_text(slides[0])
+    assert "4 off-topic / competitor-brand excluded" in exec_text
+    insights_text = _slide_text(slides[-1])
+    assert "off-topic" not in insights_text
+    assert "KD-filtered" not in insights_text
+    assert "1 Shared / 1 Missing / 1 Untapped" not in insights_text
+
+
+def test_slides_consume_the_stored_authoritative_totals():
+    rows = [_gap_row("missing kw", 800, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing")]
+    stored = {"total_relevant": 301, "off_topic_excluded": 14, "missing": 290, "shared": 11, "untapped": 0, "search_volume": 5000}
+    slides = add_keyword_gap_slides(_prs(), {"keyword_gap_rows": rows, "keyword_gap_totals": stored})
+    exec_text = _slide_text(slides[0])
+    assert "301" in exec_text and "290" in exec_text and "11" in exec_text
+    assert "14 off-topic" in exec_text
 
 
 # ---- 2026-09-22 spec: dedicated per-status slide thresholds ----
@@ -388,14 +395,13 @@ def test_dedicated_slide_insights_only_reference_its_own_status():
     assert "untapped kw" not in missing_column_text
 
 
-def test_dedicated_slide_discloses_truncation_beyond_row_cap():
+def test_dedicated_slide_links_full_list_without_restating_the_table():
     analysis = {"keyword_gap_rows": _make_rows("Missing", 15)}
     slides = add_keyword_gap_slides(_prs(), analysis, keyword_gap_sheet_link="https://sheets.google.com/x")
     missing_slide = slides[1]
     assert "Open full keyword list" in _slide_text(missing_slide)
     insights_text = _slide_text(slides[-1])
-    assert "Showing top" in insights_text
-    assert "15 Missing keyword" in insights_text
+    assert "Showing top" not in insights_text
 
 
 def test_all_categories_worst_case_fits_slide_no_overlap():

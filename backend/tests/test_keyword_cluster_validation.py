@@ -22,60 +22,56 @@ def _slide_text(slide) -> str:
     return "\n".join(parts)
 
 
-def test_mixed_page_formats_flags_split():
-    rows = [
-        {"keyword": "what is certified payroll", "cluster": "C", "search_volume": 500, "page_category": "Blog / Guide"},
-        {"keyword": "how does certified payroll work", "cluster": "C", "search_volume": 300, "page_category": "Blog / Guide"},
-        {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page"},
-        {"keyword": "certified payroll pricing", "cluster": "C", "search_volume": 200, "page_category": "Landing Page"},
-    ]
+def _insights_text(rows) -> str:
     slides = add_keyword_research_slide(_prs(), rows)
-    text = _slide_text(slides[0])
-    assert "mixed page formats" in text
-    assert "consider splitting" in text
+    return _slide_text(slides[0])
 
 
-def test_consistent_page_format_keeps_cluster():
+def test_cluster_insight_carries_only_client_facing_items():
+    # 2026-09-28 Target Keywords client-facing output filter: opportunity,
+    # demand, strongest keyword, intent, page call — never the page-format
+    # split/validation reasoning behind the cluster.
     rows = [
-        {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page"},
-        {"keyword": "certified payroll pricing", "cluster": "C", "search_volume": 200, "page_category": "Landing Page"},
+        {"keyword": "what is certified payroll", "cluster": "C", "search_volume": 500, "page_category": "Blog / Guide", "intent": "Informational"},
+        {"keyword": "how does certified payroll work", "cluster": "C", "search_volume": 300, "page_category": "Blog / Guide", "intent": "Informational"},
+        {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page", "intent": "Commercial", "keyword_difficulty": 22},
+        {"keyword": "certified payroll pricing", "cluster": "C", "search_volume": 200, "page_category": "Landing Page", "intent": "Commercial"},
     ]
-    slides = add_keyword_research_slide(_prs(), rows)
-    text = _slide_text(slides[0])
-    assert "consistent format (Landing Page)" in text
-    assert "mixed page formats" not in text
+    text = _insights_text(rows)
+    assert "4 keyword(s) with 1,900 combined monthly searches" in text
+    assert 'Strongest keyword: "certified payroll software" — 900 searches/month, KD 22.' in text
+    assert "Search intent:" in text
+    for banned in ("mixed page formats", "consistent format", "Recommended format", "Grouped by", "Confidence", "Avg. KD", "CPC"):
+        assert banned not in text
 
 
-def test_single_outlier_keyword_does_not_trigger_split():
-    # Regression guard: one stray keyword in a different format shouldn't
-    # flag a whole cluster for splitting — needs a real second sub-group.
+def test_strong_existing_page_match_is_an_existing_page_opportunity():
     rows = [
-        {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page"},
-        {"keyword": "random outlier keyword", "cluster": "C", "search_volume": 100, "page_category": "Blog / Guide"},
+        {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page",
+         "existing_page_url": "https://x.com/payroll", "existing_page_match_strength": "strong"},
+        {"keyword": "certified payroll pricing", "cluster": "C", "search_volume": 200, "page_category": "Landing Page",
+         "existing_page_url": "https://x.com/payroll", "existing_page_match_strength": "strong"},
     ]
-    slides = add_keyword_research_slide(_prs(), rows)
-    text = _slide_text(slides[0])
-    assert "mixed page formats" not in text
-    assert "consistent format" in text
+    assert "Existing page opportunity: https://x.com/payroll" in _insights_text(rows)
 
 
-def test_top_keywords_minority_format_matches_recommended_format():
-    # Regression guard (2026-09-10 spec): the page-format-consistency line
-    # must never state a different format than Recommended format above
-    # it. Here the top-volume keyword's own format ("Landing Page") is the
-    # cluster's minority — this line used to independently report the mode
-    # ("Blog / Guide") instead, contradicting the Recommended format line.
+def test_partial_or_weak_match_never_claims_the_existing_page():
+    for strength in ("partial", "weak"):
+        rows = [
+            {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page",
+             "existing_page_url": "https://x.com/blog/payroll", "existing_page_match_strength": strength},
+        ]
+        text = _insights_text(rows)
+        assert "Existing page is a partial match; a dedicated page may be required." in text
+        assert "https://x.com/blog/payroll" not in text
+
+
+def test_no_matching_page_is_a_new_page_opportunity():
     rows = [
-        {"keyword": "what is certified payroll", "cluster": "C", "search_volume": 50, "page_category": "Blog / Guide"},
-        {"keyword": "how does certified payroll work", "cluster": "C", "search_volume": 40, "page_category": "Blog / Guide"},
-        {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page"},
+        {"keyword": "certified payroll software", "cluster": "C", "search_volume": 900, "page_category": "Landing Page",
+         "existing_page_url": None, "existing_page_match_strength": "none"},
     ]
-    slides = add_keyword_research_slide(_prs(), rows)
-    text = _slide_text(slides[0])
-    assert "Recommended format: Landing Page" in text
-    # 2026-09-28 Target Keywords rule: no "Cluster validation:" label
-    # (internal-process language) — same fact, client-safe wording.
-    assert "consistent format (Landing Page)" in text and "Cluster validation" not in text
+    assert "New page opportunity" in _insights_text(rows)
 
 
 def test_no_page_category_data_omits_validation_bullet():

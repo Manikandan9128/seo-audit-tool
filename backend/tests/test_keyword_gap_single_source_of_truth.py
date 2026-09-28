@@ -68,3 +68,15 @@ def test_relevance_and_kd_filtering_produce_the_exact_same_count_everywhere():
     assert slide_total_relevant == 2
     assert "2 relevant keyword gap" in finding["summary"]
     assert counts["Missing"] + counts["Shared"] + counts["Untapped"] == slide_total_relevant == 2
+
+
+def test_keyword_gap_totals_is_the_one_authoritative_dataset():
+    from app.reporting.pptx_builder import keyword_gap_totals
+
+    rows = [_row("a", 1000, "Missing"), _row("b", 500, "Shared"), _row("c", 200, "Untapped"),
+            _row("d", 50, "Missing", relevance="potentially_relevant")]
+    totals = keyword_gap_totals({"keyword_gap_rows": rows, "keyword_gap_off_topic_count": 5})
+    assert totals == {"total_relevant": 3, "off_topic_excluded": 5, "missing": 1, "shared": 1, "untapped": 1, "search_volume": 1700}
+    by_category, counts = keyword_gap_by_category(_prepare_keyword_gap_rows(rows)[0])
+    assert counts == {"Missing": totals["missing"], "Shared": totals["shared"], "Untapped": totals["untapped"]}
+    assert keyword_gap_totals({"keyword_gap_rows": []}) is None

@@ -40,7 +40,7 @@ from app.reporting.pptx_builder import (
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
     build_search_opportunity_pages, build_structured_technical_recommendations,
-    _prepare_keyword_gap_rows, keyword_gap_by_category, build_keyword_gap_summary_finding,
+    _prepare_keyword_gap_rows, keyword_gap_by_category, build_keyword_gap_summary_finding, keyword_gap_totals,
 )
 from app.services.recommendation_registry import build_keyword_strategy_recommendations, deduplicate_recommendations
 from app.services import ga4_service, gsc_service
@@ -2607,6 +2607,16 @@ def _gather_report_data(
     gap_finding = build_keyword_gap_summary_finding(gap_kd_filtered, gap_counts, gap_off_topic_count)
     if gap_finding:
         competitor_gap_findings.append(gap_finding)
+    # The ONE authoritative Competitor Keyword Gap dataset (2026-09-28 team
+    # rule): stored on competitor_analysis so every slide reads these exact
+    # totals, and handed to Core Problem as its only keyword-gap source.
+    # Recomputed every build, so a preview override never carries stale ones.
+    keyword_gap_dataset = keyword_gap_totals(competitor_analysis_result)
+    if isinstance(competitor_analysis_result, dict):
+        if keyword_gap_dataset:
+            competitor_analysis_result["keyword_gap_totals"] = keyword_gap_dataset
+        else:
+            competitor_analysis_result.pop("keyword_gap_totals", None)
 
     # 2026-09-28 Core Problem rule: technical counts must match the SEO
     # Issues slide's own authoritative source. When a Semrush Site Audit
@@ -2667,6 +2677,7 @@ def _gather_report_data(
             "backlink_summary": core_problem_backlink_summary,
             "own_backlink_row_count": own_backlink_row_count,
             "competitor_gap_findings": competitor_gap_findings,
+            "keyword_gap": keyword_gap_dataset,
             "target_keyword_count": len(keyword_rows_all) if keyword_rows_all else 0,
             # Full-site schema coverage (the same numbers the Structured
             # Data slide and SEO Goals use). Without it the model only saw

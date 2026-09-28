@@ -127,3 +127,44 @@ def test_core_problem_slide_shows_three_when_three_are_given_never_pads():
     assert _audit_slide_geometry(prs) == []
     text_boxes = [sh for sh in slide.shapes if sh.has_text_frame and sh.text_frame.text.strip().startswith(("1.", "2.", "3."))]
     assert len(text_boxes) == 3
+
+
+# ---- 2026-09-28 CORE PROBLEM metric source rule ----
+
+_GAP = {"total_relevant": 301, "off_topic_excluded": 14, "missing": 290, "shared": 11, "untapped": 0, "search_volume": 48200}
+
+
+def test_gap_numbers_matching_the_authoritative_dataset_are_kept():
+    raw = ('{"thesis": "The audit identified a wide competitor keyword gap.", "problems": ['
+           '"Competitors rank for 290 missing keywords out of 301 relevant keywords (48,200 monthly searches).", '
+           '"Only 11 shared keywords, and 96% of relevant keywords are missing.", '
+           '"The site has 47 errors across 823 crawled pages."]}')
+    findings = {"keyword_gap": _GAP, "technical_issues_full_crawl": {"error_count": 47, "total_pages": 823}}
+    with patch("app.services.core_problem_service.iter_text_attempts", side_effect=_attempts((raw, "groq"))):
+        result = generate_core_problem(findings)
+    assert len(result["problems"]) == 3
+
+
+def test_recounted_gap_number_is_dropped_not_published():
+    raw = ('{"thesis": "The audit identified a wide competitor keyword gap.", "problems": ['
+           '"Competitors rank for 315 relevant keywords the site misses.", '
+           '"The site has 47 errors across 823 crawled pages.", '
+           '"Only 11 shared keywords overlap with competitors."]}')
+    findings = {"keyword_gap": _GAP, "technical_issues_full_crawl": {"error_count": 47, "total_pages": 823}}
+    with patch("app.services.core_problem_service.iter_text_attempts", side_effect=_attempts((raw, "groq"))):
+        result = generate_core_problem(findings)
+    assert all("315" not in p for p in result["problems"])
+    assert len(result["problems"]) == 2
+
+
+def test_no_gap_dataset_means_no_gap_metric():
+    raw = ('{"thesis": "Organic visibility is constrained.", "problems": ['
+           '"Competitors rank for 290 missing keywords.", "The site has 47 errors across 823 crawled pages."]}')
+    findings = {"keyword_gap": None, "technical_issues_full_crawl": {"error_count": 47, "total_pages": 823}}
+    with patch("app.services.core_problem_service.iter_text_attempts", side_effect=_attempts((raw, "groq"))):
+        result = generate_core_problem(findings)
+    assert "error" in result  # only 1 clean problem left — never publish the unsourced metric
+
+
+def test_prompt_names_keyword_gap_as_the_only_gap_source():
+    assert '"keyword_gap"' in CORE_PROBLEM_PROMPT and "never recount" in CORE_PROBLEM_PROMPT

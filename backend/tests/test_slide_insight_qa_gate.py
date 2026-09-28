@@ -27,3 +27,21 @@ def test_no_quoted_name_always_passes():
     validated, removed = _validate_slide_insights(insights, shown, "query")
     assert validated == insights
     assert removed == []
+
+
+def test_client_facing_insights_drops_internal_process_and_duplicates():
+    # 2026-09-28 KEY INSIGHTS — FINAL DEDUPLICATION + client-facing filter.
+    from app.reporting.pptx_builder import client_facing_insights
+
+    out = client_facing_insights([
+        "20 keywords with 5,000 combined monthly searches. Grouped by shared entity and intent.",
+        "20 keywords, 5,000 combined monthly searches.",
+        "This is a high-priority opportunity.",
+        "Keywords with unclear relevance to your business: \"x\".",
+        "Not targeted: 3 job searches — kept for review.",
+        "Strongest keyword: \"payroll software\" — 900 searches/month.",
+    ])
+    assert out == [
+        "20 keywords with 5,000 combined monthly searches.",
+        "Strongest keyword: \"payroll software\" — 900 searches/month.",
+    ]

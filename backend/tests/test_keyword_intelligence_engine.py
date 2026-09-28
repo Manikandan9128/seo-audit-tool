@@ -296,8 +296,11 @@ def test_manual_cluster_enrichment_flags_intent_mismatch_and_split_without_rewri
 
     slides = add_strategic_keyword_clusters_slide(_prs(), clusters)
     text = _slide_text(slides[0])
-    assert "Intent corrected:" in text
-    assert "Removed from this cluster:" in text
+    # 2026-09-28 client-facing output filter: the intent correction and the
+    # relevance gate's removals stay in the data model, never on the slide.
+    assert "Intent corrected:" not in text and "sheet said" not in text
+    assert "Removed from this cluster:" not in text
+    assert 'Strongest keyword: "school bus"' in text
     # 2026-09-28 Target Keywords rule: no raw decision code (e.g. "Action:
     # EXISTING URL — PRIMARY TARGET") exposed to the client. This test only
     # exercises enrich_manual_clusters in isolation (no decision/
@@ -306,7 +309,7 @@ def test_manual_cluster_enrichment_flags_intent_mismatch_and_split_without_rewri
     # itself must still render, and recommended_action's own raw label
     # ("New URL Required" etc, set by this stage via spec_action) must
     # never leak onto the slide either.
-    assert "Target:" in text
+    assert "Existing page" in text or "New page opportunity" in text
     assert c["recommended_action"] not in text
     assert "Every keyword here carries commercial" not in text
 
@@ -398,10 +401,12 @@ def test_manual_slide_shows_relevance_flags():
     # review label) and "confirm with the client before targeting" (an
     # instruction to the agency, not a claim for the client's own deck) are
     # both banned — same underlying finding, client-safe wording instead.
-    assert "may not match this business" in text
+    # 2026-09-28 client-facing output filter: no relevance-check language
+    # at all on the slide.
+    assert "may not match this business" not in text
     assert "Relevance check" not in text and "confirm with the client" not in text
     assert "brabus price in india †" not in text  # keyword cell stays exactly as the sheet has it
-    assert 'Highest demand: "brabus' not in text  # demand lines never name a flagged keyword
+    assert 'Strongest keyword: "brabus' not in text  # never names a flagged keyword
 
 
 # --- 2026-09-24 spec-gap fixes (§3, §8, §19-23, §30, §33, §55) --------------
@@ -436,7 +441,7 @@ def test_manual_target_prefers_page_already_ranking():
     assert c["target_url"] == "https://bb.com/genuine-parts"
     assert c["match_strength"] == "strong" and c["ranking_evidence"]["position"] == 6
     text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
-    assert "already ranks #6" in text
+    assert "Existing page opportunity: https://bb.com/genuine-parts" in text
 
 
 def test_ranking_page_on_dead_url_is_ignored():
@@ -478,8 +483,11 @@ def test_manual_table_shows_corrected_intent_and_primary_keyword():
     table = next(sh.table for sh in slide.shapes if sh.has_table)
     cells = {row.cells[1].text: row.cells[4].text for row in table.rows}
     assert cells["bus mileage"] == "Commercial"  # table shows the sheet's intent; correction is an insight
-    assert "Intent corrected:" in _slide_text(slide)
-    assert 'Primary keyword: "school bus"' in _slide_text(slide)
+    text = _slide_text(slide)
+    # The engine's corrected intent drives the insight's Search intent;
+    # "Intent corrected (sheet said ...)" methodology never shows.
+    assert "Intent corrected:" not in text
+    assert 'Strongest keyword: "school bus"' in text and "Search intent:" in text
 
 
 def test_flagged_keywords_lower_cluster_confidence():
@@ -500,7 +508,9 @@ def test_other_website_searches_are_called_out_separately():
         {"keyword": "truckspoint", "cluster": "Trucks", "reason": "Other Website Search: a listing portal"},
     ])
     text = _slide_text(add_strategic_keyword_clusters_slide(_prs(), clusters)[0])
-    assert '"truckspoint" are searches for another website' in text
+    # Flag stays in the data model; the slide shows only the validated view.
+    assert "another website" not in text
+    assert 'Strongest keyword: "truck"' in text
 
 
 def test_site_entity_summary_reads_own_sections_from_crawl():

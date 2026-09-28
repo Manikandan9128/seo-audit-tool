@@ -3791,6 +3791,61 @@ def add_core_problem_slide(prs: Presentation, core_problem: dict):
     return slide
 
 
+# KEY INSIGHTS — FINAL DEDUPLICATION + CLIENT-FACING FILTER (2026-09-28
+# team review). Last line of defence on every Key Insights list, whatever
+# built it (deterministic or AI): a sentence that exposes internal
+# clustering/validation/scoring/review steps is removed, and an insight
+# that repeats another on the same slide in different words is dropped.
+# Sentence-level, so the rest of a useful bullet survives.
+_INTERNAL_PROCESS_RE = re.compile(
+    r"grouped by shared entity|kept (?:in the full keyword list )?for review|unclear relevance|awaiting "
+    r"(?:relevance )?(?:validation|review)|manual (?:relevance )?review|relevance (?:review|check|queue)|human review|"
+    r"validation pending|pending validation|review required|needs? review|classification uncertainty|"
+    r"high-priority opportunity|medium-priority opportunity|lower-priority opportunity|"
+    r"\bconfidence(?: score| level)?:|confidence score|ai[- ]validated|rule-based grouping|cluster validation|"
+    r"not ai-validated|internal classification|relevance gate|KD-filtered",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“(])")
+_INSIGHT_STOPWORDS = {
+    "the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "with", "is", "are", "this", "these",
+    "that", "it", "its", "as", "by", "at", "be", "your", "their", "from", "has", "have", "than",
+}
+
+
+def _strip_internal_process(text: str) -> str:
+    if not _INTERNAL_PROCESS_RE.search(text or ""):
+        return text
+    kept = [sent for sent in _SENTENCE_SPLIT_RE.split(text.strip()) if not _INTERNAL_PROCESS_RE.search(sent)]
+    return " ".join(kept).strip()
+
+
+def _insight_tokens(text: str) -> set[str]:
+    return {t for t in re.findall(r"[a-z0-9][a-z0-9,.%]*", text.lower()) if t not in _INSIGHT_STOPWORDS}
+
+
+def _is_duplicate_insight(a: set[str], b: set[str]) -> bool:
+    if not a or not b:
+        return False
+    overlap = len(a & b)
+    return overlap / len(a | b) >= 0.6 or overlap / min(len(a), len(b)) >= 0.85
+
+
+def client_facing_insights(insights: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: list[set[str]] = []
+    for item in insights or []:
+        text = _strip_internal_process(str(item or "").strip())
+        if not text:
+            continue
+        tokens = _insight_tokens(text)
+        if any(_is_duplicate_insight(tokens, prev) for prev in seen):
+            continue
+        out.append(text)
+        seen.append(tokens)
+    return out
+
+
 def _insights_strip(slide, left, top, width, insights, title="Key Insights", max_y=None, max_items=5):
     """2-5 bullet takeaways mechanically derived from the slide's own data —
     no free-text generation, every line traces back to a number on the same
@@ -3803,6 +3858,7 @@ def _insights_strip(slide, left, top, width, insights, title="Key Insights", max
     one text-list renderer in the file with no truncate-rather-than-overflow
     guard; every AI-bullet slide already stops before its card boundary the
     same way this now does."""
+    insights = client_facing_insights(insights)
     if not insights:
         return top
     if max_y is None:
@@ -6044,6 +6100,8 @@ def add_keyword_gap_insights_slide(
     with nothing to say. overview_insights (off-topic/relevant/split,
     ambiguous-review, KD-unavailable) render above the columns since they
     describe the whole analysis, not one status."""
+    overview_insights = client_facing_insights(overview_insights)
+    insights_by_category = {cat: client_facing_insights(items)[:3] for cat, items in insights_by_category.items()}
     if not overview_insights and not any(insights_by_category.values()):
         return None
 
@@ -6095,12 +6153,10 @@ def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int,
     """Key Insights for a dedicated status slide — built ONLY from that
     status's own keywords and data (2026-09-22 spec rule 9), never
     referencing another status."""
-    topic_ref = f"{client_name.strip()}'s business" if client_name and client_name.strip() else "the client's business"
-    total = len(status_rows)
-    insights = [
-        f"{total:,} {status} keyword(s) identified in the relevant, KD-filtered set "
-        f"({off_topic_count} off-topic or competitor-brand keyword(s) excluded as not relevant to {topic_ref})."
-    ]
+    # 2026-09-28 Key Insights rules: no line that only restates the count
+    # (Executive Summary card) or the table ("Showing N of M"), and no
+    # description of the relevance/KD filtering behind the set.
+    insights = []
     top = status_rows[0]
     if status == "Missing":
         insights.append(
@@ -6143,12 +6199,6 @@ def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int,
             f"Highest-volume Untapped keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
             "no tracked domain ranks for it yet."
         )
-    if shown_count < total:
-        insights.append(f"Showing top {shown_count:,} of {total:,} {status} keyword(s), ranked by volume.")
-    else:
-        # 2026-09-23 spec: fewer than the row cap available — say so plainly
-        # rather than the "top N of M" phrasing, which implies more exist.
-        insights.append(f"Showing {shown_count:,} of {total:,} {status} keyword(s).")
     return insights
 
 
@@ -6249,6 +6299,41 @@ def build_keyword_gap_summary_finding(kd_filtered: list[dict], counts: dict[str,
         "severity": "opportunity",
         "type": "keyword_gap",
     }
+
+
+def keyword_gap_totals(competitor_analysis: dict | None) -> dict | None:
+    """The ONE authoritative Competitor Keyword Gap dataset (2026-09-28
+    team rule): Total Relevant, Off-topic Excluded, Missing, Shared,
+    Untapped and Combined Search Volume, computed once from the validated
+    rows (_prepare_keyword_gap_rows + keyword_gap_by_category).
+    site_audit.py stores it on competitor_analysis["keyword_gap_totals"];
+    the Executive Summary, gap Key Insights, Core Problem and every other
+    consumer read these exact values instead of recounting. None when
+    there is no relevant gap data."""
+    rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
+    kd_filtered = _prepare_keyword_gap_rows(rows)[0] if rows else []
+    if not kd_filtered:
+        return None
+    _by_category, counts = keyword_gap_by_category(kd_filtered)
+    return {
+        "total_relevant": len(kd_filtered),
+        "off_topic_excluded": int((competitor_analysis or {}).get("keyword_gap_off_topic_count") or 0),
+        "missing": counts["Missing"],
+        "shared": counts["Shared"],
+        "untapped": counts["Untapped"],
+        "search_volume": int(sum(_num(r.get("search_volume")) for r in kd_filtered)),
+    }
+
+
+def _stored_keyword_gap_totals(competitor_analysis: dict, computed: dict | None) -> dict | None:
+    """The totals every slide renders: the stored authoritative dataset when
+    present, else the freshly computed one. A disagreement means the rows
+    changed after the dataset was built — logged, and the stored values
+    still win so no slide publishes a second set of numbers."""
+    stored = competitor_analysis.get("keyword_gap_totals")
+    if stored and computed and stored != computed:
+        logger.error("Keyword gap totals conflict: stored %s vs recomputed %s — using stored", stored, computed)
+    return stored or computed
 
 
 _GAP_SHARED_BLUE = RGBColor(0x3E, 0x6B, 0x99)
@@ -6450,6 +6535,10 @@ def add_keyword_gap_slides(
         return []
 
     by_category, counts = keyword_gap_by_category(kd_filtered)
+    totals = _stored_keyword_gap_totals(competitor_analysis, keyword_gap_totals(competitor_analysis))
+    counts = {"Missing": totals["missing"], "Shared": totals["shared"], "Untapped": totals["untapped"]}
+    off_topic_count = totals["off_topic_excluded"]
+    total_relevant = totals["total_relevant"]
     dedicated_categories = [c for c in ("Missing", "Shared", "Untapped") if counts[c] >= _GAP_DEDICATED_THRESHOLD]
     inline_categories = [c for c in ("Missing", "Shared", "Untapped") if 1 <= counts[c] < _GAP_DEDICATED_THRESHOLD]
 
@@ -6484,7 +6573,7 @@ def add_keyword_gap_slides(
     slides = []
 
     exec_summary_slide = add_keyword_gap_executive_summary_slide(
-        prs, by_category, counts, off_topic_count, len(kd_filtered), client_name,
+        prs, by_category, counts, off_topic_count, total_relevant, client_name,
     )
     if exec_summary_slide:
         slides.append(exec_summary_slide)
@@ -6532,26 +6621,24 @@ def add_keyword_gap_slides(
     # ---- One consolidated Key Insights slide, covering every status that
     # has any rows — dedicated or inline — in its own column. ----
     overview_insights = []
-    # 2026-09-21 spec rule 5: the gap-scale bullet must explain what the
-    # split means, not just restate the counts — the trailing clause is the
-    # only addition; every number is still the same real count. Shortened
-    # 2026-09-23 (was a single ~180-char run-on sentence, the likeliest
-    # candidate for wrapping to more real lines in PowerPoint than
-    # _insights_strip's own line-count estimate reserved for it) — same
-    # numbers, same interpretive framing, half the length.
-    overview_insights.append(
-        f"{len(kd_filtered)} relevant keyword(s) analyzed ({off_topic_count} off-topic / competitor-brand excluded) — "
-        f"{counts['Shared']} Shared / {counts['Missing']} Missing / {counts['Untapped']} Untapped, "
-        "showing the scale of the competitive gap."
-    )
-    if ambiguous_rows:
-        # 2026-09-28 Competitor Keyword Gap rule: "manual relevance review"
-        # is the banned internal-process label, and "could not confidently
-        # judge" exposes the AI classification step — kept the underlying
-        # finding (these specific keywords are borderline for this
-        # business), dropped the process description.
-        review_examples = ", ".join(f"\"{r.get('keyword')}\"" for r in ambiguous_rows[:3])
-        overview_insights.append(f"Keywords with unclear relevance to your business: {review_examples}.")
+    # 2026-09-28 Key Insights rules: the counts are already on the
+    # Executive Summary cards, so the overview states what they mean (where
+    # the search demand sits) instead of restating them; keywords whose
+    # relevance was never confirmed are simply not in the validated dataset
+    # the deck shows, so they are never listed here.
+    total_volume = totals["search_volume"]
+    if total_volume:
+        by_volume = {cat: sum(_num(r.get("search_volume")) for r in by_category[cat]) for cat in ("Missing", "Shared", "Untapped")}
+        lead = max(by_volume, key=by_volume.get)
+        share = round(100 * by_volume[lead] / total_volume)
+        meaning = {
+            "Missing": "most of the demand sits on keywords where competitors rank and the site has no page",
+            "Shared": "most of the demand sits on keywords both sides already rank for, so ranking gains matter more than new pages",
+            "Untapped": "most of the demand sits on keywords only the site ranks for, so defending them comes first",
+        }[lead]
+        overview_insights.append(
+            f"{lead} keywords carry {share}% of the {total_volume:,} combined monthly searches in the gap — {meaning}."
+        )
     if kd_unavailable_count:
         overview_insights.append(f"{kd_unavailable_count} keyword(s) excluded — keyword difficulty wasn't available in the source export.")
 
@@ -6564,7 +6651,7 @@ def add_keyword_gap_slides(
         # dedicated row cap for a status that crossed the threshold, every
         # row (1-5) for one that stayed inline on the summary table.
         shown_count = min(len(status_rows), _GAP_DEDICATED_ROW_CAP) if category in dedicated_categories else len(status_rows)
-        insights_by_category[category] = _gap_status_insights(category, status_rows, shown_count, off_topic_count, client_name)
+        insights_by_category[category] = _gap_status_insights(category, status_rows, shown_count, off_topic_count, client_name)[:3]
 
     insights_slide = add_keyword_gap_insights_slide(prs, overview_insights, insights_by_category)
     if insights_slide:
@@ -6786,39 +6873,86 @@ def add_competitor_opportunity_slide(prs: Presentation, client_name: str, compet
     return slide
 
 
-def _strategic_cluster_insights(keywords: list[dict]) -> list[str]:
-    """Key Insights for one manual-sheet cluster, computed only from the
-    sheet's own values on this slide's visible keywords (never the wider
-    Semrush universe), so every number here is checkable on the table."""
+# 2026-09-28 Target Keywords client-facing output filter (team review):
+# every cluster's Key Insight carries ONLY the cluster opportunity, search
+# demand, strongest keyword, search intent, and the existing-page OR
+# new-page call — never how the keywords were clustered, validated, scored
+# or reviewed. Three lines cover all five, so a slide stays within the
+# 3-insight cap. Shared by the manual-sheet and AI-clustered paths.
+_TK_EASY_KD = 30
+_TK_OPPORTUNITY_LABEL = {
+    "commercial": "Buyer-intent opportunity", "transactional": "Buyer-intent opportunity",
+    "informational": "Awareness opportunity", "navigational": "Brand-search opportunity",
+    "local": "Local-search opportunity", "comparison": "Comparison-stage opportunity",
+}
+
+
+def _tk_dominant_intent(rows: list[dict]) -> str | None:
+    labels = [
+        str(r.get("detected_intent") or r.get("display_intent") or r.get("intent") or "").strip()
+        for r in rows
+    ]
+    labels = [label for label in labels if label and label != "—"]
+    return Counter(labels).most_common(1)[0][0] if labels else None
+
+
+def _tk_page_line(strength: str | None, url: str | None, page_type: str | None) -> str | None:
+    """EXISTING PAGE RULE: only a strong match (the matcher already requires
+    the same topic, the keyword's intent family and a compatible page type —
+    keyword_cluster_pipeline / keyword_intelligence_service) is called an
+    existing-page opportunity. A partial or weak match is never forced onto
+    a URL. None when page matching never ran, so nothing is claimed."""
+    if strength == "strong" and url:
+        return f"Existing page opportunity: {url} already matches this search intent and topic — optimize it for these keywords."
+    if strength in ("partial", "weak") and url:
+        return "Existing page is a partial match; a dedicated page may be required."
+    if strength in ("none", "partial", "weak"):
+        return f"New page opportunity — a dedicated {page_type.lower()} for this cluster." if page_type else "New page opportunity."
+    return None
+
+
+def _tk_cluster_insights(rows: list[dict], intent: str | None = None, user_need: str | None = None,
+                         user_need_keyword: str | None = None, page_line: str | None = None) -> list[str]:
+    if not rows:
+        return []
+    candidates = [r for r in rows if r.get("relevance_status") not in _EXCLUDED_RELEVANCE_STATUSES] or rows
+    strongest = max(candidates, key=lambda r: _num(r.get("search_volume")))
+    total_volume = sum(_num(r.get("search_volume")) for r in rows)
+    intent = intent or _tk_dominant_intent(rows)
+    label = next((v for k, v in _TK_OPPORTUNITY_LABEL.items() if intent and k in intent.lower()), "Opportunity")
     out = []
-    vols = [(k, _num(k.get("search_volume"))) for k in keywords if k.get("search_volume") is not None]
-    kds = [_num(k.get("keyword_difficulty")) for k in keywords if k.get("keyword_difficulty") is not None]
-    # "Highest demand"/"quickest wins" only ever name a keyword that passed
-    # the relevance check — never a flagged (†) one.
-    verified = [k for k in keywords if k.get("relevance_status") not in _EXCLUDED_RELEVANCE_STATUSES]
-    verified_vols = [(k, v) for k, v in vols if k in verified]
-    if vols:
-        out.append(f"{len(keywords)} priority keyword(s), {sum(v for _, v in vols):,.0f} combined monthly searches.")
-    if verified_vols:
-        top_kw, top_vol = max(verified_vols, key=lambda kv: kv[1])
-        kd_text = f", KD {int(_num(top_kw['keyword_difficulty']))}" if top_kw.get("keyword_difficulty") is not None else ""
-        out.append(f"Highest demand: \"{top_kw['keyword']}\" — {top_vol:,.0f} searches/month{kd_text}.")
-    easy = [k for k in verified if k.get("keyword_difficulty") is not None and _num(k["keyword_difficulty"]) < 30
-            and _num(k.get("search_volume")) > 0]
-    if easy:
-        best = max(easy, key=lambda k: _num(k.get("search_volume")))
-        out.append(f"{len(easy)} keyword(s) under KD 30 — quickest wins, led by \"{best['keyword']}\" "
-                   f"({_num(best['search_volume']):,.0f}/mo, KD {int(_num(best['keyword_difficulty']))}).")
-    elif kds:
-        out.append(f"Avg. KD {sum(kds) / len(kds):.0f} — no low-difficulty entry point; needs content depth and links.")
-    commercial = [k for k in keywords if (k.get("display_intent") or k.get("intent")) and any(
-        m in (k.get("display_intent") or k["intent"]).lower() for m in ("commercial", "transactional"))]
-    if commercial and len(commercial) < len(keywords):
-        out.append(f"{len(commercial)} of {len(keywords)} keyword(s) carry commercial/transactional intent — "
-                   "map these to product/landing pages, the rest to guides.")
-    elif commercial:
-        out.append("Every keyword here carries commercial/transactional intent — target with a product/landing page, not a blog post.")
+    if total_volume > 0:
+        easy = [r for r in candidates if r.get("keyword_difficulty") not in (None, "")
+                and _num(r["keyword_difficulty"]) < _TK_EASY_KD and _num(r.get("search_volume")) > 0]
+        easy_text = f", {len(easy)} of them low-difficulty (KD under {_TK_EASY_KD})" if easy else ""
+        out.append(f"{label}: {len(rows)} keyword(s) with {total_volume:,.0f} combined monthly searches{easy_text}.")
+        kd = strongest.get("keyword_difficulty")
+        kd_text = f", KD {int(_num(kd))}" if kd not in (None, "") else ""
+        line = f"Strongest keyword: \"{strongest.get('keyword')}\" — {_num(strongest.get('search_volume')):,.0f} searches/month{kd_text}."
+    else:
+        # Search Console-only rows carry no search volume — never print
+        # "0 searches/month" as if that were data.
+        impressions = sum(_num(r.get("gsc_impressions")) for r in rows)
+        demand = f" with {impressions:,.0f} Search Console impressions in the report window" if impressions else ""
+        out.append(f"{label}: {len(rows)} keyword(s) already bringing searchers to the site{demand}.")
+        line = f"Strongest keyword: \"{strongest.get('keyword')}\"."
+    need = strongest.get("user_need") or (user_need if user_need_keyword == strongest.get("keyword") else None)
+    need_text = f"users want to {need[0].lower()}{need[1:].rstrip('.')}" if need else ""
+    if intent:
+        line += f" Search intent: {intent}" + (f" — {need_text}." if need_text else ".")
+    elif need_text:
+        line += f" {need_text[0].upper()}{need_text[1:]}."
+    out.append(line)
+    if page_line:
+        out.append(page_line)
     return out
+
+
+def _strategic_cluster_insights(keywords: list[dict]) -> list[str]:
+    """Key Insights for one manual-sheet cluster the validation engine never
+    scored — the sheet's own values only, so every number is checkable on
+    the table. No page call: no page matching ran for these."""
+    return _tk_cluster_insights(keywords)
 
 
 def _short_exclusion_reason(reason: str) -> str:
@@ -6853,101 +6987,28 @@ def _temporal_keywords_line(keywords: list[str]) -> str | None:
 
 
 def _validated_strategic_cluster_insights(c: dict) -> list[str]:
-    """Universal SEO Keyword engine (2026-09-23) insights for one client-
-    sheet cluster: the sheet's grouping is kept, and these lines report
-    what the engine's validation found — target page + action + confidence
-    (§53/§55/§30), what the relevance/brand gate removed (§21/§45), where
-    the sheet's intent label disagrees with the keyword's own wording (§8),
-    and a split-test flag (§42). Capped at 5 lines, most decision-relevant
-    first; the plain demand lines from _strategic_cluster_insights fill any
-    space left."""
-    keywords = c["keywords"]
-    out: list[str] = []
-    base = _strategic_cluster_insights(keywords)
-    target = c.get("target_url")
-    if target:
-        target_text = f"existing page {target}"
-    elif c.get("closest_url"):
-        target_text = f"closest existing page is only a weak match ({c['closest_url']})"
-    else:
-        target_text = "new page (no existing page covers this)"
-    ranking = c.get("ranking_evidence")
-    if target and ranking:
-        target_text += f" (already ranks #{ranking['position']} for {ranking['keywords']} of these keywords)"
-    # Client-facing priority phrasing, not the internal tier label or raw
-    # 0-100 opportunity/confidence scores those numbers come from (2026-09-28
-    # Key Insights rule: no confidence scores, no internal scoring exposed
-    # to the client). "Human Review" is an internal not-confident-enough
-    # flag, not a claim to make to the client, so it gets no priority text.
-    _tier_phrase = {"High": " This is a high-priority opportunity.", "Medium": " This is a medium-priority opportunity.", "Low": " This is a lower-priority opportunity."}
-    priority_text = _tier_phrase.get(c.get("roadmap_priority"), "")
-    page_type = c.get("recommended_page_type") or "dedicated page"
-    if c.get("cluster_type"):
-        page_type = f"{page_type} ({c['cluster_type']})"
-    gap_text = f" Gap: {c['content_gap_type']}." if c.get("content_gap_type") and not target else ""
-    # 2026-09-28 Target Keywords rule: `decision`/`recommended_action` are
-    # internal codes ("EXISTING URL — SECONDARY TARGET", "REVIEW", ...) —
-    # never render them raw, same fix as _keyword_insights above.
-    # decision_reason is the natural sentence explaining the same call.
-    _decision_reason = c.get("decision_reason")
-    action_text = f" {_decision_reason.rstrip('.')}." if _decision_reason and c.get("decision") != "REVIEW" else ""
-    out.append(f"Target: {page_type} — {target_text}.{action_text}{gap_text}{priority_text}")
-    if c.get("primary_keyword"):
-        # §55/§66-D: the page's one primary keyword and the searcher's
-        # need. 2026-09-28: natural sentence instead of a raw "User need:
-        # <label>" field — same fix as _keyword_insights above.
-        _need = c.get("user_need") or ""
-        need = f" Users are trying to {_need[0].lower()}{_need[1:]}." if _need else ""
-        out.append(f'Primary keyword: "{c["primary_keyword"]}".{need}')
-    excluded = c.get("excluded") or []
-    if excluded:
-        out.append(
-            "Removed from this cluster: "
-            + ", ".join(f'"{e["keyword"]}" ({_short_exclusion_reason(e["reason"])})' for e in excluded[:3])
-            + (f" (+{len(excluded) - 3} more)" if len(excluded) > 3 else "") + "."
-        )
-    flags = c.get("relevance_flags") or []
-    other_sites = [f["keyword"] for f in flags if (f.get("reason") or "").startswith("Other Website Search")]
-    doubts = [f["keyword"] for f in flags if f["keyword"] not in other_sites]
-    if other_sites or doubts:
-        bits = []
-        if other_sites:
-            bits.append(f"{_quoted_list(other_sites)} are searches for another website")
-        if doubts:
-            bits.append(f"{_quoted_list(doubts)} may not match this business (possible other brand or product)")
-        # 2026-09-28 Target Keywords rule: "Relevance check:" is the "manual
-        # relevance review" internal-process label, and "confirm with the
-        # client before targeting" is an instruction to the agency team,
-        # not a claim for the client's own deck to make to the client.
-        # Kept the finding itself (still evidence-backed, still useful),
-        # dropped the label and the internal instruction.
-        out.append("Note: " + "; ".join(bits) + ".")
-    mismatches = c.get("intent_mismatches") or []
-    if mismatches:
-        detected = Counter(m["detected"] for m in mismatches).most_common(1)[0][0]
-        sheet = mismatches[0].get("sheet")
-        out.append(
-            f"Intent corrected: {_quoted_list([m['keyword'] for m in mismatches])} read as {detected.lower()} "
-            f"(sheet said {sheet}) — cover these in a guide/spec section, not the main product page."
-        )
-    # A keyword already called out by the relevance check isn't repeated as
-    # a split-test outlier (no repeated lines, 2026-09-08 rule).
-    flagged_lower = {f["keyword"].lower() for f in flags}
-    outliers = [o for o in c.get("outliers") or [] if o.lower() not in flagged_lower]
-    if len(outliers) >= 2:
-        out.append(
-            f"Split test: {_quoted_list(outliers)} share no core term with the rest of this cluster — "
-            "likely separate search needs; consider separate pages."
-        )
-    temporal_line = _temporal_keywords_line([k["keyword"] for k in keywords])
-    if temporal_line:
-        out.append(temporal_line)
-    # Decision lines first; the plain demand lines fill what room is left.
-    for line in base:
-        if mismatches and line.startswith("Every keyword here carries commercial"):
-            continue  # contradicted by the intent check above
-        out.append(line)
-    return out[:5]
+    """Client-facing Key Insights for one validated client-sheet cluster
+    (2026-09-28 output filter): opportunity, demand, strongest keyword,
+    intent (the engine's corrected intent where it disagreed with the
+    sheet) and the existing/new page call. What the relevance gate removed,
+    confidence, split tests and review flags stay in the data model and
+    the Sheets export — never on the slide."""
+    strength = c.get("match_strength")
+    url = c.get("target_url") or c.get("closest_url")
+    page_line = _tk_page_line(strength, url, c.get("recommended_page_type"))
+    # A keyword the relevance check flagged (another brand / website) is
+    # never named as the strongest keyword; it stays in the sheet's table.
+    flagged = {f["keyword"].lower(): f.get("reason") or "Unrelated" for f in c.get("relevance_flags") or []}
+    rows = []
+    for k in c["keywords"]:
+        row = dict(k, detected_intent=k.get("display_intent") or k.get("intent"))
+        if k["keyword"].lower() in flagged:
+            reason = flagged[k["keyword"].lower()]
+            row["relevance_status"] = next((st for st in _EXCLUDED_RELEVANCE_STATUSES if reason.startswith(st)), "Unrelated")
+        rows.append(row)
+    return _tk_cluster_insights(
+        rows, user_need=c.get("user_need"), user_need_keyword=c.get("primary_keyword"), page_line=page_line,
+    )
 
 
 # Target Keywords layout (2026-09-24 spec), shared by the manual-sheet and
@@ -7179,15 +7240,17 @@ def _render_target_keyword_slides(prs: Presentation, categories: list[dict], tra
                 if not cluster_insights:
                     return []
                 lead = [cluster_insights[0]]
-                decision = next((l for l in cluster_insights if l.startswith("Confidence:")), None) \
-                    or next((l for l in cluster_insights if l.startswith("Recommended format:") or l.startswith("Target:")), None)
+                decision = next((l for l in cluster_insights if l.startswith(("Existing page", "New page"))), None)
                 if decision:
                     lead.append(decision)
                 return lead
             insights = [line for c in starts for line in _lead_lines(c.get("insights") or [])]
         if trailing_insight and idx == len(plan) - 1:
-            insights = insights[:4] + [trailing_insight]
-        _insights_strip(slide, _TK_LEFT, y + Inches(0.15), _TK_WIDTH, insights, max_items=5, max_y=_TK_BOTTOM)
+            insights = insights[:2] + [trailing_insight]
+        # Max 3 per slide (2026-09-28 Key Insights rule); a slide shared by
+        # several small clusters carries 2 lines each, so it may run to 4.
+        cap = 3 if len(clusters_here) == 1 else 4
+        _insights_strip(slide, _TK_LEFT, y + Inches(0.15), _TK_WIDTH, insights, max_items=cap, max_y=_TK_BOTTOM)
         slides.append(slide)
     problems = _audit_target_keyword_slides(slides, categories)
     for p in problems:
@@ -7301,11 +7364,8 @@ _TARGET_KEYWORDS_EXCLUDED_CLUSTERS = {
     _NEEDS_REVIEW_CLUSTER_LABEL, _CAREER_ROUTE_CLUSTER_LABEL, _GEO_ROUTE_CLUSTER_LABEL,
 }
 _EXCLUDED_CLUSTER_NOUN = {
-    # 2026-09-28 Target Keywords rule: "awaiting relevance review" is
-    # explicitly banned client-facing language (names the internal
-    # not-yet-classified state). These are genuinely low-confidence
-    # matches to the client's business, so say that instead.
-    _NEEDS_REVIEW_CLUSTER_LABEL: "keyword(s) with unclear relevance to your business",
+    # The not-yet-validated bucket (_NEEDS_REVIEW_CLUSTER_LABEL) is never
+    # named on a slide (2026-09-28 output filter) — see add_keyword_research_slide.
     _CAREER_ROUTE_CLUSTER_LABEL: "job/career search(es)",
     _GEO_ROUTE_CLUSTER_LABEL: "out-of-market location search(es)",
 }
@@ -7570,7 +7630,11 @@ def add_competitor_keyword_overview_slide(
         row_height=0.34, wrap_cols={0},
     )
 
-    gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
+    # Validated gap rows only (same filter as the Keyword Gap slides and
+    # keyword_gap_totals) — never raw rows that include off-topic or
+    # unconfirmed-relevance keywords.
+    raw_gap_rows = (competitor_analysis or {}).get("keyword_gap_rows") or []
+    gap_rows = _prepare_keyword_gap_rows(raw_gap_rows)[0] if raw_gap_rows else []
     gap_by_keyword: dict[str, dict] = {}
     for r in gap_rows:
         kw = (r.get("keyword") or "").strip().lower()
@@ -7648,158 +7712,11 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
         clusters.setdefault(label, []).append(r)
 
     def _keyword_insights(rows_for_group: list[dict]) -> list[str]:
-        volumes = [_num(r.get("search_volume")) for r in rows_for_group]
-        kds = [_num(r.get("keyword_difficulty")) for r in rows_for_group if r.get("keyword_difficulty") not in (None, "")]
-        total_volume = sum(volumes)
-        # Prefer the upstream pipeline's own Primary keyword selection (which
-        # weighs commercial intent and ranking opportunity, not just volume)
-        # when present, so "Top opportunity" always names the same keyword
-        # the Role column marks Primary. That Role column is itself
-        # assigned by POSITION after a volume-descending sort (i == 0),
-        # never by primary_or_secondary — so preferring the pipeline's
-        # Primary pick here actually broke the very agreement this
-        # comment describes: select_primary_keyword deliberately weighs
-        # relevance/intent-fit/ranking ahead of raw demand (§19-20, the
-        # right choice for the cluster's actual TARGET keyword elsewhere
-        # in this report), but for "Top opportunity" — a label that
-        # promises the biggest number — that produced a lower-volume
-        # keyword while the table's own first row (and the Role column,
-        # on the flat-table path) showed the real highest-volume one.
-        # Confirmed real on a live Geopits report (2026-09-24): slide 23
-        # showed "Top opportunity" at 140 searches/month while its own
-        # table's first row read 260. Always the highest-volume keyword.
+        # 2026-09-28 client-facing output filter — see _tk_cluster_insights.
         top = max(rows_for_group, key=lambda r: _num(r.get("search_volume")))
-        easy_wins = [r for r in rows_for_group if _num(r.get("keyword_difficulty"), default=100) < 20 and _num(r.get("search_volume")) > 0]
-        if total_volume > 0:
-            out = [f"{len(rows_for_group)} keywords, {total_volume:,.0f} combined monthly searches."]
-            kd = top.get("keyword_difficulty")
-            kd_text = f", KD {kd}" if kd not in (None, "") else ""
-            # §55/§66-D: the searcher's need behind the primary keyword.
-            # 2026-09-28 Target Keywords rule: never show the raw "User
-            # need: <label>" internal field format — write it as a natural
-            # sentence instead. user_need values are already short verb
-            # phrases (keyword_intelligence_service._classify_intent:
-            # "Discover X options", "Compare X options before choosing",
-            # "Learn about X", ...), so lowercasing the leading verb and
-            # framing it as what users are doing reads naturally without
-            # inventing any new meaning.
-            _need = top.get("user_need") or ""
-            need_text = f" Users are trying to {_need[0].lower()}{_need[1:]}." if _need else ""
-            out.append(f"Top opportunity: \"{top.get('keyword')}\" — {_num(top.get('search_volume')):,.0f} searches/month{kd_text}.{need_text}")
-        else:
-            # Search Console-only rows carry no Semrush search volume —
-            # never print "0 searches/month, KD n/a" as if that were data
-            # (LumberFi deck, 2026-09-23).
-            impressions = sum(_num(r.get("gsc_impressions")) for r in rows_for_group)
-            out = [f"{len(rows_for_group)} keyword(s) from Search Console"
-                   + (f" — {impressions:,.0f} impressions in the report window." if impressions else ".")
-                   + " No Semrush search volume uploaded for these."]
-            out.append(f"Top keyword: \"{top.get('keyword')}\".")
-        # §30/§60/§61: confidence + the evidence behind the grouping — moved
-        # ahead of Recommended format/Cluster validation (2026-09-25): the
-        # 5-line insight cap wasn't the real threat, _insights_strip's own
-        # vertical-space budget is — a large cluster's table (15-21+ rows)
-        # leaves so little room below it that only the first 2-3 lines fit
-        # regardless of the count cap, so whatever sits later in this list
-        # gets silently cut. Confirmed real on a live Geopits report
-        # (2026-09-25): several of the biggest, highest-value clusters
-        # showed only "N keywords, X searches" + "Top opportunity", with
-        # no action, confidence or validation line at all. Confidence
-        # (how much to trust the grouping) is the single most useful line
-        # to guarantee survives that cut, ahead of the narrower "are the
-        # page formats consistent" validation check.
-        if top.get("cluster_confidence") is not None:
-            # Client-facing grouping rationale, not the internal confidence
-            # score/tier label those numbers come from (2026-09-28 Key
-            # Insights rule: no confidence scores, no internal scoring
-            # exposed to the client). Still guaranteed non-empty here
-            # whenever cluster_confidence is computed, same as before —
-            # only the wording changed, not whether this line survives the
-            # vertical-space cut described above.
-            _tier_phrase = {"High": " This is a high-priority opportunity.", "Medium": " This is a medium-priority opportunity.", "Low": " This is a lower-priority opportunity."}
-            priority_text = _tier_phrase.get(top.get("roadmap_priority"), "")
-            # 2026-09-28 Target Keywords rule: cluster_reason (see
-            # keyword_intelligence_service._score_cluster's reason_bits) is
-            # built to explain HOW the grouping was classified — it can read
-            # "AI-validated as one search need", "rule-based grouping
-            # (shared core entity), not AI-validated", "N keyword(s)
-            # flagged for relevance review", "no SERP data to confirm".
-            # Every one of those is explicitly banned client-facing
-            # language (AI-validated / rule-based grouping / relevance
-            # review / internal classification methodology). It's kept in
-            # the data model for the Sheets export's own "Reason" column
-            # (a different, more technical deliverable) but never rendered
-            # on this slide — always the plain, safe default instead.
-            out.append(f"Grouped by shared entity and intent.{priority_text}")
-        # §22 page type (strategy layer) when computed, else the pipeline's
-        # coarse page category; §29 cluster type alongside it.
-        page_category = top.get("recommended_page_type") or top.get("page_category")
-        if page_category and top.get("cluster_type"):
-            page_category = f"{page_category} ({top['cluster_type']})"
-        existing_url = top.get("existing_page_url")
-        # Universal SEO Keyword engine (2026-09-23) §53/§55: the cluster's
-        # own target decision — only added when the pipeline computed it.
-        # 2026-09-28 Target Keywords rule: `decision` is an internal code
-        # ("EXISTING URL — SECONDARY TARGET", "MERGE EXISTING URLS",
-        # "REVIEW", ...) — never render it raw. `decision_reason` is
-        # already the natural sentence explaining that same decision
-        # (keyword_strategy_service._resolve_decisions), so use that
-        # instead. The "REVIEW" decision's reason text is itself internal
-        # QA language ("confirm before building") with no safe rewrite, so
-        # it's dropped entirely — same treatment as the Human Review tier's
-        # priority label above.
-        decision_reason = top.get("decision_reason")
-        action_text = f" {decision_reason.rstrip('.')}." if decision_reason and top.get("decision") != "REVIEW" else ""
-        if top.get("content_gap_type") and not (existing_url and top.get("existing_page_match_strength") in ("strong", "partial")):
-            action_text += f" Gap: {top['content_gap_type']}."
-        if page_category and existing_url and top.get("existing_page_match_strength") == "weak":
-            out.append(f"Recommended format: {page_category} — closest existing page is only a weak match ({existing_url}).{action_text}")
-        elif page_category and existing_url:
-            out.append(f"Recommended format: {page_category} — an existing page already covers this: {existing_url}.{action_text}")
-        elif page_category:
-            out.append(f"Recommended format: {page_category} — no existing page covers this yet, new page opportunity.{action_text}")
-        # Can one page realistically satisfy every keyword in this cluster?
-        # Deterministic — reuses page_category already computed per
-        # keyword, no extra AI call. A single stray keyword in a different
-        # format isn't treated as a real split signal (min_count=2) —
-        # only flagged when there's a genuine second sub-group worth its
-        # own page. 2026-09-28 Target Keywords rule: "Cluster validation:"
-        # is explicitly banned client-facing language (it's on the same
-        # list as "cluster validation" / "AI-validated") — the underlying
-        # fact (do these keywords share a page format) is still useful to
-        # the client, just stated without the internal-process label.
-        categories_present = [r.get("page_category") for r in rows_for_group if r.get("page_category")]
-        if categories_present:
-            cat_counts = Counter(categories_present).most_common()
-            if len(cat_counts) > 1 and cat_counts[1][1] >= 2:
-                cats_text = ", ".join(f"{c} ({n})" for c, n in cat_counts)
-                out.append(f"These keywords show mixed page formats — {cats_text}. One page likely can't satisfy all of these; consider splitting into separate pages.")
-            else:
-                # 2026-09-10 spec: never publish two different values for the
-                # same classified field on one slide — anchor to page_category
-                # (what "Recommended format" above is actually built on)
-                # instead of independently re-deriving the mode, which could
-                # disagree when the top-volume keyword's own format wasn't
-                # the cluster's most common one.
-                out.append(f"These keywords share a consistent format ({page_category or cat_counts[0][0]}) — one page can reasonably target every keyword here.")
-        temporal_line = _temporal_keywords_line([r.get("keyword") or "" for r in rows_for_group])
-        if temporal_line:
-            out.append(temporal_line)
-        if kds:
-            out.append(f"Avg. keyword difficulty {sum(kds) / len(kds):.0f} — {'competitive cluster, prioritize content depth over volume' if sum(kds) / len(kds) > 40 else 'low-competition cluster, faster to rank in'}.")
-        if easy_wins:
-            out.append(f"{len(easy_wins)} low-difficulty (KD<20) keyword(s) with real search volume — quick-win content targets.")
-        cpcs = [_num(r.get("cpc")) for r in rows_for_group if r.get("cpc") not in (None, "")]
-        commercial = [r for r in rows_for_group if "commercial" in str(r.get("intent", "")).lower() or "transactional" in str(r.get("intent", "")).lower()]
-        if cpcs and commercial:
-            avg_cpc = sum(cpcs) / len(cpcs)
-            out.append(f"Avg. CPC ${avg_cpc:.2f}, {len(commercial)} of {len(rows_for_group)} keyword(s) show commercial intent — prioritize these for conversion-focused pages.")
-        elif cpcs:
-            avg_cpc = sum(cpcs) / len(cpcs)
-            out.append(f"Avg. CPC ${avg_cpc:.2f} — {'high commercial value, worth ranking organically for' if avg_cpc > 10 else 'moderate commercial value'}.")
-        elif commercial:
-            out.append(f"{len(commercial)} of {len(rows_for_group)} keyword(s) show commercial/transactional intent — prioritize these for conversion-focused pages.")
-        return out
+        page_type = top.get("recommended_page_type") or top.get("page_category")
+        page_line = _tk_page_line(top.get("existing_page_match_strength"), top.get("existing_page_url"), page_type)
+        return _tk_cluster_insights(rows_for_group, page_line=page_line)
 
     if not clusters or set(clusters.keys()) == {""}:
         sorted_rows = sorted(keyword_rows, key=lambda r: _num(r.get("search_volume")), reverse=True)
@@ -7896,12 +7813,13 @@ def add_keyword_research_slide(prs: Presentation, keyword_rows: list[dict], max_
             "source": "Semrush export" if has_volume else "Google Search Console queries",
         })
     trailing = None
-    if excluded_counts:
-        # §62 review queue / exclusions, stated once on the last slide.
-        parts = ", ".join(
-            f"{n} {_EXCLUDED_CLUSTER_NOUN.get(lbl, lbl.lower())}" for lbl, n in excluded_counts.most_common()
-        )
-        trailing = f"Not targeted: {parts} — kept in the full keyword list for review, not on any target page."
+    # Exclusions stated once on the last slide. 2026-09-28 output filter:
+    # the not-yet-validated bucket never reaches the deck (only the final
+    # validated dataset does), and nothing says "kept for review".
+    shown_exclusions = [(lbl, n) for lbl, n in excluded_counts.most_common() if lbl != _NEEDS_REVIEW_CLUSTER_LABEL]
+    if shown_exclusions:
+        parts = ", ".join(f"{n} {_EXCLUDED_CLUSTER_NOUN.get(lbl, lbl.lower())}" for lbl, n in shown_exclusions)
+        trailing = f"Not targeted: {parts} — outside this business's target search demand."
     return _render_target_keyword_slides(prs, list(categories.values()), trailing_insight=trailing)
 
 

@@ -143,25 +143,21 @@ def test_two_small_clusters_share_a_slide_but_keep_the_decision_line():
     # slide had the same 5-line budget as a single-cluster slide.
     categories = [{"name": "Trucks", "clusters": [
         {**_cluster("Tippers", 2), "insights": [
-            "2 keywords, 100 combined monthly searches.",
-            'Top opportunity: "tipper price" — 100 searches/month.',
-            "Recommended format: Service Page — new page opportunity. Action: NEW URL REQUIRED.",
-            "Cluster validation: consistent format.",
-            "Confidence: High (80/100) — rule-based grouping. Priority High (opportunity 70/100).",
+            "Buyer-intent opportunity: 2 keyword(s) with 100 combined monthly searches.",
+            'Strongest keyword: "tipper price" — 100 searches/month. Search intent: Commercial.',
+            "New page opportunity — a dedicated service page for this cluster.",
         ]},
         {**_cluster("Tractors", 2), "insights": [
-            "2 keywords, 90 combined monthly searches.",
-            'Top opportunity: "tractor price" — 90 searches/month.',
-            "Confidence: Medium (55/100) — rule-based grouping.",
+            "Buyer-intent opportunity: 2 keyword(s) with 90 combined monthly searches.",
+            'Strongest keyword: "tractor price" — 90 searches/month. Search intent: Commercial.',
+            "Existing page is a partial match; a dedicated page may be required.",
         ]},
     ]}]
     slides = _render_target_keyword_slides(_prs(), categories)
-    strip_texts = [
-        sh.text_frame.text for sh in slides[0].shapes
-        if sh.has_text_frame and "Confidence:" in sh.text_frame.text
-    ]
-    assert any("High (80/100)" in t for t in strip_texts)
-    assert any("Medium (55/100)" in t for t in strip_texts)
+    text = "\n".join(sh.text_frame.text for sh in slides[0].shapes if sh.has_text_frame)
+    # Each cluster keeps its page call (the decision line), not just demand.
+    assert "New page opportunity" in text
+    assert "Existing page is a partial match" in text
 
 
 def test_small_clusters_never_paired_across_categories_or_without_one():
@@ -203,7 +199,8 @@ def test_large_cluster_keeps_confidence_line_despite_tall_table():
          "user_need": "Evaluate expert-managed, cloud-native database alternatives to running Postgres in-house",
          "cluster_confidence": 75, "cluster_confidence_level": "High", "cluster_reason": "shared entity and intent",
          "roadmap_priority": "High", "cluster_opportunity": 70,
-         "recommended_action": "New URL Required", "recommended_page_type": "Service Page"}
+         "recommended_action": "New URL Required", "recommended_page_type": "Service Page",
+         "existing_page_url": None, "existing_page_match_strength": "none"}
         for i in range(20)
     ]
     prs = _prs()
@@ -216,8 +213,10 @@ def test_large_cluster_keeps_confidence_line_despite_tall_table():
     # underlying grouping-rationale line must still survive the vertical-
     # space cut this test guards against, just with this wording instead of
     # "Confidence: High (75/100)".
-    assert "Grouped by shared entity and intent" in text and "high-priority opportunity" in text
-    assert "Recommended format:" in text
+    # 2026-09-28 client-facing output filter: the page call is the decision
+    # line that must survive the tall table; no grouping/priority wording.
+    assert "New page opportunity" in text
+    assert "Grouped by shared entity" not in text and "high-priority opportunity" not in text
 
 
 def test_top_opportunity_is_always_the_highest_volume_keyword():
@@ -242,7 +241,7 @@ def test_top_opportunity_is_always_the_highest_volume_keyword():
     insight_text = " ".join(
         sh.text_frame.text for s in slides for sh in s.shapes if sh.has_text_frame
     )
-    assert 'Top opportunity: "database support services"' in insight_text
+    assert 'Strongest keyword: "database support services"' in insight_text
     assert "260" in insight_text
 
 

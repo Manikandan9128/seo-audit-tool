@@ -43,6 +43,11 @@ count of items EXCLUDED from a total ("X off-topic/competitor-brand excluded") i
 never be added back into it — if a finding says "301 relevant keyword gap(s) ... (14 off-topic/competitor-brand \
 excluded)", the only valid total to cite is 301, never 315.
 
+Keyword-gap metrics come ONLY from "keyword_gap" (the report's single authoritative Competitor Keyword Gap \
+dataset): total_relevant, missing, shared, untapped, search_volume (combined monthly searches), off_topic_excluded. \
+Cite them exactly as given — never recount them, never take them from any other finding. If "keyword_gap" is null, \
+state no keyword-gap count at all.
+
 Avoid unsupported causal claims the data doesn't actually establish — never write "poor rankings stem from...", \
 "this prevents rankings...", "this causes...", or "this will improve rankings...". State what the audit found, not \
 a causal chain it can't prove: prefer phrasing like "The audit identified...", "Organic visibility is currently \
@@ -103,6 +108,68 @@ def _leaks_internal_field(point) -> bool:
 _ALLOWED_UNDERSCORE_TERMS: set[str] = set()
 
 
+# CORE PROBLEM — METRIC SOURCE RULE (2026-09-28 team review): the prompt
+# asks for exact copying, but the model can still recount or recall a
+# number. Any number the output ties to keywords/searches must be one of
+# the authoritative keyword_gap values (or a number another, non-gap
+# finding actually states, e.g. "ranks for 1,200 more keywords"). A problem
+# citing any other keyword number is dropped rather than published.
+_GAP_METRIC_RE = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*(%)?\s+(?:[A-Za-z/'-]+\s+){0,3}?"
+    r"(?:keywords?|keyword gaps?|monthly searches|searches|search volume)\b",
+    re.IGNORECASE,
+)
+_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _to_number(text: str) -> float:
+    return float(text.replace(",", ""))
+
+
+def _allowed_gap_numbers(findings: dict) -> tuple[set[float], set[float]]:
+    """(plain numbers, percentages) the output may tie to keywords."""
+    gap = findings.get("keyword_gap") or None
+    plain: set[float] = set()
+    pcts: set[float] = set()
+    if gap:
+        plain |= {float(v) for v in gap.values() if isinstance(v, (int, float))}
+        total = gap.get("total_relevant") or 0
+        if total:
+            pcts |= {float(round(100 * gap.get(k, 0) / total)) for k in ("missing", "shared", "untapped")}
+    if findings.get("target_keyword_count"):
+        plain.add(float(findings["target_keyword_count"]))
+    # Numbers other (non-keyword-gap) findings genuinely state.
+    other = {k: v for k, v in findings.items() if k not in ("keyword_gap", "competitor_gap_findings")}
+    other_gap_findings = [f for f in findings.get("competitor_gap_findings") or [] if f.get("type") != "keyword_gap"]
+    for m in _NUMBER_RE.finditer(json.dumps([other, other_gap_findings], default=str)):
+        plain.add(_to_number(m.group(0)))
+    return plain, pcts
+
+
+def _violates_gap_metrics(text: str, allowed: tuple[set[float], set[float]]) -> bool:
+    plain, pcts = allowed
+    for m in _GAP_METRIC_RE.finditer(text or ""):
+        value = _to_number(m.group(1))
+        if (value not in pcts) if m.group(2) else (value not in plain):
+            return True
+    return False
+
+
+def _enforce_gap_metrics(data: dict, findings: dict) -> dict | None:
+    """Drops problems with an unsourced keyword-gap number. None when the
+    thesis itself carries one, or fewer than 2 problems survive."""
+    allowed = _allowed_gap_numbers(findings)
+    if _violates_gap_metrics(data.get("thesis", ""), allowed):
+        return None
+    original = data.get("problems")
+    if not isinstance(original, list):
+        return data
+    problems = [p for p in original if not _violates_gap_metrics(str(p), allowed)]
+    if len(problems) < len(original) and len(problems) < 2:
+        return None
+    return {**data, "problems": problems}
+
+
 def generate_core_problem(findings: dict) -> dict:
     """Returns {"thesis": str, "categories": [...]} or {"error": str}.
 
@@ -121,9 +188,13 @@ def generate_core_problem(findings: dict) -> dict:
         for raw, provider in iter_text_attempts(prompt, max_tokens=1024, errors=errors):
             last_raw = raw
             data = _parse(raw)
-            if data is not None:
-                return data
-            errors.append(f"{provider} did not return valid JSON")
+            if data is None:
+                errors.append(f"{provider} did not return valid JSON")
+                continue
+            checked = _enforce_gap_metrics(data, findings)
+            if checked is not None:
+                return checked
+            errors.append(f"{provider} cited a keyword-gap number not in the authoritative dataset")
     except NoAIProviderConfigured as e:
         return {"error": str(e)}
 
