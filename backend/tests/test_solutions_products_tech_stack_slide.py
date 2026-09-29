@@ -104,14 +104,33 @@ def test_tile_names_shortened_via_known_aliases():
     assert "Amazon CloudFront" not in texts
 
 
-def test_more_than_six_technologies_shows_overflow_tile():
+def test_technologies_in_one_category_share_a_single_heading_and_all_show():
+    # 2026-09-29 user report (Lumber): "ANALYTICS" was repeated once per
+    # tool and the rest were hidden behind "+2 more".
+    prs = _prs()
+    detected = [{"category": "analytics", "name": n} for n in ("Google Analytics 4", "Tag Manager", "Meta Pixel", "Microsoft Clarity")]
+    detected.append({"category": "cdn", "name": "Cloudflare"})
+    tech = {"hostname": "x.com", "https": True, "detected": detected}
+    slide = add_solutions_products_slide(prs, {}, tech)
+    texts = _texts(slide)
+    assert texts.count("ANALYTICS") == 1
+    assert texts.count("CDN") == 1
+    for n in ("Google Analytics 4", "Tag Manager", "Meta Pixel", "Microsoft Clarity", "Cloudflare"):
+        assert n in texts
+    assert not any(t.startswith("+") and "more" in t for t in texts)
+    assert _audit_slide_geometry(prs) == []
+
+
+def test_a_category_with_many_technologies_shows_a_plus_n_more_line_inside_its_own_tile():
     prs = _prs()
     detected = [{"category": "other", "name": f"Tool {i}"} for i in range(9)]
     tech = {"hostname": "x.com", "https": True, "detected": detected}
     slide = add_solutions_products_slide(prs, {}, tech)
     texts = _texts(slide)
-    assert "+4 more" in texts  # 9 items, 6 slots -> 5 real tiles shown + 1 counter tile covering the other 4
-    assert sum(1 for t in texts if t.startswith("Tool ")) == 5
+    assert texts.count("OTHER") == 1
+    assert "+5 more" in texts  # 9 tools, 4 shown, 5 counted
+    assert sum(1 for t in texts if t.startswith("Tool ")) == 4
+    assert _audit_slide_geometry(prs) == []
 
 
 def test_products_heading_never_renders_as_an_orphan_with_no_content():

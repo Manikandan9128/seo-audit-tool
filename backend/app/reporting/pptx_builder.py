@@ -1878,6 +1878,39 @@ def _draw_tech_tile(slide, x, y, w, h, category: str, name: str | None):
     _textbox(slide, x + pad, y + pad + Inches(0.22), text_w, Inches(0.28), display, size=size, bold=True, color=TEXT_DARK)
 
 
+_TECH_TILE_MAX_NAMES = 5
+_TECH_TILE_LINE_H = Inches(0.21)
+
+
+def _tech_category_tile_height(lines: int):
+    return Inches(0.13) + Inches(0.22) + _TECH_TILE_LINE_H * lines + Inches(0.06)
+
+
+def _draw_tech_category_tile(slide, x, y, w, h, category: str, names: list[str], extra: int = 0):
+    """One tile per technology category: the category heading once, then each
+    technology on its own line."""
+    tile = slide.shapes.add_shape(5, x, y, w, h)
+    try:
+        tile.adjustments[0] = 0.12
+    except (IndexError, AttributeError):
+        pass
+    tile.fill.solid()
+    tile.fill.fore_color.rgb = RGBColor(0xF7, 0xF8, 0xFA)
+    tile.line.color.rgb = CARD_BORDER
+    tile.line.width = Pt(0.75)
+    tile.shadow.inherit = False
+    pad = Inches(0.13)
+    text_w = w - pad * 2
+    _textbox(slide, x + pad, y + pad, text_w, Inches(0.16), category.upper(), size=8.5, bold=True, color=TEXT_MUTED)
+    ly = y + pad + Inches(0.22)
+    for name in names:
+        display, size = _tile_display_name(name, text_w)
+        _textbox(slide, x + pad, ly, text_w, Inches(0.2), display, size=size, bold=True, color=TEXT_DARK)
+        ly += _TECH_TILE_LINE_H
+    if extra:
+        _textbox(slide, x + pad, ly, text_w, Inches(0.2), f"+{extra} more", size=10, color=TEXT_MUTED)
+
+
 def _tech_stack_hosting_card(slide, x, top, width, height, tech_stack: dict):
     """Right card of the redesigned 'Solutions, Products & Tech Stack'
     slide (spec 2026-09-25) — this content used to be its own standalone
@@ -1955,43 +1988,38 @@ def _tech_stack_hosting_card(slide, x, top, width, height, tech_stack: dict):
         grid_y = tech_label_y + Inches(0.3)
         gap = Inches(0.15)
         tile_w = (inner_w - gap) / 2
-        tile_h = Inches(0.68)
-        shown = remaining_detected[:6]
-        overflow = len(remaining_detected) - len(shown)
-        # The 6th slot becomes "+N more" instead of a 6th real tile once
-        # there's an overflow, so the count on screen always matches what
-        # was actually shown.
-        if overflow > 0:
-            shown = shown[:5]
-        for i, item in enumerate(shown):
-            col, rowi = i % 2, i // 2
+        # One tile per CATEGORY listing every technology in it (2026-09-29
+        # user report: a heading like ANALYTICS was repeated on 4 separate
+        # tiles for Lumber's 4 analytics tools, and the last slot hid the
+        # rest behind "+N more"). Tiles are packed into the shorter of the
+        # two columns; anything that can't fit above the source line is
+        # counted honestly in a closing "+N more categories" note.
+        groups: dict[str, list[str]] = {}
+        for item in remaining_detected:
+            names = groups.setdefault(item["category"], [])
+            display = _normalize_tech_name(item["name"])
+            if display not in names:
+                names.append(display)
+        limit_y = top + height - pad - Inches(0.32)
+        col_y = [grid_y, grid_y]
+        skipped = 0
+        for category, names in groups.items():
+            shown_names = names if len(names) <= _TECH_TILE_MAX_NAMES else names[: _TECH_TILE_MAX_NAMES - 1]
+            extra = len(names) - len(shown_names)
+            lines = len(shown_names) + (1 if extra else 0)
+            tile_h = _tech_category_tile_height(lines)
+            col = 0 if col_y[0] <= col_y[1] else 1
+            if col_y[col] + tile_h > limit_y:
+                skipped += 1
+                continue
             tx = inner_x + col * (tile_w + gap)
-            ty = grid_y + rowi * (tile_h + gap)
-            _draw_tech_tile(slide, tx, ty, tile_w, tile_h, item["category"], item["name"])
-        if overflow > 0:
-            col, rowi = len(shown) % 2, len(shown) // 2
-            tx = inner_x + col * (tile_w + gap)
-            ty = grid_y + rowi * (tile_h + gap)
-            tile = slide.shapes.add_shape(5, tx, ty, tile_w, tile_h)
-            try:
-                tile.adjustments[0] = 0.12
-            except (IndexError, AttributeError):
-                pass
-            tile.fill.solid()
-            tile.fill.fore_color.rgb = RGBColor(0xF7, 0xF8, 0xFA)
-            tile.line.color.rgb = CARD_BORDER
-            tile.line.width = Pt(0.75)
-            tile.shadow.inherit = False
-            tf = tile.text_frame
-            tf.word_wrap = True
-            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
-            p = tf.paragraphs[0]
-            p.alignment = PP_ALIGN.CENTER
-            run = p.add_run()
-            run.text = f"+{overflow + 1} more"
-            run.font.size = Pt(11)
-            run.font.bold = True
-            run.font.color.rgb = TEXT_MUTED
+            _draw_tech_category_tile(slide, tx, col_y[col], tile_w, tile_h, category, shown_names, extra)
+            col_y[col] += tile_h + gap
+        if skipped:
+            _textbox(
+                slide, inner_x, limit_y, inner_w, Inches(0.24),
+                f"+{skipped} more {'category' if skipped == 1 else 'categories'} detected", size=9.5, color=TEXT_MUTED,
+            )
     else:
         _textbox(slide, inner_x, tech_label_y, inner_w, Inches(0.24), "No technologies detected", size=10.5, color=TEXT_MUTED)
 
