@@ -213,7 +213,7 @@ def test_fix_impact_slide_skips_observed_signal_when_mobile_share_too_small():
     slide = add_pagespeed_fix_impact_slide(prs, _mobile(), None, device_performance=dp)
     text = _slide_text(slide)
     assert "supports prioritizing mobile performance remediation" not in text
-    assert "POST-FIX VALIDATION" in text
+    assert "POST-FIX VALIDATION" not in text  # removed 2026-09-29
 
 
 def test_fix_impact_slide_source_label_includes_ga4_date_range():
@@ -226,7 +226,7 @@ def test_fix_impact_slide_source_label_includes_ga4_date_range():
 
 # --- Slide 3 — Fix -> Target -> Outcome -> Measurement spec (2026-09-25) -------------
 
-def test_fix_impact_slide_right_column_order_is_target_evidence_outcomes_measurement():
+def test_fix_impact_slide_right_column_order_is_target_evidence_outcomes():
     prs = _prs()
     dp = _device_performance()
     slide = add_pagespeed_fix_impact_slide(prs, _mobile(), None, device_performance=dp)
@@ -234,21 +234,23 @@ def test_fix_impact_slide_right_column_order_is_target_evidence_outcomes_measure
     target_i = text.index("PERFORMANCE TARGET")
     evidence_i = text.index("CURRENT GA4 EVIDENCE")
     outcomes_i = text.index("EXPECTED OUTCOMES")
-    measurement_i = text.index("POST-FIX MEASUREMENT")
-    assert target_i < evidence_i < outcomes_i < measurement_i
+    assert target_i < evidence_i < outcomes_i
+    assert "POST-FIX MEASUREMENT" not in text  # removed 2026-09-29
     assert _audit_slide_geometry(prs) == []
 
 
-def test_fix_impact_slide_ga4_evidence_shows_engagement_and_key_events_not_just_bounce():
-    # Regression: engagement_rate_pct/key_events were already real fields on
-    # device_performance (ga4_service.get_device_performance_breakdown) but
-    # this slide only ever rendered bounce rate before this spec pass.
+def test_fix_impact_slide_ga4_evidence_shows_only_bounce_and_share_of_sessions():
+    # 2026-09-29 user spec: the Current GA4 Evidence cards show ONLY bounce
+    # percentage and percentage of sessions per device — no engagement rate
+    # and no key events.
     prs = _prs()
     dp = _device_performance()
     slide = add_pagespeed_fix_impact_slide(prs, _mobile(), None, device_performance=dp)
     text = _slide_text(slide)
-    assert "Engagement 41%" in text and "Engagement 60%" in text
-    assert "Key events 40 (0.6%)" in text and "Key events 60 (1.7%)" in text
+    assert "Bounce" in text and "% of sessions" in text
+    assert "Engagement 41%" not in text and "Engagement 60%" not in text
+    evidence = text[text.index("CURRENT GA4 EVIDENCE"):text.index("EXPECTED OUTCOMES")]
+    assert "Key events" not in evidence and "Engagement" not in evidence
     assert _audit_slide_geometry(prs) == []
 
 

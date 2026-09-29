@@ -1074,7 +1074,7 @@ def add_pagespeed_fix_impact_slide(
     y += Inches(0.26)
     if signal:
         card_w = (right_w - Inches(0.2)) / 2
-        card_h = Inches(1.12)
+        card_h = Inches(0.78)
         for i, (dev_label, dev) in enumerate([("MOBILE", signal["mobile"]), ("DESKTOP", signal["desktop"])]):
             cx = right_x + Emu(int(i * (card_w + Inches(0.2))))
             _card(slide, cx, y, card_w, card_h)
@@ -1083,12 +1083,7 @@ def add_pagespeed_fix_impact_slide(
             bounce_color = BAD if dev["bounce_rate_pct"] >= 55 else (WARN if dev["bounce_rate_pct"] >= 40 else GOOD)
             _textbox(slide, inner_x, y + Inches(0.27), inner_w, Inches(0.2),
                      f"Bounce {dev['bounce_rate_pct']:.0f}%", size=11, bold=True, color=bounce_color)
-            _textbox(slide, inner_x, y + Inches(0.5), inner_w, Inches(0.2),
-                     f"Engagement {dev['engagement_rate_pct']:.0f}%", size=10.5, color=TEXT_DARK)
-            key_events, key_rate = dev.get("key_events"), dev.get("key_event_rate_pct")
-            events_text = f"Key events {int(key_events):,} ({key_rate:.1f}%)" if key_events else "Key events —"
-            _textbox(slide, inner_x, y + Inches(0.71), inner_w, Inches(0.2), events_text, size=10.5, color=TEXT_DARK)
-            _textbox(slide, inner_x, y + Inches(0.93), inner_w, Inches(0.18), f"{dev['pct_share']:.0f}% of sessions", size=8.5, color=TEXT_MUTED)
+            _textbox(slide, inner_x, y + Inches(0.52), inner_w, Inches(0.18), f"{dev['pct_share']:.0f}% of sessions", size=9.5, color=TEXT_MUTED)
         y += card_h + Inches(0.08)
         direction = "higher" if signal["diff_pp"] > 0 else "lower"
         _textbox(slide, right_x, y, right_w, Inches(0.24), f"{abs(signal['diff_pp']):.1f} percentage points {direction} bounce rate on mobile (same reporting period).", size=10, color=TEXT_DARK)
@@ -1116,21 +1111,6 @@ def add_pagespeed_fix_impact_slide(
         rows_used = -(-len(outcomes) // 2)  # ceil division
         y += Emu(int(rows_used * Inches(0.3))) + Inches(0.1)
 
-    # 4. POST-FIX MEASUREMENT
-    if y < max_y - Inches(0.9):
-        _textbox(slide, right_x, y, right_w, Inches(0.2), "POST-FIX MEASUREMENT", size=10, bold=True, color=TEXT_DARK)
-        y += Inches(0.24)
-        col_w = right_w / 3
-        for i, (label, items) in enumerate([
-            ("TECHNICAL", "Performance score, LCP, TBT, CLS"),
-            ("USER ENGAGEMENT", "Bounce rate, engagement rate, device-level engagement"),
-            ("BUSINESS", "Key events, conversion rate"),
-        ]):
-            cx = right_x + Emu(int(i * col_w))
-            _textbox(slide, cx, y, col_w - Inches(0.1), Inches(0.18), label, size=9, bold=True, color=_accent())
-            _textbox(slide, cx, y + Inches(0.2), col_w - Inches(0.1), Inches(0.5), items, size=9, color=TEXT_MUTED)
-        y += Inches(0.68)
-
     # This closing strip spans the FULL width (x=0.6 to 12.7in) — under the
     # right column's own USER/BUSINESS IMPACT sections, but also directly
     # under the LEFT column's Performance Fix Plan table, whose real bottom
@@ -1143,19 +1123,16 @@ def add_pagespeed_fix_impact_slide(
     y = max(y, left_table_bottom + Inches(0.15))
 
     if y < max_y - Inches(0.6):
+        # Post-Fix Measurement section and the generic "Post-Fix Validation"
+        # strip were removed 2026-09-29 (user spec); only the evidence-backed
+        # observed-signal strip remains, and only when its condition holds.
         if signal and signal["mobile"]["pct_share"] >= 30 and signal["diff_pp"] >= 8 and mobile_weaker:
             strip_title, strip_text = "Observed Signal — Not Proven Causation", (
                 f"Mobile accounts for {signal['mobile']['pct_share']:.0f}% of sessions and shows a "
                 f"{abs(signal['diff_pp']):.0f} percentage-point higher bounce rate than desktop, alongside weaker "
-                "mobile performance metrics. This supports prioritizing mobile performance remediation and "
-                "validating the behavioural change after implementation."
+                "mobile performance metrics. This supports prioritizing mobile performance remediation."
             )
-        else:
-            strip_title, strip_text = "Post-Fix Validation", (
-                "Post-fix GA4 measurement will determine whether these performance improvements translate into "
-                "improved engagement and conversion behaviour."
-            )
-        _insights_strip(slide, Inches(0.6), y, Inches(12.1), [strip_text], title=strip_title, max_y=max_y)
+            _insights_strip(slide, Inches(0.6), y, Inches(12.1), [strip_text], title=strip_title, max_y=max_y)
 
     return slide
 
