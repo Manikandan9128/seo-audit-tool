@@ -225,9 +225,17 @@ def _drop_cross_list_duplicates(aeo_items: list[str], geo_items: list[str]) -> l
 
 
 # Sized so one condense call (instructions + chunk + its output) fits
-# Groq's shared per-minute token budget with room to spare.
+# Groq's shared per-minute token budget with room to spare — also small
+# enough that ANY provider's condense call finishes well inside its own
+# per-chunk output budget (_CONDENSE_MAX_TOKENS), unlike the single
+# whole-document synthesis call below.
 _CONDENSE_CHUNK_CHARS = 14_000
 _CONDENSE_MAX_TOKENS = 900
+# Past this many raw_text characters, sending it whole risks ANY provider's
+# single synthesis call running out of its own output budget digesting a
+# large document instead of writing the answer — not just Groq's narrower
+# per-minute INPUT budget (see _condense_large_export's docstring).
+_LARGE_EXPORT_CHAR_THRESHOLD = _CONDENSE_CHUNK_CHARS
 
 _CONDENSE_PROMPT = """Below is one part of a GeoPulse AI-visibility report. Extract the facts an SEO strategist \
 needs, as short bullet points. Keep exact numbers, percentages, prompt/query wording, AI engine names, \
@@ -238,15 +246,26 @@ REPORT PART {part} of {total}:
 {chunk}"""
 
 
-def _condense_for_groq(raw_text: str) -> str | None:
-    """A Groq pin can't take a full GeoPulse export (up to 40k chars,
-    ~10k tokens) in one call — Groq's per-minute budget is 7,500 tokens,
-    so _try_groq refused it and the strict pin had nowhere to fall to
-    (2026-09-28: AEO/GEO slides always came out as "check unavailable" on
-    Groq). Condense the export chunk by chunk first; the final prompt then
-    fits. Items are still checked against the FULL raw_text afterwards.
-    Returns None if any chunk fails — the caller then sends the full text
-    and reports Groq's own error."""
+def _condense_large_export(raw_text: str) -> str | None:
+    """Condenses a large GeoPulse export chunk by chunk before the single
+    whole-document synthesis call, so THAT call gets a short set of
+    extracted facts to write from instead of the raw document. Originally
+    Groq-only (2026-09-28: a Groq pin's 7,500-token/minute INPUT budget
+    flatly refused a ~10k-token raw_text, so AEO/GEO slides always came out
+    "check unavailable" on Groq) — generalized 2026-09-29 after the SAME
+    shape of failure turned up on Claude, root cause different but result
+    identical: Claude has no per-minute input budget to fail on, but a
+    strict Claude pin has no fallback provider to catch it either, and a
+    big enough raw_text (confirmed real, Lumber — got BIGGER after
+    geopulse_parser.py's 4f5f2d8 head+tail extraction fix, which correctly
+    stopped truncating away the report's own conclusion) made Claude spend
+    its whole 4096-token OUTPUT budget digesting the document and come back
+    "empty content, stop_reason=max_tokens" before writing anything. Uses
+    generate_text(), so each chunk call already goes through whatever
+    provider is currently pinned — this only ever needed a broader trigger,
+    not different plumbing. Items are still checked against the FULL
+    raw_text afterwards. Returns None if any chunk fails — the caller then
+    sends the full text and reports that provider's own error."""
     chunks = [raw_text[i : i + _CONDENSE_CHUNK_CHARS] for i in range(0, len(raw_text), _CONDENSE_CHUNK_CHARS)]
     notes = []
     for n, chunk in enumerate(chunks, 1):
@@ -255,7 +274,7 @@ def _condense_for_groq(raw_text: str) -> str | None:
                 _CONDENSE_PROMPT.format(part=n, total=len(chunks), chunk=chunk), max_tokens=_CONDENSE_MAX_TOKENS,
             )
         except NoAIProviderConfigured as e:
-            logger.warning("GeoPulse condense for Groq failed on part %d/%d: %s", n, len(chunks), e)
+            logger.warning("GeoPulse condense failed on part %d/%d: %s", n, len(chunks), e)
             return None
         notes.append(f"[Part {n} of {len(chunks)}]\n{text.strip()}")
     return "\n\n".join(notes)
@@ -296,8 +315,13 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
     else:
         disputed_note = ""
     prompt = PROMPT_TEMPLATE.format(raw_text=raw_text, disputed_metrics_note=disputed_note)
-    if pinned_provider() == "groq" and not groq_prompt_fits(prompt, 4096):
-        condensed = _condense_for_groq(raw_text)
+    # Condense first whenever the raw export is large enough to risk ANY
+    # provider's single synthesis call running out of ITS OWN output budget
+    # (see _condense_large_export's docstring) — not just a Groq pin's
+    # narrower per-minute INPUT budget, which groq_prompt_fits alone used to
+    # gate this on.
+    if len(raw_text) > _LARGE_EXPORT_CHAR_THRESHOLD or (pinned_provider() == "groq" and not groq_prompt_fits(prompt, 4096)):
+        condensed = _condense_large_export(raw_text)
         if condensed:
             prompt = PROMPT_TEMPLATE.format(raw_text=condensed, disputed_metrics_note=disputed_note)
     # Takes up to two responses from the selected Report AI Provider, not just the first

@@ -170,8 +170,33 @@ def test_groq_pin_condenses_oversized_export_before_the_final_call():
     assert result["aeo_items"] == ["Answer the pricing prompt GeoPulse shows 0 citations for."]
 
 
-def test_non_groq_pin_sends_full_export():
-    raw_text = "GeoPulse finding. " * 2500
+def test_large_export_condenses_regardless_of_pinned_provider():
+    # 2026-09-29: the SAME shape of failure that hits a Groq pin's narrower
+    # per-minute INPUT budget (test above) also hit Claude — no per-minute
+    # budget to fail on, but no fallback provider either, and a large
+    # enough raw_text made a strict Claude pin run out of ITS OWN 4096-
+    # token OUTPUT budget mid-synthesis ("empty content, stop_reason=
+    # max_tokens") instead of writing an answer (confirmed real, Lumber).
+    # Condensing now runs for any provider once the export is large, not
+    # only when pinned to Groq specifically.
+    raw_text = "GeoPulse finding. " * 2500  # ~45k chars
+    seen_prompts = []
+
+    def _gen(prompt, max_tokens, errors):
+        seen_prompts.append(prompt)
+        yield '{"aeo_items": ["Answer the pricing prompt GeoPulse shows 0 citations for."], "geo_items": []}', "claude"
+
+    with patch("app.services.geopulse_ai_service.generate_text", return_value=("- condensed fact", "claude")) as mock_gen, \
+            patch("app.services.geopulse_ai_service.iter_text_attempts", side_effect=_gen):
+        result = generate_aeo_geo_content(raw_text)
+
+    assert mock_gen.call_count == 4
+    assert "- condensed fact" in seen_prompts[0] and raw_text not in seen_prompts[0]
+    assert result["aeo_items"] == ["Answer the pricing prompt GeoPulse shows 0 citations for."]
+
+
+def test_small_export_sends_full_text_regardless_of_pinned_provider():
+    raw_text = "GeoPulse finding, lumberfi is mentioned in 52 of 150 AI answers."
     seen_prompts = []
 
     def _gen(prompt, max_tokens, errors):
