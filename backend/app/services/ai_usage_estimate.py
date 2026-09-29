@@ -111,20 +111,13 @@ def estimate_report_ai_usage(client_id: uuid.UUID, db: Session, provider: str, c
     }
 
 
-HARD_LIMIT_MESSAGE = (
-    "This analysis exceeds the configured maximum token limit. Reduce the analysis scope or increase the "
-    "maximum limit before continuing."
-)
-
-
 def hard_limit_violation(estimate: dict, skipped: list[str]) -> str | None:
-    """The hard-limit message when the steps that WILL run exceed a hard
-    safety limit (a single step, or the whole report), else None."""
-    running = [s for s in estimate["steps"] if s["key"] not in set(skipped)]
-    over = [s["label"] for s in running if s["over_hard_limit"]]
-    if over:
-        return f"{HARD_LIMIT_MESSAGE} Over the per-step limit: {', '.join(over)}."
-    total = sum(s["total_tokens"] for s in running) + estimate["other"]["total_tokens"]
-    if total > estimate["limits"]["report_hard_limit_tokens"]:
-        return f"{HARD_LIMIT_MESSAGE} Estimated total: {total:,} tokens."
+    """2026-09-29 user decision: the High Token Usage popup's Proceed button
+    IS the confirmation gate — a request that reaches this function already
+    passed through it (or the provider is free-tier and the popup never
+    showed at all), so the server no longer refuses a report for being over
+    a hard limit. Always None; kept (rather than removed) so its call site
+    in site_audit.py and this module's own return-shape/tests don't need
+    touching. `over_hard_limit` on each step and the report totals above
+    are still computed and returned to the popup for display."""
     return None

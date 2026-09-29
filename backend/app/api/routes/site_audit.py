@@ -2872,9 +2872,13 @@ def _gather_report_data(
 
 
 def _enforce_hard_limit(client_id: uuid.UUID, db: Session, selection: ReportAISelection, skip_steps: list[str]) -> None:
-    """Never start a report whose estimated usage (the steps that will run)
-    is over a hard safety limit — the page blocks it too, this is the
-    server-side guarantee."""
+    """2026-09-29 user decision: hard_limit_violation() always returns None
+    now — the High Token Usage popup's own Proceed button is the one
+    confirmation gate, and a section missing from the deck is worse than
+    the extra cost/time, so the server no longer refuses a report for being
+    over a hard limit either. Kept as a real call (not deleted) so this
+    route's shape and the estimate/violation plumbing stay in one place if
+    enforcement is ever wanted back."""
     estimate = estimate_report_ai_usage(client_id, db, selection.provider, selection.claude_model)
     violation = hard_limit_violation(estimate, skip_steps)
     if violation:

@@ -48,16 +48,20 @@ def test_browser_use_has_no_per_token_price_and_free_tiers_are_not_paid():
     assert est.estimate_report_ai_usage(uuid.uuid4(), _Db([]), "groq", None)["paid"] is False
 
 
-def test_steps_over_the_warning_say_why_and_hard_limit_blocks():
+def test_steps_over_the_warning_say_why_but_hard_limit_no_longer_blocks():
+    # 2026-09-29 user decision: the High Token Usage popup's own Proceed
+    # button is the one confirmation gate — a section missing from the deck
+    # is worse than the extra cost/time, so the server no longer refuses a
+    # report for being over a hard limit. over_hard_limit is still computed
+    # (the popup uses it to call the step out more strongly), but
+    # hard_limit_violation() never blocks.
     db = _Db([_imp("geopulse", raw="x" * 400_000)])  # ~100k tokens of GeoPulse text
     result = est.estimate_report_ai_usage(uuid.uuid4(), db, "claude", "claude-sonnet-5")
     aeo = next(s for s in result["steps"] if s["key"] == "aeo_geo")
     assert aeo["over_warning"] and aeo["over_hard_limit"]
     assert "GeoPulse export" in aeo["reason"]
     assert result["needs_confirmation"] is True
-    message = est.hard_limit_violation(result, skipped=[])
-    assert message.startswith("This analysis exceeds the configured maximum token limit.")
-    assert "AEO / GEO" in message
+    assert est.hard_limit_violation(result, skipped=[]) is None
     assert est.hard_limit_violation(result, skipped=["aeo_geo"]) is None
 
 

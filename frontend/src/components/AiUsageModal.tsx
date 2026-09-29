@@ -5,8 +5,12 @@ import { formatCost, formatTokens } from "../aiUsageFormat";
 // High Token Usage confirmation (2026-09-29 global AI token spec). Shown
 // before Preview/Download on a paid provider when the estimate is over the
 // warning threshold. Lists each heavy AI step with estimated input/output
-// tokens and cost; steps over the warning say why; steps over the hard
-// safety limit can't run. Unticked steps are skipped (sent as
+// tokens and cost; steps over the warning, or over the hard limit, say so —
+// this modal's own Proceed button is the ONE confirmation gate (2026-09-29
+// user decision: a section missing from the deck is worse than the extra
+// cost/time, so nothing here is force-disabled any more; over-hard-limit
+// steps are still ticked by default and can be run same as any other step,
+// just called out more strongly). Unticked steps are skipped (sent as
 // skip_ai_steps) and left out of the deck. Limits come from the server
 // (ai_usage.AI_CONFIG) — nothing is hard-coded here.
 
@@ -38,7 +42,7 @@ export type AiUsageEstimate = {
 };
 
 const HARD_LIMIT_MESSAGE =
-  "This analysis exceeds the configured maximum token limit. Reduce the analysis scope or increase the maximum limit before continuing.";
+  "This analysis exceeds the configured token guideline — it will use more tokens and take longer than usual. Click Proceed to run it anyway.";
 
 export default function AiUsageModal({
   estimate,
@@ -50,7 +54,7 @@ export default function AiUsageModal({
   onProceed: (skipped: string[]) => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(estimate.steps.filter((s) => !s.over_hard_limit).map((s) => s.key)),
+    () => new Set(estimate.steps.map((s) => s.key)),
   );
   const chosen = estimate.steps.filter((s) => selected.has(s.key));
   const sum = (key: "input_tokens" | "output_tokens" | "total_tokens") =>
@@ -95,13 +99,8 @@ export default function AiUsageModal({
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {estimate.steps.map((step) => (
             <div key={step.key} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, opacity: step.over_hard_limit ? 0.6 : 1 }}>
-                <input
-                  type="checkbox"
-                  checked={selected.has(step.key)}
-                  disabled={step.over_hard_limit}
-                  onChange={() => toggle(step.key)}
-                />
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+                <input type="checkbox" checked={selected.has(step.key)} onChange={() => toggle(step.key)} />
                 <span style={{ flex: 1 }}>{step.label}</span>
                 <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
                   {formatTokens(step.input_tokens)} in · {formatTokens(step.output_tokens)} out ·{" "}
@@ -110,7 +109,8 @@ export default function AiUsageModal({
               </label>
               {step.over_hard_limit ? (
                 <span style={{ fontSize: 12, color: "#991b1b", marginLeft: 24 }}>
-                  Over the maximum limit ({formatTokens(estimate.limits.step_hard_limit_tokens)} tokens) — can't run.
+                  Over the token guideline ({formatTokens(estimate.limits.step_hard_limit_tokens)} tokens) — will take
+                  longer and cost more; runs anyway if ticked.
                 </span>
               ) : (
                 step.reason && (
@@ -146,8 +146,9 @@ export default function AiUsageModal({
         )}
         <p className="muted" style={{ margin: 0, fontSize: 12 }}>
           Estimates only — actual usage depends on the site's data. Warning at{" "}
-          {formatTokens(estimate.limits.report_warning_tokens)} tokens per report; hard limit{" "}
-          {formatTokens(estimate.limits.report_hard_limit_tokens)}.
+          {formatTokens(estimate.limits.report_warning_tokens)} tokens per report; guideline{" "}
+          {formatTokens(estimate.limits.report_hard_limit_tokens)} — none of this blocks the report, Proceed always
+          runs everything ticked above.
         </p>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -156,7 +157,6 @@ export default function AiUsageModal({
           </button>
           <button
             className="btn btn-primary"
-            disabled={overReportHard}
             onClick={() => onProceed(estimate.steps.filter((s) => !selected.has(s.key)).map((s) => s.key))}
           >
             Proceed

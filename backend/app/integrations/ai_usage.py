@@ -27,14 +27,36 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 AI_CONFIG = {
     # Per heavy step (one module's AI work) and per whole report, in tokens.
+    # These are WARNING thresholds only (shown in the High Token Usage
+    # popup so the user can see cost before proceeding) — 2026-09-29 user
+    # decision: correctness matters more than cost or time, so nothing here
+    # blocks a step or a report from running once the user has seen the
+    # popup and clicked Proceed. See hard_limit_violation() and
+    # check_report_hard_limit(), both now no-ops kept for their return
+    # shape/tests. step_hard_limit_tokens/report_hard_limit_tokens still
+    # drive the popup's "over the limit" styling, just not enforcement.
     "step_warning_tokens": 20_000,
     "step_hard_limit_tokens": 50_000,
     "report_warning_tokens": 150_000,
     "report_hard_limit_tokens": 400_000,
     # Retries after a failed request (the first attempt is not a retry).
-    "max_retries": 2,
-    # A request that times out is retried at most this many times.
-    "max_timeout_retries": 1,
+    # Raised from 2 (2026-09-29 user decision, same reasoning as above):
+    # a section missing from the deck is worse than a slower/costlier
+    # report, so the SAME pinned provider (never a fallback substitute)
+    # keeps getting retried, each retry shaped by the real failure reason
+    # (shorter answer / stricter JSON / etc, see RETRY_SUFFIX), well past
+    # what a quick transient blip would need. NOT raised all the way to
+    # "unlimited": some provider paths (Groq/Gemini rate-limit handling)
+    # sleep for real seconds between attempts, so the retry count is also a
+    # real wall-clock multiplier, not just a request-count cap — confirmed
+    # real, raising this to 20 made the test suite itself balloon from ~35s
+    # to several minutes. 8 is a large jump from 2 (a genuinely stuck call
+    # gets far more chances) without that pathological blow-up.
+    "max_retries": 8,
+    # A request that times out is retried at most this many times — kept
+    # equal to max_retries so a run of timeouts isn't cut short earlier
+    # than any other failure type would be.
+    "max_timeout_retries": 8,
 }
 
 # Output-token budget per module for providers whose models reason before
@@ -424,13 +446,14 @@ def record_usage(provider: str, model: str | None, input_tokens: int, output_tok
 
 
 def check_report_hard_limit() -> None:
-    ledger = current_ledger()
-    limit = AI_CONFIG["report_hard_limit_tokens"]
-    if ledger is not None and ledger.total_tokens >= limit:
-        raise SafetyLimitError(
-            f"This report reached the configured maximum token limit ({limit:,} tokens), so no further AI "
-            "requests were sent. Reduce the analysis scope or increase the maximum limit before continuing."
-        )
+    """2026-09-29 user decision: the High Token Usage popup (Preview/
+    Download) is the ONE confirmation gate — once the user has clicked
+    Proceed there, nothing mid-report aborts a run over token usage, no
+    matter how far over report_hard_limit_tokens it runs. A no-op kept so
+    _layered_attempts' call site and SafetyLimitError's tests/shape don't
+    need touching; the ledger's own total_tokens keeps counting either way
+    for the live usage display."""
+    return
 
 
 def context_snapshot() -> tuple:

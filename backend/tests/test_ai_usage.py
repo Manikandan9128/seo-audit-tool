@@ -131,24 +131,34 @@ def test_invalid_json_retry_uses_strict_json_instructions():
     assert "not valid JSON" in prompts[1]
 
 
-def test_a_request_that_keeps_timing_out_is_retried_only_once():
-    accepted, prompts, _, errors = _run("claude", [RuntimeError("timed out after 180s")] * 3)
-    assert accepted is None and len(prompts) == 2
+def test_a_request_that_keeps_timing_out_stops_after_max_timeout_retries():
+    max_timeout_retries = ai_usage.AI_CONFIG["max_timeout_retries"]
+    accepted, prompts, _, errors = _run("claude", [RuntimeError("timed out after 180s")] * (max_timeout_retries + 5))
+    assert accepted is None and len(prompts) == max_timeout_retries + 1  # first try + max_timeout_retries retries
     assert errors[-1] == "No fallback provider was used because Claude was selected."
 
 
-def test_never_more_than_two_retries():
-    _, prompts, _, _ = _run("claude", [RuntimeError("500 server error")] * 5)
-    assert len(prompts) == 3
+def test_never_more_than_the_configured_retries():
+    max_retries = ai_usage.AI_CONFIG["max_retries"]
+    _, prompts, _, _ = _run("claude", [RuntimeError("500 server error")] * (max_retries + 5))
+    assert len(prompts) == max_retries + 1
 
 
-def test_report_safety_limit_stops_further_requests():
+def test_report_hard_limit_no_longer_stops_requests():
+    # 2026-09-29 user decision: the High Token Usage popup's own Proceed
+    # button is the one confirmation gate — once a report has passed it (or
+    # the provider is free-tier and the popup never showed), nothing
+    # mid-report aborts a run for being over token usage, however far past
+    # report_hard_limit_tokens it runs. check_report_hard_limit() is a
+    # deliberate no-op now; this asserts that, not just that it doesn't
+    # raise, so a future re-add of enforcement can't slip back in silently.
     ledger = ai_usage.UsageLedger(provider="claude", model="claude-sonnet-5")
     ledger.record_call("core_problem", "claude", "claude-sonnet-5", 390_000, 20_000)
+    assert ledger.total_tokens > ai_usage.AI_CONFIG["report_hard_limit_tokens"]
     ai_usage.set_ledger(ledger)
     accepted, prompts, _, errors = _run("claude", ['{"ok": 1}'])
-    assert accepted is None and prompts == []
-    assert "maximum token limit" in errors[0]
+    assert accepted == '{"ok": 1}' and len(prompts) == 1
+    assert errors == []
 
 
 # --- ledger ------------------------------------------------------------------
@@ -168,8 +178,9 @@ def test_ledger_tracks_tokens_cost_module_and_status():
 def test_failed_module_keeps_its_real_status():
     ledger = ai_usage.UsageLedger(provider="claude")
     ai_usage.set_ledger(ledger)
+    max_retries = ai_usage.AI_CONFIG["max_retries"]
     with ai_usage.ai_module("core_problem"):
-        _run("claude", [RuntimeError("stop_reason=max_tokens")] * 3)
+        _run("claude", [RuntimeError("stop_reason=max_tokens")] * (max_retries + 5))
     assert ledger.summary()["modules"]["core_problem"]["status"] == AIStatus.TOKEN_LIMIT_EXCEEDED
 
 

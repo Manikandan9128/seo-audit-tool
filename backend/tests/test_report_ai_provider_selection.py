@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.integrations.text_ai_client as text_ai_client
+from app.integrations import ai_usage
 from app.api.deps import ReportAISelection
 from app.api.routes import site_audit
 from app.services.geopulse_ai_service import generate_aeo_geo_content
@@ -107,7 +108,10 @@ def test_ui_ux_failure_on_claude_stops_without_sending_screenshots_elsewhere():
     finally:
         _stop(patches)
     assert [p for p, m in mocks.items() if m.called] == ["claude"]
-    assert mocks["claude"].call_count == 3  # first try + 2 retries, SAME provider
+    # first try + AI_CONFIG["max_retries"] retries, SAME provider (2026-09-29:
+    # raised from 2 retries so a genuinely stuck call gets far more chances
+    # before a section goes missing from the deck).
+    assert mocks["claude"].call_count == 1 + ai_usage.AI_CONFIG["max_retries"]
     assert result["error"].startswith("UI/UX analysis — Provider API error.")
     assert result["error"].endswith("No fallback provider was used because Claude was selected.")
 
