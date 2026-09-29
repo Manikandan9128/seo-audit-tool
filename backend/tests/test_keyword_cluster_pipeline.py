@@ -626,6 +626,35 @@ def test_native_semrush_cluster_column_still_gets_full_enrichment():
     assert all(r.get("detected_intent") for r in rows)
 
 
+def test_sparse_native_cluster_column_autoclusters_the_rows_it_left_blank():
+    # 2026-09-29 fix, same root cause as the manual-map version above: a
+    # Semrush export can carry a Cluster/Topic column populated for only
+    # SOME rows — the old code trusted that as "this export is already
+    # clustered" for every row just because at least one had a value,
+    # leaving every blank row stranded in "Other / Ungrouped Keywords"
+    # forever. The rows Semrush actually tagged are still trusted as-is;
+    # the ones it left blank now get the same AI/rule-based clustering a
+    # fully-untagged export already gets.
+    rows = [
+        {"keyword": "database support services", "cluster": "Database Support Services",
+         "search_volume": 260, "intent": "Commercial Investigation", "page_category": "Service Page"},
+        {"keyword": "unlisted keyword", "search_volume": 50, "intent": "Informational", "page_category": "Blog / Guide"},
+    ]
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"unlisted keyword": "General"}), \
+         patch(_PHASE2_PATH, return_value=({}, ["unlisted keyword"])) as mock_p2, \
+         patch(_PHASE3_PATH) as mock_p3, \
+         patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
+        build_final_keyword_clusters(rows, "Acme", None, None)
+
+    # Candidate clustering only ever saw the ONE keyword Semrush left blank.
+    assert [m["keyword"] for m in mock_p2.call_args[0][0]] == ["unlisted keyword"]
+    mock_p3.assert_not_called()
+
+    by_kw = {r["keyword"]: r for r in rows}
+    assert by_kw["database support services"]["cluster"] == "Database Support Services"
+    assert by_kw["unlisted keyword"]["cluster"] != ""
+
+
 def test_native_semrush_cluster_routes_junk_and_competitor_rows_like_any_report():
     rows = [
         {"keyword": "database support services", "cluster": "Database Support Services",
@@ -675,10 +704,15 @@ def test_native_semrush_clusters_merge_into_one_when_they_share_a_target_page():
     assert len({r["cluster"] for r in rows}) == 1
 
 
-def test_manual_cluster_map_is_used_and_ai_pipeline_never_runs():
+def test_manual_cluster_map_is_used_and_ai_never_second_guesses_covered_keywords():
     # User's explicit instruction (2026-09-21): manual clustering is first
-    # preference — when a manual_cluster_map is supplied, the AI Phase 2/3
-    # pipeline must never be called at all, not even as a second opinion.
+    # preference for whatever keyword it actually covers — AI must never
+    # override or second-guess a manual assignment. 2026-09-29 fix: this is
+    # NOT a guarantee every keyword got covered (confirmed real, Lumber: a
+    # 29-row cluster-name index against a 2,554-keyword export left 2,552
+    # keywords cluster="" forever, exploding into 213 "Other / Ungrouped"
+    # slides) — whatever the manual file leaves blank now goes through the
+    # same AI/rule-based clustering a no-manual-file report already gets.
     rows = [
         {"keyword": "6x4 truck", "search_volume": 900, "intent": "Commercial", "page_category": "Landing Page"},
         {"keyword": "6x4 truck price", "search_volume": 400, "intent": "Commercial", "page_category": "Landing Page"},
@@ -688,20 +722,29 @@ def test_manual_cluster_map_is_used_and_ai_pipeline_never_runs():
         "6x4 truck": {"cluster": "6x4 Truck Configuration", "primary_or_secondary": "Primary"},
         "6x4 truck price": {"cluster": "6x4 Truck Configuration", "primary_or_secondary": "Secondary"},
     }
-    with patch(_PHASE2_PATH) as mock_p2, \
+    with patch("app.services.keyword_cluster_pipeline.generate_business_themes", return_value={"unlisted keyword": "General"}) as mock_theme, \
+         patch(_PHASE2_PATH, return_value=({}, ["unlisted keyword"])) as mock_p2, \
          patch(_PHASE3_PATH) as mock_p3, \
-         patch("app.services.keyword_cluster_pipeline.generate_business_themes") as mock_theme, \
          patch("app.services.keyword_cluster_pipeline.match_existing_page_for_cluster", return_value=None):
         build_final_keyword_clusters(rows, "Acme", None, None, manual_cluster_map=manual_cluster_map)
 
-    mock_p2.assert_not_called()
-    mock_p3.assert_not_called()
-    mock_theme.assert_not_called()
+    # The AI pipeline only ever saw the ONE keyword manual clustering didn't cover.
+    mock_theme.assert_called_once()
+    assert mock_theme.call_args[0][2] == ["unlisted keyword"]
+    assert mock_p2.call_count == 1
+    keyword_meta = mock_p2.call_args[0][0]
+    assert [m["keyword"] for m in keyword_meta] == ["unlisted keyword"]
+    mock_p3.assert_not_called()  # phase2 returned no candidate clusters, nothing to validate
+
     by_kw = {r["keyword"]: r for r in rows}
     assert by_kw["6x4 truck"]["cluster"] == "6x4 Truck Configuration"
+    assert by_kw["6x4 truck"]["cluster_source"] == "manual"
     assert by_kw["6x4 truck"]["primary_or_secondary"] == "Primary"
     assert by_kw["6x4 truck price"]["primary_or_secondary"] == "Secondary"
-    assert by_kw["unlisted keyword"]["cluster"] == ""  # not covered by the manual file — left unclustered, never guessed
+    # not covered by the manual file, but no longer stranded in "Other /
+    # Ungrouped Keywords" — gets a real rule-based cluster instead.
+    assert by_kw["unlisted keyword"]["cluster"] != ""
+    assert by_kw["unlisted keyword"]["cluster_source"] != "manual"
 
 
 def test_manual_cluster_map_respects_final_acceptance_check_like_any_other_cluster():

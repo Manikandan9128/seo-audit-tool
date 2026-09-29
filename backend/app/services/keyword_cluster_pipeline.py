@@ -345,8 +345,10 @@ def _apply_manual_clusters(rows: list[dict], manual_cluster_map: dict[str, dict]
     never a second opinion layered on top of a manual assignment that
     exists. `manual_cluster_map` is {keyword.lower(): {"cluster",
     "primary_or_secondary"}}. A keyword the manual file doesn't cover is
-    left cluster="" (unclustered) — the same explicit "never force a
-    group" fallback the AI pipeline itself uses, not silently guessed."""
+    left cluster="" here — never silently guessed by THIS function — but
+    build_final_keyword_clusters' caller now runs _autocluster_unmatched_
+    rows over whatever's still blank afterward, so a sparse manual file
+    doesn't leave real keywords stranded (see that function's docstring)."""
     for r in rows:
         keyword = (r.get("keyword") or "").strip()
         entry = manual_cluster_map.get(keyword.lower()) if keyword else None
@@ -358,6 +360,40 @@ def _apply_manual_clusters(rows: list[dict], manual_cluster_map: dict[str, dict]
         r["cluster_source"] = "manual"
         if entry.get("primary_or_secondary"):
             r["primary_or_secondary"] = entry["primary_or_secondary"]
+
+
+def _autocluster_unmatched_rows(
+    rows: list[dict], keyword_rows_by_text: dict[str, dict], client_name: str,
+    client_description: str | None, cache: KeywordIntelligenceCache | None,
+) -> None:
+    """Manual clustering and a Semrush-native Cluster/Topic column are both
+    trusted as-is in build_final_keyword_clusters rather than re-run through
+    AI — correct when the source actually covers the export, but neither is
+    guaranteed to. Confirmed real: a live Lumber manual upload was a 29-row
+    CLUSTER-NAME INDEX (one example keyword per cluster, e.g. "Construction
+    Payroll" -> "construction payroll system"), never meant as a full
+    per-keyword mapping the way Geopits'/BharatBenz's manual files are
+    (485/875 rows, every real keyword tagged individually). Against Lumber's
+    real 2,554-keyword export, only the 2 rows whose keyword text happened
+    to match one of those 29 phrases verbatim got clustered by
+    _apply_manual_clusters' exact-match lookup — the other 2,552 stayed
+    cluster="" forever, since nothing downstream of the trust-as-is branches
+    ever ran the AI/rule-based fallback that guarantees every keyword a real
+    cluster name. That blank pile rendered as one "Other / Ungrouped
+    Keywords" cluster, which pptx_builder's per-cluster pagination correctly
+    but mercilessly split into 213 slides (251 total in that report).
+
+    Whatever manual clustering or a Semrush Cluster column left blank now
+    gets exactly the same AI/rule-based clustering a no-manual-file report
+    already relies on. A full, comprehensive file's leftover set is empty,
+    so this is a no-op for Geopits/BharatBenz-shaped uploads — it only ever
+    picks up real slack."""
+    unmatched = [r for r in rows if not (r.get("cluster") or "").strip()]
+    if not unmatched:
+        return
+    clusterable_rows = _route_non_clusterable_rows(unmatched)
+    _assign_business_themes(clusterable_rows, client_name, client_description)
+    _build_candidate_clusters(clusterable_rows, keyword_rows_by_text, client_description, cache)
 
 
 def _build_candidate_clusters(
@@ -1031,9 +1067,16 @@ def build_final_keyword_clusters(
 
     `manual_cluster_map` (site_audit.py, built from a client's own
     "keyword_cluster_manual" uploads) is the user's explicit first
-    preference (2026-09-21): when present, it's authoritative and the AI
-    Phase 2/3 pipeline never runs at all — not a second opinion layered on
-    top, strictly a fallback for when no manual file exists.
+    preference (2026-09-21): when present, it's authoritative for whatever
+    keyword it actually covers — never a second opinion layered on top of a
+    manual assignment that exists. It is NOT, however, a guarantee that
+    every real keyword got assigned: a manual file can be a small cluster-
+    name index rather than a full per-keyword mapping (confirmed real,
+    Lumber, 2026-09-29 — see _autocluster_unmatched_rows' docstring), so
+    whatever it (or a Semrush-native Cluster column, same reasoning) leaves
+    at cluster="" afterward still goes through the AI Phase 2/3 pipeline,
+    same as a no-manual-file report — a comprehensive manual file simply
+    leaves nothing for that step to do.
 
     Caller must already have `intent` and `page_category` set on every row
     (FINAL PIPELINE steps 3-4) before calling this — this function only
@@ -1051,6 +1094,7 @@ def build_final_keyword_clusters(
     annotate_keyword_rows(rows)
     if manual_cluster_map:
         _apply_manual_clusters(rows, manual_cluster_map)
+        _autocluster_unmatched_rows(rows, keyword_rows_by_text, client_name, client_description, cache)
     elif any((r.get("cluster") or "").strip() for r in rows):
         # A Semrush export that already carries a Cluster/Topic column
         # (e.g. Keyword Magic Tool) used to skip this whole function
@@ -1076,6 +1120,7 @@ def build_final_keyword_clusters(
                 r["cluster_status"] = "From Semrush export"
         clusterable_rows = _route_non_clusterable_rows(rows)
         _assign_business_themes(clusterable_rows, client_name, client_description)
+        _autocluster_unmatched_rows(rows, keyword_rows_by_text, client_name, client_description, cache)
     else:
         clusterable_rows = _route_non_clusterable_rows(rows)
         _assign_business_themes(clusterable_rows, client_name, client_description)
