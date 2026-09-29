@@ -102,19 +102,47 @@ def test_root_causes_add_third_party_overhead_when_significant():
 
 
 def test_resource_contributors_name_fits_one_line_in_the_narrowest_card():
-    # Regression (confirmed real, Geopits report, 2026-09-25): an
-    # unrecognized (no known vendor) script's raw filename could run up
-    # to 28 chars — at 13pt bold inside the ~1.9in-wide card the 5-card
-    # layout leaves (12.1in row / 5 cards), that routinely wrapped to a
-    # 2nd line with no natural break point, landing on top of the
-    # fixed-position KB text below it. The 2nd/4th contributor cards on
-    # that live report were exactly this case.
+    # Regression (Geopits, 2026-09-25): raw filenames wrapped onto the KB
+    # line. 2026-09-29: the fix that truncated hashed names ("O5JBjZ_SBv52dH8...")
+    # left labels no reader could interpret — hashed chunks now get a
+    # meaningful label instead of a cut-off hash.
     script_weight = {"top_scripts": [
         {"url": "https://example.com/_next/static/chunks/O5JBjZ_SBodhEgBNnZ3e48-TaSN123456.js",
          "encoded_bytes": 181000, "resource_bytes": 181000},
     ]}
     contributors = _resource_contributors(script_weight, "https://example.com")
-    assert len(contributors[0][0]) <= 17  # 16 chars + ellipsis
+    assert len(contributors[0][0]) <= 17
+
+
+def test_resource_contributors_never_show_hash_fragments_or_ellipsis_on_hashed_first_party_chunks():
+    script_weight = {"top_scripts": [
+        {"url": "https://example.com/_next/static/chunks/O5JBjZ_SBodhEgBNnZ3e48-TaSN123456.js", "encoded_bytes": 181000},
+        {"url": "https://example.com/_next/static/chunks/a8Kd93Jsl20Xq.js", "encoded_bytes": 90000},
+    ]}
+    contributors = _resource_contributors(script_weight, "https://example.com")
+    assert contributors == [("Top site scripts", 271000)]  # merged, one readable card
+
+
+def test_resource_contributors_third_party_hashed_script_shows_its_domain():
+    script_weight = {"top_scripts": [
+        {"url": "https://cdn.somevendor.io/assets/O5JBjZ_SBv52dH8xQ.js", "encoded_bytes": 120000},
+    ]}
+    contributors = _resource_contributors(script_weight, "https://example.com")
+    assert contributors[0][0] == "somevendor.io"
+
+
+def test_resource_contributors_third_party_domain_handles_co_uk_style_suffix():
+    script_weight = {"top_scripts": [
+        {"url": "https://cdn.vendor.co.uk/assets/O5JBjZ_SBv52dH8xQ.js", "encoded_bytes": 120000},
+    ]}
+    assert _resource_contributors(script_weight, "https://example.com")[0][0] == "vendor.co.uk"
+
+
+def test_resource_contributors_keeps_readable_filenames():
+    script_weight = {"top_scripts": [
+        {"url": "https://example.com/static/main.js", "encoded_bytes": 120000},
+    ]}
+    assert _resource_contributors(script_weight, "https://example.com")[0][0] == "main.js"
 
 
 def test_resource_contributors_dedup_by_vendor_and_rank_by_size():

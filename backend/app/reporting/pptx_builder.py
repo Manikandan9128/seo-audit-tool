@@ -815,6 +815,32 @@ def _performance_root_causes(primary: dict, max_rows: int = 6) -> list[tuple[str
     return rows[:max_rows]
 
 
+def _contributor_label(url: str, website_url: str, maxlen: int = 16) -> str:
+    """Human-readable card label for a script with no recognised vendor.
+    A build tool's hashed chunk name ("O5JBjZ_SBv52dH8...") tells the reader
+    nothing and used to be shown truncated with an ellipsis (2026-09-29 user
+    report). Readable filenames (main.js, jquery.min.js) are kept as-is;
+    hashed ones fall back to what the reader can act on — the third-party
+    domain, or "Top site scripts" for the client's own bundled chunks (which
+    then merge into one card with their combined size)."""
+    from urllib.parse import unquote, urlparse
+    parsed = urlparse(url)
+    filename = unquote(parsed.path).rsplit("/", 1)[-1]
+    stem = filename[:-3] if filename.lower().endswith(".js") else filename
+    stem = re.sub(r"\.min$", "", stem, flags=re.I)
+    if re.fullmatch(r"[a-z][a-z\-_.]{2,14}", stem) and re.search(r"[aeiou]", stem):
+        return filename if len(filename) <= maxlen else stem
+    host = (parsed.netloc or "").lower().removeprefix("www.")
+    site_host = re.sub(r"^https?://", "", (website_url or "").lower()).split("/")[0].removeprefix("www.")
+    if host and site_host and site_host not in host:
+        parts = host.split(".")
+        # co.uk / com.au style suffixes: two labels would give just "co.uk".
+        take = 3 if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in {"co", "com", "org", "net", "gov", "ac"} else 2
+        label = ".".join(parts[-take:])
+        return label if len(label) <= maxlen else label[: maxlen - 1] + "…"
+    return "Top site scripts"
+
+
 def _resource_contributors(script_weight: dict | None, website_url: str | None, limit: int = 5) -> list[tuple[str, int]]:
     """§B — top resource contributors by transferred size, named by known
     vendor and deduplicated onto it (spec's "don't show the same underlying
@@ -833,7 +859,7 @@ def _resource_contributors(script_weight: dict | None, website_url: str | None, 
         # and 4th contributor cards (raw hashed filenames, no natural
         # break point for word-wrap to use) overlapped their own KB text.
         # 16 reliably fits one line at that width with margin to spare.
-        name = vendor or _short_resource_name(s["url"], maxlen=16)
+        name = vendor or _contributor_label(s["url"], website_url or "")
         grouped[name] = grouped.get(name, 0) + (s.get("encoded_bytes") or 0)
     return sorted(grouped.items(), key=lambda kv: -kv[1])[:limit]
 
