@@ -2395,11 +2395,24 @@ def _gather_report_data(
     else:
         capture = capture_ui_audit(client.website_url)
         if not capture or not capture.get("desktop"):
+            blocked_reason = (capture or {}).get("blocked_reason")
             logger.warning(
-                "UI-Level Fixes: homepage capture failed for %s — analysis skipped this run.", own_website_domain,
+                "UI-Level Fixes: homepage capture failed for %s (%s) — analysis skipped this run.",
+                own_website_domain, blocked_reason or "unreachable/timed out",
             )
             content_issues.append(
-                "UI-Level Fixes: homepage capture failed (bot-blocked, timed out, or unreachable)."
+                f"UI-Level Fixes: homepage capture failed ({'bot-blocked: ' + blocked_reason if blocked_reason else 'timed out or unreachable'})."
+            )
+            # Replaces the misleading "manual UX pass not done" note — the
+            # real reason is the site refused automated capture.
+            ux_findings_result["note"] = (
+                "An automated visual review of the homepage could not be completed: the site's bot protection "
+                "blocked our capture. The UI-Level Fixes analysis (hero, CTAs, overlays, mobile tap targets) needs "
+                "either a screenshot supplied by the client or a hands-on walkthrough, and is not represented in "
+                "this report."
+                if blocked_reason else
+                "An automated visual review of the homepage could not be completed because the site did not load "
+                "within the capture window. Re-run the report, or supply screenshots for a manual UI review."
             )
         else:
             desktop_facts = capture.get("desktop", {}).get("page_facts") or {}

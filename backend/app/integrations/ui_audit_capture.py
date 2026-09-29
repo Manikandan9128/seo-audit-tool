@@ -215,18 +215,74 @@ _PAGE_FACTS_JS = r"""
 """
 
 
-def _capture_viewport(browser, url: str, viewport: dict, capture_tap_targets: bool) -> dict | None:
-    page = browser.new_page(viewport=viewport, user_agent=_REALISTIC_UA)
-    page.add_init_script(_HIDE_WEBDRIVER_SCRIPT)
+_BLOCK_STATUSES = {401, 403, 406, 429, 503}
+_BLOCK_MARKERS = (
+    "just a moment", "attention required", "access denied", "verify you are human", "verifying you are human",
+    "are you a robot", "captcha", "pardon our interruption", "request blocked", "checking your browser",
+    "enable javascript and cookies to continue", "unusual traffic", "bot detection",
+)
+_BLOCK_RECHECK_MS = 8000  # JS challenges (Cloudflare "Just a moment") often self-resolve within a few seconds
+
+
+def _block_reason(page, status: int | None) -> str | None:
+    """Returns a short reason if `page` is a bot-block/challenge page rather
+    than the real homepage, else None. A block page loads fine (HTTP 200 or
+    403) so navigation never raises — without this check the challenge page
+    was screenshotted and audited as if it were the client's site."""
+    if status in _BLOCK_STATUSES:
+        return f"HTTP {status}"
     try:
+        title = (page.title() or "").lower()
+        body = (page.evaluate("() => (document.body && document.body.innerText || '').slice(0, 1500)") or "").lower()
+    except Exception:
+        return None
+    text = f"{title}\n{body}"
+    for marker in _BLOCK_MARKERS:
+        # Only trust a marker on a near-empty page or in the title — a real
+        # homepage can legitimately mention "captcha" in a form footer.
+        if marker in title or (marker in body and len(body) < 600):
+            return f"challenge page ({marker!r})"
+    return None
+
+
+def _new_context_page(browser, viewport: dict):
+    context = browser.new_context(
+        viewport=viewport, user_agent=_REALISTIC_UA, locale="en-US", timezone_id="America/New_York",
+        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+    )
+    context.add_init_script(_HIDE_WEBDRIVER_SCRIPT)
+    return context, context.new_page()
+
+
+def _capture_viewport(browser, url: str, viewport: dict, capture_tap_targets: bool) -> dict | None:
+    """Returns the capture dict, or {"blocked_reason": str} when the site
+    served a bot-block/challenge page, or None on navigation failure."""
+    context, page = _new_context_page(browser, viewport)
+    try:
+        status = None
         try:
-            page.goto(url, timeout=_NAV_TIMEOUT_MS, wait_until="load")
+            resp = page.goto(url, timeout=_NAV_TIMEOUT_MS, wait_until="load")
+            status = resp.status if resp else None
         except Exception as e:
             try:
-                page.goto(url, timeout=_NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+                resp = page.goto(url, timeout=_NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+                status = resp.status if resp else None
             except Exception:
                 logger.warning("UI audit capture: navigation failed for %s: %s", url, e)
                 return None
+        reason = _block_reason(page, status)
+        if reason:
+            title_before = page.title()
+            page.wait_for_timeout(_BLOCK_RECHECK_MS)  # give a JS challenge time to clear itself
+            still_blocked = _block_reason(page, None)  # status is stale after a challenge redirect
+            # A bare HTTP-status block only counts as cleared if the page
+            # actually changed (challenge redirected to the real site).
+            if reason.startswith("HTTP") and not still_blocked and page.title() == title_before:
+                still_blocked = reason
+            reason = still_blocked
+        if reason:
+            logger.warning("UI audit capture: %s served a bot-block page (%s)", url, reason)
+            return {"blocked_reason": reason}
         try:
             page.wait_for_load_state("networkidle", timeout=_NETWORKIDLE_TIMEOUT_MS)
         except Exception:
@@ -244,29 +300,60 @@ def _capture_viewport(browser, url: str, viewport: dict, capture_tap_targets: bo
             page_facts.pop("small_tap_targets", None)
         return {"first_screen_png": first_screen_png, "full_page_png": full_page_png, "page_facts": page_facts}
     finally:
-        page.close()
+        context.close()
+
+
+_STEALTH_ARGS = ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+
+
+def _launch_attempts(p):
+    """Real installed Chrome first (its TLS/HTTP2 fingerprint and GPU
+    strings look like a normal browser, which most WAFs key on), then the
+    bundled Chromium, then headed Chromium (works under xvfb-run)."""
+    yield "chrome", lambda: p.chromium.launch(channel="chrome", args=_STEALTH_ARGS, timeout=15000)
+    yield "chromium", lambda: p.chromium.launch(args=_STEALTH_ARGS, timeout=15000)
+    yield "chromium-headed", lambda: p.chromium.launch(headless=False, args=_STEALTH_ARGS, timeout=15000)
 
 
 def capture_ui_audit(website_url: str) -> dict | None:
     """Captures the homepage at desktop (1440x900) and mobile (375x812)
     viewports — first-screen + full-page screenshots, plus a DOM-measured
     page_facts dict, at each. Returns {"desktop": {...}, "mobile": {...}}
-    or None if the site couldn't be reached at all (bot-blocked, timed
-    out, DNS/unreachable) — same best-effort contract as screenshot_
-    client.capture_homepage_screenshots."""
+    on success. On a bot-block returns {"blocked_reason": str} (no
+    "desktop" key, so callers' existing `not capture.get("desktop")` path
+    still fires but can now say WHY). None if unreachable/launch failed.
+
+    Tries several browser launch modes and stops at the first that gets
+    past the block; a challenge page is never returned as a real capture."""
     url = website_url if website_url.startswith(("http://", "https://")) else f"https://{website_url}"
-    result: dict = {}
+    blocked_reason: str | None = None
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(args=["--no-sandbox"], timeout=15000)
-            try:
-                for name, viewport in _VIEWPORTS.items():
-                    captured = _capture_viewport(browser, url, viewport, capture_tap_targets=(name == "mobile"))
-                    if captured:
-                        result[name] = captured
-            finally:
-                browser.close()
+            for label, launch in _launch_attempts(p):
+                try:
+                    browser = launch()
+                except Exception as e:
+                    logger.info("UI audit capture: %s launch unavailable (%s)", label, str(e)[:120])
+                    continue
+                result: dict = {}
+                try:
+                    for name, viewport in _VIEWPORTS.items():
+                        captured = _capture_viewport(browser, url, viewport, capture_tap_targets=(name == "mobile"))
+                        if captured and captured.get("blocked_reason"):
+                            blocked_reason = captured["blocked_reason"]
+                            result = {}
+                            break
+                        if captured:
+                            result[name] = captured
+                finally:
+                    browser.close()
+                if result.get("desktop"):
+                    logger.info("UI audit capture: succeeded for %s via %s", url, label)
+                    return result
+                if not blocked_reason:
+                    return result or None  # plain navigation failure — a different launch mode won't fix it
+                logger.info("UI audit capture: %s blocked under %s, trying next mode", url, label)
     except Exception:
-        logger.exception("UI audit capture: Playwright/Chromium launch failed for %s", website_url)
+        logger.exception("UI audit capture: Playwright launch failed for %s", website_url)
         return None
-    return result or None
+    return {"blocked_reason": blocked_reason} if blocked_reason else None
