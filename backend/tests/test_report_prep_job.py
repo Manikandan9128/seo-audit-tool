@@ -60,3 +60,37 @@ def test_start_rejects_unknown_or_empty_sections(sections):
     with pytest.raises(HTTPException) as e:
         rp.start_report_prep_job(uuid.uuid4(), sections, "30daysAgo", "today", db=_FakeSession(), current_user=SimpleNamespace(id=OWNER))
     assert e.value.status_code == 400
+
+
+# 2026-09-29: _section_site_audit/_section_overview call site_audit_routes'
+# functions directly (not through a real HTTP request), so FastAPI never
+# resolves their `ai: ReportAISelection = Depends(...)` parameter — a call
+# with no `ai=` left it holding the literal Depends() sentinel, and any
+# route reading ai.provider crashed with "'Depends' object has no attribute
+# 'provider'" (confirmed real, every Generate Report run's Site Audit
+# section). These guard that both callers now pass a real ReportAISelection.
+
+def test_section_site_audit_passes_a_real_ai_selection(monkeypatch):
+    captured = {}
+
+    def fake_site_audit(client_id, ai=None, db=None, current_user=None):
+        captured["ai"] = ai
+
+    monkeypatch.setattr(rp.site_audit_routes, "site_audit", fake_site_audit)
+    rp._section_site_audit(uuid.uuid4(), _FakeSession(), SimpleNamespace(id=OWNER), {"preferred_provider": "claude", "claude_model": "claude-sonnet-5"})
+    assert captured["ai"].provider == "claude"
+    assert captured["ai"].claude_model == "claude-sonnet-5"
+
+
+def test_section_overview_passes_a_real_ai_selection(monkeypatch):
+    captured = {}
+
+    def fake_company_overview(client_id, force=False, ai=None, db=None, current_user=None):
+        captured["ai"] = ai
+        return {"name": "Acme"}
+
+    monkeypatch.setattr(rp.site_audit_routes, "company_overview", fake_company_overview)
+    monkeypatch.setattr(rp.site_audit_routes, "product_catalogue", lambda *a, **k: {"products": []})
+    result = rp._section_overview(uuid.uuid4(), _FakeSession(), SimpleNamespace(id=OWNER), {"preferred_provider": "groq", "claude_model": None})
+    assert captured["ai"].provider == "groq"
+    assert result["overview"] == {"name": "Acme"}

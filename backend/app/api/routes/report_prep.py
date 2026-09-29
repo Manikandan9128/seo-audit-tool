@@ -62,8 +62,22 @@ def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
 # function the browser used to call, and returns what the page needs to
 # show that section.
 
-def _section_overview(client_id, db, user, _params):
-    overview = site_audit_routes.company_overview(client_id, force=False, db=db, current_user=user)
+def _job_ai_selection(params: dict) -> ReportAISelection:
+    """These section runners call route functions directly in Python, not
+    through a real HTTP request, so FastAPI never resolves their `ai:
+    ReportAISelection = Depends(...)` parameter — passing none left that
+    parameter holding the literal Depends() sentinel object, and any route
+    that read ai.provider (site_audit, company_overview) crashed with
+    "'Depends' object has no attribute 'provider'" (confirmed real, 2026-
+    09-29, every Generate Report run's Site Audit section). params'
+    preferred_provider/claude_model were already validated non-empty by
+    start_report_prep_job before this job started."""
+    return ReportAISelection(params.get("preferred_provider"), params.get("claude_model"))
+
+
+def _section_overview(client_id, db, user, params):
+    ai = _job_ai_selection(params)
+    overview = site_audit_routes.company_overview(client_id, force=False, ai=ai, db=db, current_user=user)
     try:
         catalogue = site_audit_routes.product_catalogue(client_id, db=db, current_user=user)
     except Exception:
@@ -71,8 +85,8 @@ def _section_overview(client_id, db, user, _params):
     return {"overview": overview, "catalogue": catalogue}
 
 
-def _section_site_audit(client_id, db, user, _params):
-    site_audit_routes.site_audit(client_id, db=db, current_user=user)
+def _section_site_audit(client_id, db, user, params):
+    site_audit_routes.site_audit(client_id, ai=_job_ai_selection(params), db=db, current_user=user)
     return {}  # saved as a SiteAuditRun; the page re-reads its history list
 
 
