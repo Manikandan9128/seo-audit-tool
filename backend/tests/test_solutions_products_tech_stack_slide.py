@@ -133,6 +133,17 @@ def test_a_category_with_many_technologies_shows_a_plus_n_more_line_inside_its_o
     assert _audit_slide_geometry(prs) == []
 
 
+def test_many_categories_never_overlap_or_overflow_the_card():
+    # Worst realistic case once HubSpot/CookieYes/Sentry etc. are detected:
+    # a dozen categories. Whatever doesn't fit is counted, never drawn over.
+    cats = ["cdn", "analytics", "library", "marketing", "consent", "monitoring", "chat", "framework", "server", "hosting", "security", "payments"]
+    detected = [{"category": c, "name": f"{c} tool {i}"} for c in cats for i in range(3)]
+    prs = _prs()
+    slide = add_solutions_products_slide(prs, {}, {"hostname": "x.com", "https": True, "detected": detected})
+    assert _audit_slide_geometry(prs) == []
+    assert any("more categor" in t for t in _texts(slide))
+
+
 def test_products_heading_never_renders_as_an_orphan_with_no_content():
     # Regression (confirmed real, QA stress case, 2026-09-25): Solutions
     # can legitimately consume nearly the whole left card on a client with

@@ -43,6 +43,18 @@ HTML_TECH_HINTS = [
     (r"hotjar\.com", "Hotjar", "analytics"),
     (r"clarity\.ms", "Microsoft Clarity", "analytics"),
     (r"cdn\.segment\.com", "Segment", "analytics"),
+    # Marketing/consent/monitoring tools seen on real client sites (2026-09-29:
+    # HubSpot forms and CookieYes were on a live site but never reported).
+    # Host-based patterns only — a bare "hubspot.com" would also match a
+    # site merely LINKING to a HubSpot blog post.
+    (r"js\.hs-scripts\.com|js\.hsforms\.net|js\.hs-analytics\.net|js\.hs-banner\.com|js\.hubspot\.com", "HubSpot", "marketing"),
+    (r"clearbitscripts\.com|tag\.clearbit\.com", "Clearbit", "marketing"),
+    (r"cdn-cookieyes\.com", "CookieYes", "consent"),
+    (r"js\.sentry-cdn\.com|browser\.sentry-cdn\.com", "Sentry", "monitoring"),
+    (r"widget\.intercom\.io|js\.intercomcdn\.com", "Intercom", "chat"),
+    (r"snap\.licdn\.com|_linkedin_partner_id", "LinkedIn Insight Tag", "analytics"),
+    (r"analytics\.tiktok\.com", "TikTok Pixel", "analytics"),
+    (r"googleadservices\.com|googleads\.g\.doubleclick\.net", "Google Ads", "analytics"),
     (r"jquery[.-](\d+\.\d+\.\d+)?.*\.js", "jQuery", "library"),
     (r"cdn\.jsdelivr\.net/npm/bootstrap|bootstrap\.min\.css", "Bootstrap", "library"),
     (r"tailwind", "Tailwind CSS", "library"),
@@ -135,8 +147,12 @@ def detect_tech_stack(website_url: str) -> dict:
     if generator_match:
         _add(generator_match.group(1).strip(), "cms")
 
+    # A server header that only repeats a name already detected (e.g.
+    # "cloudflare" after the Cloudflare CDN hint) would show as a second,
+    # identical tile — skip the repeat.
+    known_lower = {n.lower() for n in seen_names}
     server_header = headers_lower.get("server")
-    if server_header:
+    if server_header and server_header.strip().lower() not in known_lower:
         _add(server_header, "server")
 
     powered_by = headers_lower.get("x-powered-by")
