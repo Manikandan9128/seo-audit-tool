@@ -3,10 +3,10 @@ notes a reviewer typed in by hand (text notes only — no screenshot/vision
 analysis). If no notes were supplied, the caller uses static_no_ux_pass()
 instead of skipping the dimension, per the report spec's Rule 8."""
 
-import json
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 PROMPT_TEMPLATE = """You are a conversion-rate/UX consultant writing part of a client-facing SEO/web audit \
 report. You are given manual QA notes a reviewer wrote while walking through {client_name}'s site \
@@ -65,9 +65,8 @@ def generate_ux_findings(client_name: str, website_url: str, ux_notes: str) -> d
             last_raw = raw
             cleaned = raw.strip()
             cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            try:
-                data = json.loads(cleaned)
-            except json.JSONDecodeError:
+            data, _repaired = parse_json(cleaned)
+            if data is None:
                 errors.append(f"{provider} did not return valid JSON")
                 continue
             if isinstance(data, dict):

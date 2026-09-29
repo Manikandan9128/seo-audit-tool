@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, defer
 from app.api.deps import ReportAISelection, get_current_user, get_db, report_ai_selection, validate_ai_selection
 from app.config import settings
 from app.db.session import SessionLocal
-from app.integrations import google_oauth, text_ai_client
+from app.integrations import ai_usage, google_oauth, text_ai_client
 from app.integrations.text_ai_client import JobContextThreadPoolExecutor
 from app.integrations.crypto import decrypt, encrypt
 from app.integrations.pagespeed_client import run_pagespeed
@@ -68,6 +68,7 @@ from app.services.keyword_intelligence_service import KeywordIntelligenceCache, 
 from app.services.content_safety import is_gambling_spam, safe_imports, scrub as scrub_adult, scrub_gambling_spam
 from app.services.logo_service import fetch_logo_bytes
 from app.services.next_steps_service import generate_next_steps
+from app.services.ai_usage_estimate import HEAVY_AI_STEPS, estimate_report_ai_usage, hard_limit_violation
 from app.services.product_catalogue_service import crawl_product_catalogue
 from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.tech_stack_service import detect_tech_stack
@@ -89,6 +90,8 @@ STALE_JOB_MINUTES = 15
 # 15 minutes and a still-working job was marked "stalled or crashed".
 # Capped so a genuinely wedged thread still gets caught eventually.
 JOB_HEARTBEAT_SECONDS = 60
+# How often the heartbeat also saves the live AI usage counter.
+JOB_USAGE_FLUSH_SECONDS = 10
 JOB_HEARTBEAT_MAX_MINUTES = 60
 
 
@@ -1542,6 +1545,7 @@ def _gather_report_data(
         company_overview_result = client.company_overview_cache
     elif include_company_overview and text_ai_client.selected_provider_ready():
         progress("Reading company overview...", 5)
+        ai_usage.set_module("company_overview")
         result = extract_company_overview(client.website_url)
         if "error" not in result:
             company_overview_result = result
@@ -1561,6 +1565,7 @@ def _gather_report_data(
     # instead of the old one-at-a-time loop with a hardcoded time.sleep(0.3)
     # after every page — that alone was 6+ seconds of pure sleep for a
     # 20-page crawl, run synchronously on every single report generation.
+    ai_usage.set_module("company_overview")
     progress("Crawling site and checking tech stack...", 15)
     # Hard outer deadline, same pattern (and same reasoning) as the PSI
     # section's own fix below: run_site_audit calls summarize_company (an
@@ -1847,6 +1852,7 @@ def _gather_report_data(
     # finished, reading as a hang with nothing to show it wasn't). These
     # checkpoints don't change what runs, only what the progress bar says
     # while it does.
+    ai_usage.set_module("keywords")
     progress("Merging keyword data and clustering topics...", 52)
     # Hard rule (2026-09-23): no 18+ content anywhere in a report. GSC
     # queries/pages are scrubbed here, before any AI prompt or slide sees
@@ -2161,7 +2167,11 @@ def _gather_report_data(
     # render. Multiple uploads get concatenated so the AI sees everything.
     geopulse_rows = _all_rows("geopulse", own_only=True)
     geopulse_analysis_result = None
-    if geopulse_rows:
+    ai_usage.set_module("aeo_geo")
+    if geopulse_rows and text_ai_client.ai_step_skipped("aeo_geo"):
+        geopulse_analysis_result = {"skipped": True}
+        content_issues.append(_cancelled_step("aeo_geo"))
+    elif geopulse_rows:
         combined_geopulse_text = "\n\n---\n\n".join(
             r.get("raw_text", "") for r in geopulse_rows if r.get("raw_text")
         )
@@ -2371,7 +2381,13 @@ def _gather_report_data(
     # site itself couldn't be reached) — build_report's own "note"
     # fallback covers that gap, same as the old pipeline.
     ui_audit_result = None
-    if not text_ai_client.selected_provider_ready():
+    ai_usage.set_module("ui_audit")
+    if text_ai_client.ai_step_skipped("ui_audit"):
+        # No UI-Level Fixes slide at all — the static "manual UX pass not
+        # done" note would misstate why it's missing.
+        ux_findings_result.pop("note", None)
+        content_issues.append(_cancelled_step("ui_audit"))
+    elif not text_ai_client.selected_provider_ready():
         try:
             text_ai_client.resolve_selected_provider()
         except text_ai_client.NoAIProviderConfigured as e:
@@ -2449,6 +2465,7 @@ def _gather_report_data(
     # the slide itself renders (classify_seo_issues), so the AI never reasons
     # about a number the reader can't also see on the table.
     seo_issues_ai_insights = None
+    ai_usage.set_module("seo_issues")
     if site_audit_issues_rows and text_ai_client.selected_provider_ready():
         progress("Generating SEO Issues insights...", 62)
         error_entries, warning_entries = classify_seo_issues(site_audit_issues_rows)
@@ -2537,6 +2554,7 @@ def _gather_report_data(
             page_query_rows=page_query_rows, brand_tokens=brand_tokens,
         )
 
+        ai_usage.set_module("branded")
         if text_ai_client.selected_provider_ready():
             progress("Analyzing branded vs non-branded search...", 70)
             top_branded = sorted(branded_queries, key=lambda q: q.get("clicks", 0), reverse=True)[:10]
@@ -2582,6 +2600,7 @@ def _gather_report_data(
     # harmless no-op re-filter of already-clean rows (cache-hit on the AI
     # classification). Bonus: also fixes report_preview's keyword-gap data,
     # which never filtered it at all before.
+    ai_usage.set_module("keywords")
     _filter_competitor_keywords(
         client,
         {
@@ -2663,8 +2682,11 @@ def _gather_report_data(
         if own_domain_rating is not None:
             core_problem_backlink_summary["authority_score"] = own_domain_rating
 
+    ai_usage.set_module("core_problem")
     core_problem_result = None
-    if text_ai_client.selected_provider_ready():
+    if text_ai_client.ai_step_skipped("core_problem"):
+        content_issues.append(_cancelled_step("core_problem"))
+    elif text_ai_client.selected_provider_ready():
         progress("Diagnosing core problem...", 75)
         core_problem_findings = {
             "homepage_issues": site_audit_result.get("issues", []),
@@ -2729,6 +2751,7 @@ def _gather_report_data(
     # about a schema type or count the reader can't also see on the table.
     schema_ai_insights = None
     schema_impact = None
+    ai_usage.set_module("schema")
     if schema_validation_result and text_ai_client.selected_provider_ready():
         schema_parts = build_schema_report_parts(schema_validation_result)
         pageviews_by_page_type = {
@@ -2848,6 +2871,36 @@ def _gather_report_data(
     }
 
 
+def _enforce_hard_limit(client_id: uuid.UUID, db: Session, selection: ReportAISelection, skip_steps: list[str]) -> None:
+    """Never start a report whose estimated usage (the steps that will run)
+    is over a hard safety limit — the page blocks it too, this is the
+    server-side guarantee."""
+    estimate = estimate_report_ai_usage(client_id, db, selection.provider, selection.claude_model)
+    violation = hard_limit_violation(estimate, skip_steps)
+    if violation:
+        raise HTTPException(status_code=400, detail=violation)
+
+
+def _cancelled_step(step: str) -> str:
+    """A heavy AI step the user unticked in the usage popup: no request is
+    sent, the module is marked CANCELLED, and the app (never the deck) says
+    so in the spec's wording."""
+    ledger = ai_usage.current_ledger()
+    if ledger is not None:
+        ledger.set_module_status(step, ai_usage.AIStatus.CANCELLED)
+    headline, explanation = ai_usage.FAILURE_WORDING[ai_usage.AIStatus.CANCELLED]
+    if step == "next_steps":
+        explanation = "Skipped at your request to save AI usage; the standard Next Steps slides are shown instead."
+    return f"{HEAVY_AI_STEPS[step]} — {headline}. {explanation}"
+
+
+def _validated_skip_steps(skip_ai_steps: list[str] | None) -> list[str]:
+    unknown = set(skip_ai_steps or []) - set(HEAVY_AI_STEPS)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"skip_ai_steps must be a subset of {sorted(HEAVY_AI_STEPS)}")
+    return list(skip_ai_steps or [])
+
+
 def _request_ai_selection(
     preferred_provider: str | None, claude_model: str | None, header_selection: ReportAISelection,
 ) -> ReportAISelection:
@@ -2873,6 +2926,7 @@ def report_preview(
     semrush_source: str | None = Body(default=None),
     preferred_provider: str | None = Body(default=None),
     claude_model: str | None = Body(default=None),
+    skip_ai_steps: list[str] | None = Body(default=None),
     ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -2885,19 +2939,29 @@ def report_preview(
     (the client's fetched Semrush MCP snapshot)."""
     client = _get_owned_client(client_id, db, current_user)
     selection = _request_ai_selection(preferred_provider, claude_model, ai)
+    skip_steps = _validated_skip_steps(skip_ai_steps)
+    _enforce_hard_limit(client_id, db, selection, skip_steps)
     semrush_mcp_data_service.set_active_snapshot(_semrush_snapshot_for(semrush_source, client_id, db))
     try:
-        with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model):
+        with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model, skip_steps):
             data = _gather_report_data(
                 client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
                 company_overview_override, competitor_analysis_override, ux_notes,
             )
+            ledger = ai_usage.current_ledger()
+            ledger.status = ai_usage.AIStatus.COMPLETED
+            usage_summary = ledger.summary()
+            provider = text_ai_client.pinned_provider()
+            data["content_generation_issues"] = [
+                ai_usage.readable_issue(i, provider) for i in data.get("content_generation_issues") or []
+            ]
     finally:
         semrush_mcp_data_service.set_active_snapshot(None)
     data = _scrub_report_data(data)
     return {
         "client_name": client.name, "website_url": client.website_url,
-        "ai_provider": selection.provider, "claude_model": selection.claude_model, **data,
+        "ai_provider": selection.provider, "claude_model": selection.claude_model,
+        "ai_usage": usage_summary, **data,
     }
 
 
@@ -2974,6 +3038,7 @@ def _build_pptx_for_client(
     # Strip excluded competitor keywords (brand, nav/login, careers, typos,
     # unrelated industries) before anything downstream — PPTX slides, the
     # ranking_page_types signal below, Next Steps findings — ever sees them.
+    ai_usage.set_module("keywords")
     kw_cache = _keyword_cache_for(client, data.get("company_overview"))
     _filter_competitor_keywords(client, data, kw_cache)
     _filter_search_queries(client, data, kw_cache)
@@ -2985,9 +3050,14 @@ def _build_pptx_for_client(
     # filtered. Calling it again here would be a second, wasted
     # classify_keywords AI call on data already filtered once.
 
-    competitor_narratives = _generate_competitor_narratives(
-        client, data, on_progress=on_progress, content_issues=content_issues
-    )
+    ai_usage.set_module("competitor_narratives")
+    if text_ai_client.ai_step_skipped("competitor_narratives"):
+        competitor_narratives = {}
+        content_issues.append(_cancelled_step("competitor_narratives"))
+    else:
+        competitor_narratives = _generate_competitor_narratives(
+            client, data, on_progress=on_progress, content_issues=content_issues
+        )
 
     # Bespoke, business-aware Next Steps advice (real products/competitors/
     # numbers, sections that don't fit the business dropped entirely) in
@@ -2995,8 +3065,12 @@ def _build_pptx_for_client(
     # attempted when an AI key is configured (same gate as Core Problem);
     # falls back to the static per-category slides automatically inside
     # build_report when this is None or a category comes back empty.
+    ai_usage.set_module("next_steps")
     next_steps_ai = None
-    if text_ai_client.selected_provider_ready():
+    if text_ai_client.ai_step_skipped("next_steps"):
+        # The standard (non-AI) Next Steps slides still render.
+        content_issues.append(_cancelled_step("next_steps"))
+    elif text_ai_client.selected_provider_ready():
         progress("Writing tailored recommendations...", 90)
         client_domain = client.website_url.replace("https://", "").replace("http://", "").rstrip("/")
         findings = _build_next_steps_findings(data, competitor_narratives)
@@ -3021,6 +3095,7 @@ def _build_pptx_for_client(
     # doesn't change how long any of it takes, only makes updated_at (and
     # progress_stage, for the next report that does get stuck) reflect
     # what's actually running.
+    ai_usage.set_module(None)
     progress("Checking brand citations and Wikipedia presence...", 92)
 
     # Real citation lookup for the Brand Citation Opportunities slide — free,
@@ -3153,6 +3228,9 @@ def _build_pptx_for_client(
         )
 
     filename = f"{client.name.replace(' ', '-')}-seo-audit.pptx"
+    # Every AI failure worded by its real reason (token limit / timeout /
+    # invalid JSON / provider error), whatever module produced it.
+    content_issues[:] = [ai_usage.readable_issue(i, text_ai_client.pinned_provider()) for i in content_issues]
     return pptx_bytes, filename, content_issues
 
 
@@ -3167,6 +3245,7 @@ def generate_report(
     ux_notes: str | None = Body(default=None),
     preferred_provider: str | None = Body(default=None),
     claude_model: str | None = Body(default=None),
+    skip_ai_steps: list[str] | None = Body(default=None),
     ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -3181,7 +3260,9 @@ def generate_report(
     # legacy synchronous path is kept for backward compatibility only, not
     # used by the current frontend (which always uses /start + polling).
     selection = _request_ai_selection(preferred_provider, claude_model, ai)
-    with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model):
+    skip_steps = _validated_skip_steps(skip_ai_steps)
+    _enforce_hard_limit(client_id, db, selection, skip_steps)
+    with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model, skip_steps):
         pptx_bytes, filename, _content_issues = _build_pptx_for_client(
             client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
             company_overview_override, competitor_analysis_override, ux_notes,
@@ -3193,18 +3274,23 @@ def generate_report(
     )
 
 
-def _report_job_heartbeat(job_id: uuid.UUID, stop: threading.Event) -> None:
+def _report_job_heartbeat(
+    job_id: uuid.UUID, stop: threading.Event, ledger: "ai_usage.UsageLedger | None" = None,
+) -> None:
     """Touches the job's updated_at while its build thread runs — see
-    JOB_HEARTBEAT_SECONDS. Only updated_at is written, so it can't clobber
-    the status/progress the build thread commits."""
+    JOB_HEARTBEAT_SECONDS — and saves the live AI usage counter every
+    JOB_USAGE_FLUSH_SECONDS. Only updated_at/ai_usage are written, so it
+    can't clobber the status/progress the build thread commits."""
     hb_db = SessionLocal()
     deadline = datetime.now(timezone.utc) + timedelta(minutes=JOB_HEARTBEAT_MAX_MINUTES)
     try:
-        while not stop.wait(JOB_HEARTBEAT_SECONDS) and datetime.now(timezone.utc) < deadline:
+        while not stop.wait(JOB_USAGE_FLUSH_SECONDS) and datetime.now(timezone.utc) < deadline:
             job = hb_db.get(ReportGenerationJob, job_id)
             if not job or job.status != "running":
                 return
             job.updated_at = datetime.now(timezone.utc)
+            if ledger is not None:
+                job.ai_usage = ledger.summary()
             hb_db.commit()
             hb_db.expire_all()
     except Exception:
@@ -3225,6 +3311,7 @@ def _run_generate_report_job(
     preferred_provider: str | None = None,
     semrush_snapshot: dict | None = None,
     claude_model: str | None = None,
+    skip_ai_steps: list[str] | None = None,
 ):
     """Builds the PPTX in a background thread with its own DB session, so a
     slow build (PageSpeed Insights, AI narratives, crawls) never has an HTTP
@@ -3237,6 +3324,7 @@ def _run_generate_report_job(
     # set here reaches every generate_text() call; nested pools inherit it
     # via JobContextThreadPoolExecutor. Reset in finally.
     text_ai_client.set_preferred_provider(preferred_provider)
+    text_ai_client.set_skipped_ai_steps(skip_ai_steps)
     # Which Claude model this job's Claude calls use (2026-09-25), same
     # thread-local-per-job pattern.
     text_ai_client.set_claude_model(claude_model)
@@ -3245,6 +3333,13 @@ def _run_generate_report_job(
     # of this job's thread, read once in the finally block below,
     # regardless of whether the job succeeded or failed partway through.
     text_ai_client.reset_claude_token_usage()
+    # One usage ledger for the whole build (every AI call, every module,
+    # every provider) — read live by the heartbeat, saved on the job.
+    ledger = ai_usage.UsageLedger(
+        provider=preferred_provider,
+        model=(claude_model or text_ai_client.CLAUDE_MODEL) if preferred_provider == "claude" else None,
+    )
+    ai_usage.set_ledger(ledger)
     semrush_mcp_data_service.set_active_snapshot(semrush_snapshot)
     heartbeat_stop: threading.Event | None = None
     try:
@@ -3270,7 +3365,7 @@ def _run_generate_report_job(
                 progress_db.commit()
 
         heartbeat_stop = threading.Event()
-        threading.Thread(target=_report_job_heartbeat, args=(job_id, heartbeat_stop), daemon=True).start()
+        threading.Thread(target=_report_job_heartbeat, args=(job_id, heartbeat_stop, ledger), daemon=True).start()
 
         client = db.get(Client, client_id)
         pptx_bytes, filename, content_issues = _build_pptx_for_client(
@@ -3289,12 +3384,16 @@ def _run_generate_report_job(
         # failed and why, right in the app, before deciding whether to
         # regenerate or send the file as-is.
         job.content_generation_issues = content_issues or None
+        ledger.status = ai_usage.AIStatus.COMPLETED
+        job.ai_usage = ledger.summary()
         db.commit()
     except Exception as e:
         job = db.get(ReportGenerationJob, job_id)
         if job:
             job.status = "failed"
             job.error = str(e)
+            ledger.status = ai_usage.AIStatus.FAILED
+            job.ai_usage = ledger.summary()
             db.commit()
     finally:
         if heartbeat_stop is not None:
@@ -3308,6 +3407,9 @@ def _run_generate_report_job(
             )
         text_ai_client.set_preferred_provider(None)
         text_ai_client.set_claude_model(None)
+        text_ai_client.set_skipped_ai_steps(())
+        ai_usage.set_ledger(None)
+        ai_usage.set_module(None)
         semrush_mcp_data_service.set_active_snapshot(None)
         db.close()
         progress_db.close()
@@ -3325,6 +3427,7 @@ def start_generate_report_job(
     preferred_provider: str | None = Body(default=None),
     claude_model: str | None = Body(default=None),
     semrush_source: str | None = Body(default=None),
+    skip_ai_steps: list[str] | None = Body(default=None),
     ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -3341,6 +3444,8 @@ def start_generate_report_job(
     _get_owned_client(client_id, db, current_user)
     selection = _request_ai_selection(preferred_provider, claude_model, ai)
     preferred_provider, claude_model = selection.provider, selection.claude_model
+    skip_steps = _validated_skip_steps(skip_ai_steps)
+    _enforce_hard_limit(client_id, db, selection, skip_steps)
     # One build per client at a time: a double click, a second tab, or a
     # page that lost track of its job after navigation/refresh gets the
     # build already in progress instead of starting a duplicate. The client
@@ -3374,7 +3479,7 @@ def start_generate_report_job(
         args=(
             job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
             company_overview_override, competitor_analysis_override, ux_notes, preferred_provider,
-            semrush_snapshot, claude_model,
+            semrush_snapshot, claude_model, skip_steps,
         ),
         daemon=True,
     ).start()
@@ -3410,6 +3515,7 @@ def _report_job_status(job: ReportGenerationJob) -> dict:
         "content_generation_issues": job.content_generation_issues,
         "ai_provider": job.ai_provider,
         "claude_model": job.claude_model,
+        "ai_usage": job.ai_usage,
         "created_at": job.created_at,
     }
 
@@ -3433,6 +3539,20 @@ def _active_report_job(db: Session, client_id: uuid.UUID) -> ReportGenerationJob
     if job:
         _fail_if_stale(job, db, commit=False)
     return job if job and job.status in ("pending", "running") else None
+
+
+@router.get("/{client_id}/generate-report/ai-estimate")
+def get_report_ai_estimate(
+    client_id: uuid.UUID,
+    ai: ReportAISelection = Depends(report_ai_selection),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Estimated AI usage per heavy step for this client's report on the
+    selected provider — what the page's high-usage popup shows before
+    Preview/Download on a paid provider (see ai_usage_estimate)."""
+    _get_owned_client(client_id, db, current_user)
+    return estimate_report_ai_usage(client_id, db, ai.require(), ai.claude_model)
 
 
 @router.get("/{client_id}/generate-report/latest")

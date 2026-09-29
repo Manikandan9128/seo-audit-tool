@@ -39,6 +39,7 @@ import json
 import re
 
 from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, iter_text_attempts, pinned_provider
+from app.integrations.ai_usage import parse_json
 
 BATCH_PROMPT_TEMPLATE = """You are an SEO/growth consultant writing competitive-analysis sections for \
 {client_name} ({client_domain}), comparing them against {competitor_count} competitors. Write ONE independent \
@@ -155,23 +156,11 @@ def _strip_field_name_citations(entry: dict) -> dict:
 
 
 def _parse(raw: str) -> dict | None:
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        # Some models (seen with Groq's openai/gpt-oss-120b) prepend a line
-        # or two of commentary/reasoning before the JSON object despite the
-        # "return ONLY valid JSON" instruction - the fence-strip above only
-        # catches ``` markers at the very start/end, not stray prose. Fall
-        # back to grabbing the outermost {...} span before giving up.
-        start, end = raw.find("{"), raw.rfind("}")
-        if start == -1 or end <= start:
-            return None
-        try:
-            parsed = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError:
-            return None
+    # Shared JSON validation + repair (ai_usage.parse_json): fences, stray
+    # prose around the object, and answers cut off mid-JSON.
+    parsed, _repaired = parse_json(raw)
+    if parsed is None:
+        return None
     # json.loads succeeds on any valid JSON value, not just objects — a
     # degenerate completion (e.g. the literal token "null") parses cleanly
     # with no exception raised, and every caller assumes a dict.

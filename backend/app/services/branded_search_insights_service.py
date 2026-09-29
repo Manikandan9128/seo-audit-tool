@@ -14,6 +14,7 @@ import json
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 BRANDED_SEARCH_INSIGHTS_PROMPT = """You are an SEO consultant writing the Key Insights for a "Branded vs \
 Non-Branded Search Performance" slide, covering a single {date_range} Search Console snapshot — there is no \
@@ -106,9 +107,8 @@ def generate_branded_search_insights(
             last_raw = raw
             cleaned = raw.strip()
             cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            try:
-                data = json.loads(cleaned)
-            except json.JSONDecodeError:
+            data, _repaired = parse_json(cleaned)
+            if data is None:
                 errors.append(f"{provider} did not return valid JSON")
                 continue
             if isinstance(data, dict) and data.get("insights"):

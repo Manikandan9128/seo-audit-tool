@@ -1,5 +1,4 @@
 import io
-import json
 import logging
 import re
 
@@ -7,6 +6,7 @@ import pandas as pd
 import pdfplumber
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, generate_text_with_image
+from app.integrations.ai_usage import parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -604,12 +604,9 @@ def parse_site_audit_overview_image(content: bytes, mime_type: str = "image/png"
         logger.warning("Site Audit Overview image parsing failed: %s", e)
         return None
 
-    cleaned = raw.strip()
-    cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        logger.warning("Site Audit Overview image: AI returned invalid JSON: %s", cleaned[:300])
+    data, _repaired = parse_json(raw)
+    if data is None:
+        logger.warning("Site Audit Overview image: AI returned invalid JSON: %s", raw[:300])
         return None
     if not isinstance(data, dict) or data.get("site_health_pct") is None:
         return None

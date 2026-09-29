@@ -10440,7 +10440,7 @@ def _build_report(
         _next_steps_category_slide(prs, "Answer Engine Optimization (AEO)", "From the AI visibility check: prompt- and answer-level gaps.", aeo_items)
     if geo_items:
         _next_steps_category_slide(prs, "Generative Engine Optimization (GEO)", "From the AI visibility check: entity, discovery, competitor, and citation gaps.", geo_items)
-    if not aeo_items and not geo_items:
+    if not aeo_items and not geo_items and not (geopulse_analysis or {}).get("skipped"):
         add_aeo_geo_visibility_required_slide(prs, bool((geopulse_analysis or {}).get("uploaded_but_unavailable")))
     # Always deterministic, never the AI category — see add_goals_slide.
     add_goals_slide(

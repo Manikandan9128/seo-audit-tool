@@ -8,6 +8,7 @@ import re
 import time
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts, resolve_selected_provider
+from app.integrations.ai_usage import parse_json
 
 PROMPT_TEMPLATE = """You are an SEO consultant writing a short narrative summary for a client report. \
 Base everything ONLY on the structured findings below — never invent numbers, competitors, or issues \
@@ -74,9 +75,8 @@ def generate_ai_summary(client_name: str, website_url: str, analysis: dict) -> d
                 last_raw = raw
                 cleaned = raw.strip()
                 cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-                try:
-                    data = json.loads(cleaned)
-                except json.JSONDecodeError:
+                data, _repaired = parse_json(cleaned)
+                if data is None:
                     errors.append(f"{provider} did not return valid JSON")
                     continue
                 if isinstance(data, dict):

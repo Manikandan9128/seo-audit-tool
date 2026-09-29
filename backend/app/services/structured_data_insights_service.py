@@ -8,6 +8,7 @@ import json
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 STRUCTURED_DATA_INSIGHTS_PROMPT = """You are an SEO consultant preparing a "Structured data & schema validator" \
 slide for a client audit report. Below are two tables already computed from a real crawl + validation pass — \
@@ -312,9 +313,8 @@ def generate_schema_implementation_impact(part1: list[dict], part2: list[dict]) 
         for raw, provider in iter_text_attempts(prompt, max_tokens=1024, errors=errors):
             cleaned = raw.strip()
             cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            try:
-                data = json.loads(cleaned)
-            except json.JSONDecodeError:
+            data, _repaired = parse_json(cleaned)
+            if data is None:
                 errors.append(f"{provider} returned invalid JSON: {cleaned[:200]}")
                 continue
             impact = [
@@ -370,9 +370,8 @@ def generate_structured_data_insights(
         for raw, provider in iter_text_attempts(prompt, max_tokens=1024, errors=errors):
             cleaned = raw.strip()
             cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            try:
-                data = json.loads(cleaned)
-            except json.JSONDecodeError:
+            data, _repaired = parse_json(cleaned)
+            if data is None:
                 errors.append(f"{provider} returned invalid JSON: {cleaned[:200]}")
                 continue
             if data.get("insights"):

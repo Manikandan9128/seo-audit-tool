@@ -27,9 +27,9 @@ used here only as advisory prompt context, never trusted directly."""
 
 import json
 import logging
-import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -183,18 +183,11 @@ member_keywords, using its exact original text.
 
 
 def _parse(raw: str) -> dict | None:
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start == -1 or end <= start:
-            return None
-        try:
-            data = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError:
-            return None
+    # Shared JSON validation + repair (ai_usage.parse_json): fences, stray
+    # prose around the object, and answers cut off mid-JSON.
+    data, _repaired = parse_json(raw)
+    if data is None:
+        return None
     return data if isinstance(data, dict) else None
 
 

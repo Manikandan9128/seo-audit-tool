@@ -77,7 +77,8 @@ def test_aeo_geo_failure_names_provider_and_never_switches():
     finally:
         _stop(patches)
     assert [p for p, m in mocks.items() if m.called] == ["gemini"]
-    assert result["error"].startswith("Gemini failed to generate the AEO/GEO analysis")
+    assert result["error"].startswith("AEO/GEO analysis — Provider API error.")
+    assert "Gemini" in result["error"]
     assert result["error"].endswith("No fallback provider was used because Gemini was selected.")
 
 
@@ -106,9 +107,15 @@ def test_ui_ux_failure_on_claude_stops_without_sending_screenshots_elsewhere():
     finally:
         _stop(patches)
     assert [p for p, m in mocks.items() if m.called] == ["claude"]
-    assert mocks["claude"].call_count == 2  # one retry on the SAME provider
-    assert result["error"].startswith("Claude failed to generate the UI/UX analysis")
+    assert mocks["claude"].call_count == 3  # first try + 2 retries, SAME provider
+    assert result["error"].startswith("UI/UX analysis — Provider API error.")
     assert result["error"].endswith("No fallback provider was used because Claude was selected.")
+
+
+@pytest.fixture(autouse=True)
+def _no_estimate_db(monkeypatch):
+    # Route tests use a fake DB; the hard-limit estimate has its own tests.
+    monkeypatch.setattr(site_audit, "_enforce_hard_limit", lambda *a: None)
 
 
 def _preview(monkeypatch, body_provider=None, header_provider=None):
@@ -124,7 +131,7 @@ def _preview(monkeypatch, body_provider=None, header_provider=None):
     monkeypatch.setattr(site_audit, "_scrub_report_data", lambda d: d)
     result = site_audit.report_preview(
         uuid.uuid4(), company_overview_override=None, competitor_analysis_override=None, ux_notes=None,
-        semrush_source=None, preferred_provider=body_provider, claude_model=None,
+        semrush_source=None, preferred_provider=body_provider, claude_model=None, skip_ai_steps=None,
         ai=ReportAISelection(header_provider, None), db=None, current_user=None,
     )
     return result, seen
@@ -193,7 +200,7 @@ def _start(monkeypatch, provider, active=None):
     monkeypatch.setattr(site_audit.threading, "Thread", FakeThread)
     result = site_audit.start_generate_report_job(
         uuid.uuid4(), company_overview_override=None, competitor_analysis_override=None, ux_notes=None,
-        preferred_provider=provider, claude_model=None, semrush_source=None,
+        preferred_provider=provider, claude_model=None, semrush_source=None, skip_ai_steps=None,
         ai=ReportAISelection(None, None), db=db, current_user=None,
     )
     return result, started, db
@@ -218,3 +225,37 @@ def test_download_without_a_selection_is_refused(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         _start(monkeypatch, None)
     assert exc_info.value.status_code == 400
+
+
+def test_download_passes_skipped_steps_to_the_job_and_rejects_unknown_ones(monkeypatch):
+    started = {}
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            started["args"] = args
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(site_audit, "_get_owned_client", lambda *a: None)
+    monkeypatch.setattr(site_audit, "_active_report_job", lambda *a: None)
+    monkeypatch.setattr(site_audit, "_semrush_snapshot_for", lambda *a: None)
+    monkeypatch.setattr(site_audit.threading, "Thread", FakeThread)
+    kwargs = dict(company_overview_override=None, competitor_analysis_override=None, ux_notes=None,
+                  preferred_provider="claude", claude_model=None, semrush_source=None,
+                  ai=ReportAISelection(None, None), db=_FakeDb(), current_user=None)
+    site_audit.start_generate_report_job(uuid.uuid4(), skip_ai_steps=["aeo_geo", "ui_audit"], **kwargs)
+    assert started["args"][-1] == ["aeo_geo", "ui_audit"]
+    with pytest.raises(HTTPException) as exc_info:
+        site_audit.start_generate_report_job(uuid.uuid4(), skip_ai_steps=["everything"], **kwargs)
+    assert exc_info.value.status_code == 400
+
+
+def test_skipped_steps_follow_the_job_into_worker_threads():
+    text_ai_client.set_skipped_ai_steps(["aeo_geo"])
+    try:
+        with text_ai_client.JobContextThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(text_ai_client.ai_step_skipped, "aeo_geo").result() is True
+            assert pool.submit(text_ai_client.ai_step_skipped, "ui_audit").result() is False
+    finally:
+        text_ai_client.set_skipped_ai_steps(())

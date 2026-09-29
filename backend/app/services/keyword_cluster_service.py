@@ -7,11 +7,10 @@ anywhere in the header). Pure classification of already-uploaded
 keywords into topic labels — never invents new keywords, volumes, or any
 other data, only groups what's already there."""
 
-import json
 import logging
-import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +102,8 @@ def _generate_and_parse(prompt: str, keywords: list[str], label: str) -> dict[st
 
 
 def _parse_cluster_response(raw: str, provider: str, label: str) -> list | None:
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        clusters = json.loads(raw)
-    except json.JSONDecodeError:
+    clusters, _repaired = parse_json(raw)
+    if clusters is None:
         logger.warning("%s: %s returned invalid JSON: %s", label, provider, raw[:300])
         return None
     if not isinstance(clusters, list):

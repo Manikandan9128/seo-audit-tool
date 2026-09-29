@@ -2,7 +2,6 @@
 structured company overview (name, description, products, KPIs, registration
 info) for the report's "About the client" slide."""
 
-import json
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -11,6 +10,7 @@ import time
 import httpx
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts, resolve_selected_provider
+from app.integrations.ai_usage import parse_json
 from app.services.product_catalogue_service import crawl_product_catalogue
 
 USER_AGENT = (
@@ -202,9 +202,8 @@ def extract_company_overview(website_url: str) -> dict:
                 last_raw = raw
                 cleaned = raw.strip()
                 cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-                try:
-                    data = json.loads(cleaned)
-                except json.JSONDecodeError:
+                data, _repaired = parse_json(cleaned)
+                if data is None:
                     errors.append(f"{provider} did not return valid JSON")
                     continue
                 if isinstance(data, dict):

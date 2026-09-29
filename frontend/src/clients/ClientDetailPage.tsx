@@ -25,6 +25,8 @@ import type { SemrushSource, SemrushMcpState } from "../components/SemrushSource
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
 import Tip from "../components/Tip";
+import AiUsageModal, { type AiUsageEstimate } from "../components/AiUsageModal";
+import { formatCost, formatTokens } from "../aiUsageFormat";
 import {
   PROVIDER_LABELS, readClaudeModel, readSelectedProvider, writeClaudeModel, writeSelectedProvider,
 } from "../aiProvider";
@@ -43,6 +45,9 @@ const CLAUDE_MODEL_OPTIONS = [
 // Redesign v3 stage 2 — decorative section-row icon anchors, purely for
 // scannability (never repeated as a data-encoding color elsewhere).
 // Keyed by SectionKey string literal; module-level since it's static.
+// Providers that bill per use — the high AI-usage popup only shows for these.
+const PAID_AI_PROVIDERS = new Set(["claude", "openrouter", "browser_use"]);
+
 const SECTION_ICONS: Record<string, ReactNode> = {
   overview: (
     <svg viewBox="0 0 24 24" fill="none"><path d="M3 21h18M6 21V7l6-4 6 4v14M10 21v-6h4v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -170,6 +175,15 @@ export default function ClientDetailPage() {
   const reportStatusMsg = dl.stage && dl.aiProvider
     ? `${dl.stage} · ${PROVIDER_LABELS[dl.aiProvider] ?? dl.aiProvider}`
     : dl.stage;
+  // Live AI usage for the running (or last) build — ai_usage.UsageLedger
+  // summary saved by the server every few seconds.
+  const usage = dl.aiUsage;
+  const usageLine = usage && usage.calls > 0
+    ? `${usage.provider_label ?? ""}${usage.model ? ` (${usage.model})` : ""} · Tokens: ${formatTokens(usage.total_tokens)}`
+      + ` · Estimated cost: ${formatCost(usage.cost_usd, usage.cost_usd === null)}${usage.estimated ? " (approx.)" : ""}`
+      + ` · Status: ${usage.status === "RUNNING" ? "Running" : usage.status === "COMPLETED" ? "Completed" : usage.status}`
+    : null;
+  const usageOverWarning = !!usage && usage.total_tokens > usage.warning_tokens;
   const reportProgressPct = dl.pct;
   const contentGenerationIssues = dl.issues;
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -262,6 +276,40 @@ export default function ClientDetailPage() {
     preferred_provider: preferredProvider,
     ...(preferredProvider === "claude" ? { claude_model: claudeModel } : {}),
   };
+
+  // High AI-usage popup (2026-09-29): on a paid provider, Preview/Download
+  // first show the estimated usage per heavy AI step; unticked steps are
+  // skipped. The answer is kept for this page session per provider/model
+  // so Preview then Download doesn't ask twice; changing either asks again.
+  const [aiUsagePrompt, setAiUsagePrompt] = useState<AiUsageEstimate | null>(null);
+  const aiUsageResolver = useRef<((skipped: string[] | null) => void) | null>(null);
+  const aiUsageDecision = useRef<{ key: string; skipped: string[] } | null>(null);
+
+  async function confirmAiUsage(): Promise<string[] | null> {
+    if (!PAID_AI_PROVIDERS.has(preferredProvider)) return [];
+    const decisionKey = `${preferredProvider}:${preferredProvider === "claude" ? claudeModel : ""}`;
+    if (aiUsageDecision.current?.key === decisionKey) return aiUsageDecision.current.skipped;
+    let estimate: AiUsageEstimate;
+    try {
+      estimate = (await api.get(`/clients/${clientId}/generate-report/ai-estimate`)).data;
+    } catch {
+      return []; // no estimate available — don't block the report on it
+    }
+    // Only above the warning threshold (or with a step over it) — a small
+    // report on a paid provider runs without asking.
+    if (!estimate.needs_confirmation) return [];
+    const skipped = await new Promise<string[] | null>((resolve) => {
+      aiUsageResolver.current = resolve;
+      setAiUsagePrompt(estimate);
+    });
+    setAiUsagePrompt(null);
+    if (skipped === null) {
+      showToast("Cancelled — no AI request was sent.");
+      return null;
+    }
+    aiUsageDecision.current = { key: decisionKey, skipped };
+    return skipped;
+  }
   const [availableProviders, setAvailableProviders] = useState<{ value: string; label: string }[]>([]);
 
   // Semrush data source for this report: "manual" = the uploaded CSVs,
@@ -548,12 +596,15 @@ export default function ClientDetailPage() {
   }
 
   async function openPreview() {
+    const skipped = await confirmAiUsage();
+    if (skipped === null) return;
     setPreviewLoading(true);
     setError("");
     try {
       const body = {
         ...(overview ? { company_overview_override: overview } : {}),
         ...aiSelectionBody,
+        skip_ai_steps: skipped,
         ...semrushBody,
       };
       const res = await api.post(`/clients/${clientId}/report-preview`, Object.keys(body).length ? body : null);
@@ -574,20 +625,26 @@ export default function ClientDetailPage() {
     startDownload(clientId!, body);
   }
 
-  function downloadReportDirect() {
+  async function downloadReportDirect() {
+    const skipped = await confirmAiUsage();
+    if (skipped === null) return;
     const body = {
       ...(overview ? { company_overview_override: overview } : {}),
       ...aiSelectionBody,
+      skip_ai_steps: skipped,
       ...semrushBody,
     };
-    downloadReportWithBody(Object.keys(body).length ? body : null, false);
+    downloadReportWithBody(body, false);
   }
 
-  function downloadReportFromPreview() {
+  async function downloadReportFromPreview() {
+    const skipped = await confirmAiUsage();
+    if (skipped === null) return;
     const body = {
       company_overview_override: previewOverview,
       competitor_analysis_override: previewCompetitorAnalysis,
       ...aiSelectionBody,
+      skip_ai_steps: skipped,
       ...semrushBody,
     };
     downloadReportWithBody(body, true);
@@ -809,6 +866,13 @@ export default function ClientDetailPage() {
             >
               {generating ? "Generating..." : "Generate Report"}
             </button>
+            {aiUsagePrompt && (
+              <AiUsageModal
+                estimate={aiUsagePrompt}
+                onCancel={() => aiUsageResolver.current?.(null)}
+                onProceed={(skipped) => aiUsageResolver.current?.(skipped)}
+              />
+            )}
             {showSemrushSourceModal && (
               <SemrushSourceModal
                 clientId={clientId!}
@@ -883,7 +947,18 @@ export default function ClientDetailPage() {
                         />
                       </div>
                     )}
+                    {usageLine && (
+                      <span style={{ fontSize: 12, color: usageOverWarning ? "#92400e" : undefined }} className={usageOverWarning ? undefined : "muted"}>
+                        {usageOverWarning ? "⚠ " : ""}
+                        {usageLine}
+                      </span>
+                    )}
                   </div>
+                )}
+                {!reportLoading && usageLine && usage?.status !== "RUNNING" && (
+                  <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
+                    Last report AI usage: {usageLine}
+                  </span>
                 )}
                 {!reportLoading && contentGenerationIssues && (
                   <div
@@ -899,7 +974,7 @@ export default function ClientDetailPage() {
                   >
                     <strong>Heads up:</strong> {contentGenerationIssues.length} section(s) didn't generate this run
                     {dl.aiProvider ? ` with ${PROVIDER_LABELS[dl.aiProvider] ?? dl.aiProvider}` : ""} (shown below, not in
-                    the downloaded file). No other provider was tried. Regenerating often fixes a temporary rate limit.
+                    the downloaded file). No other provider was tried.
                     <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
                       {contentGenerationIssues.map((issue, i) => (
                         <li key={i}>{issue}</li>

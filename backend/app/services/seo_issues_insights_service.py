@@ -8,9 +8,9 @@ itself renders (see pptx_builder.classify_seo_issues) — otherwise the AI
 could reason about numbers the reader never actually sees on the slide."""
 
 import json
-import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 SEO_ISSUES_INSIGHTS_PROMPT = """You are an SEO analyst writing insights for a client audit report. I will give \
 you a list of SEO errors and warnings with the number of affected pages, plus the total crawled pages and total \
@@ -50,21 +50,11 @@ Warnings:
 
 
 def _parse(raw: str) -> dict | None:
-    raw = raw.strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # Groq's gpt-oss-120b sometimes prepends stray commentary before the
-        # JSON object despite the "return ONLY valid JSON" instruction — see
-        # the same fallback in competitor_narrative_service.py.
-        start, end = raw.find("{"), raw.rfind("}")
-        if start == -1 or end <= start:
-            return None
-        try:
-            data = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError:
-            return None
+    # Shared JSON validation + repair (ai_usage.parse_json): fences, stray
+    # prose around the object, and answers cut off mid-JSON.
+    data, _repaired = parse_json(raw)
+    if data is None:
+        return None
     # json.loads succeeds on any valid JSON value, not just objects — a
     # degenerate completion (e.g. the literal token "null") parses cleanly
     # to None/a list/a string with no exception raised, and .get() below

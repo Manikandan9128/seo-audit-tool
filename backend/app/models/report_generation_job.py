@@ -47,6 +47,10 @@ class ReportGenerationJob(Base):
     # produced the report and never pass it off as another provider's.
     ai_provider: Mapped[str | None] = mapped_column(String, nullable=True)
     claude_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Live AI usage for this build (ai_usage.UsageLedger.summary()): tokens,
+    # estimated cost, per-module status — written every few seconds while
+    # the job runs so the page can show a running token counter.
+    ai_usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Set once, the first time this job's file is actually fetched via the
     # /download endpoint — never moved on a later re-download of the same
     # job (2026-09-25: the sidebar's "Downloaded Reports" list needs to

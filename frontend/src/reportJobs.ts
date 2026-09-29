@@ -18,6 +18,23 @@ import { api } from "./api/client";
 // result is kept on the job, so the page restores both the button and the
 // section previews after navigation or a refresh.
 
+// ai_usage.UsageLedger.summary() from the server.
+export type AiUsageSummary = {
+  provider: string | null;
+  provider_label: string | null;
+  model: string | null;
+  status: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number | null;
+  estimated: boolean;
+  modules: Record<string, { input_tokens: number; output_tokens: number; calls: number; status?: string }>;
+  warning_tokens: number;
+  hard_limit_tokens: number;
+};
+
 export type DownloadStatus = "idle" | "building" | "downloading" | "failed";
 
 export interface PrepSection {
@@ -47,6 +64,8 @@ export interface ReportJobState {
     issues: string[] | null;
     // Report AI Provider the current/last build ran on (job.ai_provider).
     aiProvider: string | null;
+    // Live AI usage of the current/last build (job.ai_usage).
+    aiUsage: AiUsageSummary | null;
     // Last finished build that hasn't been downloaded in this session —
     // offered as "Download last report" instead of building it again.
     readyJob: { id: string; createdAt: string; aiProvider: string | null } | null;
@@ -60,7 +79,7 @@ const EMPTY: ReportJobState = {
   generate: { jobId: null, sections: {}, pct: null, error: null, errorSeq: 0 },
   download: {
     status: "idle", jobId: null, stage: "", pct: null, error: null, errorSeq: 0,
-    issues: null, aiProvider: null, readyJob: null, downloadedSeq: 0,
+    issues: null, aiProvider: null, aiUsage: null, readyJob: null, downloadedSeq: 0,
   },
 };
 
@@ -249,6 +268,7 @@ async function poll(clientId: string, jobId: string) {
           issues: Array.isArray(job.content_generation_issues) && job.content_generation_issues.length
             ? job.content_generation_issues : null,
           aiProvider: job.ai_provider ?? null,
+          aiUsage: job.ai_usage ?? null,
         });
         await saveJobFile(clientId, jobId);
         return;
@@ -266,6 +286,7 @@ async function poll(clientId: string, jobId: string) {
         // A rough per-stage estimate (report_generation_job.py), but a real,
         // increasing signal — never a fake animation.
         pct: typeof job.progress_pct === "number" ? job.progress_pct : get(clientId).download.pct,
+        aiUsage: job.ai_usage ?? get(clientId).download.aiUsage,
       });
       await new Promise((r) => setTimeout(r, 2000));
     }
@@ -278,7 +299,7 @@ export async function startDownload(clientId: string, body: any) {
   if (isDownloadActive(clientId)) return;
   set(clientId, {}, {
     status: "building", stage: "Starting report build…", pct: 0, error: null, issues: null, readyJob: null,
-    aiProvider: body?.preferred_provider ?? null,
+    aiProvider: body?.preferred_provider ?? null, aiUsage: null,
   });
   try {
     const res = await api.post(`/clients/${clientId}/generate-report/start`, body);
@@ -304,10 +325,14 @@ export async function resumeReportJob(clientId: string) {
       set(clientId, {}, {
         status: "building", jobId: job.id, stage: job.progress_stage || "Queued…", pct: job.progress_pct ?? null,
         aiProvider: job.ai_provider ?? null,
+        aiUsage: job.ai_usage ?? null,
       });
       poll(clientId, job.id);
     } else if (job.status === "done") {
-      set(clientId, {}, { readyJob: { id: job.id, createdAt: job.created_at, aiProvider: job.ai_provider ?? null } });
+      set(clientId, {}, {
+        readyJob: { id: job.id, createdAt: job.created_at, aiProvider: job.ai_provider ?? null },
+        aiUsage: job.ai_usage ?? null,
+      });
     }
   } catch {
     // Nothing to resume; the buttons simply start from idle.

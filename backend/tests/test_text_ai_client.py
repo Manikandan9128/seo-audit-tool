@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 import app.integrations.text_ai_client as text_ai_client
+from app.integrations import ai_usage
 from app.integrations.text_ai_client import (
     NoAIProviderConfigured, _cap_image_dimensions, _reserve_gemini_slot, generate_text, generate_text_with_image,
     generate_text_with_images,
@@ -120,8 +121,10 @@ def test_selected_provider_failure_never_calls_another_provider():
         mock_claude.assert_not_called()
     finally:
         text_ai_client.set_preferred_provider(None)
+    # A long Retry-After is a cap that won't clear inside this report, so
+    # the request layer stops after one attempt instead of retrying.
     groq_part, note = str(exc_info.value).split(" | ")
-    assert groq_part.startswith("Groq rate-limited, not retrying (Retry-After 1550s)")
+    assert groq_part.startswith("[PROVIDER_ERROR] Groq rate-limited, not retrying (Retry-After 1550s)")
     assert "org_01m1nfvvxbe998jw8y33xx4qce" in groq_part
     assert note == "No fallback provider was used because Groq was selected."
 
@@ -167,7 +170,7 @@ def test_failure_message_names_provider_and_section():
     finally:
         text_ai_client.set_preferred_provider(None)
     assert message == (
-        "Claude failed to generate the UI/UX analysis (Claude returned an empty response). "
+        "UI/UX analysis — Failed. The analysis could not be generated. (Claude returned an empty response) "
         "No fallback provider was used because Claude was selected."
     )
 
@@ -255,34 +258,32 @@ def test_groq_prompt_fits_matches_try_groq_budget():
     assert not text_ai_client.groq_prompt_fits("x" * 40_000, 4096)
 
 
-def test_attempt_claude_retries_once_on_empty_response_then_succeeds():
-    # Regression (confirmed real, Geopits Core Problem slide, 2026-09-24):
-    # a paid Claude key can still answer with a 200 and zero text (safety
-    # stop or stopping before writing anything) — a per-request roll, not
-    # an outage, so one immediate retry on the same prompt should recover.
+def test_request_layer_retries_an_empty_claude_answer_then_succeeds():
+    # Regression (Geopits Core Problem, 2026-09-24): a 200 with no text is a
+    # per-request roll — the shared request layer retries it (no hidden
+    # extra retry inside _attempt_claude any more).
+    text_ai_client.set_preferred_provider("claude")
     with patch("app.integrations.text_ai_client.settings") as mock_settings:
         mock_settings.claude_api_key = "sk-ant-test"
         with patch(
             "app.integrations.text_ai_client._try_claude",
             side_effect=[RuntimeError("empty content, stop_reason=end_turn"), "claude answer"],
         ) as mock_claude:
-            text = text_ai_client._attempt_claude("some prompt", 1024, [])
-    assert text == "claude answer"
+            assert generate_text("some prompt") == ("claude answer", "claude")
     assert mock_claude.call_count == 2
 
 
-def test_attempt_claude_reports_stop_reason_when_retry_also_comes_back_empty():
+def test_attempt_claude_makes_one_request_and_reports_stop_reason():
     with patch("app.integrations.text_ai_client.settings") as mock_settings:
         mock_settings.claude_api_key = "sk-ant-test"
         with patch(
             "app.integrations.text_ai_client._try_claude",
             side_effect=RuntimeError("empty content, stop_reason=refusal"),
-        ):
+        ) as mock_claude:
             errors: list[str] = []
             text = text_ai_client._attempt_claude("some prompt", 1024, errors)
-    assert text is None
+    assert text is None and mock_claude.call_count == 1
     assert "stop_reason=refusal" in errors[0]
-    assert "retried once" in errors[0]
 
 
 def test_gemini_slot_reserved_immediately_when_windows_are_empty():
@@ -573,3 +574,22 @@ def test_selected_provider_scope_pins_then_clears():
     with text_ai_client.selected_provider_scope("gemini", None):
         assert text_ai_client.pinned_provider() == "gemini"
     assert text_ai_client.pinned_provider() is None
+
+
+def test_claude_calls_leave_room_for_default_thinking():
+    # Sonnet 5 / Opus 5.5 think by default and thinking counts against
+    # max_tokens: a 4096 cap came back as "empty content,
+    # stop_reason=max_tokens" (Lumber, 2026-09-29).
+    text_ai_client.set_preferred_provider("claude")
+    with patch("app.integrations.text_ai_client.settings") as mock_settings, \
+         patch("app.integrations.text_ai_client.Anthropic") as mock_anthropic:
+        mock_settings.claude_api_key = "sk-ant-test"
+        mock_anthropic.return_value.messages.create.return_value = _fake_claude_response("ok", 10, 5)
+        generate_text("prompt", max_tokens=4096)
+    _, kwargs = mock_anthropic.return_value.messages.create.call_args
+    assert kwargs["max_tokens"] == ai_usage.MODULE_OUTPUT_BUDGETS["other"]
+    assert kwargs["output_config"] == {"effort": "medium"}
+
+
+def test_haiku_gets_no_effort_setting():
+    assert text_ai_client._claude_output_options("claude-haiku-4-5-20251001", 16000) == {"max_tokens": 16000}

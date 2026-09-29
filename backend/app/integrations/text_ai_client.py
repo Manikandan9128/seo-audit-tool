@@ -32,6 +32,9 @@ from io import BytesIO
 import base64
 
 import httpx
+
+from app.integrations import ai_usage
+from app.integrations.ai_usage import AIStatus, TokenLimitError
 from anthropic import Anthropic
 from google import genai
 from google.genai import types as genai_types
@@ -60,16 +63,15 @@ CLAUDE_MODEL_CHOICES = {
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 GEMINI_TIMEOUT_SECONDS = 45
-CLAUDE_TIMEOUT_SECONDS = 60
-# UI-Level Fixes asks Claude for up to 25 evidence-backed issues from 4
-# screenshots in one JSON object (2026-09-28, Geopits): at the caller's
-# 4096-token cap the JSON came back cut off ("claude did not return valid
-# JSON"), and a full-length answer at that size doesn't finish inside the
-# 60s text-call timeout either. Claude vision gets its own floor/timeout;
-# Groq/Gemini vision keep the caller's max_tokens (Groq's TPM budget can't
-# fit a bigger one anyway).
-CLAUDE_VISION_MIN_MAX_TOKENS = 12000
-CLAUDE_VISION_TIMEOUT_SECONDS = 180
+# Sonnet 5 and Opus 5.5 think by default (adaptive thinking runs even with
+# no `thinking` param; on Opus 5.5 it can't be turned off), and thinking
+# tokens count against max_tokens — so Claude's output budget comes from
+# ai_usage.MODULE_OUTPUT_BUDGETS (room for thinking plus the answer), and
+# effort "medium" keeps thinking proportionate to these structured-JSON
+# tasks ("low" on a retry after a token-limit failure).
+CLAUDE_EFFORT = "medium"
+CLAUDE_TIMEOUT_SECONDS = 180
+CLAUDE_VISION_TIMEOUT_SECONDS = 240
 
 
 def _call_with_timeout(fn, timeout_seconds: float, *args, **kwargs):
@@ -196,10 +198,26 @@ class NoAIProviderConfigured(Exception):
     pass
 
 
+def _gemini_result(response) -> str:
+    """Records usage, flags a cut-off answer, returns the text."""
+    meta = getattr(response, "usage_metadata", None)
+    ai_usage.record_usage(
+        "gemini", GEMINI_MODEL, getattr(meta, "prompt_token_count", 0) or 0,
+        (getattr(meta, "candidates_token_count", 0) or 0) + (getattr(meta, "thoughts_token_count", 0) or 0),
+    )
+    candidates = getattr(response, "candidates", None) or []
+    if candidates and "MAX_TOKENS" in str(getattr(candidates[0], "finish_reason", "")):
+        ledger = ai_usage.current_ledger()
+        if ledger:
+            ledger.mark_last_call(AIStatus.TOKEN_LIMIT_EXCEEDED)
+        raise TokenLimitError("finish_reason=MAX_TOKENS")
+    return (response.text or "").strip()
+
+
 def _try_gemini(prompt: str) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    return (response.text or "").strip()
+    return _gemini_result(response)
 
 
 # Some free-tier Groq orgs are capped as low as 8000 tokens-per-minute
@@ -212,6 +230,21 @@ def _try_gemini(prompt: str) -> str:
 # needs more output than fits one call — e.g. competitor narratives — can
 # size its own chunks against the same number instead of guessing.
 GROQ_TPM_BUDGET = 7500  # stays under the observed 8000 cap with slack
+
+
+def _chat_completion_result(provider: str, model: str | None, data: dict) -> str:
+    """Usage + truncation handling for OpenAI-compatible chat responses
+    (Groq, OpenRouter, and any future OpenAI-style provider)."""
+    usage = data.get("usage") or {}
+    ai_usage.record_usage(provider, model or data.get("model"), usage.get("prompt_tokens") or 0,
+                          usage.get("completion_tokens") or 0)
+    choice = (data.get("choices") or [{}])[0]
+    if choice.get("finish_reason") == "length":
+        ledger = ai_usage.current_ledger()
+        if ledger:
+            ledger.mark_last_call(AIStatus.TOKEN_LIMIT_EXCEEDED)
+        raise TokenLimitError("finish_reason=length")
+    return ((choice.get("message") or {}).get("content") or "").strip()
 
 
 def _try_groq(prompt: str, max_tokens: int) -> str:
@@ -261,8 +294,7 @@ def _try_groq(prompt: str, max_tokens: int) -> str:
             request=response.request,
             response=response,
         )
-    data = response.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
+    return _chat_completion_result("groq", GROQ_MODEL, response.json())
 
 
 def _groq_retry_after_seconds(response: httpx.Response) -> float | None:
@@ -275,25 +307,44 @@ def _groq_retry_after_seconds(response: httpx.Response) -> float | None:
         return None
 
 
-def _try_claude(prompt: str, max_tokens: int) -> str:
-    client = Anthropic(api_key=settings.claude_api_key)
-    response = client.messages.create(
-        model=_current_claude_model(),
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    _record_claude_usage("text", response.usage.input_tokens, response.usage.output_tokens)
+_effort_override = threading.local()
+
+
+def _claude_output_options(model: str, max_tokens: int) -> dict:
+    """max_tokens plus effort for one Claude call. Haiku 4.5 doesn't think
+    by default and rejects `effort`, so it only gets max_tokens."""
+    options: dict = {"max_tokens": max_tokens}
+    if not model.startswith("claude-haiku"):
+        options["output_config"] = {"effort": getattr(_effort_override, "value", None) or CLAUDE_EFFORT}
+    return options
+
+
+def _claude_result(response, model: str) -> str:
+    """Records usage; a cut-off (stop_reason=max_tokens) or empty answer
+    raises with the real stop_reason so it's never mistaken for a
+    timeout or a refusal."""
+    ai_usage.record_usage("claude", model, response.usage.input_tokens, response.usage.output_tokens)
     text = "".join(block.text for block in response.content if block.type == "text").strip()
+    if response.stop_reason == "max_tokens":
+        ledger = ai_usage.current_ledger()
+        if ledger:
+            ledger.mark_last_call(AIStatus.TOKEN_LIMIT_EXCEEDED)
+        raise TokenLimitError(f"{'truncated' if text else 'empty'} content, stop_reason=max_tokens")
     if not text:
-        # A 200 with no text block (safety stop, or the model stopping
-        # before writing anything) isn't a transport failure, so it never
-        # hit the except branch below — confirmed real on a Geopits Core
-        # Problem slide (2026-09-24): Claude answered, wrote nothing, and
-        # the old code just logged "empty response" with no way to tell
-        # a genuine one-off from a real refusal. stop_reason is the one
-        # field that tells them apart, so surface it instead of guessing.
         raise RuntimeError(f"empty content, stop_reason={response.stop_reason}")
     return text
+
+
+def _try_claude(prompt: str, max_tokens: int) -> str:
+    client = Anthropic(api_key=settings.claude_api_key)
+    model = _current_claude_model()
+    response = client.messages.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        **_claude_output_options(model, max_tokens),
+    )
+    _record_claude_usage("text", response.usage.input_tokens, response.usage.output_tokens)
+    return _claude_result(response, model)
 
 
 # Lets a caller STRICTLY pin one provider for the lifetime of a single
@@ -319,18 +370,42 @@ def set_preferred_provider(name: str | None) -> None:
     _provider_preference.value = name
 
 
+# Heavy AI steps the user chose to skip for this report (2026-09-29): the
+# high-usage popup lets them untick e.g. AEO/GEO or the UI/UX screenshot
+# audit on a paid provider. Same thread-local-per-job lifecycle as the
+# provider pin; the report build checks ai_step_skipped(key) before running
+# each heavy step. Keys: see app.services.ai_usage_estimate.HEAVY_AI_STEPS.
+_skipped_ai_steps = threading.local()
+
+
+def set_skipped_ai_steps(steps) -> None:
+    _skipped_ai_steps.value = frozenset(steps or ())
+
+
+def ai_step_skipped(step: str) -> bool:
+    return step in (getattr(_skipped_ai_steps, "value", None) or ())
+
+
 @contextmanager
-def selected_provider_scope(provider: str | None, claude_model: str | None = None):
-    """Pins this thread's AI calls to the user's Report AI Provider for the
-    duration of one request, then clears it so a pooled server thread never
-    carries it into an unrelated request."""
+def selected_provider_scope(provider: str | None, claude_model: str | None = None, skip_steps=()):
+    """Pins this thread's AI calls to the user's Report AI Provider (and the
+    heavy steps they chose to skip) for the duration of one request, then
+    clears it so a pooled server thread never carries it into an unrelated
+    request."""
     set_preferred_provider(provider)
     set_claude_model(claude_model)
+    set_skipped_ai_steps(skip_steps)
+    previous_usage = ai_usage.context_snapshot()
+    ai_usage.set_ledger(ai_usage.UsageLedger(
+        provider=provider, model=(claude_model or CLAUDE_MODEL) if provider == "claude" else None,
+    ))
     try:
         yield
     finally:
         set_preferred_provider(None)
         set_claude_model(None)
+        set_skipped_ai_steps(())
+        ai_usage.restore_context(previous_usage)
 
 
 # Same thread-local-per-job pattern as _provider_preference above, one
@@ -410,19 +485,27 @@ class JobContextThreadPoolExecutor(ThreadPoolExecutor):
             getattr(_provider_preference, "value", None),
             getattr(_claude_model_preference, "value", None),
             getattr(_claude_token_usage, "calls", None),
+            getattr(_skipped_ai_steps, "value", None),
         )
+        usage_context = ai_usage.context_snapshot()
 
         def run():
             previous = (
                 getattr(_provider_preference, "value", None),
                 getattr(_claude_model_preference, "value", None),
                 getattr(_claude_token_usage, "calls", None),
+                getattr(_skipped_ai_steps, "value", None),
             )
-            _provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls = context
+            previous_usage = ai_usage.context_snapshot()
+            (_provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls,
+             _skipped_ai_steps.value) = context
+            ai_usage.restore_context(usage_context)
             try:
                 return fn(*args, **kwargs)
             finally:
-                _provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls = previous
+                (_provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls,
+                 _skipped_ai_steps.value) = previous
+                ai_usage.restore_context(previous_usage)
 
         return super().submit(run)
 
@@ -511,24 +594,17 @@ def _attempt_gemini(prompt: str, max_tokens: int, errors: list[str]) -> str | No
 
 
 def _attempt_claude(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
+    """One Claude request. Retries are decided centrally (_layered_attempts)
+    from the real failure reason, never blindly here."""
     if not settings.claude_api_key:
         return None
     try:
         text = _call_with_timeout(_try_claude, CLAUDE_TIMEOUT_SECONDS, prompt, max_tokens)
         if text:
             return text
+        errors.append("Claude returned an empty response")
     except Exception as e:
-        # One immediate retry before giving up — an empty/refused response
-        # is a per-request roll, not a persistent outage like Groq/Gemini's
-        # quota errors, so a second attempt on the same borderline prompt
-        # often just succeeds (same reasoning as Groq/Gemini's retry above).
-        try:
-            text = _call_with_timeout(_try_claude, CLAUDE_TIMEOUT_SECONDS, prompt, max_tokens)
-            if text:
-                return text
-            errors.append("Claude returned an empty response")
-        except Exception as e2:
-            errors.append(f"Claude request failed (retried once): {str(e2)[:300]}")
+        errors.append(f"Claude request failed: {str(e)[:300]}")
     return None
 
 
@@ -563,7 +639,10 @@ def _try_browser_use(prompt: str, timeout_seconds: float = BROWSER_USE_TIMEOUT_S
         data = status_response.json()
         status = data.get("status")
         if status == "completed":
-            return (data.get("result") or "").strip()
+            result = (data.get("result") or "").strip()
+            # Browser Use reports no token counts — estimated from text size.
+            ai_usage.record_usage("browser_use", BROWSER_USE_MODEL, len(prompt) // 4, len(result) // 4, estimated=True)
+            return result
         if status in ("failed", "cancelled"):
             raise RuntimeError(f"Browser Use run {status}: {data.get('error') or 'no error detail'}")
     raise TimeoutError(f"Browser Use run did not finish within {timeout_seconds:.0f}s")
@@ -607,8 +686,7 @@ def _try_openrouter(prompt: str, max_tokens: int) -> str:
             request=response.request,
             response=response,
         )
-    data = response.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
+    return _chat_completion_result("openrouter", None, response.json())
 
 
 def _attempt_openrouter(prompt: str, max_tokens: int, errors: list[str]) -> str | None:
@@ -682,17 +760,73 @@ def selected_provider_ready() -> bool:
 
 def failure_message(section: str, errors: list[str]) -> str:
     """User-facing error for an AI step that failed on the selected
-    provider — names the provider and the report section, and says no
-    other provider was tried."""
+    provider: the section, the REAL failure type (token limit / timeout /
+    invalid JSON / provider error — never lumped together), and that no
+    other provider was tried. See ai_usage.describe_failure."""
     provider = pinned_provider()
     if not provider:
         try:
             resolve_selected_provider()
         except NoAIProviderConfigured as e:
             return str(e)
-    label = PROVIDER_LABELS[provider]
-    reasons = " | ".join(e for e in errors if not e.startswith("No fallback provider")) or "no usable response"
-    return f"{label} failed to generate the {section} ({reasons}). No fallback provider was used because {label} was selected."
+    return ai_usage.describe_failure(section, errors, provider)
+
+
+def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors: list[str], max_attempts: int):
+    """The one request layer every AI call goes through (2026-09-29 global
+    token & failure spec). Per attempt: report hard-safety check, module
+    output budget, provider call, usage recorded by the provider helper.
+    Between attempts, the retry is shaped by the REAL failure reason:
+    token limit -> retry asking for a shorter answer (Claude at low effort);
+    invalid JSON -> retry with strict JSON instructions; timeout -> at most
+    one retry; a daily/provider cap that won't clear -> stop. Never more
+    than 1 + AI_CONFIG["max_retries"] attempts. Every error appended is
+    tagged with its status so the final message states the exact reason.
+    Yields text; a caller that accepts an answer stops iterating (that is
+    what marks the module COMPLETED in the usage ledger)."""
+    module = ai_usage.current_module()
+    ledger = ai_usage.current_ledger()
+    budget = ai_usage.output_budget(module, provider, max_tokens)
+    last_status, suffix, timeouts, accepted = None, "", 0, False
+    try:
+        for _attempt in range(max_attempts):
+            try:
+                ai_usage.check_report_hard_limit()
+            except ai_usage.SafetyLimitError as e:
+                errors.append(f"[{AIStatus.FAILED}] {e}")
+                last_status = AIStatus.FAILED
+                break
+            before = len(errors)
+            _effort_override.value = "low" if last_status == AIStatus.TOKEN_LIMIT_EXCEEDED else None
+            try:
+                text = call(prompt + suffix, budget, errors)
+            finally:
+                _effort_override.value = None
+            for i in range(before, len(errors)):
+                errors[i] = ai_usage.tag_error(errors[i])
+            if text:
+                yield text
+                # Still iterating: the caller rejected this answer.
+                if len(errors) > before:
+                    errors[-1] = ai_usage.tag_error(errors[-1])
+                    last_status = ai_usage.classify_error(errors[-1])
+                else:
+                    last_status = AIStatus.INVALID_JSON
+            else:
+                last_status = ai_usage.classify_error(errors[-1]) if len(errors) > before else AIStatus.FAILED
+            if last_status == AIStatus.TIMEOUT:
+                timeouts += 1
+                if timeouts > ai_usage.AI_CONFIG["max_timeout_retries"]:
+                    break
+            if last_status == AIStatus.PROVIDER_ERROR and errors and ai_usage.is_daily_limit(errors[-1]):
+                break
+            suffix = ai_usage.RETRY_SUFFIX.get(last_status, "")
+    except GeneratorExit:
+        accepted = True
+        raise
+    finally:
+        if ledger is not None:
+            ledger.set_module_status(module, AIStatus.COMPLETED if accepted else (last_status or AIStatus.FAILED))
 
 
 def _no_fallback_note(provider: str) -> str:
@@ -715,42 +849,30 @@ def groq_prompt_fits(prompt: str, max_tokens: int) -> bool:
 
 def iter_text_attempts(prompt: str, max_tokens: int, errors: list[str]):
     """Yields (text, provider) from the selected provider only (see
-    resolve_selected_provider) — up to two responses, so a caller whose own
-    parse rejects the first one (bad JSON, semantically empty) gets a second
-    try from the SAME provider. Never moves to another provider. When both
-    tries are exhausted, `errors` ends with a "No fallback provider was
-    used" note naming the selected provider."""
+    resolve_selected_provider), through the shared request layer
+    (_layered_attempts): up to 1 + max_retries answers, each retry shaped
+    by why the previous one failed or was rejected. Never moves to another
+    provider. When attempts are exhausted, `errors` ends with a "No
+    fallback provider was used" note naming the selected provider."""
     provider = resolve_selected_provider()
-    for _ in range(2):
-        text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
-        if text:
-            yield text, provider
+    attempt = _PROVIDER_ATTEMPTS[provider]
+    for text in _layered_attempts(
+        provider, attempt, prompt, max_tokens, errors, 1 + ai_usage.AI_CONFIG["max_retries"],
+    ):
+        yield text, provider
     errors.append(_no_fallback_note(provider))
 
 
 def generate_text(prompt: str, max_tokens: int = 4096) -> tuple[str, str]:
-    """Returns (text, provider) from the selected provider only. Raises
-    NoAIProviderConfigured with that provider's error (plus a "No fallback
-    provider was used" note) if it fails — never tries another provider."""
-    provider = resolve_selected_provider()
+    """Returns (text, provider) from the selected provider only, via the
+    shared request layer (retries shaped by the failure reason). Raises
+    NoAIProviderConfigured with the tagged errors (plus a "No fallback
+    provider was used" note) if every attempt fails."""
     errors: list[str] = []
-    text = _PROVIDER_ATTEMPTS[provider](prompt, max_tokens, errors)
-    if text:
+    for text, provider in iter_text_attempts(prompt, max_tokens, errors):
         return text, provider
-    errors.append(_no_fallback_note(provider))
-
-    # " / " used to join these (confirmed real, 2026-09-19): a raw provider
-    # error can itself legitimately contain " / " (Groq's own org id in its
-    # JSON body, e.g. ".../ organization `org_...`"), and that string is
-    # truncated separately per-provider above — a truncation cut can land
-    # right next to that separator, making one provider's cut-off message
-    # visually run straight into the NEXT provider's message with no
-    # readable boundary (looked, on a real report, like Gemini's quota text
-    # was somehow embedded INSIDE Groq's own error body). Each message
-    # already names its own provider ("Groq ...", "Gemini ...", "Claude
-    # ...") — " | " is a character that essentially never appears inside
-    # real provider error text, so it can't be confused with content, only
-    # ever read as this join's own separator.
+    # " | " joins these: a raw provider error can itself contain " / "
+    # (Groq's org id in its JSON body), " | " essentially never appears.
     raise NoAIProviderConfigured(" | ".join(errors))
 
 
@@ -820,8 +942,7 @@ def _try_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: i
                 request=response.request,
                 response=response,
             )
-        data = response.json()
-        return (data["choices"][0]["message"]["content"] or "").strip()
+        return _chat_completion_result("groq", model, response.json())
     raise RuntimeError(f"no Groq vision model available on this account: {'; '.join(model_errors)}")
 
 
@@ -863,7 +984,7 @@ def _try_gemini_vision(prompt: str, images: list[tuple[bytes, str]]) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
     image_parts = [genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type) for image_bytes, mime_type in images]
     response = client.models.generate_content(model=GEMINI_MODEL, contents=[*image_parts, prompt])
-    return (response.text or "").strip()
+    return _gemini_result(response)
 
 
 def _try_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int) -> str:
@@ -872,19 +993,14 @@ def _try_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens:
         {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": base64.b64encode(image_bytes).decode()}}
         for image_bytes, mime_type in images
     ] + [{"type": "text", "text": prompt}]
+    model = _current_claude_model()
     response = client.messages.create(
-        model=_current_claude_model(),
-        max_tokens=max(max_tokens, CLAUDE_VISION_MIN_MAX_TOKENS),
+        model=model,
         messages=[{"role": "user", "content": content}],
+        **_claude_output_options(model, max_tokens),
     )
     _record_claude_usage("vision", response.usage.input_tokens, response.usage.output_tokens)
-    text = "".join(block.text for block in response.content if block.type == "text").strip()
-    if not text or response.stop_reason == "max_tokens":
-        # Same stop_reason surfacing as _try_claude — an empty or cut-off
-        # answer is otherwise indistinguishable from a refusal in the job's
-        # issues list.
-        raise RuntimeError(f"{'empty' if not text else 'truncated'} content, stop_reason={response.stop_reason}")
-    return text
+    return _claude_result(response, model)
 
 
 def _attempt_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
@@ -991,8 +1107,7 @@ def _try_openrouter_vision(prompt: str, images: list[tuple[bytes, str]], max_tok
             request=response.request,
             response=response,
         )
-    data = response.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
+    return _chat_completion_result("openrouter", None, response.json())
 
 
 def _attempt_openrouter_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
@@ -1052,13 +1167,15 @@ def iter_text_with_images_attempts(
     # Two tries on the selected provider — there is no other provider to
     # move to, and one bad-JSON response shouldn't end the whole pass.
     # Browser Use gets one: each try is a billed agent run lasting minutes.
-    for _ in range(1 if provider == "browser_use" else 2):
-        if provider == "browser_use":
-            text = _attempt_browser_use_vision(prompt, images, max_tokens, errors, start_url)
-        else:
-            text = _VISION_PROVIDER_ATTEMPTS[provider](prompt, images, max_tokens, errors)
-        if text:
-            yield text, provider
+    if provider == "browser_use":
+        def call(p, mt, errs):
+            return _attempt_browser_use_vision(p, images, mt, errs, start_url)
+    else:
+        def call(p, mt, errs):
+            return _VISION_PROVIDER_ATTEMPTS[provider](p, images, mt, errs)
+    attempts = 1 if provider == "browser_use" else 1 + ai_usage.AI_CONFIG["max_retries"]
+    for text in _layered_attempts(provider, call, prompt, max_tokens, errors, attempts):
+        yield text, provider
     errors.append(_no_fallback_note(provider))
 
 
@@ -1070,7 +1187,7 @@ def generate_text_with_images(prompt: str, images: list[tuple[bytes, str]], max_
     errors: list[str] = []
     for text, provider in iter_text_with_images_attempts(prompt, images, max_tokens, errors):
         return text, provider
-    raise NoAIProviderConfigured(" / ".join(errors))
+    raise NoAIProviderConfigured(" | ".join(errors))
 
 
 def generate_text_with_image(prompt: str, image_bytes: bytes, mime_type: str = "image/png", max_tokens: int = 2048) -> tuple[str, str]:

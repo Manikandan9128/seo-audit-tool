@@ -13,11 +13,11 @@ get better input for free, no changes needed on their end. Pure
 classification of keywords that are already there — never invents a
 keyword, only assigns one of Semrush's own 4 intent labels to each."""
 
-import json
 import logging
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,10 @@ def generate_search_intents(keywords: list[str]) -> dict[str, str]:
         for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
             cleaned = raw.strip()
             cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            try:
-                parsed = json.loads(cleaned)
-            except json.JSONDecodeError:
+            parsed, _repaired = parse_json(cleaned)
+            if parsed is None:
                 logger.warning("Search intent classification: %s returned invalid JSON: %s", provider, cleaned[:300])
+                errors.append(f"{provider} did not return valid JSON")
                 continue
             if not isinstance(parsed, list):
                 logger.warning("Search intent classification: %s returned non-list JSON: %s", provider, cleaned[:300])

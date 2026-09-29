@@ -8,10 +8,10 @@ AEO/GEO recommendations (spec 2026-09-23): with no file, or no usable
 result, pptx_builder renders add_aeo_geo_visibility_required_slide instead
 of generic AI-search advice."""
 
-import json
 import logging
 import re
 
+from app.integrations.ai_usage import parse_json
 from app.integrations.text_ai_client import (
     NoAIProviderConfigured, failure_message, generate_text, groq_prompt_fits, iter_text_attempts, pinned_provider,
 )
@@ -334,10 +334,10 @@ def generate_aeo_geo_content(raw_text: str) -> dict:
         for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
             cleaned = raw.strip()
             cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            try:
-                parsed = json.loads(cleaned)
-            except json.JSONDecodeError:
+            parsed, _repaired = parse_json(cleaned)
+            if parsed is None:
                 logger.warning("GeoPulse AEO/GEO content: %s returned invalid JSON: %s", provider, cleaned[:300])
+                errors.append(f"{provider} did not return valid JSON")
                 continue
             if not isinstance(parsed, dict):
                 continue

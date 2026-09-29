@@ -14,6 +14,7 @@ import json
 import logging
 import re
 
+from app.integrations.ai_usage import parse_json
 from app.integrations.text_ai_client import NoAIProviderConfigured, failure_message, iter_text_with_images_attempts
 
 logger = logging.getLogger(__name__)
@@ -122,19 +123,10 @@ def generate_ui_audit_issues(
     )
 
     def _parse(raw: str) -> dict | None:
-        cleaned = raw.strip()
-        cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start != -1 and end > start:
-            try:
-                return json.loads(cleaned[start : end + 1])
-            except json.JSONDecodeError:
-                pass
-        return _salvage_truncated_issues(cleaned)
+        data, _repaired = parse_json(raw)
+        if data is not None:
+            return data
+        return _salvage_truncated_issues(raw)
 
     errors: list[str] = []
     last_raw = None

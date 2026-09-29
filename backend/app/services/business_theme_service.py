@@ -15,11 +15,11 @@ A business theme is NOT the final cluster on its own — a single theme can
 still split into several SEO clusters downstream once intent and page
 category are also considered (see keyword_cluster_pipeline.py)."""
 
-import json
 import logging
 import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
+from app.integrations.ai_usage import parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +77,10 @@ def generate_business_themes(
         for raw, provider in iter_text_attempts(prompt, max_tokens=4096, errors=errors):
             cleaned = raw.strip()
             cleaned = re.sub(r"^```(json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            try:
-                parsed = json.loads(cleaned)
-            except json.JSONDecodeError:
+            parsed, _repaired = parse_json(cleaned)
+            if parsed is None:
                 logger.warning("Business theme classification: %s returned invalid JSON: %s", provider, cleaned[:300])
+                errors.append(f"{provider} did not return valid JSON")
                 continue
             if not isinstance(parsed, list):
                 logger.warning("Business theme classification: %s returned non-list JSON: %s", provider, cleaned[:300])
