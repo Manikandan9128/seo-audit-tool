@@ -13,6 +13,8 @@ interface SemrushImportSummary {
   original_filename: string;
   row_count: number;
   created_at: string;
+  uploaded_by?: string | null;
+  can_delete?: boolean;
   is_own_site?: boolean;
   domain_label?: string | null;
 }
@@ -78,6 +80,11 @@ function FileTable({ clientId, rows, deleteImport }: {
                       <span className={`file-icon ${chip.cls}`}>{chip.label}</span>
                       {imp.original_filename}
                     </div>
+                    {imp.uploaded_by && (
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        Uploaded by {imp.uploaded_by}, {new Date(imp.created_at).toLocaleString()}
+                      </div>
+                    )}
                   </td>
                   <td>
                     <span className="type-badge">{imp.import_type.replace(/_/g, " ")}</span>
@@ -85,7 +92,9 @@ function FileTable({ clientId, rows, deleteImport }: {
                   <td className="num">{imp.row_count}</td>
                   <td style={{ textAlign: "right" }}>
                     <DownloadImportButton clientId={clientId} importId={imp.id} filename={imp.original_filename} />
-                    <ConfirmDeleteButton label={imp.original_filename} onConfirm={() => deleteImport(imp.id)} />
+                    {imp.can_delete !== false && (
+                      <ConfirmDeleteButton label={imp.original_filename} onConfirm={() => deleteImport(imp.id)} />
+                    )}
                   </td>
                 </tr>
               );

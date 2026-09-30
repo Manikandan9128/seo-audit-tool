@@ -147,7 +147,7 @@ client_router = APIRouter(prefix="/clients", tags=["integrations"])
 
 def _owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
     client = db.get(Client, client_id)
-    if not client or client.owner_user_id != user.id:
+    if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     return client
 

@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     browser_use_api_key: str = ""
     openrouter_api_key: str = ""
     ahrefs_api_key: str = ""
+    # Comma-separated login emails promoted at startup / when they register.
+    super_admin_emails: str = ""
+    admin_emails: str = ""
     # A separate, dedicated Web-application OAuth client for the Sheets
     # connection above — deliberately NOT reusing google_client_id/secret
     # (the per-client GA4/GSC OAuth client). That client's actual

@@ -13,7 +13,9 @@ from app.integrations import text_ai_client
 from app.models.client import Client
 from app.models.domain_rating import DomainRating
 from app.models.semrush_import import SemrushImport
+from app.core import permissions
 from app.models.user import User
+from app.services.activity_service import log_activity
 from app.services.ahrefs_service import fetch_domain_rating
 from app.services.semrush_analysis_service import analyze as analyze_semrush_data, _normalize_domain
 from app.services.semrush_ai_summary_service import generate_ai_summary
@@ -28,7 +30,7 @@ _GEOPULSE_MAX_UPLOAD_BYTES = 25 * 1_048_576  # 25 MB — generous for a real dat
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
     client = db.get(Client, client_id)
-    if not client or client.owner_user_id != user.id:
+    if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     return client
 
@@ -105,6 +107,7 @@ async def upload_semrush_file(
     db.add(record)
     db.commit()
     db.refresh(record)
+    log_activity(current_user, "file_uploaded", client, filename=record.original_filename, import_type=record.import_type, import_id=record.id, is_own_site=record.is_own_site, domain_label=record.domain_label)
     # Surfaced so a Domain Overview PDF exported from the wrong Semrush
     # database (confirmed real incident: a client's 4 competitor PDFs were
     # accidentally exported from Guyana instead of US, silently producing
@@ -169,6 +172,7 @@ async def upload_geopulse_file(
     db.add(record)
     db.commit()
     db.refresh(record)
+    log_activity(current_user, "file_uploaded", client_id=client_id, filename=record.original_filename, import_type=record.import_type, import_id=record.id)
     return {
         "id": record.id,
         "import_type": record.import_type,
@@ -217,6 +221,7 @@ async def upload_manual_keyword_cluster_file(
     db.add(record)
     db.commit()
     db.refresh(record)
+    log_activity(current_user, "file_uploaded", client_id=client_id, filename=record.original_filename, import_type=record.import_type, import_id=record.id)
     return {
         "id": record.id,
         "import_type": record.import_type,
@@ -234,8 +239,14 @@ def list_semrush_imports(client_id: uuid.UUID, db: Session = Depends(get_db), cu
         .order_by(SemrushImport.created_at.desc())
         .all()
     )
+    uploaders = {
+        u.id: u for u in db.query(User).filter(User.id.in_({r.uploaded_by_user_id for r in records})).all()
+    } if records else {}
     return [
         {
+            "uploaded_by": (uploaders[r.uploaded_by_user_id].full_name if r.uploaded_by_user_id in uploaders else None),
+            "uploaded_by_user_id": r.uploaded_by_user_id,
+            "can_delete": permissions.can_delete_upload(current_user, r, db),
             "id": r.id,
             "import_type": r.import_type,
             "original_filename": r.original_filename,
@@ -378,10 +389,20 @@ def download_semrush_import(
 def delete_semrush_import(
     client_id: uuid.UUID, import_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
-    _get_owned_client(client_id, db, current_user)
+    client = _get_owned_client(client_id, db, current_user)
     record = db.get(SemrushImport, import_id)
     if not record or record.client_id != client_id:
         raise HTTPException(status_code=404, detail="Import not found")
+    if not permissions.can_delete_upload(current_user, record, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Team members can only delete a file they uploaded themselves, and only before a report "
+            "has been generated with it. Ask an admin to remove this file.",
+        )
+    log_activity(
+        current_user, "file_deleted", client, filename=record.original_filename, import_type=record.import_type,
+        import_id=record.id, uploaded_by_user_id=record.uploaded_by_user_id,
+    )
     db.delete(record)
     db.commit()
     return {"ok": True}

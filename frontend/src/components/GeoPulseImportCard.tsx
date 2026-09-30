@@ -7,6 +7,8 @@ import DownloadImportButton from "./DownloadImportButton";
 import { useToast } from "./ToastProvider";
 
 interface GeoPulseImportSummary {
+  uploaded_by?: string | null;
+  can_delete?: boolean;
   id: string;
   import_type: string;
   original_filename: string;
@@ -130,10 +132,17 @@ export default function GeoPulseImportCard({
                         <span className={`file-icon ${chip.cls}`}>{chip.label}</span>
                         {imp.original_filename}
                       </div>
+                      {imp.uploaded_by && (
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          Uploaded by {imp.uploaded_by}, {new Date(imp.created_at).toLocaleString()}
+                        </div>
+                      )}
                     </td>
                     <td style={{ textAlign: "right" }}>
                       <DownloadImportButton clientId={clientId} importId={imp.id} filename={imp.original_filename} />
-                      <ConfirmDeleteButton label={imp.original_filename} onConfirm={() => deleteImport(imp.id)} />
+                      {imp.can_delete !== false && (
+                        <ConfirmDeleteButton label={imp.original_filename} onConfirm={() => deleteImport(imp.id)} />
+                      )}
                     </td>
                   </tr>
                 );

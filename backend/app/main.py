@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from google.auth.exceptions import RefreshError
 
-from app.api.routes import auth, clients, competitors, google_oauth, integrations, report_prep, settings as settings_routes, site_audit
+from app.api.routes import auth, team, clients, competitors, google_oauth, integrations, report_prep, settings as settings_routes, site_audit
 from app.db.session import SessionLocal
 from app.services.app_settings_service import load_overrides_into_settings
 
@@ -58,6 +58,17 @@ def _fail_jobs_orphaned_by_restart():
 
 
 @app.on_event("startup")
+def _sync_configured_roles():
+    from app.services.role_service import sync_configured_roles
+
+    db = SessionLocal()
+    try:
+        sync_configured_roles(db)
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
 def _load_settings_overrides():
     db = SessionLocal()
     try:
@@ -77,6 +88,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(team.router, prefix="/api")
 app.include_router(clients.router, prefix="/api")
 app.include_router(google_oauth.router, prefix="/api")
 app.include_router(site_audit.router, prefix="/api")

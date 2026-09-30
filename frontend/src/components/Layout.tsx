@@ -16,7 +16,11 @@ function isNavActive(pathname: string, to: string) {
 }
 
 export default function Layout({ children }: { children: ReactNode }) {
-  const { logout, isAuthenticated } = useAuth();
+  const { logout, isAuthenticated, isAdmin } = useAuth();
+  const navItems = [
+    ...NAV_ITEMS.filter((item) => item.to !== "/settings" || isAdmin),
+    ...(isAdmin ? [{ to: "/team", label: "Team" }, { to: "/activity", label: "Activity Log" }] : []),
+  ];
   const { pathname } = useLocation();
   const { start: startTour } = useGuidedTour();
   const [helpDismissed, setHelpDismissed] = useState(() => {
@@ -54,7 +58,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         {/* Text-only nav (2026-09-24 Cyces reskin) — the active link is
             marked by a 2px orange left border + white text, not an icon. */}
         <nav className="sidebar-nav">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const active = isNavActive(pathname, item.to);
             return (
               <Link

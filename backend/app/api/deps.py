@@ -6,6 +6,7 @@ from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.core import permissions
 from app.core.security import decode_access_token
 from app.db.session import SessionLocal
 from app.models.user import User
@@ -36,6 +37,18 @@ def get_current_user(
     user = db.get(User, uuid.UUID(subject))
     if user is None:
         raise credentials_exception
+    return user
+
+
+def require_super_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != permissions.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="Only a super admin can do this.")
+    return user
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    if not permissions.is_admin_or_above(user):
+        raise HTTPException(status_code=403, detail="Only an admin or super admin can do this.")
     return user
 
 

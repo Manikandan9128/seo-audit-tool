@@ -35,6 +35,7 @@ from app.models.semrush_import import SemrushImport
 from app.services import ahrefs_service, report_options, semrush_mcp_data_service
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
+from app.services.activity_service import log_activity
 from app.reporting.pptx_builder import (
     build_report, classify_seo_issues, _canonical_page_totals,
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
@@ -97,7 +98,7 @@ JOB_HEARTBEAT_MAX_MINUTES = 60
 
 def _get_owned_client(client_id: uuid.UUID, db: Session, user: User) -> Client:
     client = db.get(Client, client_id)
-    if not client or client.owner_user_id != user.id:
+    if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     return client
 
@@ -3031,6 +3032,7 @@ def report_preview(
     skip_steps = _validated_skip_steps(skip_ai_steps)
     cluster_mode = _require_keyword_cluster_choice(keyword_cluster_mode, client_id, db)
     _enforce_hard_limit(client_id, db, selection, skip_steps)
+    log_activity(current_user, "report_previewed", client, ai_provider=selection.provider, keyword_cluster_mode=cluster_mode)
     semrush_mcp_data_service.set_active_snapshot(_semrush_snapshot_for(semrush_source, client_id, db))
     report_options.set_keyword_cluster_mode(cluster_mode)
     try:
@@ -3576,6 +3578,10 @@ def start_generate_report_job(
     db.add(job)
     db.commit()
     db.refresh(job)
+    log_activity(
+        current_user, "report_generation_started", client_id=client_id, job_id=job.id,
+        ai_provider=preferred_provider, keyword_cluster_mode=cluster_mode,
+    )
     threading.Thread(
         target=_run_generate_report_job,
         args=(
@@ -3732,7 +3738,7 @@ def list_downloaded_reports(
     rows = (
         db.query(ReportGenerationJob, Client.name)
         .join(Client, Client.id == ReportGenerationJob.client_id)
-        .filter(Client.owner_user_id == current_user.id, ReportGenerationJob.downloaded_at.isnot(None))
+        .filter(ReportGenerationJob.downloaded_at.isnot(None))
         .order_by(ReportGenerationJob.downloaded_at.desc())
         .limit(limit)
         .all()
@@ -3761,7 +3767,7 @@ def list_undownloaded_reports(
     rows = (
         db.query(ReportGenerationJob, Client.name)
         .join(Client, Client.id == ReportGenerationJob.client_id)
-        .filter(Client.owner_user_id == current_user.id, ReportGenerationJob.status == "done",
+        .filter(ReportGenerationJob.status == "done",
                 ReportGenerationJob.downloaded_at.is_(None))
         .order_by(ReportGenerationJob.updated_at.desc())
         .limit(limit)

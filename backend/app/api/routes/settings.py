@@ -3,7 +3,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import get_current_user, get_db, require_super_admin
 from app.models.user import User
 from app.services.app_settings_service import (
     disconnect_sheets_oauth,
@@ -96,7 +96,7 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
     }
 
 
-@router.put("/gemini-api-key")
+@router.put("/gemini-api-key", dependencies=[Depends(require_super_admin)])
 def update_gemini_api_key(
     payload: GeminiKeyIn,
     db: Session = Depends(get_db),
@@ -115,14 +115,14 @@ def update_gemini_api_key(
     }
 
 
-@router.post("/gemini-api-key/test")
+@router.post("/gemini-api-key/test", dependencies=[Depends(require_super_admin)])
 def test_gemini_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_gemini_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
-@router.put("/groq-api-key")
+@router.put("/groq-api-key", dependencies=[Depends(require_super_admin)])
 def update_groq_api_key(
     payload: GroqKeyIn,
     db: Session = Depends(get_db),
@@ -144,14 +144,14 @@ def update_groq_api_key(
     }
 
 
-@router.post("/groq-api-key/test")
+@router.post("/groq-api-key/test", dependencies=[Depends(require_super_admin)])
 def test_groq_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_groq_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
-@router.put("/claude-api-key")
+@router.put("/claude-api-key", dependencies=[Depends(require_super_admin)])
 def update_claude_api_key(
     payload: ClaudeKeyIn,
     db: Session = Depends(get_db),
@@ -170,14 +170,14 @@ def update_claude_api_key(
     }
 
 
-@router.post("/claude-api-key/test")
+@router.post("/claude-api-key/test", dependencies=[Depends(require_super_admin)])
 def test_claude_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_claude_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
-@router.put("/browser-use-api-key")
+@router.put("/browser-use-api-key", dependencies=[Depends(require_super_admin)])
 def update_browser_use_api_key(
     payload: BrowserUseKeyIn,
     db: Session = Depends(get_db),
@@ -196,14 +196,14 @@ def update_browser_use_api_key(
     }
 
 
-@router.post("/browser-use-api-key/test")
+@router.post("/browser-use-api-key/test", dependencies=[Depends(require_super_admin)])
 def test_browser_use_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_browser_use_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
-@router.put("/openrouter-api-key")
+@router.put("/openrouter-api-key", dependencies=[Depends(require_super_admin)])
 def update_openrouter_api_key(
     payload: OpenRouterKeyIn,
     db: Session = Depends(get_db),
@@ -221,14 +221,14 @@ def update_openrouter_api_key(
     }
 
 
-@router.post("/openrouter-api-key/test")
+@router.post("/openrouter-api-key/test", dependencies=[Depends(require_super_admin)])
 def test_openrouter_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_openrouter_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
-@router.put("/ahrefs-api-key")
+@router.put("/ahrefs-api-key", dependencies=[Depends(require_super_admin)])
 def update_ahrefs_api_key(
     payload: AhrefsKeyIn,
     db: Session = Depends(get_db),
@@ -249,14 +249,14 @@ def update_ahrefs_api_key(
     }
 
 
-@router.post("/ahrefs-api-key/test")
+@router.post("/ahrefs-api-key/test", dependencies=[Depends(require_super_admin)])
 def test_ahrefs_api_key(current_user: User = Depends(get_current_user)):
     """Re-runs the connectivity test on demand, without changing the key."""
     test = test_ahrefs_key()
     return {"test_ok": test["ok"], "test_message": test["message"]}
 
 
-@router.get("/google-sheets-oauth/connect")
+@router.get("/google-sheets-oauth/connect", dependencies=[Depends(require_super_admin)])
 def google_sheets_oauth_connect(request: Request, current_user: User = Depends(get_current_user)):
     """Connects the app to create competitor keyword Sheets directly under
     the user's own Google account (see google_sheets_service.py)."""
@@ -270,7 +270,7 @@ def google_sheets_oauth_connect(request: Request, current_user: User = Depends(g
     return {"auth_url": auth_url}
 
 
-@router.put("/google-sheets-oauth-client")
+@router.put("/google-sheets-oauth-client", dependencies=[Depends(require_super_admin)])
 def update_google_sheets_oauth_client(
     payload: GoogleSheetsOAuthClientIn,
     db: Session = Depends(get_db),
@@ -307,13 +307,13 @@ def google_sheets_oauth_callback(code: str, state: str, request: Request, db: Se
     return RedirectResponse(url=f"{scheme}://{host}/settings?sheets_oauth_connected=1")
 
 
-@router.post("/google-sheets-oauth/disconnect")
+@router.post("/google-sheets-oauth/disconnect", dependencies=[Depends(require_super_admin)])
 def google_sheets_oauth_disconnect(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     disconnect_sheets_oauth(db)
     return {"ok": True}
 
 
-@router.post("/google-sheets-oauth/test")
+@router.post("/google-sheets-oauth/test", dependencies=[Depends(require_super_admin)])
 def google_sheets_oauth_test(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     test = test_sheets_connection(db)
     return {"test_ok": test["ok"], "test_message": test["message"]}
