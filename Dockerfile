@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # fresh; a slow/flaky CDN night turned that into repeated stuck/failed
 # deploys and real site downtime. Keep this version in sync with
 # backend/pyproject.toml's own playwright pin.
-RUN pip install --no-cache-dir "playwright>=1.47" && playwright install --with-deps chromium
+RUN pip install --no-cache-dir "playwright>=1.47" && playwright install --with-deps chromium chrome
 
 COPY backend/pyproject.toml ./backend/pyproject.toml
 COPY backend/app ./backend/app
