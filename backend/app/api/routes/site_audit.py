@@ -700,6 +700,34 @@ def _merge_keyword_gap_and_positions(
     return [by_keyword[key] for key in order]
 
 
+def _reparse_unknown_imports(db, imports: list) -> None:
+    """Every uploaded file gets read at report time (2026-09-30): an upload
+    stored as "unknown" (typically a PNG screenshot uploaded while no Report
+    AI Provider was selected, so the vision read failed) is parsed again from
+    its stored original bytes with the provider this report was started
+    with. A file that now identifies is saved under its real type so later
+    reports skip the retry; one that still doesn't stays "unknown" and is
+    ignored, exactly as before."""
+    from app.services.semrush_parser import parse_semrush_file
+
+    changed = False
+    for imp in imports:
+        if imp.import_type != "unknown" or not imp.original_file:
+            continue
+        try:
+            new_type, parsed = parse_semrush_file(imp.original_filename, imp.original_file)
+        except Exception as e:
+            logger.warning("Re-reading unknown upload %s failed: %s", imp.original_filename, e)
+            continue
+        if new_type != "unknown":
+            imp.import_type = new_type
+            imp.parsed_data = parsed
+            changed = True
+            logger.info("Upload %s re-read at report time: now %s", imp.original_filename, new_type)
+    if changed:
+        db.commit()
+
+
 def _reclassify_mislabeled_competitor_overviews(imports: list, website_url: str) -> list:
     """A Domain Overview PDF names its own domain inside the file, so a
     competitor's PDF uploaded under the client's own site (no competitor
@@ -1870,6 +1898,7 @@ def _gather_report_data(
         if not is_gambling_spam(_business_text):
             analytics = scrub_gambling_spam(analytics)
     all_imports = db.query(SemrushImport).filter(SemrushImport.client_id == client_id).all()
+    _reparse_unknown_imports(db, all_imports)
     # Semrush MCP data-source option: no-op for a Manual Upload report; for
     # a Semrush MCP report, swaps the uploaded Semrush-account imports for
     # the fetched MCP snapshot (see semrush_mcp_data_service's docstring).
