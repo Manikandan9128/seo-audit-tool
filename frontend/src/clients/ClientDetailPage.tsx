@@ -1578,7 +1578,7 @@ export default function ClientDetailPage() {
       <section className={`panel ${activeTab === "datasources" ? "active" : ""}`} style={{ display: activeTab === "datasources" ? "flex" : "none", flexDirection: "column", gap: "var(--card-stack-gap)" }}>
       {/* Semrush uploads — one for our domain, one for competitors */}
       <div id="semrush-section" className="stack-cards">
-        <DomainRatingEditor clientId={clientId!} ownDomain={client.website_url} onChanged={loadDomainRatingsForKpi} />
+        <DomainRatingEditor clientId={clientId!} ownDomain={client.website_url} />
         {/* Upload checklist matrix cut 2026-09-22 per user request — "will
             share better idea for this later." Component kept in
             ../components/SemrushChecklist.tsx for fast re-enable. */}

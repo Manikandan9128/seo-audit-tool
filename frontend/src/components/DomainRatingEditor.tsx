@@ -27,8 +27,8 @@ const SOURCE_COLOR: Record<LiveDomainRatingRow["source"], string> = {
 };
 
 export default function DomainRatingEditor({
-  clientId, ownDomain, onChanged,
-}: { clientId: string; ownDomain?: string; onChanged?: () => void }) {
+  clientId, ownDomain,
+}: { clientId: string; ownDomain?: string }) {
   const [liveRows, setLiveRows] = useState<LiveDomainRatingRow[]>([]);
   const [loadingLive, setLoadingLive] = useState(false);
   const [liveError, setLiveError] = useState("");
