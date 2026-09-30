@@ -274,12 +274,41 @@ def test_countries_slide_absent_when_nothing_flagged():
     assert add_search_opportunities_countries_slide(_prs(), {}, "Google Search Console") is None
 
 
-def test_search_opportunity_pages_excludes_outside_4_to_10_band():
+def test_search_opportunity_pages_band_rules():
+    # 2026-09-30 spec: top-3 needs a proven low CTR (not knowable from one
+    # page -> left out), page 2 qualifies, beyond position 20 never does.
     pages = [
-        {"page": "https://x.com/a", "impressions": 500, "ctr": 0.01, "position": 2.0},  # top-3, out of band
-        {"page": "https://x.com/b", "impressions": 500, "ctr": 0.01, "position": 12.0},  # below page 1, out of band
+        {"page": "https://x.com/a", "impressions": 500, "ctr": 0.01, "position": 2.0},
+        {"page": "https://x.com/b", "impressions": 500, "ctr": 0.01, "position": 12.0},
+        {"page": "https://x.com/c", "impressions": 500, "ctr": 0.01, "position": 25.0},
     ]
-    assert build_search_opportunity_pages(pages) == []
+    flagged = build_search_opportunity_pages(pages)
+    assert [r["page"] for r in flagged] == ["https://x.com/b"]
+    assert "Strengthen" in flagged[0]["recommended_action"]
+
+
+def test_search_opportunity_pages_top3_only_when_ctr_is_low_for_its_band():
+    pages = [{"page": f"https://x.com/t{i}", "impressions": 500, "ctr": 0.30, "position": 1.5} for i in range(5)]
+    pages.append({"page": "https://x.com/weak", "impressions": 800, "ctr": 0.02, "position": 1.8})
+    flagged = build_search_opportunity_pages(pages)
+    assert [r["page"] for r in flagged] == ["https://x.com/weak"]
+    assert "SERP messaging" in flagged[0]["recommended_action"]
+
+
+def test_search_opportunity_pages_healthy_ctr_page_one_gets_content_action():
+    pages = [{"page": f"https://x.com/p{i}", "impressions": 500, "ctr": 0.05, "position": 6.0} for i in range(5)]
+    flagged = build_search_opportunity_pages(pages)
+    assert all("instead of changing the title" in r["recommended_action"] or "rather than changing the title" in r["recommended_action"] for r in flagged)
+
+
+def test_search_opportunity_pages_actions_have_no_backend_language_or_metric_restatement():
+    pages = [{"page": "https://x.com/hydraulic-lifts", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
+    page_query_rows = [{"page": "https://x.com/hydraulic-lifts", "query": "hydraulic lifts", "impressions": 800, "clicks": 8, "ctr": 0.01, "position": 5.5}]
+    for flagged in (build_search_opportunity_pages(pages), build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens={"acme"})):
+        text = flagged[0]["recommended_action"].lower()
+        for banned in ("validation", "insufficient", "confidence", "manual", "observable search opportunity", "strong impression volume"):
+            assert banned not in text
+        assert not any(ch.isdigit() for ch in text)
 
 
 def test_search_opportunity_pages_flags_real_ctr_gap_in_band():
@@ -287,9 +316,9 @@ def test_search_opportunity_pages_flags_real_ctr_gap_in_band():
     flagged = build_search_opportunity_pages(pages)
     assert len(flagged) == 1
     assert flagged[0]["position"] == 6.0
-    # 2026-09-21 spec: with no page_query_rows, there's no real GSC query
-    # evidence — the fixed evidence-gap sentence, never an invented query.
-    assert flagged[0]["recommended_action"] == "Insufficient query-level GSC evidence."
+    # No page_query_rows -> directional wording, never an invented query.
+    assert flagged[0]["recommended_action"].startswith("High visibility with limited click-through") or "title" in flagged[0]["recommended_action"]
+    assert flagged[0]["driving_query"] is None
     assert flagged[0]["priority"] == "High"
     assert flagged[0]["data_source"] == "GSC"
 
@@ -316,14 +345,14 @@ def test_search_opportunity_pages_recommendation_uses_driving_query_when_title_d
     flagged = build_search_opportunity_pages(pages, crawled, page_query_rows=page_query_rows, brand_tokens=brand_tokens)
     action = flagged[0]["recommended_action"]
     assert "hydraulic lifts" in action
-    assert "doesn't lead with" in action
+    assert "doesn't mention it" in action
     assert flagged[0]["driving_query"] == "hydraulic lifts"
 
 
-def test_search_opportunity_pages_states_insufficient_when_no_query_data():
+def test_search_opportunity_pages_directional_when_no_query_data():
     pages = [{"page": "https://x.com/12345", "impressions": 1000, "ctr": 0.01, "position": 6.0}]
     flagged = build_search_opportunity_pages(pages)
-    assert flagged[0]["recommended_action"] == "Insufficient query-level GSC evidence."
+    assert "Insufficient" not in flagged[0]["recommended_action"]
     assert flagged[0]["driving_query"] is None
     assert flagged[0]["evidence_confidence"] == "low"
 
@@ -353,11 +382,9 @@ def test_search_opportunity_pages_never_uses_an_off_topic_query_as_driving_query
         {"page": "https://x.com/hydraulic-lifts", "query": "unrelated celebrity gossip", "impressions": 900,
          "clicks": 9, "ctr": 0.01, "position": 5.0, "relevance": "exclude"},
     ]
-    flagged = build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens={"acme"})
-    assert len(flagged) == 1
-    assert flagged[0]["driving_query"] is None
-    assert flagged[0]["recommended_action"] == "Insufficient query-level GSC evidence."
-    assert flagged[0]["evidence_confidence"] == "low"
+    # Every non-brand query is off-topic -> the page is left out entirely
+    # rather than optimized for noise (2026-09-30 spec).
+    assert build_search_opportunity_pages(pages, page_query_rows=page_query_rows, brand_tokens={"acme"}) == []
 
 
 def test_search_opportunity_pages_falls_back_to_a_relevant_query_when_the_top_one_is_excluded():

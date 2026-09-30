@@ -4587,7 +4587,12 @@ def build_high_potential_pages(page_rows: list[dict]) -> list[dict]:
 # requiring a new page") — position >10 pages need ranking work, not a
 # title/meta fix, so they're out of scope for this table entirely.
 _SOP_MIN_IMPRESSIONS = _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE
-_SOP_POSITION_LO, _SOP_POSITION_HI = 4.0, 10.0
+# 2026-09-30 spec: the evidence patterns cover positions 1-3 (low CTR only),
+# 4-10 and 11-20, so the candidate band is 1-20; which pattern a row gets is
+# decided by _sop_band + the page's CTR relative to its own dataset.
+_SOP_POSITION_LO, _SOP_POSITION_HI = 1.0, 20.0
+_SOP_CTR_MIN_PEERS = 5      # pages needed in a position band before CTR can be called low/healthy
+_SOP_LOW_CTR_RATIO = 0.75   # below this share of the band's own median CTR = 'low' (dataset-relative, not a universal benchmark)
 
 _SOP_PAGE_TYPE_PATTERNS = [
     ("product/category", re.compile(r"/(products?|shop|store|item|sku|categor(y|ies)|collections?|catalog)(/|$)", re.I)),
@@ -4692,70 +4697,125 @@ def _sop_driving_query(queries: list[dict]) -> dict | None:
     return max(candidates, key=lambda q: q["impressions"]) if candidates else None
 
 
-def _sop_recommended_action(position: float, meta: dict | None, driving_query: dict | None) -> str:
-    """Builds a page-specific Recommended Action from only what this row's
-    real data supports — impression volume, page-one position, and, when a
-    real GSC (page, query) row identifies one, the actual non-brand query
-    driving this page's visibility (2026-09-20 spec). Never derives a
-    keyword from the URL slug: when no qualifying query is available, says
-    so plainly instead of guessing one.
+def _sop_band(position: float) -> str:
+    if position < 4.0:
+        return "top3"
+    if position <= 10.0:
+        return "page1"
+    return "page2"
 
-    2026-09-21 spec (no universal CTR benchmark): CTR is an observed,
-    displayed metric, never a pass/fail threshold — this function does not
-    take a CTR value or a benchmark band as input at all, so it's
-    structurally impossible for the reason to read "CTR trails benchmark
-    X-Y%." The reason is impressions + position + query relevance only.
-    Any action beyond a real title/query mismatch (which the crawled title
-    data actually supports) would be asserting a SERP-messaging problem we
-    have no SERP data to back up — that case states the evidence gap
-    ("Query/SERP validation required...") instead of inventing a fix.
 
-    Kept deliberately to ONE short sentence (2026-09-18 fix — confirmed
-    live on the BharatBenz regen: a longer version didn't fit _draw_table's
-    row height at 9 rows and collapsed every row to one truncated line)."""
-    if not driving_query:
-        return "Insufficient query-level GSC evidence."
+def _sop_ctr_states(page_rows: list[dict]) -> dict[str, float | None]:
+    """Median CTR per position band across the client's OWN pages (never a
+    universal benchmark — spec 2026-09-21). None when a band has too few
+    pages to call any single page's CTR low or healthy."""
+    by_band: dict[str, list[float]] = {"top3": [], "page1": [], "page2": []}
+    for r in page_rows:
+        pos = float(r.get("position", 0) or 0)
+        if _SOP_POSITION_LO <= pos <= _SOP_POSITION_HI and float(r.get("impressions", 0) or 0) > 0:
+            by_band[_sop_band(pos)].append(float(r.get("ctr", 0) or 0))
+    medians: dict[str, float | None] = {}
+    for band, vals in by_band.items():
+        if len(vals) >= _SOP_CTR_MIN_PEERS:
+            vals = sorted(vals)
+            mid = len(vals) // 2
+            medians[band] = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+        else:
+            medians[band] = None
+    return medians
 
-    query_text = driving_query["query"]
-    short_query = query_text if len(query_text) <= _SOP_TOPIC_MAX_CHARS else query_text[:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
-    reason = (
-        f"Strong impression volume ({driving_query['impressions']:,.0f}) with page-one visibility "
-        f"(position {position:.1f}) for \"{short_query}\" creates an observable search opportunity."
-    )
-    title = (meta or {}).get("title")
-    if title and short_query.lower() not in title.lower():
-        action = f"Front-load \"{short_query}\" in the title/H1 — current title doesn't lead with it."
-    else:
-        action = "Query/SERP validation required before making a CTR-focused recommendation."
-    return f"{reason} {action}"
+
+def _sop_ctr_state(ctr: float, band: str, medians: dict[str, float | None]) -> str | None:
+    median = medians.get(band)
+    if median is None or median <= 0:
+        return None
+    return "low" if ctr < median * _SOP_LOW_CTR_RATIO else "healthy"
+
+
+def _sop_action_and_type(position: float, meta: dict | None, driving_query: dict | None, ctr_state: str | None) -> tuple[str, str] | None:
+    """Recommended Action per the 2026-09-30 evidence patterns, written as an
+    action (never a restatement of the GSC metrics) and only after query
+    relevance is established: the query named is always a relevant,
+    non-brand one, or no query is named at all (directional wording). Returns
+    (text, action_type) or None when the pattern says no change is warranted
+    (positions 1-3 without a low CTR). action_type is one of serp_messaging /
+    content_relevance / query_alignment — used only for the slide's summary
+    line, never shown as backend language."""
+    band = _sop_band(position)
+    if band == "top3" and ctr_state != "low":
+        return None
+
+    q = None
+    if driving_query:
+        raw = driving_query["query"]
+        q = raw if len(raw) <= _SOP_TOPIC_MAX_CHARS else raw[:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
+
+    if band == "top3":
+        if q:
+            return (f"The page already ranks in the top three for \"{q}\" but earns few clicks — review the title and meta description messaging.", "serp_messaging")
+        return ("Strong visibility with limited click-through in the top three. Review the page's SERP messaging and relevance to improve the likelihood of attracting clicks.", "serp_messaging")
+
+    if band == "page2":
+        if ctr_state == "low":
+            if q:
+                return (f"Check that the page directly answers \"{q}\" before touching titles — strengthen its content alignment first.", "query_alignment")
+            return ("Assess how well the page's content matches what searchers want before adjusting titles or meta descriptions.", "query_alignment")
+        if q:
+            return (f"Strengthen the page's relevance and content around \"{q}\" to move it toward page one.", "content_relevance")
+        return ("Strengthen the page's relevance and content around the topics generating its visibility.", "content_relevance")
+
+    # page 1 (positions 4-10)
+    if ctr_state == "low":
+        if q:
+            title = (meta or {}).get("title")
+            if title and q.lower() not in title.lower():
+                return (f"Rework the title and meta description around \"{q}\" — the current title doesn't mention it.", "serp_messaging")
+            return (f"Review the title and meta description so the SERP messaging better matches searches for \"{q}\".", "serp_messaging")
+        return ("High visibility with limited click-through at a page-one position. Review the page's SERP messaging and relevance to improve the likelihood of attracting clicks.", "serp_messaging")
+    if ctr_state == "healthy":
+        if q:
+            return (f"Strengthen content depth and on-page signals for \"{q}\" instead of changing the title or meta description.", "content_relevance")
+        return ("Strengthen content depth and on-page signals for the topics driving visibility rather than changing the title or meta description.", "content_relevance")
+    if q:
+        title = (meta or {}).get("title")
+        if title and q.lower() not in title.lower():
+            return (f"Rework the title and meta description around \"{q}\" — the current title doesn't mention it.", "serp_messaging")
+        return (f"Review the title, meta description and on-page coverage for \"{q}\" to make sure the page fully answers that search.", "serp_messaging")
+    return ("Review the page's title, meta description and on-page relevance for the topics driving its visibility.", "serp_messaging")
+
+
+def _sop_recommended_action(position: float, meta: dict | None, driving_query: dict | None, ctr_state: str | None = None) -> str:
+    result = _sop_action_and_type(position, meta, driving_query, ctr_state)
+    return result[0] if result else ""
+
+
+# How much each situation is worth surfacing first: a low CTR at a good
+# position is the clearest fixable gap; page-two pages need ranking work, so
+# they trail. Multiplies impressions — never replaces them (spec: "do not
+# select pages based on impressions alone").
+_SOP_SCORE_WEIGHT = {("page1", "low"): 1.0, ("top3", "low"): 1.0, ("page1", None): 0.8, ("page1", "healthy"): 0.6}
 
 
 def build_search_opportunity_pages(
     page_rows: list[dict], crawled_pages: list[dict] | None = None,
     page_query_rows: list[dict] | None = None, brand_tokens=None,
 ) -> list[dict]:
-    """Search Opportunities — Pages table (2026-09-21 spec: no universal CTR
-    benchmark). Selection is evidence-based, never CTR-vs-threshold: real
-    impression volume, page-one visibility (position 4-10 — page 1, but not
-    the noisy top-3 extreme), and a real non-brand GSC (page, query) row
-    establishing query relevance. CTR is collected and displayed (still a
-    table column) but is NOT evaluated against any hard-coded percentage —
-    it never gates which pages qualify and never drives the priority score.
-    A page whose query breakdown shows its top query is BRANDED is excluded
-    (branded demand isn't a clear incremental non-brand SEO opportunity); a
-    page with no query breakdown at all still qualifies, just with the
-    fixed "Insufficient query-level GSC evidence." action instead of a
-    guessed one. Same fallback for a page whose only qualifying queries
-    were AI-labeled off-topic/irrelevant (2026-09-24 spec) — the page can
-    still be a real opportunity, it just never gets a recommendation
-    forced onto an irrelevant query (_sop_driving_query skips them).
-
-    Priority is impressions-only (a real, observed signal, not a modeled
-    CTR-gap x impressions score — that formula was the exact "universal
-    benchmark by another name" this spec forbids): the highest-visibility
-    pages surface first, tiered into High/Medium/Low thirds."""
+    """Search Opportunities — Pages (2026-09-30 GSC-driven relevance spec).
+    A page qualifies on real impression volume in positions 1-20, and the
+    action follows the spec's evidence patterns: page-one pages with a
+    low CTR (relative to the client's own pages in that band, never a
+    universal benchmark) get title/meta work, page-one pages with a healthy
+    CTR get content work, top-three pages only qualify on a low CTR, page-two
+    pages get relevance work. Query relevance is a gate: a page whose only
+    queries are branded or labeled off-topic is left out entirely, and a
+    query is only ever named in an action when it is a relevant non-brand
+    query for that page. A page with no query breakdown at all still
+    qualifies with directional wording built from page-level metrics.
+    Ordering weighs impressions by how fixable the situation is; tiered into
+    High/Medium/Low thirds."""
     meta_index = _sop_crawled_meta_index(crawled_pages)
     query_index = _sop_page_query_index(page_query_rows, brand_tokens)
+    medians = _sop_ctr_states(page_rows)
     scored = []
     for r in page_rows:
         impressions = float(r.get("impressions", 0) or 0)
@@ -4764,7 +4824,8 @@ def build_search_opportunity_pages(
         position = float(r.get("position", 0) or 0)
         if not (_SOP_POSITION_LO <= position <= _SOP_POSITION_HI):
             continue
-        ctr_pct = float(r.get("ctr", 0) or 0) * 100  # observed/displayed only — never a selection gate
+        ctr = float(r.get("ctr", 0) or 0)
+        ctr_pct = ctr * 100  # displayed; the low/healthy call is relative to the client's own pages
 
         url = r.get("page") or ""
         key = _sop_normalize_url(url)
@@ -4774,20 +4835,29 @@ def build_search_opportunity_pages(
             top_query = max(page_queries, key=lambda q: q["impressions"])
             if top_query["query_type"] == "brand":
                 continue  # primarily branded-driven — not a clear incremental non-brand SEO opportunity
+            if not any(q["query_type"] != "brand" and q.get("relevance") != "exclude" for q in page_queries):
+                continue  # every non-brand query is off-topic — never optimize the page for those
 
-        page_type = _sop_page_type(url)
-        meta = meta_index.get(key)
+        band = _sop_band(position)
+        state = _sop_ctr_state(ctr, band, medians)
+        outcome = _sop_action_and_type(position, meta_index.get(key), driving_query, state)
+        if outcome is None:
+            continue  # strong position without a low CTR — nothing to change
+        action, action_type = outcome
 
+        weight = _SOP_SCORE_WEIGHT.get((band, state), 0.5)
         scored.append({
             "page": url, "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1),
-            "position": round(position, 1), "page_type": page_type,
-            "recommended_action": _sop_recommended_action(position, meta, driving_query),
+            "position": round(position, 1), "page_type": _sop_page_type(url),
+            "recommended_action": action, "action_type": action_type,
             "driving_query": driving_query["query"] if driving_query else None,
             "evidence_confidence": "high" if driving_query else "low",
-            "data_source": "GSC",
+            "data_source": "GSC", "_score": impressions * weight,
         })
 
-    scored.sort(key=lambda r: r["impressions"], reverse=True)
+    scored.sort(key=lambda r: r["_score"], reverse=True)
+    for r in scored:
+        r.pop("_score")
     third = max(1, -(-len(scored) // 3))
     for i, r in enumerate(scored):
         r["priority"] = "High" if i < third else ("Medium" if i < 2 * third else "Low")
@@ -5003,7 +5073,7 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
     # or query/page alignment — not necessarily a proven CTR problem — so
     # the section title must not narrow to "(Existing Pages, CTR
     # Opportunity)".
-    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Pages — CTR & SERP Opportunities", size=12.5, bold=True, color=_accent())
+    _textbox(slide, left, y, width, Inches(0.24), "High-Potential Pages — Existing Search Visibility", size=12.5, bold=True, color=_accent())
     y += Inches(0.28)
     # 6, not the 9 other Search Opportunities/Traffic Sources tables use
     # (2026-09-18 fix): Recommended Action here runs ~2 lines even at its
@@ -5036,25 +5106,24 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
         run.font.color.rgb = _accent()
         run.font.underline = True
 
-    # KEY INSIGHTS: name the single highest-visibility row (impressions —
-    # a real observed signal, never a modeled CTR-gap number, 2026-09-21
-    # spec: no universal CTR benchmark anywhere in this reasoning),
-    # disclose how many candidates exist beyond the table, and flag
-    # data-insufficient rows explicitly rather than letting them read like
-    # every other row. No individual query is named here — that detail
-    # stays in each row's own Recommended Action.
+    # KEY INSIGHTS: what kinds of work the flagged pages call for, and how
+    # many sit beyond the table. The rows already show every page-level
+    # number, so nothing here restates one.
     insights = []
-    top = opportunity_pages[0]
-    insights.append(
-        f"Highest-visibility page: \"{top['page']}\" (position {top['position']:.1f}, {top['impressions']:,} "
-        "impressions) — the largest observed search visibility in this set; CTR is shown per-row as an observed "
-        "metric, not compared against a fixed benchmark."
-    )
-    insufficient = sum(1 for r in opportunity_pages if r["recommended_action"] == "Insufficient query-level GSC evidence.")
-    if insufficient:
-        insights.append(f"{insufficient} of {len(opportunity_pages)} flagged pages have no qualifying non-brand query in the GSC (page, query) data pulled — listed with position/CTR only, not a generic recommendation.")
-    insights.append(f"Showing top {len(shown)} of {len(opportunity_pages)} pages ranked by impression volume.")
-    _insights_strip(slide, left, y, width, insights, max_y=SLIDE_H - Inches(0.4))
+    kinds = {t: sum(1 for r in opportunity_pages if r.get("action_type") == t) for t in ("serp_messaging", "content_relevance", "query_alignment")}
+    parts = []
+    if kinds["serp_messaging"]:
+        parts.append(f"{kinds['serp_messaging']} would benefit from stronger title and meta description messaging")
+    if kinds["content_relevance"]:
+        parts.append(f"{kinds['content_relevance']} from deeper, more relevant content")
+    if kinds["query_alignment"]:
+        parts.append(f"{kinds['query_alignment']} from a closer match between the page and what searchers want")
+    if parts:
+        insights.append("Of the flagged pages, " + "; ".join(parts) + ".")
+    if len(opportunity_pages) > len(shown):
+        insights.append(f"Showing the top {len(shown)} of {len(opportunity_pages)} flagged pages, ordered by opportunity.")
+    if insights:
+        _insights_strip(slide, left, y, width, insights, max_y=SLIDE_H - Inches(0.4))
     return slide
 
 
