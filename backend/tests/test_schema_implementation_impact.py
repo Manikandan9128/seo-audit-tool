@@ -120,3 +120,13 @@ def test_deterministic_impact_win_not_shown_when_two_real_gaps_exist():
 def test_deterministic_impact_empty_when_nothing_meaningful():
     part2 = [{"schema_type": "Article", "applicable": 0, "present": 0, "valid": 0, "invalid": 0, "missing": 0, "coverage_pct": 0, "site_level": False}]
     assert _deterministic_schema_impact(part2) == []
+
+
+def test_deterministic_impact_invalid_uses_corrective_wording_and_avoids_stock_phrases():
+    part2 = [{"schema_type": "Product", "applicable": 10, "present": 4, "valid": 2, "invalid": 2, "missing": 0, "coverage_pct": 20, "site_level": False}]
+    impact = _deterministic_schema_impact(part2)
+    assert "already marked up" in impact[0]["text"]
+    from app.services.structured_data_insights_service import _SCHEMA_IMPACT_INVALID_TEXT, _SCHEMA_IMPACT_LABELS
+    blob = json.dumps(list(_SCHEMA_IMPACT_LABELS.values()) + list(_SCHEMA_IMPACT_INVALID_TEXT.values())).lower()
+    for phrase in ("machine-readable", "semantic", "better understand", "will rank", "guarantee"):
+        assert phrase not in blob

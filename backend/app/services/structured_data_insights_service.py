@@ -181,6 +181,19 @@ by one concise sentence.
 9. Never mention AI, confidence scores, validation methodology, clustering, review queues, or any other backend \
 process — this is client-facing prose only.
 10. Never mention that you are an AI, a language model, or any tool by name.
+11. Each point is ONE or TWO sentences: SCHEMA -> the specific information or relationship it makes clear -> the \
+practical search or entity value. Never a definition ("Product schema describes products").
+12. Missing schema: state the value gained by having the markup. Invalid schema: state the value of the existing \
+information being read correctly. Valid schema is never a problem.
+13. Search enhancements only as "can support eligibility for..." / "supports applicable search features". Never \
+claim schema creates Sitelinks, places a page in People Also Ask, produces a Knowledge Panel, guarantees rich \
+results or Featured Snippets, or lifts rankings, traffic, CTR, or conversions. For WebSite/Organization stay with \
+identity and site-level context; never present them as page-level rich-result opportunities. For FAQPage say the \
+questions and answers become explicit; never promise question visibility.
+14. Avoid stock phrasing: "helps search engines better understand", "machine-readable", "provides structured \
+context", "clarifies the relationship", "semantic". Say what actually becomes clearer and why it matters.
+15. Priority: missing/invalid schema on important or commercial page types first, then widely used templates, then \
+site-wide entity gaps, then the rest. Never order by page count alone.
 
 Return ONLY valid JSON, no markdown fences, no commentary:
 {{
@@ -196,27 +209,44 @@ Return ONLY valid JSON, no markdown fences, no commentary:
 # never violate the no-numbers/no-directive-language rules even as a raw
 # static lookup.
 _SCHEMA_IMPACT_LABELS: dict[str, tuple[str, str]] = {
-    "Article": ("Editorial Content", "Clarifies the site's editorial content and its relationship to the topics being covered."),
-    "BlogPosting": ("Editorial Content", "Clarifies the site's editorial content and its relationship to the topics being covered."),
-    "NewsArticle": ("News Content", "Clarifies the site's news content and its relationship to the topics being covered."),
-    "Product": ("Product Pages", "Makes important product attributes easier for search engines to interpret and associate with the offering."),
-    "Service": ("Service Pages", "Strengthens the semantic understanding of the site's service offerings and their relationship to the business."),
-    "JobPosting": ("Job Listings", "Makes individual employment opportunities easier to interpret within applicable job-search experiences."),
-    "Organization": ("Organization", "Strengthens the machine-readable identity of the business and its relationship to the website."),
-    "LocalBusiness": ("Local Presence", "Clarifies the business, location, and local attributes represented on applicable pages."),
-    "WebSite": ("Site Identity", "Establishes clearer machine-readable context around the website and its overall identity."),
-    "BreadcrumbList": ("Page Hierarchy", "Establishes clearer relationships between pages and their position within the site's structure."),
-    "FAQPage": ("FAQ Content", "Structures qualifying question-and-answer content so its format and relationships are easier for search engines to interpret."),
-    "HowTo": ("Instructional Content", "Adds clearer structured context around qualifying step-by-step instructional content."),
-    "VideoObject": ("Video Content", "Strengthens the machine-readable understanding of video content and its associated information."),
-    "Event": ("Events", "Clarifies key event information and its relationship to applicable search experiences."),
-    "Review": ("Reviews & Ratings", "Makes genuine review and rating information more explicit within the context of the associated offering."),
-    "AggregateRating": ("Reviews & Ratings", "Makes genuine review and rating information more explicit within the context of the associated offering."),
-    "Recipe": ("Recipe Content", "Clarifies recipe-specific information and its relationship to the content being presented."),
-    "Course": ("Course Content", "Strengthens the structured understanding of educational course information and its relationship to the offering."),
-    "SoftwareApplication": ("Software/App Pages", "Makes important software or application attributes easier for search engines to interpret."),
-    "Person": ("Individual Profiles", "Clarifies the identity of an individual and their relationship to the organization or content represented on the site."),
-    "ImageObject": ("Image Assets", "Adds clearer structured context around important image assets and their associated information."),
+    "Article": ("Editorial Content", "Strengthens how editorial content is interpreted, including its author, publication details, and subject."),
+    "BlogPosting": ("Editorial Content", "Strengthens how editorial content is interpreted, including its author, publication details, and subject."),
+    "NewsArticle": ("News Content", "Makes the publisher, publication details, and subject of each news piece more explicit."),
+    "Product": ("Product Pages", "Makes product information more explicit to search engines and can support eligibility for applicable product search enhancements."),
+    "Service": ("Service Pages", "Makes the relationship between the business and its service offerings clearer, strengthening understanding of the site's commercial content."),
+    "JobPosting": ("Job Listings", "Individual vacancies become easier to identify and can support visibility in applicable job-search experiences."),
+    "Organization": ("Organization", "Ties the business, its website, and its digital identity more firmly together."),
+    "LocalBusiness": ("Local Presence", "Key business and location details become explicit, supporting clearer interpretation of the business in location-based search."),
+    "WebSite": ("Site Identity", "Establishes clearer site-level identity and the relationship between the website and the organization it represents."),
+    "WebPage": ("Page Context", "Adds context about the purpose and role of each page within the overall website."),
+    "BreadcrumbList": ("Page Hierarchy", "Reinforces the site's hierarchy and page relationships, supporting clearer navigation context in search."),
+    "FAQPage": ("FAQ Content", "Genuine questions and answers become explicit, giving search engines clearer context around the topics the page addresses."),
+    "HowTo": ("Instructional Content", "Communicates the structure of instructional content, so the steps and purpose of each guide are easier to interpret."),
+    "VideoObject": ("Video Content", "Gives the video clearer context in relation to its surrounding page, supporting applicable video search features."),
+    "Event": ("Events", "Key event details become explicit and can support eligibility for applicable event search experiences."),
+    "Review": ("Reviews & Ratings", "Review information becomes more clearly associated with the product, service, or entity being reviewed."),
+    "AggregateRating": ("Reviews & Ratings", "Rating information becomes more clearly associated with the relevant entity where the markup is applicable."),
+    "Recipe": ("Recipe Content", "Recipe-specific details become explicit and can support eligibility for applicable recipe search enhancements."),
+    "Course": ("Course Content", "The identity and key details of each educational course become clearer."),
+    "SoftwareApplication": ("Software/App Pages", "Software identity and key application details become clearer to search engines."),
+    "Person": ("Individual Profiles", "Connects an individual to their content and to the organizations or entities they are associated with."),
+    "ImageObject": ("Image Assets", "Adds context around important images and how they relate to the page or entity."),
+}
+# Corrective variants (spec section 11): when the markup already exists but
+# fails validation the value is in the existing information being read as
+# intended, not in building something new.
+_SCHEMA_IMPACT_INVALID_TEXT: dict[str, str] = {
+    "Article": "Existing editorial markup starts describing the author, publication details, and subject as intended.",
+    "BlogPosting": "Existing editorial markup starts describing the author, publication details, and subject as intended.",
+    "Product": "Product details already marked up become dependable, and applicable product search enhancements stay within reach.",
+    "Service": "Service details already marked up are read as intended, keeping the link between the business and its offerings intact.",
+    "JobPosting": "Vacancies already marked up become eligible to be read correctly in applicable job-search experiences.",
+    "Organization": "The business identity already declared on the site is read as intended rather than partially.",
+    "LocalBusiness": "Business and location details already declared are read as intended in location-based search.",
+    "WebSite": "Site-level identity already declared is read as intended, keeping the site tied to its organization.",
+    "BreadcrumbList": "Hierarchy already declared is read as intended, keeping navigation context in search accurate.",
+    "FAQPage": "Questions and answers already marked up are read as intended rather than discarded as malformed.",
+    "Event": "Event details already marked up are read as intended, keeping applicable event search experiences within reach.",
 }
 # Priority order for the deterministic fallback — mirrors the table's own
 # content-importance ordering (_PAGE_TYPE_DISPLAY_ORDER), then site-wide,
@@ -285,9 +315,19 @@ def _deterministic_schema_impact(part2: list[dict]) -> list[dict]:
                 break
     selected = selected[:4]
 
+    invalid_types = {
+        _clean_schema_type(r["schema_type"]) for r in part2
+        if not r.get("site_level") and isinstance(r.get("invalid"), int) and r["invalid"] > 0
+        and isinstance(r.get("missing"), int) and r["missing"] == 0
+    } | {
+        _clean_schema_type(r["schema_type"]) for r in part2
+        if r.get("site_level") and r.get("present") == "Yes" and r.get("valid") == "No"
+    }
     impact = []
     for t in selected:
-        label, text = _SCHEMA_IMPACT_LABELS.get(t, (t, f"Strengthens the machine-readable understanding of {t} and its relationship to the website."))
+        label, text = _SCHEMA_IMPACT_LABELS.get(t, (t, f"Gives the {t} information on the site clearer context and a firmer link to the page or entity it describes."))
+        if t in invalid_types and t in _SCHEMA_IMPACT_INVALID_TEXT:
+            text = _SCHEMA_IMPACT_INVALID_TEXT[t]
         impact.append({"label": label, "text": text})
     return impact
 
