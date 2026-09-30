@@ -25,6 +25,7 @@ import type { SemrushSource, SemrushMcpState } from "../components/SemrushSource
 import type { ReportPreviewData } from "../components/ReportPreviewModal";
 import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor";
 import Tip from "../components/Tip";
+import KeywordClusterChoiceModal from "../components/KeywordClusterChoiceModal";
 import AiUsageModal, { type AiUsageEstimate } from "../components/AiUsageModal";
 import { formatCost, formatTokens } from "../aiUsageFormat";
 import {
@@ -272,27 +273,30 @@ export default function ClientDetailPage() {
   const [claudeModel, setClaudeModel] = useState(() => readClaudeModel("claude-sonnet-5"));
   useEffect(() => writeSelectedProvider(preferredProvider), [preferredProvider]);
   useEffect(() => writeClaudeModel(claudeModel), [claudeModel]);
-  // Keyword cluster source — an explicit choice, no default and no fallback
-  // (2026-09-30): "manual" = the uploaded cluster file only, "ai" = AI
-  // clusters from Keyword Gap / Search Console / GA4 only. "" = not chosen
-  // yet, so Preview/Download stay disabled. Remembered per client.
-  const [keywordClusterMode, setKeywordClusterMode] = useState<"" | "manual" | "ai">(() => {
+  // Keyword cluster source (2026-09-30, user-defined, no fallback). No
+  // dropdown: an uploaded manual cluster file means "manual". With none
+  // uploaded, Preview/Download ask the user (popup) whether to upload one or
+  // use AI clusters, and the answer is sent with that request only.
+  const [clusterPromptOpen, setClusterPromptOpen] = useState(false);
+  const clusterResolver = useRef<((mode: "ai" | null) => void) | null>(null);
+
+  async function resolveKeywordClusterMode(): Promise<"manual" | "ai" | null> {
+    let hasFile = false;
     try {
-      const saved = localStorage.getItem(`keyword_cluster_mode:${clientId}`);
-      return saved === "manual" || saved === "ai" ? saved : "";
+      const res = await api.get(`/clients/${clientId}/semrush-imports`);
+      hasFile = (res.data as { import_type: string }[]).some((i) => i.import_type === "keyword_cluster_manual");
     } catch {
-      return "";
+      // if the check fails, ask instead of guessing
     }
-  });
-  useEffect(() => {
-    try {
-      if (keywordClusterMode) localStorage.setItem(`keyword_cluster_mode:${clientId}`, keywordClusterMode);
-    } catch {
-      // ignore
-    }
-  }, [keywordClusterMode, clientId]);
+    if (hasFile) return "manual";
+    const choice = await new Promise<"ai" | null>((resolve) => {
+      clusterResolver.current = resolve;
+      setClusterPromptOpen(true);
+    });
+    setClusterPromptOpen(false);
+    return choice;
+  }
   const aiSelectionBody = {
-    keyword_cluster_mode: keywordClusterMode,
     preferred_provider: preferredProvider,
     ...(preferredProvider === "claude" ? { claude_model: claudeModel } : {}),
   };
@@ -616,6 +620,8 @@ export default function ClientDetailPage() {
   }
 
   async function openPreview() {
+    const clusterMode = await resolveKeywordClusterMode();
+    if (clusterMode === null) return;
     const skipped = await confirmAiUsage();
     if (skipped === null) return;
     setPreviewLoading(true);
@@ -624,6 +630,7 @@ export default function ClientDetailPage() {
       const body = {
         ...(overview ? { company_overview_override: overview } : {}),
         ...aiSelectionBody,
+        keyword_cluster_mode: clusterMode,
         skip_ai_steps: skipped,
         ...semrushBody,
       };
@@ -646,11 +653,14 @@ export default function ClientDetailPage() {
   }
 
   async function downloadReportDirect() {
+    const clusterMode = await resolveKeywordClusterMode();
+    if (clusterMode === null) return;
     const skipped = await confirmAiUsage();
     if (skipped === null) return;
     const body = {
       ...(overview ? { company_overview_override: overview } : {}),
       ...aiSelectionBody,
+      keyword_cluster_mode: clusterMode,
       skip_ai_steps: skipped,
       ...semrushBody,
     };
@@ -658,12 +668,15 @@ export default function ClientDetailPage() {
   }
 
   async function downloadReportFromPreview() {
+    const clusterMode = await resolveKeywordClusterMode();
+    if (clusterMode === null) return;
     const skipped = await confirmAiUsage();
     if (skipped === null) return;
     const body = {
       company_overview_override: previewOverview,
       competitor_analysis_override: previewCompetitorAnalysis,
       ...aiSelectionBody,
+      keyword_cluster_mode: clusterMode,
       skip_ai_steps: skipped,
       ...semrushBody,
     };
@@ -863,21 +876,6 @@ export default function ClientDetailPage() {
                 All report analysis will use this provider. No automatic fallback.
               </span>
             </label>
-            <label className="report-ai-provider" style={{ display: "flex", flexDirection: "column", marginRight: 8, fontSize: 12 }}>
-              <span style={{ fontWeight: 600 }}>Keyword clusters</span>
-              <select
-                value={keywordClusterMode}
-                onChange={(e) => setKeywordClusterMode(e.target.value as "" | "manual" | "ai")}
-                aria-describedby="keyword-cluster-mode-help"
-              >
-                <option value="" disabled>Select a source…</option>
-                <option value="manual">My uploaded cluster file</option>
-                <option value="ai">AI clusters (Keyword Gap, Search Console, GA4)</option>
-              </select>
-              <span id="keyword-cluster-mode-help" className="muted" style={{ fontSize: 11 }}>
-                Only the chosen source is used. No automatic fallback.
-              </span>
-            </label>
             {preferredProvider === "claude" && (
               <select
                 value={claudeModel}
@@ -901,6 +899,16 @@ export default function ClientDetailPage() {
             >
               {generating ? "Generating..." : "Generate Report"}
             </button>
+            {clusterPromptOpen && (
+              <KeywordClusterChoiceModal
+                onUseAi={() => clusterResolver.current?.("ai")}
+                onGoUpload={() => {
+                  clusterResolver.current?.(null);
+                  setActiveTab("keywordclusters");
+                }}
+                onCancel={() => clusterResolver.current?.(null)}
+              />
+            )}
             {aiUsagePrompt && (
               <AiUsageModal
                 estimate={aiUsagePrompt}
@@ -952,7 +960,7 @@ export default function ClientDetailPage() {
                   data-tour="tour-preview-report"
                   className="btn btn-secondary"
                   onClick={openPreview}
-                  disabled={previewLoading || semrushBlocksReport || !preferredProvider || !keywordClusterMode}
+                  disabled={previewLoading || semrushBlocksReport || !preferredProvider}
                 >
                   {previewLoading ? "Loading..." : "Preview Report"}
                 </button>
@@ -960,7 +968,7 @@ export default function ClientDetailPage() {
                   data-tour="tour-download-report"
                   className="btn btn-secondary"
                   onClick={downloadReportDirect}
-                  disabled={reportLoading || semrushBlocksReport || !preferredProvider || !keywordClusterMode}
+                  disabled={reportLoading || semrushBlocksReport || !preferredProvider}
                 >
                   {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
                 </button>
