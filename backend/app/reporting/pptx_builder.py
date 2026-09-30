@@ -4227,19 +4227,18 @@ def _traffic_sources_insights(shown: list[dict], total_sessions: float) -> list[
         quality = f"{top['new_users']:,.0f} new vs {top['returning_users']:,.0f} returning users this period"
     else:
         quality = "no new-vs-returning data available for this channel"
-    insights.append(
-        f"{top['channel']}{_channel_note(top['channel'])} makes up the largest share of sessions "
-        f"({_pct_text(top['pct_share'])} of {int(total_sessions):,} total) — {quality}."
-    )
+    # The share and session total already sit in the donut, the table and
+    # the Sessions card, so the sentence carries only what they can't: the
+    # quality signal and, when the mix is genuinely concentrated, the
+    # exposure — folded into ONE bullet instead of restating the same
+    # channel share twice (2026-09-30 repeated-points fix).
+    lead = f"{top['channel']}{_channel_note(top['channel'])} is the largest source of sessions, with {quality}"
+    if top["pct_share"] >= _TRAFFIC_SOURCES_OVER_RELIANCE_PCT:
+        lead += " — the mix leans on this one channel, leaving real exposure if it is disrupted."
+    else:
+        lead += "."
+    insights.append(lead)
     used.add(top["channel"])
-
-    # 2. Over-reliance: only flagged when the mix is genuinely concentrated
-    # — a real threshold, not asserted for every report.
-    if top["pct_share"] >= _TRAFFIC_SOURCES_OVER_RELIANCE_PCT and len(insights) < 4:
-        insights.append(
-            f"{_pct_text(top['pct_share'])} of sessions come through {top['channel']} alone — a concentrated "
-            "acquisition mix with real exposure if that one channel is disrupted, not a diversified one."
-        )
 
     # 3. Data-quality flag: elevated Direct share is a classic symptom of
     # lost/broken UTM tagging misattributing real campaign traffic as
@@ -4249,10 +4248,11 @@ def _traffic_sources_insights(shown: list[dict], total_sessions: float) -> list[
     if len(insights) < 4:
         direct = next((r for r in verified if (r["channel"] or "").strip().lower() == "direct"), None)
         if direct and direct["pct_share"] >= _TRAFFIC_SOURCES_DIRECT_INFLATION_PCT:
+            share_txt = "" if direct["channel"] in used else f" ({_pct_text(direct['pct_share'])} of sessions)"
             insights.append(
-                f"Direct accounts for {_pct_text(direct['pct_share'])} of sessions — worth investigating whether "
-                "UTM tagging or campaign attribution is incomplete, since Direct is where GA4 dumps traffic it "
-                "can't otherwise source; this can't be confirmed from a single snapshot alone."
+                f"Direct traffic{share_txt} is high enough to be worth checking whether UTM tagging or campaign "
+                "attribution is incomplete, since GA4 files traffic it can't otherwise source under Direct; a "
+                "single snapshot can't confirm it."
             )
 
     # 4. Sample-size caution: a shown channel with too few sessions to
@@ -4278,8 +4278,8 @@ def _traffic_sources_insights(shown: list[dict], total_sessions: float) -> list[
         if rate_ranked and rate_ranked[0]["channel"] not in used:
             best = rate_ranked[0]
             insights.append(
-                f"{best['channel']}{_channel_note(best['channel'])} has the strongest return rate this period at "
-                f"{best['return_rate']:.0f}% ({_pct_text(best['pct_share'])} of sessions)."
+                f"{best['channel']}{_channel_note(best['channel'])} brings back the most repeat visitors, with a "
+                f"{best['return_rate']:.0f}% return rate this period."
             )
             used.add(best["channel"])
 
