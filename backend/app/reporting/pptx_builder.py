@@ -4892,12 +4892,18 @@ def _summarize_low_signal_countries(rows: list[dict]) -> dict | None:
 
 
 _COUNTRY_DETAIL_MIN_IMPRESSIONS = 10
-_COUNTRY_PATH_MAX_CHARS = 45
+_COUNTRY_PATH_MAX_CHARS = 32
 
 
 def _country_page_label(url: str) -> str:
     path = urlparse(url or "").path or "/"
-    return path if len(path) <= _COUNTRY_PATH_MAX_CHARS else path[:_COUNTRY_PATH_MAX_CHARS].rstrip("/-") + "…"
+    if len(path) <= _COUNTRY_PATH_MAX_CHARS:
+        return path
+    cut = path[:_COUNTRY_PATH_MAX_CHARS]
+    boundary = max(cut.rfind("/"), cut.rfind("-"))
+    if boundary > _COUNTRY_PATH_MAX_CHARS // 2:
+        cut = cut[:boundary]  # end on a whole word, never mid-word
+    return cut.rstrip("/-") + "…"
 
 
 def _country_fix(label: str, out_of_market: bool, avg_position: float | None, detail: list[dict], brand_tokens) -> str:
@@ -4920,7 +4926,7 @@ def _country_fix(label: str, out_of_market: bool, avg_position: float | None, de
         if reachable:
             best = max(reachable, key=lambda d: float(d.get("impressions", 0) or 0))
             page = _country_page_label(best.get("page") or "")
-            q = best["query"] if len(best["query"]) <= _SOP_TOPIC_MAX_CHARS else best["query"][:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
+            q = best["query"] if len(best["query"]) <= 30 else best["query"][:30].rsplit(" ", 1)[0] + "…"
             pos = float(best.get("position", 0) or 0)
             if pos < 4:
                 return (f"{page} already ranks near the top in {label} for \"{q}\" — keep it current and watch whether it earns "

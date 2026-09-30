@@ -569,3 +569,31 @@ def test_country_fix_country_level_only_is_directional_and_number_free():
         assert not any(ch.isdigit() for ch in r["fix"])
         for banned in ("localiz", "budget", "currency", "validation", "search opportunity"):
             assert banned not in r["fix"].lower()
+
+
+def test_search_opportunities_pages_and_countries_worst_case_no_overlap_or_overflow():
+    # 2026-09-30: new evidence-based action / country Fix wording is longer
+    # than the old fixed strings — pin that 14 long-slug pages and 11
+    # detailed countries still fit their slides.
+    pages = [
+        {"page": f"https://example.com/very-long-descriptive-category-slug-{i}/hydraulic-lift-industrial-equipment",
+         "impressions": 5000 - i * 100, "ctr": 0.01 + 0.004 * (i % 4), "position": 2 + (i * 1.7) % 18}
+        for i in range(14)
+    ]
+    pq = [
+        {"page": r["page"], "query": f"industrial hydraulic scissor lift equipment supplier {i}", "impressions": 400,
+         "clicks": 4, "ctr": 0.01, "position": r["position"]}
+        for i, r in enumerate(pages)
+    ]
+    codes = ["usa", "gbr", "can", "aus", "ind", "deu", "fra", "jpn", "bra", "mex", "ita"]
+    crow = [{"country": c, "clicks": 300 - i * 10, "impressions": 9000 - i * 300, "ctr": 0.03, "position": 6 + i} for i, c in enumerate(codes)]
+    det = [
+        {"country": c, "page": f"https://example.com/very-long-descriptive-category-slug/hydraulic-lift-industrial-{c}",
+         "query": "industrial hydraulic scissor lift equipment supplier", "impressions": 500, "clicks": 5, "ctr": 0.01,
+         "position": [3, 6, 12, 25][i % 4]}
+        for i, c in enumerate(codes)
+    ]
+    prs = _prs()
+    add_search_opportunities_pages_slide(prs, build_search_opportunity_pages(pages, page_query_rows=pq, brand_tokens={"acme"}), "Google Search Console")
+    add_search_opportunities_countries_slide(prs, build_high_potential_countries(crow, country_page_query_rows=det), "Google Search Console")
+    assert _audit_slide_geometry(prs) == []
