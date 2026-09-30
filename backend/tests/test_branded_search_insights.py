@@ -81,7 +81,6 @@ def test_country_benchmark_never_cites_another_countrys_raw_ctr():
     ]
     result = build_high_potential_countries(countries)
     for r in result["material"]:
-        assert "page/query validation is required before prescribing a specific optimization" in r["fix"]
         assert "vs France" not in r["fix"] and "vs United States" not in r["fix"]
         assert "benchmark" not in r["fix"].lower()
 
@@ -161,9 +160,7 @@ def test_country_fix_never_prescribes_budget_localization_or_meta_changes():
         fix_lower = r["fix"].lower()
         for phrase in banned:
             assert phrase not in fix_lower, f"{phrase!r} found in: {r['fix']}"
-        # Required disclosure sentence, verbatim, on every material row —
-        # page/query evidence is never available to this function.
-        assert "page/query validation is required before prescribing a specific optimization" in r["fix"]
+        assert "validation" not in fix_lower
 
 
 def test_country_zero_clicks_lands_in_low_signal_never_a_material_fix():
@@ -526,3 +523,49 @@ def test_countries_slide_low_signal_never_overlaps_footer():
         assert _audit_slide_geometry(prs) == []
     finally:
         _theme["footer"] = ""
+
+
+def _detail(country, page, query, imp, pos, **kw):
+    return {"country": country, "page": page, "query": query, "impressions": imp, "clicks": 5, "ctr": 0.01, "position": pos, **kw}
+
+
+def test_country_fix_names_the_real_page_and_relevant_query_when_detail_exists():
+    countries = [{"country": "usa", "clicks": 500, "impressions": 5000, "ctr": 0.1, "position": 8.0}]
+    detail = [_detail("usa", "https://x.com/hydraulic-lifts", "hydraulic lifts", 900, 6.0)]
+    fix = build_high_potential_countries(countries, country_page_query_rows=detail, brand_tokens={"acme"})["material"][0]["fix"]
+    assert "/hydraulic-lifts" in fix and "hydraulic lifts" in fix and "page one" in fix
+
+
+def test_country_fix_never_uses_an_off_topic_or_branded_query():
+    countries = [{"country": "usa", "clicks": 500, "impressions": 5000, "ctr": 0.1, "position": 8.0}]
+    off = [_detail("usa", "https://x.com/a", "celebrity gossip", 900, 5.0, relevance="exclude")]
+    fix = build_high_potential_countries(countries, country_page_query_rows=off, brand_tokens={"acme"})["material"][0]["fix"]
+    assert "celebrity gossip" not in fix and "unrelated" in fix
+    brand = [_detail("usa", "https://x.com/a", "acme login", 900, 2.0)]
+    fix = build_high_potential_countries(countries, country_page_query_rows=brand, brand_tokens={"acme"})["material"][0]["fix"]
+    assert "acme login" not in fix and "branded" in fix
+
+
+def test_country_fix_wording_varies_with_evidence():
+    countries = [
+        {"country": "usa", "clicks": 500, "impressions": 5000, "ctr": 0.1, "position": 8.0},
+        {"country": "gbr", "clicks": 400, "impressions": 4000, "ctr": 0.1, "position": 14.0},
+    ]
+    detail = [
+        _detail("usa", "https://x.com/a", "hydraulic lifts", 900, 6.0),
+        _detail("gbr", "https://x.com/b", "scissor lifts", 800, 13.0),
+    ]
+    fixes = [r["fix"] for r in build_high_potential_countries(countries, country_page_query_rows=detail)["material"]]
+    assert len(set(fixes)) == 2
+    assert any("page two" in f for f in fixes)
+
+
+def test_country_fix_country_level_only_is_directional_and_number_free():
+    countries = [
+        {"country": "usa", "clicks": 500, "impressions": 5000, "ctr": 0.1, "position": 8.0},
+        {"country": "fra", "clicks": 200, "impressions": 4000, "ctr": 0.05, "position": 18.0},
+    ]
+    for r in build_high_potential_countries(countries)["material"]:
+        assert not any(ch.isdigit() for ch in r["fix"])
+        for banned in ("localiz", "budget", "currency", "validation", "search opportunity"):
+            assert banned not in r["fix"].lower()

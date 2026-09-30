@@ -4503,16 +4503,6 @@ _HIGH_POTENTIAL_MIN_IMPRESSIONS_PAGE = 50
 _COUNTRY_MIN_CLICK_THRESHOLD = 15
 _COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS = 100
 
-# 2026-09-22 spec's own required disclosure — country_rows only ever
-# carries impressions/clicks/CTR/country (see build_high_potential_
-# countries), never page/query-level data, so this sentence is always
-# true here and always appended.
-_COUNTRY_EVIDENCE_DISCLAIMER = (
-    "Country-level data indicates search presence; page/query validation is required before prescribing a "
-    "specific optimization."
-)
-
-
 _PAGE_CTR_BENCHMARK_SOURCE = "internal position-based CTR benchmark (not an external published study)"
 
 
@@ -4901,34 +4891,73 @@ def _summarize_low_signal_countries(rows: list[dict]) -> dict | None:
     return {"countries": names, "summary": summary}
 
 
+_COUNTRY_DETAIL_MIN_IMPRESSIONS = 10
+_COUNTRY_PATH_MAX_CHARS = 45
+
+
+def _country_page_label(url: str) -> str:
+    path = urlparse(url or "").path or "/"
+    return path if len(path) <= _COUNTRY_PATH_MAX_CHARS else path[:_COUNTRY_PATH_MAX_CHARS].rstrip("/-") + "…"
+
+
+def _country_fix(label: str, out_of_market: bool, avg_position: float | None, detail: list[dict], brand_tokens) -> str:
+    """Fix for one country, chosen from the most specific evidence
+    available (2026-09-30 spec): a real relevant (page, query) pair for that
+    country first, then a directional monitoring action from country-level
+    presence. Never localization, budget, currency or language advice off
+    country totals alone, never a metric restatement, and wording follows
+    the evidence so rows don't share one template."""
+    rows = [d for d in detail if float(d.get("impressions", 0) or 0) >= _COUNTRY_DETAIL_MIN_IMPRESSIONS]
+    if rows:
+        typed = [(d, _sop_query_type(d.get("query") or "", brand_tokens)) for d in rows]
+        relevant = [d for d, t in typed if t != "brand" and d.get("relevance") != "exclude"]
+        if not relevant:
+            if any(t != "brand" for _d, t in typed):
+                return (f"Most {label} visibility comes from searches unrelated to the site's offering — keep those queries out of the "
+                        "optimization plan and watch for relevant demand.")
+            return f"{label} visibility is driven by branded searches — treat it as brand awareness rather than a page-optimization target."
+        reachable = [d for d in relevant if float(d.get("position", 0) or 0) <= 20]
+        if reachable:
+            best = max(reachable, key=lambda d: float(d.get("impressions", 0) or 0))
+            page = _country_page_label(best.get("page") or "")
+            q = best["query"] if len(best["query"]) <= _SOP_TOPIC_MAX_CHARS else best["query"][:_SOP_TOPIC_MAX_CHARS].rstrip() + "…"
+            pos = float(best.get("position", 0) or 0)
+            if pos < 4:
+                return (f"{page} already ranks near the top in {label} for \"{q}\" — keep it current and watch whether it earns "
+                        "the clicks that visibility should bring.")
+            if pos <= 10:
+                return (f"Strengthen {page} around \"{q}\" — it is on page one in {label}, so tightening its content and SERP "
+                        "messaging is the closest gain.")
+            return (f"Deepen {page} for \"{q}\" — it sits on page two in {label}; improve the existing coverage before "
+                    "considering any new page.")
+        return (f"{label} queries related to the site rank beyond page two — monitor them and investigate local demand before "
+                "creating new assets.")
+
+    if out_of_market:
+        return f"{label} is outside the client's stated target markets — monitor whether the visibility persists before investing further."
+    if avg_position is not None and avg_position <= 10:
+        return (f"Identify which existing pages earn the visibility in {label} and keep them current — the country data alone "
+                "doesn't point to a specific gap.")
+    return (f"Monitor search presence in {label} and review the pages and queries behind it before deciding on any "
+            "country-specific action.")
+
+
 def build_high_potential_countries(
     country_rows: list[dict],
     target_countries: list[str] | None = None,
     minimum_click_threshold: float = _COUNTRY_MIN_CLICK_THRESHOLD,
+    country_page_query_rows: list[dict] | None = None,
+    brand_tokens=None,
 ) -> dict:
-    """Part 3 flagging logic (2026-09-16 user spec, recommendation wording
-    rewritten 2026-09-22): split by signal strength first — clicks <
-    minimum_click_threshold never gets an individual Fix, it's rolled into
-    one grouped low-signal summary.
-
-    2026-09-22 spec: country-level GSC data (impressions/clicks/CTR/
-    country) shows OBSERVED search presence only, never the cause of it —
-    this function no longer benchmarks a country's CTR against anything
-    (another country, an aggregate, an external curve) to justify a
-    prescriptive fix like "expand budget" or "localize title/meta/
-    currency." CTR is an observed metric here, not a universal benchmark,
-    and must never independently trigger a recommendation. Every material
-    row instead gets the same directional "review pages/queries and assess
-    demand" next step (target-market membership is the only thing that
-    branches it, never a CTR or click-volume comparison — clicks here are
-    already >= minimum_click_threshold by construction, so a zero-click
-    branch would be dead code), plus the spec's own required disclosure
-    sentence, since page/query-level
-    evidence is categorically unavailable here (country_rows never carries
-    a page or query dimension). Countries outside target_countries (when
-    supplied) are labeled explicitly as out-of-market rather than told to
-    expand. Country codes are resolved to full names via _country_label so
-    nothing renders as an unexplained code."""
+    """Search Opportunities — Countries (2026-09-30 general fix logic).
+    Tiering unchanged: clicks < minimum_click_threshold is never an
+    individual Fix, it rolls into one grouped low-signal summary. Each
+    material country's Fix comes from _country_fix — page + query evidence
+    when country_page_query_rows carries it for that country, otherwise a
+    directional action from country-level presence. Countries outside
+    target_countries (when supplied) are labeled out-of-market instead of
+    being told to expand. Country codes resolve to full names via
+    _country_label."""
     candidates = [r for r in country_rows if float(r.get("impressions", 0) or 0) >= _COUNTRY_LOW_SIGNAL_MIN_IMPRESSIONS]
     if not candidates:
         return {"material": [], "low_signal": None}
@@ -4939,6 +4968,9 @@ def build_high_potential_countries(
         return {"material": [], "low_signal": _summarize_low_signal_countries(low_signal_rows)}
 
     target_set = {str(t).strip().lower() for t in target_countries} if target_countries else None
+    detail_by_country: dict[str, list[dict]] = {}
+    for d in country_page_query_rows or []:
+        detail_by_country.setdefault(str(d.get("country", "")).strip().lower(), []).append(d)
 
     material = []
     for r in material_pool:
@@ -4948,15 +4980,9 @@ def build_high_potential_countries(
         label = _country_label(r.get("country", ""))
         code = str(r.get("country", "")).strip().lower()
         out_of_market = target_set is not None and code not in target_set
+        avg_position = float(r["position"]) if r.get("position") not in (None, "") else None
 
-        if out_of_market:
-            fix = f"{label} is outside the client's stated target markets. {_COUNTRY_EVIDENCE_DISCLAIMER}"
-        else:
-            fix = (
-                f"Review the highest-visibility pages and queries for {label} ({int(clicks):,} clicks, "
-                f"{int(impressions):,} impressions observed) and assess whether country-specific content is "
-                f"justified by that demand. {_COUNTRY_EVIDENCE_DISCLAIMER}"
-            )
+        fix = _country_fix(label, out_of_market, avg_position, detail_by_country.get(code, []), brand_tokens)
         material.append({
             "country": label, "impressions": int(impressions), "clicks": int(clicks),
             "ctr_pct": round(ctr_pct, 1), "fix": fix,

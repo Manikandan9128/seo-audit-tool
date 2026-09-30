@@ -149,6 +149,34 @@ def get_page_query_clicks(creds: Credentials, site_url: str, start_date: str, en
     return {"rows": rows}
 
 
+def get_country_page_query_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 25000) -> dict:
+    """Country x page x query combined dimension (2026-09-30 country-fix
+    spec): lets a country's Fix name the real page and relevant query behind
+    its visibility instead of guessing from country totals."""
+    webmasters = build("searchconsole", "v1", credentials=creds)
+    body = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "dimensions": ["country", "page", "query"],
+        "rowLimit": row_limit,
+    }
+    response = webmasters.searchanalytics().query(siteUrl=site_url, body=body).execute()
+    rows = []
+    for row in response.get("rows", []):
+        rows.append(
+            {
+                "country": row["keys"][0],
+                "page": row["keys"][1],
+                "query": row["keys"][2],
+                "clicks": row["clicks"],
+                "impressions": row["impressions"],
+                "ctr": row["ctr"],
+                "position": row["position"],
+            }
+        )
+    return {"rows": rows}
+
+
 def get_page_clicks(creds: Credentials, site_url: str, start_date: str, end_date: str, row_limit: int = 1000) -> dict:
     """Same Search Analytics API as get_search_analytics, dimensioned by page
     instead of query — clicks/impressions per URL, for cross-referencing

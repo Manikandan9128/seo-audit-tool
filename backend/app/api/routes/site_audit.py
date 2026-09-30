@@ -1773,6 +1773,11 @@ def _gather_report_data(
                 jobs["search_by_country"] = pool.submit(
                     gsc_service.get_search_analytics_by_country, creds, client.gsc_site_url, gsc_start, gsc_end
                 )
+                # (country, page, query) — Search Opportunities - Countries
+                # names the real page/query behind a country's visibility.
+                jobs["country_page_query_clicks"] = pool.submit(
+                    gsc_service.get_country_page_query_clicks, creds, client.gsc_site_url, gsc_start, gsc_end
+                )
             done, _not_done = wait(list(jobs.values()), timeout=analytics_deadline)
             for key, future in jobs.items():
                 if future not in done:
@@ -2548,7 +2553,6 @@ def _gather_report_data(
         page_clicks_rows = (analytics.get("page_clicks") or {}).get("rows") or []
         country_rows = (analytics.get("search_by_country") or {}).get("rows") or []
         high_potential_pages = build_high_potential_pages(page_clicks_rows)
-        high_potential_countries = build_high_potential_countries(country_rows)
 
         # Search Opportunities — Pages slide (2026-09-18 user spec) reads a
         # separately re-scoped list, not high_potential_pages above (that one
@@ -2565,6 +2569,23 @@ def _gather_report_data(
         search_opportunity_pages = build_search_opportunity_pages(
             page_clicks_rows, (page_audit_result or {}).get("pages") or [],
             page_query_rows=page_query_rows, brand_tokens=brand_tokens,
+        )
+
+        # Countries table (2026-09-30 spec): Fix follows the most specific
+        # evidence — the real (country, page, query) rows, with each query's
+        # relevance label borrowed from the classification just stamped on
+        # the (page, query) rows above (an unlabeled query stays kept,
+        # same fail-open rule as everywhere else).
+        country_detail_rows = (analytics.get("country_page_query_clicks") or {}).get("rows") or []
+        relevance_by_query = {
+            (r.get("query") or "").lower(): r["relevance"] for r in page_query_rows if r.get("relevance")
+        }
+        for r in country_detail_rows:
+            label = relevance_by_query.get((r.get("query") or "").lower())
+            if label:
+                r["relevance"] = label
+        high_potential_countries = build_high_potential_countries(
+            country_rows, country_page_query_rows=country_detail_rows, brand_tokens=brand_tokens,
         )
 
         ai_usage.set_module("branded")
