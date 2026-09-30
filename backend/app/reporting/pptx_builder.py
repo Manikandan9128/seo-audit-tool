@@ -6396,54 +6396,52 @@ def add_keyword_gap_insights_slide(
 
 
 def _gap_status_insights(status: str, status_rows: list[dict], shown_count: int, off_topic_count: int, client_name: str | None) -> list[str]:
-    """Key Insights for a dedicated status slide — built ONLY from that
-    status's own keywords and data (2026-09-22 spec rule 9), never
-    referencing another status."""
-    # 2026-09-28 Key Insights rules: no line that only restates the count
-    # (Executive Summary card) or the table ("Showing N of M"), and no
-    # description of the relevance/KD filtering behind the set.
-    insights = []
-    top = status_rows[0]
+    """Key Insights card content for one status (2026-09-30 logic update):
+    what the dataset MEANS for the SEO strategy, built only from that
+    status's own rows. No counts, no exact keyword/volume/position (the
+    Executive Summary and the tables carry those) — patterns only:
+    competitor concentration, recurring topics, and who holds the stronger
+    position. Each line is supported by the rows and skipped when the data
+    can't back it."""
+    insights: list[str] = []
+    themes = _gap_dominant_themes(status_rows, _gap_exclude_tokens(status_rows, client_name))
     if status == "Missing":
-        insights.append(
-            f"Highest-volume Missing keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
-            f"ranking competitors: {_gap_row_competitors_text(top)}."
-        )
-        # (The generic "high-volume Missing keywords … start there" line was
-        # removed 2026-09-28: it only repeated the Executive Summary's
-        # "Close the Missing-Keyword Gap … start with" action item.)
-    elif status == "Shared":
-        insights.append(
-            f"Highest-volume Shared keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
-            f"you and {_gap_row_competitors_text(top)} both rank."
-        )
-        # 2026-09-28 Competitor Keyword Gap rule: Key Insights should
-        # surface "meaningful Shared ranking weaknesses", not just that
-        # both sides rank at all — your_position/competitor position are
-        # already on every row, just not compared before now. Only
-        # surfaced past a real gap (>=5 positions), so a 1-2 spot
-        # difference (noise, not a weakness) never shows.
-        weakest, weakest_gap = None, 0
+        coverage: dict[str, int] = {}
         for r in status_rows:
-            your_pos = r.get("your_position")
-            cps = [cp for cp in (r.get("competitor_positions") or []) if cp.get("position")]
-            if not your_pos or not cps:
-                continue
-            best = min(cps, key=lambda cp: cp["position"])
-            gap = your_pos - best["position"]
-            if gap > weakest_gap:
-                weakest, weakest_gap = (r, best, your_pos), gap
-        if weakest and weakest_gap >= 5:
-            r, best, your_pos = weakest
+            for cp in _gap_row_competitors(r):
+                coverage[cp["competitor"]] = coverage.get(cp["competitor"], 0) + 1
+        if coverage:
+            top_domain, top_hits = max(coverage.items(), key=lambda kv: kv[1])
+            if len(coverage) >= 2 and top_hits / len(status_rows) >= 0.5:
+                insights.append(
+                    f"Competitor visibility in this gap is concentrated in {top_domain}, making its coverage the clearest "
+                    "benchmark for the topics the site is missing."
+                )
+            elif len(coverage) >= 2:
+                insights.append(
+                    "Several competitors overlap on these topics, which points to established demand rather than one rival's niche."
+                )
+        if themes:
             insights.append(
-                f"Weakest Shared ranking: \"{r['keyword']}\" — you rank #{your_pos} while "
-                f"{best['competitor']} ranks #{best['position']}, a {weakest_gap}-position gap worth closing."
+                f"The missing visibility clusters around {_gap_join(themes)} — themes where the site's ranking footprint "
+                "has no presence yet."
             )
+    elif status == "Shared":
+        behind, ahead = _gap_shared_position_split(status_rows)
+        judged = behind + ahead
+        if judged:
+            if behind / judged >= 0.6:
+                insights.append("Competitors hold the stronger position on most shared topics — the ranking pages exist but are not yet winning.")
+            elif ahead / judged >= 0.6:
+                insights.append("The site already outranks competitors on most shared topics, so the position is defensible with a few weaker pages to lift.")
+            else:
+                insights.append("Rankings on shared topics are split, with competitors ahead on some and the site ahead on others.")
+        if themes:
+            insights.append(f"Existing topical relevance is strongest around {_gap_join(themes)}, where the site is already competing.")
     elif status == "Untapped":
-        insights.append(
-            f"Highest-volume Untapped keyword: \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo) — "
-            "no tracked domain ranks for it yet."
-        )
+        insights.append("Only the site ranks for these topics among the tracked competitors — a defensible position worth protecting.")
+        if themes:
+            insights.append(f"These lead-position topics cluster around {_gap_join(themes)}.")
     return insights
 
 
@@ -6614,68 +6612,166 @@ def _gap_kpi_card(slide, left, top, width, height, label, value, sub, color):
         _textbox(slide, left + pad, top + height - Inches(0.2) - Inches(0.16) * lines, width - pad * 2, Inches(0.16) * lines, sub, size=9.5, color=TEXT_MUTED)
 
 
+_GAP_THEME_STOPWORDS = frozenset(
+    "best free online near price prices cost cheap review reviews compare comparison alternative alternatives login "
+    "download meaning definition example examples template templates company companies top with from your that this "
+    "what does how when where which about into for and the are can use using vs versus".split()
+)
+
+
+def _gap_row_competitors(r: dict) -> list[dict]:
+    return [cp for cp in (r.get("competitor_positions") or []) if cp.get("position")]
+
+
+def _gap_best_competitor_position(r: dict):
+    cps = _gap_row_competitors(r)
+    return min(cp["position"] for cp in cps) if cps else None
+
+
+def _gap_dominant_themes(rows: list[dict], exclude: set[str], n: int = 3) -> list[str]:
+    """Words that recur across a status's keywords — a topic signal read
+    straight off the keyword text (never invented). Empty when the set is
+    too small for a recurring word to mean anything."""
+    if len(rows) < 5:
+        return []
+    counts: dict[str, int] = {}
+    for r in rows:
+        tokens = {t for t in re.split(r"[^a-z0-9]+", (r.get("keyword") or "").lower()) if len(t) >= 4 and not t.isdigit()}
+        for t in tokens - _GAP_THEME_STOPWORDS - exclude:
+            counts[t] = counts.get(t, 0) + 1
+    floor = max(3, round(0.12 * len(rows)))
+    ranked = sorted((t for t, c in counts.items() if c >= floor), key=lambda t: (-counts[t], t))
+    return ranked[:n]
+
+
+def _gap_exclude_tokens(rows: list[dict], client_name: str | None) -> set[str]:
+    """Brand words (the client's and every competitor's) never count as a
+    topic theme."""
+    tokens = {t for t in re.split(r"[^a-z0-9]+", (client_name or "").lower()) if t}
+    for r in rows:
+        for cp in r.get("competitor_positions") or []:
+            brand = _brand_token(cp.get("competitor") or "")
+            if brand:
+                tokens.add(brand)
+    return tokens
+
+
+def _gap_join(words: list[str]) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
+def _gap_missing_priority(r: dict) -> float:
+    """Which Missing keywords to show first: demand, weighted by how many
+    competitors already rank (validated interest), how well they rank, how
+    climbable it looks and whether the intent is commercial — never volume
+    alone."""
+    volume = _num(r.get("search_volume"))
+    n_comp = min(len(_gap_row_competitors(r)), 3)
+    best = _gap_best_competitor_position(r)
+    score = volume * (1 + 0.5 * max(n_comp - 1, 0))
+    if best and best <= 10:
+        score *= 1.2
+    score *= 1 - min(_num(r.get("keyword_difficulty")), 100) / 250
+    intent = str(r.get("intent") or "").lower()
+    if "commercial" in intent or "transactional" in intent:
+        score *= 1.15
+    return score
+
+
+def _gap_shared_priority(r: dict) -> float:
+    """Which Shared keywords to show first: demand, weighted by how far a
+    competitor outranks the site (room to improve) — a keyword the site
+    already leads on is a lower-priority row."""
+    volume = _num(r.get("search_volume"))
+    your_pos = r.get("your_position")
+    best = _gap_best_competitor_position(r)
+    factor = 1.0
+    if your_pos and best:
+        gap = your_pos - best
+        factor = 1 + min(gap, 30) / 15 if gap > 0 else 0.4
+    n_comp = min(len(_gap_row_competitors(r)), 3)
+    return volume * factor * (1 + 0.25 * max(n_comp - 1, 0))
+
+
+def _gap_display_order(category: str, rows: list[dict]) -> list[dict]:
+    """Order in which a status slide's capped table picks its rows. The
+    underlying dataset, counts and the full-list Sheet keep their volume
+    order — only the visible selection changes."""
+    key = {"Missing": _gap_missing_priority, "Shared": _gap_shared_priority}.get(category)
+    if key is None:
+        return list(rows)
+    return sorted(rows, key=lambda r: (-key(r), -_num(r.get("search_volume"))))
+
+
+def _gap_shared_position_split(rows: list[dict]) -> tuple[int, int]:
+    """(behind, ahead): Shared keywords where the best competitor outranks
+    the site, and where the site outranks every tracked competitor."""
+    behind = ahead = 0
+    for r in rows:
+        your_pos, best = r.get("your_position"), _gap_best_competitor_position(r)
+        if not your_pos or not best:
+            continue
+        if your_pos > best:
+            behind += 1
+        elif your_pos < best:
+            ahead += 1
+    return behind, ahead
+
+
 def _gap_exec_action_items(
     by_category: dict[str, list[dict]], counts: dict[str, int], total_relevant: int, client_name: str | None,
 ) -> list[tuple[str, str]]:
-    """Exactly 3 (fewer only if the data genuinely doesn't support 3)
-    heading+sentence action items for the Executive Summary slide
-    (2026-09-23 spec) — never a generic action for a status with no real
-    rows, never a repeat of the KPI numbers already on the cards above.
-    Priority order: close the Missing gap (competitors already rank, no
-    page exists) -> narrow the widest Shared ranking gap (visible today,
-    losing to a competitor) -> defend Untapped wins (no competitor there
-    yet). by_category rows are already volume-sorted (_prepare_keyword_gap_
-    rows), so by_category[cat][0] is each status's highest-volume row.
-    Every number cited is read straight off the row data — nothing
-    invented, no keyword-validation advice (relevance is already validated
-    upstream by _prepare_keyword_gap_rows)."""
+    """Up to 3 heading+sentence strategic actions for the Executive Summary
+    (2026-09-30 logic update): each says what the shape of the gap means and
+    what to do about it — never the KPI numbers already on the cards, never
+    an exact keyword/volume, and never "create a page" as a reflex (extend an
+    existing page unless the intent differs). Chosen from the actual data:
+    a status only produces an action when its rows support one, and the
+    order follows where the search demand sits."""
     topic_ref = f"{client_name.strip()}'s" if client_name and client_name.strip() else "the client's"
-    items: list[tuple[str, str]] = []
+    volume = {cat: sum(_num(r.get("search_volume")) for r in by_category.get(cat, [])) for cat in ("Missing", "Shared", "Untapped")}
+    candidates: list[tuple[str, tuple[str, str]]] = []
 
     missing_rows = [r for r in by_category.get("Missing", []) if r.get("competitor_positions")]
     if missing_rows:
-        top = missing_rows[0]
-        pct = round(100 * counts["Missing"] / total_relevant) if total_relevant else 0
-        items.append((
-            "Close the Missing-Keyword Gap",
-            f"{counts['Missing']} keywords ({pct}%) have competitors ranking with no page on {topic_ref} site yet — "
-            f"start with \"{top['keyword']}\" ({int(_num(top.get('search_volume'))):,}/mo), where "
-            f"{_gap_row_competitors_text(top)} already rank.",
-        ))
+        themes = _gap_dominant_themes(missing_rows, _gap_exclude_tokens(missing_rows, client_name))
+        overlap = sum(1 for r in missing_rows if len(_gap_row_competitors(r)) >= 2) / len(missing_rows)
+        where = f" around {_gap_join(themes)}" if themes else ""
+        lead = (
+            f"Several competitors rank for the same topics{where}, pointing to established demand that {topic_ref} site does not cover — "
+            if overlap >= 0.4 else
+            f"Competitors already hold visibility{where} on relevant topics {topic_ref} site does not rank for — "
+        )
+        candidates.append(("Missing", (
+            "Expand Relevant Topic Coverage",
+            lead + "extend an existing page where the topic is already covered, and add a new page only where the search intent differs.",
+        )))
 
-    behind_rows = []
-    for r in by_category.get("Shared", []):
-        your_pos = r.get("your_position")
-        if not your_pos:
-            continue
-        comp_positions = [cp.get("position") for cp in (r.get("competitor_positions") or []) if cp.get("position")]
-        if not comp_positions:
-            continue
-        best_comp = min(comp_positions)
-        if best_comp < your_pos:
-            behind_rows.append((your_pos - best_comp, r, best_comp))
-    if behind_rows:
-        behind_rows.sort(key=lambda t: t[0], reverse=True)
-        gap, row, best_comp = behind_rows[0]
-        items.append((
-            "Strengthen the Weakest Shared Ranking",
-            f"Of {counts['Shared']} keywords where both sides rank, \"{row['keyword']}\" shows the widest gap — "
-            f"{topic_ref} site sits at #{int(row['your_position'])} vs. #{int(best_comp)} for the closest-ranking "
-            "competitor.",
-        ))
+    behind, ahead = _gap_shared_position_split(by_category.get("Shared", []))
+    if behind or ahead:
+        if behind >= ahead:
+            item = (
+                "Strengthen Existing Shared Rankings",
+                "On the topics both sides already rank for, competitors more often hold the stronger position — improving the "
+                "pages that already rank is a faster route than publishing overlapping content.",
+            )
+        else:
+            item = (
+                "Hold and Extend Shared Rankings",
+                f"{topic_ref.capitalize()} site already leads competitors on most shared topics — maintain those pages and put "
+                "improvement effort into the few where a competitor still ranks higher.",
+            )
+        candidates.append(("Shared", item))
 
-    untapped_rows = by_category.get("Untapped", [])
-    if untapped_rows and len(items) < 3:
-        top_u = untapped_rows[0]
-        pct = round(100 * counts["Untapped"] / total_relevant) if total_relevant else 0
-        items.append((
-            "Defend Untapped Keyword Wins",
-            f"{counts['Untapped']} keywords ({pct}%) rank for {topic_ref} site with no tracked competitor present "
-            f"yet — reinforce these pages, starting with \"{top_u['keyword']}\" "
-            f"({int(_num(top_u.get('search_volume'))):,}/mo), before a competitor moves in.",
-        ))
+    if by_category.get("Untapped"):
+        candidates.append(("Untapped", (
+            "Protect Untapped Strengths",
+            f"{topic_ref.capitalize()} site ranks alone on some relevant topics with no tracked competitor present — keep those "
+            "pages current and well linked before a competitor moves in.",
+        )))
 
-    return items[:3]
+    candidates.sort(key=lambda c: -volume[c[0]])
+    return [item for _cat, item in candidates][:3]
 
 
 def add_keyword_gap_executive_summary_slide(
@@ -6852,7 +6948,7 @@ def add_keyword_gap_slides(
         if category not in dedicated_categories:
             continue
         status_rows = by_category[category]
-        shown = status_rows[:_GAP_DEDICATED_ROW_CAP]
+        shown = _gap_display_order(category, status_rows)[:_GAP_DEDICATED_ROW_CAP]
 
         slide = _blank_slide(prs)
         _content_header(slide, _GAP_STATUS_SLIDE_TITLE[category])
@@ -6876,17 +6972,20 @@ def add_keyword_gap_slides(
     if total_volume:
         by_volume = {cat: sum(_num(r.get("search_volume")) for r in by_category[cat]) for cat in ("Missing", "Shared", "Untapped")}
         lead = max(by_volume, key=by_volume.get)
-        share = round(100 * by_volume[lead] / total_volume)
-        meaning = {
-            "Missing": "most of the demand sits on keywords where competitors rank and the site has no page",
-            "Shared": "most of the demand sits on keywords both sides already rank for, so ranking gains matter more than new pages",
-            "Untapped": "most of the demand sits on keywords only the site ranks for, so defending them comes first",
-        }[lead]
-        overview_insights.append(
-            f"{lead} keywords carry {share}% of the {total_volume:,} combined monthly searches in the gap — {meaning}."
-        )
+        lead_share = by_volume[lead] / total_volume
+        if lead_share < 0.45:
+            overview_insights.append(
+                "Demand is spread across topics competitors hold and topics both sides contest, so widening coverage and "
+                "strengthening existing pages should run in parallel."
+            )
+        else:
+            overview_insights.append({
+                "Missing": "Competitors have established visibility across a broader set of relevant topics than the site ranks for, making topic coverage the larger opportunity while shared rankings offer a smaller set of pages to strengthen.",
+                "Shared": "Most of the relevant demand sits on topics the site already competes for, so improving existing rankings is a more efficient route than broad new coverage.",
+                "Untapped": "Most of the relevant demand sits on topics only the site ranks for, so defending those positions comes before widening coverage.",
+            }[lead])
     if kd_unavailable_count:
-        overview_insights.append(f"{kd_unavailable_count} keyword(s) excluded — keyword difficulty wasn't available in the source export.")
+        logger.info("Keyword gap: %d keyword(s) left out of the slides because keyword difficulty was missing from the export.", kd_unavailable_count)
 
     insights_by_category: dict[str, list[str]] = {}
     for category in ("Missing", "Shared", "Untapped"):

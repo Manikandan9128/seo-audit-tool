@@ -244,11 +244,11 @@ def test_key_insights_include_actionable_implication_for_missing_keywords():
         _gap_row("missing kw", 1000, 40, competitors=[{"competitor": "rival.com", "position": 3, "ranking_url": None}], gap_category="Missing"),
     ]}
     slides = add_keyword_gap_slides(_prs(), analysis)
-    # The actionable next step lives once, on the Executive Summary ("start
-    # with <keyword>") — the Key Insights slide no longer repeats it as a
-    # generic "start there" line (2026-09-28 deck-wide dedup).
+    # The actionable next step lives once, on the Executive Summary — a
+    # strategic action, not a restated keyword/count (2026-09-30).
     exec_text = " ".join(_slide_text(s) for s in slides[:-1])
-    assert 'start with "missing kw"' in exec_text
+    assert "Expand Relevant Topic Coverage" in exec_text
+    assert "extend an existing page" in exec_text
     text = _slide_text(slides[-1])
     assert "strongest immediate content targets" not in text
     # Rule 6: never an unsupported strategic claim.
@@ -265,7 +265,8 @@ def test_gap_overview_insight_interprets_demand_not_restates_counts():
     }
     slides = add_keyword_gap_slides(_prs(), analysis, client_name="Acme")
     text = _slide_text(slides[-1])
-    assert "Missing keywords carry 100% of the 1,000 combined monthly searches" in text
+    assert "Competitors have established visibility" in text
+    assert "1,000" not in text and "100%" not in text
 
 
 def test_counts_live_on_exec_summary_not_repeated_in_insights():
@@ -393,7 +394,8 @@ def test_dedicated_slide_insights_only_reference_its_own_status():
         sh.has_text_frame and sh.text_frame.text == "Competitor Keyword Gap — Key Insights" for sh in s.shapes
     ))
     text = _slide_text(insights_slide)
-    assert "Highest-volume Missing keyword" in text
+    assert "Not every missing keyword" not in text  # that guidance lives once, in the Executive Summary action
+    assert "Highest-volume" not in text
     # Missing's own column (rendered first) never mentions an Untapped
     # keyword — everything before the Untapped column header is Missing's.
     missing_column_text = text.split("Untapped")[0]
@@ -452,3 +454,48 @@ def test_dedicated_slide_full_row_cap_fits_no_overlap():
     prs = _prs()
     add_keyword_gap_slides(prs, analysis, client_name="Acme Trucks", keyword_gap_sheet_link="https://sheets.google.com/x")
     assert _audit_slide_geometry(prs) == []
+
+
+def _many(category, n, base_kw, your=None, comp_pos=5, competitors=("rival.com",)):
+    return [
+        _gap_row(f"{base_kw} {i}", 1000 - i, 30, your_position=your,
+                 competitors=[{"competitor": c, "position": comp_pos, "ranking_url": None} for c in competitors],
+                 gap_category=category)
+        for i in range(n)
+    ]
+
+
+def test_exec_actions_are_strategic_and_never_restate_counts_or_keywords():
+    rows = _many("Missing", 8, "payroll software") + _many("Shared", 8, "timesheet app", your=9, comp_pos=3)
+    slides = add_keyword_gap_slides(_prs(), {"keyword_gap_rows": rows}, client_name="Acme")
+    text = _slide_text(slides[0]).split("Key Action Items")[1]
+    assert "Expand Relevant Topic Coverage" in text and "Strengthen Existing Shared Rankings" in text
+    assert "payroll" in text  # recurring topic named, not a keyword/volume
+    assert "payroll software 0" not in text and "/mo" not in text and "%" not in text
+    for banned in ("manual", "confidence", "validation", "review queue", "will rank", "create a page immediately"):
+        assert banned not in text.lower()
+
+
+def test_missing_table_prefers_multi_competitor_keywords_over_pure_volume():
+    solo = _gap_row("solo giant", 5000, 30, competitors=[{"competitor": "a.com", "position": 40, "ranking_url": None}], gap_category="Missing")
+    multi = _gap_row("shared demand", 3000, 30, competitors=[
+        {"competitor": "a.com", "position": 4, "ranking_url": None}, {"competitor": "b.com", "position": 6, "ranking_url": None}], gap_category="Missing")
+    from app.reporting.pptx_builder import _gap_display_order
+    assert [r["keyword"] for r in _gap_display_order("Missing", [solo, multi])] == ["shared demand", "solo giant"]
+
+
+def test_shared_table_prefers_rows_where_a_competitor_is_ahead():
+    leading = _gap_row("we lead", 5000, 30, your_position=1, competitors=[{"competitor": "a.com", "position": 8, "ranking_url": None}], gap_category="Shared")
+    behind = _gap_row("we trail", 2000, 30, your_position=15, competitors=[{"competitor": "a.com", "position": 3, "ranking_url": None}], gap_category="Shared")
+    from app.reporting.pptx_builder import _gap_display_order
+    assert [r["keyword"] for r in _gap_display_order("Shared", [leading, behind])] == ["we trail", "we lead"]
+
+
+def test_key_insights_interpret_without_counts_examples_or_backend_language():
+    rows = _many("Missing", 8, "payroll software", competitors=("a.com", "b.com")) + _many("Shared", 7, "timesheet app", your=9, comp_pos=3)
+    slides = add_keyword_gap_slides(_prs(), {"keyword_gap_rows": rows, "keyword_gap_off_topic_count": 3}, client_name="Acme")
+    text = _slide_text(slides[-1])
+    assert "Competitors have established visibility" in text or "Demand is spread" in text
+    assert "Competitors hold the stronger position" in text
+    for banned in ("payroll software 0", "1,000", "/mo", "manual", "confidence", "validat", "difficulty", "excluded"):
+        assert banned not in text.lower()
