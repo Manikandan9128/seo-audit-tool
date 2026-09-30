@@ -272,7 +272,27 @@ export default function ClientDetailPage() {
   const [claudeModel, setClaudeModel] = useState(() => readClaudeModel("claude-sonnet-5"));
   useEffect(() => writeSelectedProvider(preferredProvider), [preferredProvider]);
   useEffect(() => writeClaudeModel(claudeModel), [claudeModel]);
+  // Keyword cluster source — an explicit choice, no default and no fallback
+  // (2026-09-30): "manual" = the uploaded cluster file only, "ai" = AI
+  // clusters from Keyword Gap / Search Console / GA4 only. "" = not chosen
+  // yet, so Preview/Download stay disabled. Remembered per client.
+  const [keywordClusterMode, setKeywordClusterMode] = useState<"" | "manual" | "ai">(() => {
+    try {
+      const saved = localStorage.getItem(`keyword_cluster_mode:${clientId}`);
+      return saved === "manual" || saved === "ai" ? saved : "";
+    } catch {
+      return "";
+    }
+  });
+  useEffect(() => {
+    try {
+      if (keywordClusterMode) localStorage.setItem(`keyword_cluster_mode:${clientId}`, keywordClusterMode);
+    } catch {
+      // ignore
+    }
+  }, [keywordClusterMode, clientId]);
   const aiSelectionBody = {
+    keyword_cluster_mode: keywordClusterMode,
     preferred_provider: preferredProvider,
     ...(preferredProvider === "claude" ? { claude_model: claudeModel } : {}),
   };
@@ -843,6 +863,21 @@ export default function ClientDetailPage() {
                 All report analysis will use this provider. No automatic fallback.
               </span>
             </label>
+            <label className="report-ai-provider" style={{ display: "flex", flexDirection: "column", marginRight: 8, fontSize: 12 }}>
+              <span style={{ fontWeight: 600 }}>Keyword clusters</span>
+              <select
+                value={keywordClusterMode}
+                onChange={(e) => setKeywordClusterMode(e.target.value as "" | "manual" | "ai")}
+                aria-describedby="keyword-cluster-mode-help"
+              >
+                <option value="" disabled>Select a source…</option>
+                <option value="manual">My uploaded cluster file</option>
+                <option value="ai">AI clusters (Keyword Gap, Search Console, GA4)</option>
+              </select>
+              <span id="keyword-cluster-mode-help" className="muted" style={{ fontSize: 11 }}>
+                Only the chosen source is used. No automatic fallback.
+              </span>
+            </label>
             {preferredProvider === "claude" && (
               <select
                 value={claudeModel}
@@ -917,7 +952,7 @@ export default function ClientDetailPage() {
                   data-tour="tour-preview-report"
                   className="btn btn-secondary"
                   onClick={openPreview}
-                  disabled={previewLoading || semrushBlocksReport || !preferredProvider}
+                  disabled={previewLoading || semrushBlocksReport || !preferredProvider || !keywordClusterMode}
                 >
                   {previewLoading ? "Loading..." : "Preview Report"}
                 </button>
@@ -925,7 +960,7 @@ export default function ClientDetailPage() {
                   data-tour="tour-download-report"
                   className="btn btn-secondary"
                   onClick={downloadReportDirect}
-                  disabled={reportLoading || semrushBlocksReport || !preferredProvider}
+                  disabled={reportLoading || semrushBlocksReport || !preferredProvider || !keywordClusterMode}
                 >
                   {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
                 </button>

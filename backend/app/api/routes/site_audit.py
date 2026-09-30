@@ -32,7 +32,7 @@ from app.models.google_connection import GoogleConnection
 from app.models.page_audit_job import PageAuditJob
 from app.models.report_generation_job import ReportGenerationJob
 from app.models.semrush_import import SemrushImport
-from app.services import ahrefs_service, semrush_mcp_data_service
+from app.services import ahrefs_service, report_options, semrush_mcp_data_service
 from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.reporting.pptx_builder import (
@@ -2122,6 +2122,7 @@ def _gather_report_data(
                 _all_rows("site_audit_pages", own_only=True),
                 manual_cluster_map=manual_cluster_map or None,
                 cache=kw_cache,
+                cluster_mode=report_options.keyword_cluster_mode(),
             )
         except Exception as e:
             logger.warning("Keyword clustering pipeline failed for client %s: %s", client_id, e)
@@ -2310,23 +2311,22 @@ def _gather_report_data(
     # bulk exports) so no Semrush-sourced value can leak through.
     # 2026-09-27: DR is now pulled live from Ahrefs' free public Domain
     # Rating endpoint (see app.services.ahrefs_service — 0 API units, needs
-    # a free APIv3 key set in Settings). Falls back to the manually entered
-    # DomainRating row (see DomainRating model) per-domain whenever the API
-    # call fails — no key configured, rate limited, unknown domain, etc.
+    # a free APIv3 key set in Settings). 2026-09-30 user decision: Ahrefs API
+    # is the ONLY DR source — no manual-table fallback. The DomainRating
+    # table is left in place (additive-only) but no longer read here. A
+    # domain whose lookup fails gets no DR and a content issue says so.
     for row in domain_overview_rows:
         row["authority_score"] = None
-    manual_dr_rows = db.query(DomainRating).filter(DomainRating.client_id == client_id).all()
-    manual_dr_by_domain = {_normalize_domain(r.domain): r.dr for r in manual_dr_rows}
     dr_domains = {row["domain"] for row in domain_overview_rows}
     dr_domains.add(own_website_domain)
     dr_by_domain: dict[str, int] = {}
     for domain in dr_domains:
         norm = _normalize_domain(domain)
         dr = ahrefs_service.fetch_domain_rating(domain)
-        if dr is None:
-            dr = manual_dr_by_domain.get(norm)
         if dr is not None:
             dr_by_domain[norm] = dr
+        else:
+            content_issues.append(f"Domain Rating unavailable for {domain}: Ahrefs API lookup failed or no Ahrefs key is set.")
     for row in domain_overview_rows:
         match = dr_by_domain.get(_normalize_domain(row["domain"]))
         if match is not None:
@@ -2874,8 +2874,9 @@ def _gather_report_data(
         own_domain_rating, ((analytics or {}).get("page_query_clicks") or {}).get("rows"), keyword_rows_all,
         ((analytics or {}).get("page_clicks") or {}).get("rows"), own_backlink_rows,
     )
+    # "ai" mode (user choice 2026-09-30): the uploaded sheet is not used at all.
     strategic_keyword_clusters = _select_validated_manual_clusters(
-        client, list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,
+        client, [] if report_options.keyword_cluster_mode() == "ai" else list(manual_cluster_rows_full.values()), company_overview_result, _gap_domains,
         domain_overview_rows, site_audit_pages_rows, kw_cache, keyword_rows_all, strategy_context,
     )
     # Keyword strategy (topic map, page map, roadmap) from whichever path
@@ -2968,6 +2969,26 @@ def _validated_skip_steps(skip_ai_steps: list[str] | None) -> list[str]:
     return list(skip_ai_steps or [])
 
 
+def _require_keyword_cluster_choice(mode: str | None, client_id: uuid.UUID, db: Session) -> str:
+    """The user's explicit keyword-cluster choice (no default, no fallback):
+    refuses up front when the chosen source has nothing to work from."""
+    mode = report_options.validated_keyword_cluster_mode(mode)
+    types = {t for (t,) in db.query(SemrushImport.import_type).filter(SemrushImport.client_id == client_id).distinct().all()}
+    if mode == "manual" and "keyword_cluster_manual" not in types:
+        raise HTTPException(
+            status_code=400,
+            detail="You chose your uploaded cluster file, but none is uploaded for this client. "
+            "Upload it on the Keyword Clusters tab, or choose AI clusters.",
+        )
+    if mode == "ai" and not types & {"keyword_gap", "organic_positions"}:
+        raise HTTPException(
+            status_code=400,
+            detail="You chose AI clusters, which are built from Keyword Gap, Search Console and GA4 data, "
+            "but no Keyword Gap or Organic Positions export is uploaded for this client.",
+        )
+    return mode
+
+
 def _request_ai_selection(
     preferred_provider: str | None, claude_model: str | None, header_selection: ReportAISelection,
 ) -> ReportAISelection:
@@ -2991,6 +3012,7 @@ def report_preview(
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
     semrush_source: str | None = Body(default=None),
+    keyword_cluster_mode: str | None = Body(default=None),
     preferred_provider: str | None = Body(default=None),
     claude_model: str | None = Body(default=None),
     skip_ai_steps: list[str] | None = Body(default=None),
@@ -3007,8 +3029,10 @@ def report_preview(
     client = _get_owned_client(client_id, db, current_user)
     selection = _request_ai_selection(preferred_provider, claude_model, ai)
     skip_steps = _validated_skip_steps(skip_ai_steps)
+    cluster_mode = _require_keyword_cluster_choice(keyword_cluster_mode, client_id, db)
     _enforce_hard_limit(client_id, db, selection, skip_steps)
     semrush_mcp_data_service.set_active_snapshot(_semrush_snapshot_for(semrush_source, client_id, db))
+    report_options.set_keyword_cluster_mode(cluster_mode)
     try:
         with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model, skip_steps):
             data = _gather_report_data(
@@ -3024,6 +3048,7 @@ def report_preview(
             ]
     finally:
         semrush_mcp_data_service.set_active_snapshot(None)
+        report_options.set_keyword_cluster_mode(None)
     data = _scrub_report_data(data)
     return {
         "client_name": client.name, "website_url": client.website_url,
@@ -3310,6 +3335,7 @@ def generate_report(
     company_overview_override: dict | None = Body(default=None),
     competitor_analysis_override: dict | None = Body(default=None),
     ux_notes: str | None = Body(default=None),
+    keyword_cluster_mode: str | None = Body(default=None),
     preferred_provider: str | None = Body(default=None),
     claude_model: str | None = Body(default=None),
     skip_ai_steps: list[str] | None = Body(default=None),
@@ -3328,12 +3354,17 @@ def generate_report(
     # used by the current frontend (which always uses /start + polling).
     selection = _request_ai_selection(preferred_provider, claude_model, ai)
     skip_steps = _validated_skip_steps(skip_ai_steps)
+    cluster_mode = _require_keyword_cluster_choice(keyword_cluster_mode, client_id, db)
     _enforce_hard_limit(client_id, db, selection, skip_steps)
-    with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model, skip_steps):
-        pptx_bytes, filename, _content_issues = _build_pptx_for_client(
-            client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
-            company_overview_override, competitor_analysis_override, ux_notes,
-        )
+    report_options.set_keyword_cluster_mode(cluster_mode)
+    try:
+        with text_ai_client.selected_provider_scope(selection.provider, selection.claude_model, skip_steps):
+            pptx_bytes, filename, _content_issues = _build_pptx_for_client(
+                client, db, client_id, include_analytics, include_pagespeed, include_company_overview,
+                company_overview_override, competitor_analysis_override, ux_notes,
+            )
+    finally:
+        report_options.set_keyword_cluster_mode(None)
     return Response(
         content=pptx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -3379,6 +3410,7 @@ def _run_generate_report_job(
     semrush_snapshot: dict | None = None,
     claude_model: str | None = None,
     skip_ai_steps: list[str] | None = None,
+    keyword_cluster_mode: str | None = None,
 ):
     """Builds the PPTX in a background thread with its own DB session, so a
     slow build (PageSpeed Insights, AI narratives, crawls) never has an HTTP
@@ -3392,6 +3424,7 @@ def _run_generate_report_job(
     # via JobContextThreadPoolExecutor. Reset in finally.
     text_ai_client.set_preferred_provider(preferred_provider)
     text_ai_client.set_skipped_ai_steps(skip_ai_steps)
+    report_options.set_keyword_cluster_mode(keyword_cluster_mode)
     # Which Claude model this job's Claude calls use (2026-09-25), same
     # thread-local-per-job pattern.
     text_ai_client.set_claude_model(claude_model)
@@ -3494,6 +3527,7 @@ def start_generate_report_job(
     preferred_provider: str | None = Body(default=None),
     claude_model: str | None = Body(default=None),
     semrush_source: str | None = Body(default=None),
+    keyword_cluster_mode: str | None = Body(default=None),
     skip_ai_steps: list[str] | None = Body(default=None),
     ai: ReportAISelection = Depends(report_ai_selection),
     db: Session = Depends(get_db),
@@ -3512,6 +3546,7 @@ def start_generate_report_job(
     selection = _request_ai_selection(preferred_provider, claude_model, ai)
     preferred_provider, claude_model = selection.provider, selection.claude_model
     skip_steps = _validated_skip_steps(skip_ai_steps)
+    cluster_mode = _require_keyword_cluster_choice(keyword_cluster_mode, client_id, db)
     _enforce_hard_limit(client_id, db, selection, skip_steps)
     # One build per client at a time: a double click, a second tab, or a
     # page that lost track of its job after navigation/refresh gets the
@@ -3546,7 +3581,7 @@ def start_generate_report_job(
         args=(
             job.id, client_id, include_analytics, include_pagespeed, include_company_overview,
             company_overview_override, competitor_analysis_override, ux_notes, preferred_provider,
-            semrush_snapshot, claude_model, skip_steps,
+            semrush_snapshot, claude_model, skip_steps, cluster_mode,
         ),
         daemon=True,
     ).start()

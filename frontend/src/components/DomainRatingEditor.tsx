@@ -1,17 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import ConfirmDeleteButton from "./ConfirmDeleteButton";
-
-interface DomainRatingRow {
-  id: string;
-  domain: string;
-  dr: number;
-}
 
 interface LiveDomainRatingRow {
   domain: string;
   dr: number | null;
-  source: "ahrefs" | "manual" | "unavailable";
+  source: "ahrefs" | "unavailable";
   is_own: boolean;
 }
 
@@ -26,35 +19,19 @@ function normalizeDomain(d: string) {
 
 const SOURCE_LABEL: Record<LiveDomainRatingRow["source"], string> = {
   ahrefs: "Ahrefs",
-  manual: "Manual",
-  unavailable: "No data",
+  unavailable: "Ahrefs lookup failed",
 };
 const SOURCE_COLOR: Record<LiveDomainRatingRow["source"], string> = {
   ahrefs: "var(--color-success-text, #15803d)",
-  manual: "var(--text-muted)",
   unavailable: "var(--color-danger-text, #b91c1c)",
 };
 
 export default function DomainRatingEditor({
   clientId, ownDomain, onChanged,
 }: { clientId: string; ownDomain?: string; onChanged?: () => void }) {
-  const [rows, setRows] = useState<DomainRatingRow[]>([]);
   const [liveRows, setLiveRows] = useState<LiveDomainRatingRow[]>([]);
   const [loadingLive, setLoadingLive] = useState(false);
   const [liveError, setLiveError] = useState("");
-  const [domain, setDomain] = useState("");
-  const [dr, setDr] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState("");
-
-  async function load() {
-    try {
-      const res = await api.get(`/clients/${clientId}/domain-ratings`);
-      setRows(res.data);
-    } catch {
-      // quiet — this panel is optional, the report just shows no DR if it fails to load
-    }
-  }
 
   async function loadLive() {
     setLoadingLive(true);
@@ -70,43 +47,9 @@ export default function DomainRatingEditor({
   }
 
   useEffect(() => {
-    load();
     loadLive();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId]);
-
-  async function save() {
-    if (!domain.trim() || dr.trim() === "") return;
-    const drNum = Number(dr);
-    if (!Number.isFinite(drNum)) {
-      setMsg("DR must be a number");
-      return;
-    }
-    setSaving(true);
-    setMsg("");
-    try {
-      await api.put(`/clients/${clientId}/domain-ratings`, { domain: domain.trim(), dr: drNum });
-      setDomain("");
-      setDr("");
-      await Promise.all([load(), loadLive()]);
-      onChanged?.();
-    } catch (err: any) {
-      setMsg(err?.response?.data?.detail || "Couldn't save");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function remove(id: string) {
-    try {
-      await api.delete(`/clients/${clientId}/domain-ratings/${id}`);
-      setRows(rows.filter((r) => r.id !== id));
-      await loadLive();
-      onChanged?.();
-    } catch (err: any) {
-      setMsg(err?.response?.data?.detail || "Couldn't delete");
-    }
-  }
 
   const ownNorm = ownDomain ? normalizeDomain(ownDomain) : null;
 
@@ -120,8 +63,8 @@ export default function DomainRatingEditor({
           <h3 className="card-title">Domain Rating</h3>
           <p className="card-desc">
             Pulled live from Ahrefs' free API for your own site and every competitor domain you've uploaded data
-            for — this is exactly what the next report will use. A domain falls back to a manual entry below only
-            when the live lookup fails (no Ahrefs key configured, rate limited, unknown domain).
+            for. This is exactly what the next report will use. Ahrefs is the only source; if a lookup fails the
+            report shows no DR for that domain and says why.
           </p>
         </div>
         <button className="btn btn-secondary" onClick={loadLive} disabled={loadingLive} style={{ marginLeft: "auto" }}>
@@ -166,47 +109,6 @@ export default function DomainRatingEditor({
         </ol>
       )}
 
-      <div className="card-title-row" style={{ marginTop: "var(--sp-4)" }}>
-        <div className="card-title-text">
-          <h3 className="card-title" style={{ fontSize: 15 }}>Manual override (fallback)</h3>
-          <p className="card-desc">
-            Only used for a domain where the live Ahrefs lookup fails. Look it up on Ahrefs' free Authority Checker
-            and enter it here.
-          </p>
-        </div>
-      </div>
-      <div className="card-body" style={{ display: "flex", gap: "var(--sp-3)", alignItems: "center", flexWrap: "wrap" }}>
-        <input
-          type="text"
-          placeholder="Domain (e.g. example.com)"
-          value={domain}
-          onChange={(e) => setDomain(e.target.value)}
-          style={{ width: 220 }}
-        />
-        <input
-          type="number"
-          placeholder="DR"
-          value={dr}
-          onChange={(e) => setDr(e.target.value)}
-          style={{ width: 80 }}
-        />
-        <button className="btn btn-primary" onClick={save} disabled={saving || !domain.trim() || dr.trim() === ""}>
-          {saving ? "Saving..." : "Add / Update"}
-        </button>
-      </div>
-      {msg && <p style={{ fontSize: 13, color: "var(--color-danger-text)", marginTop: "var(--sp-2)" }}>{msg}</p>}
-
-      {rows.length > 0 && (
-        <ul style={{ listStyle: "none", padding: 0, marginTop: "var(--sp-3)", display: "flex", flexDirection: "column", gap: 6 }}>
-          {rows.map((r) => (
-            <li key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-              <span style={{ flex: 1 }}>{r.domain}</span>
-              <span style={{ fontWeight: 600 }}>{r.dr}</span>
-              <ConfirmDeleteButton label={r.domain} onConfirm={() => remove(r.id)} />
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }

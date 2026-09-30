@@ -420,18 +420,10 @@ def live_domain_ratings(client_id: uuid.UUID, db: Session = Depends(get_db), cur
         seen.add(norm)
         domains.append((label, False))
 
-    manual_by_domain = {
-        _normalize_domain(r.domain): r.dr
-        for r in db.query(DomainRating).filter(DomainRating.client_id == client_id).all()
-    }
-
     result = []
     for domain, is_own in domains:
         dr = fetch_domain_rating(domain)
-        source = "ahrefs"
-        if dr is None:
-            dr = manual_by_domain.get(_normalize_domain(domain))
-            source = "manual" if dr is not None else "unavailable"
+        source = "ahrefs" if dr is not None else "unavailable"
         result.append({"domain": domain, "dr": dr, "source": source, "is_own": is_own})
     return result
 

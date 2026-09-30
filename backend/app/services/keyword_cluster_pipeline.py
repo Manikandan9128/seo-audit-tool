@@ -1054,8 +1054,16 @@ def build_final_keyword_clusters(
     site_audit_pages_rows: list[dict] | None,
     manual_cluster_map: dict[str, dict] | None = None,
     cache: KeywordIntelligenceCache | None = None,
+    cluster_mode: str | None = None,
 ) -> list[dict]:
-    """Runs (Manual Clustering, when `manual_cluster_map` is non-empty — see
+    """`cluster_mode` (2026-09-30, user-defined choice, no fallback): "manual"
+    = ONLY the uploaded cluster file assigns clusters — keywords it doesn't
+    cover are parked in the not-shown "Needs Review" bucket, never AI-
+    clustered, and a Semrush-native Cluster column is ignored; "ai" = ONLY
+    the AI/rule pipeline clusters (manual file and Semrush-native labels
+    ignored). None keeps the legacy data-driven behaviour for older callers.
+
+    Runs (Manual Clustering, when `manual_cluster_map` is non-empty — see
     `_apply_manual_clusters` — OR, as the fallback, Non-Clusterable Routing
     [AMBIGUOUS/competitor-flavored rows, see `_route_non_clusterable_rows`]
     -> Business Theme -> Candidate Clustering) -> Validation/Auto-Split
@@ -1092,7 +1100,23 @@ def build_final_keyword_clusters(
 
     keyword_rows_by_text = _annotate_semantic_fields(rows)
     annotate_keyword_rows(rows)
-    if manual_cluster_map:
+    if cluster_mode in ("manual", "ai"):
+        # A Semrush-native Cluster/Topic label is a third source the user
+        # never chose — drop it so it can't mix into either mode.
+        for r in rows:
+            if (r.get("cluster") or "").strip() and not r.get("cluster_source"):
+                r["cluster"] = ""
+    if cluster_mode == "manual":
+        _apply_manual_clusters(rows, manual_cluster_map or {})
+        for r in rows:
+            if not (r.get("cluster") or "").strip():
+                r["cluster"] = _NEEDS_REVIEW_CLUSTER_LABEL
+                r["cluster_status"] = "Not in the uploaded cluster file"
+    elif cluster_mode == "ai":
+        clusterable_rows = _route_non_clusterable_rows(rows)
+        _assign_business_themes(clusterable_rows, client_name, client_description)
+        _build_candidate_clusters(clusterable_rows, keyword_rows_by_text, client_description, cache)
+    elif manual_cluster_map:
         _apply_manual_clusters(rows, manual_cluster_map)
         _autocluster_unmatched_rows(rows, keyword_rows_by_text, client_name, client_description, cache)
     elif any((r.get("cluster") or "").strip() for r in rows):

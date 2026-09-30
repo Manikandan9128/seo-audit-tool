@@ -58,12 +58,12 @@ def test_ahrefs_success_marks_source_ahrefs(monkeypatch):
     ]
 
 
-def test_ahrefs_failure_falls_back_to_manual(monkeypatch):
+def test_ahrefs_failure_never_uses_manual_rating(monkeypatch):
     manual = [SimpleNamespace(domain="rival.com", dr=33)]
     db = FakeDB(competitor_labels=[("rival.com",)], manual_ratings=manual)
     result = _live(monkeypatch, db, {"example.com": 55})  # no ahrefs value for rival.com
     rival = next(r for r in result if r["domain"] == "rival.com")
-    assert rival == {"domain": "rival.com", "dr": 33, "source": "manual", "is_own": False}
+    assert rival == {"domain": "rival.com", "dr": None, "source": "unavailable", "is_own": False}
 
 
 def test_no_ahrefs_no_manual_is_unavailable(monkeypatch):

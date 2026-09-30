@@ -131,11 +131,12 @@ def _preview(monkeypatch, body_provider=None, header_provider=None):
 
     monkeypatch.setattr(site_audit, "_get_owned_client", lambda *a: SimpleNamespace(name="Acme", website_url="https://acme.test"))
     monkeypatch.setattr(site_audit, "_semrush_snapshot_for", lambda *a: None)
+    monkeypatch.setattr(site_audit, "_require_keyword_cluster_choice", lambda mode, *a: mode)
     monkeypatch.setattr(site_audit, "_gather_report_data", fake_gather)
     monkeypatch.setattr(site_audit, "_scrub_report_data", lambda d: d)
     result = site_audit.report_preview(
         uuid.uuid4(), company_overview_override=None, competitor_analysis_override=None, ux_notes=None,
-        semrush_source=None, preferred_provider=body_provider, claude_model=None, skip_ai_steps=None,
+        semrush_source=None, keyword_cluster_mode="ai", preferred_provider=body_provider, claude_model=None, skip_ai_steps=None,
         ai=ReportAISelection(header_provider, None), db=None, current_user=None,
     )
     return result, seen
@@ -201,10 +202,11 @@ def _start(monkeypatch, provider, active=None):
     monkeypatch.setattr(site_audit, "_get_owned_client", lambda *a: None)
     monkeypatch.setattr(site_audit, "_active_report_job", lambda *a: active)
     monkeypatch.setattr(site_audit, "_semrush_snapshot_for", lambda *a: None)
+    monkeypatch.setattr(site_audit, "_require_keyword_cluster_choice", lambda mode, *a: mode)
     monkeypatch.setattr(site_audit.threading, "Thread", FakeThread)
     result = site_audit.start_generate_report_job(
         uuid.uuid4(), company_overview_override=None, competitor_analysis_override=None, ux_notes=None,
-        preferred_provider=provider, claude_model=None, semrush_source=None, skip_ai_steps=None,
+        preferred_provider=provider, claude_model=None, semrush_source=None, keyword_cluster_mode="ai", skip_ai_steps=None,
         ai=ReportAISelection(None, None), db=db, current_user=None,
     )
     return result, started, db
@@ -244,12 +246,13 @@ def test_download_passes_skipped_steps_to_the_job_and_rejects_unknown_ones(monke
     monkeypatch.setattr(site_audit, "_get_owned_client", lambda *a: None)
     monkeypatch.setattr(site_audit, "_active_report_job", lambda *a: None)
     monkeypatch.setattr(site_audit, "_semrush_snapshot_for", lambda *a: None)
+    monkeypatch.setattr(site_audit, "_require_keyword_cluster_choice", lambda mode, *a: mode)
     monkeypatch.setattr(site_audit.threading, "Thread", FakeThread)
     kwargs = dict(company_overview_override=None, competitor_analysis_override=None, ux_notes=None,
-                  preferred_provider="claude", claude_model=None, semrush_source=None,
+                  preferred_provider="claude", claude_model=None, semrush_source=None, keyword_cluster_mode="ai",
                   ai=ReportAISelection(None, None), db=_FakeDb(), current_user=None)
     site_audit.start_generate_report_job(uuid.uuid4(), skip_ai_steps=["aeo_geo", "ui_audit"], **kwargs)
-    assert started["args"][-1] == ["aeo_geo", "ui_audit"]
+    assert started["args"][-2] == ["aeo_geo", "ui_audit"]
     with pytest.raises(HTTPException) as exc_info:
         site_audit.start_generate_report_job(uuid.uuid4(), skip_ai_steps=["everything"], **kwargs)
     assert exc_info.value.status_code == 400
