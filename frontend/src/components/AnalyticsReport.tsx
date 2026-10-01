@@ -1,3 +1,5 @@
+import { markTocActive } from "./tocActive";
+
 interface TrafficRow {
   date: string;
   sessions: string;
@@ -235,7 +237,7 @@ export function SectionTrafficSources({ data }: { data: AnalyticsReportData }) {
 export default function AnalyticsReport({ data }: { data: AnalyticsReportData }) {
   return (
     <div className="report">
-      <nav className="toc">
+      <nav className="toc" onClick={markTocActive}>
         <p className="toc-label">On this page</p>
         <ol>
           {data.traffic_overview && <li><a href="#ga-overview">Traffic overview</a></li>}

@@ -108,6 +108,7 @@
   /* Cyces editorial type system: serif (Cormorant Garamond) carries
      headings/big numbers, Poppins carries body/UI — see index.html's font
      link. */
+  --control-h: 40px;
   --font-display: "Cormorant Garamond", Georgia, serif;
   --font-body: "Poppins", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "Poppins", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -199,16 +200,39 @@ button.secondary:hover {
 
 input, select {
   font-family: inherit;
-  font-size: 14px;
-  padding: 9px 12px;
-  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  height: var(--control-h, 40px);
+  padding: 0 16px;
+  border-radius: 6px;
   border: 1px solid var(--border-strong);
   background: var(--surface);
   color: var(--text);
 }
+/* Checkboxes, radios, files and ranges are not text controls: they keep their
+   native size instead of the shared 40px control box. */
+input[type="checkbox"], input[type="radio"], input[type="file"], input[type="range"], input[type="color"] {
+  height: auto;
+  padding: 0;
+  border-radius: 0;
+}
+input[type="text"], input[type="email"], input[type="password"], input[type="search"],
+input[type="number"], input[type="url"], input[type="date"], input:not([type]) {
+  font-weight: 500;
+}
+select {
+  padding-right: 32px;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235A4E49' stroke-width='2'><path d='M7 10l5 5 5-5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 14px;
+  cursor: pointer;
+}
 input:focus, select:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-subtle);
 }
 
 .card {
@@ -518,8 +542,8 @@ input:focus, select:focus {
 
 .clients-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 20px;
 }
 
 .client-tile {
@@ -541,7 +565,6 @@ input:focus, select:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-display);
   font-weight: 700;
   font-size: 16px;
   flex-shrink: 0;
@@ -549,7 +572,6 @@ input:focus, select:focus {
 .client-name {
   font-weight: 600;
   font-size: 16px;
-  font-family: var(--font-display);
 }
 .client-host {
   color: var(--text-muted);
@@ -623,45 +645,57 @@ input:focus, select:focus {
 
 nav.toc {
   position: sticky;
-  top: 24px;
+  top: var(--sp-7, 32px);
   align-self: start;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 nav.toc .toc-label {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: 12px;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  margin: 0 0 var(--sp-3, 12px);
 }
 nav.toc ol {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   list-style: none;
   margin: 0;
   padding: 0;
   counter-reset: toc;
-  border-left: 1px solid var(--border);
+  border-left: 2px solid var(--color-border-soft);
 }
 nav.toc li {
   counter-increment: toc;
 }
 nav.toc a {
   display: block;
-  padding: 6px 0 6px 14px;
-  margin-left: -1px;
-  border-left: 1px solid transparent;
-  color: var(--text-muted);
+  padding: 7px 0 7px var(--sp-4, 16px);
+  margin-left: -2px;
+  border-left: 2px solid transparent;
+  color: var(--color-text-tertiary);
+  text-decoration: none;
 }
 nav.toc a::before {
   content: counter(toc, decimal-leading-zero) "  ";
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   color: var(--border-strong);
 }
-nav.toc a:hover,
-nav.toc a.active {
+nav.toc a:hover {
   color: var(--text);
-  border-left-color: var(--accent);
   text-decoration: none;
+}
+nav.toc a.active {
+  color: var(--color-primary);
+  font-weight: 700;
+  border-left-color: var(--color-primary);
+  text-decoration: none;
+}
+nav.toc a.active::before {
+  color: var(--color-primary);
 }
 
 .report-section {
@@ -1655,7 +1689,6 @@ table.matrix th:first-child {
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-family: var(--font-display);
   font-weight: 600;
   font-size: 14px;
   flex-shrink: 0;
@@ -1663,7 +1696,6 @@ table.matrix th:first-child {
 .brand-name {
   display: flex;
   flex-direction: column;
-  font-family: var(--font-display);
   font-weight: 600;
   font-size: 17px;
   line-height: 1.15;
@@ -1733,7 +1765,6 @@ table.matrix th:first-child {
   gap: var(--sp-2);
 }
 .sidebar-help-title {
-  font-family: var(--font-display);
   font-weight: 600;
   font-size: 12.5px;
   color: #fff;
@@ -2185,3 +2216,104 @@ button.secondary:hover:not(:disabled) {
   visibility: visible;
   transform: translateX(-50%) translateY(0);
 }
+
+
+/* ============ v9 classic (2026-10-01): shared control + client topbar ============
+   Visual only. One height for every control; the client topbar is one row of
+   three groups (Sections | AI provider/model | Preview-Generate-Download). */
+.control {
+  height: var(--control-h);
+  padding: 0 var(--sp-4);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  box-shadow: none;
+}
+.control:hover { background: var(--bg); box-shadow: none; }
+
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-5);
+  flex-wrap: wrap;
+}
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-right: var(--sp-4);
+  border-right: 1px solid var(--border-strong);
+}
+.ai-control {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.ai-control .ai-label {
+  padding: 0 var(--sp-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  border-right: 1px solid var(--color-border-soft);
+  white-space: nowrap;
+}
+.ai-control select {
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background-color: transparent;
+  padding: 0 32px 0 var(--sp-3);
+  box-shadow: none;
+}
+.ai-control select + select { border-left: 1px solid var(--color-border-soft); }
+.ai-control select:focus { box-shadow: inset 0 0 0 2px var(--color-primary-subtle); }
+.ai-hint {
+  margin: var(--sp-2) 0 0;
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}
+.action-group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.topbar-controls .btn,
+.action-group .btn {
+  height: var(--control-h);
+  padding: 0 var(--sp-4);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  box-shadow: none;
+}
+/* Preview and Download are outline; Generate is the one filled action. */
+.action-group .btn-secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+.action-group .btn-secondary:hover { background: var(--bg); }
+.action-group .btn-primary {
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  color: #fff;
+}
+.action-group .btn-primary:hover { background: var(--color-primary-hover); }

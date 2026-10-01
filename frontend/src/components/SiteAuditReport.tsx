@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api/client";
+import { markTocActive } from "./tocActive";
 
 interface SiteAuditResult {
   url: string;
@@ -120,7 +121,7 @@ export default function SiteAuditReport({
 
   return (
     <div className="report">
-      <nav className="toc">
+      <nav className="toc" onClick={markTocActive}>
         <p className="toc-label">On this page</p>
         <ol>
           <li><a href="#sa-overview">Overview</a></li>

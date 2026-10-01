@@ -801,7 +801,7 @@ export default function ClientDetailPage() {
           borderBottom: "1px solid var(--border)",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 24 }}>
+        <div>
           <div>
             <p className="eyebrow" style={{ margin: "0 0 4px" }}>
               Client
@@ -816,9 +816,10 @@ export default function ClientDetailPage() {
               {client.website_url.replace(/^https?:\/\//, "")}
             </a>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "flex-start", position: "relative", flexWrap: "wrap" }}>
+          <div className="topbar-controls">
+            <div className="control-group">
             <div style={{ position: "relative" }}>
-              <button className="secondary" onClick={() => setSectionDropdownOpen((o) => !o)}>
+              <button className="secondary control" onClick={() => setSectionDropdownOpen((o) => !o)}>
                 Sections ({selectedSections.length}) ▾
               </button>
               {sectionDropdownOpen && (
@@ -856,9 +857,11 @@ export default function ClientDetailPage() {
                 </>
               )}
             </div>
-            <label className="report-ai-provider" style={{ display: "flex", flexDirection: "column", marginRight: 8, fontSize: 12 }}>
-              <span style={{ fontWeight: 600 }}>Report AI Provider</span>
+            </div>
+            <div className="ai-control" role="group" aria-label="Report AI Provider">
+              <span className="ai-label" aria-hidden="true">AI</span>
               <select
+                aria-label="Report AI Provider"
                 value={preferredProvider}
                 onChange={(e) => setPreferredProvider(e.target.value)}
                 aria-describedby="report-ai-provider-help"
@@ -872,24 +875,32 @@ export default function ClientDetailPage() {
                   </option>
                 ))}
               </select>
-              <span id="report-ai-provider-help" className="muted" style={{ fontSize: 11 }}>
-                All report analysis will use this provider. No automatic fallback.
-              </span>
-            </label>
-            {preferredProvider === "claude" && (
-              <select
-                value={claudeModel}
-                onChange={(e) => setClaudeModel(e.target.value)}
-                title="Which Claude model this report's Claude calls use"
-                style={{ marginRight: 8 }}
-              >
-                {CLAUDE_MODEL_OPTIONS.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            )}
+              {preferredProvider === "claude" && (
+                <select
+                  aria-label="Claude model"
+                  value={claudeModel}
+                  onChange={(e) => setClaudeModel(e.target.value)}
+                  title="Which Claude model this report's Claude calls use"
+                >
+                  {CLAUDE_MODEL_OPTIONS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <div className="action-group">
+              {hasGenerated && (
+                <button
+                  data-tour="tour-preview-report"
+                  className="btn btn-secondary"
+                  onClick={openPreview}
+                  disabled={previewLoading || semrushBlocksReport || !preferredProvider}
+                >
+                  {previewLoading ? "Loading..." : "Preview Report"}
+                </button>
+              )}
             <button
               data-tour="tour-generate-report"
               className="btn btn-primary"
@@ -899,6 +910,17 @@ export default function ClientDetailPage() {
             >
               {generating ? "Generating..." : "Generate Report"}
             </button>
+            {hasGenerated && (
+              <button
+                data-tour="tour-download-report"
+                className="btn btn-secondary"
+                onClick={downloadReportDirect}
+                disabled={reportLoading || semrushBlocksReport || !preferredProvider}
+              >
+                {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
+              </button>
+            )}
+            </div>
             {clusterPromptOpen && (
               <KeywordClusterChoiceModal
                 onUseAi={() => clusterResolver.current?.("ai")}
@@ -956,22 +978,6 @@ export default function ClientDetailPage() {
             )}
             {hasGenerated && (
               <>
-                <button
-                  data-tour="tour-preview-report"
-                  className="btn btn-secondary"
-                  onClick={openPreview}
-                  disabled={previewLoading || semrushBlocksReport || !preferredProvider}
-                >
-                  {previewLoading ? "Loading..." : "Preview Report"}
-                </button>
-                <button
-                  data-tour="tour-download-report"
-                  className="btn btn-secondary"
-                  onClick={downloadReportDirect}
-                  disabled={reportLoading || semrushBlocksReport || !preferredProvider}
-                >
-                  {reportLoading ? "Downloading..." : "Download Report (PPTX)"}
-                </button>
                 {reportLoading && reportStatusMsg && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 220 }}>
                     <span className="muted" style={{ fontSize: 12 }}>
@@ -1028,6 +1034,9 @@ export default function ClientDetailPage() {
               </>
             )}
           </div>
+          <p id="report-ai-provider-help" className="ai-hint">
+            All report analysis will use this provider. No automatic fallback.
+          </p>
         </div>
         <div className="tabs" role="tablist" aria-label="Client sections">
           <button role="tab" aria-selected={activeTab === "overview"} className={`tab ${activeTab === "overview" ? "active" : ""}`} onClick={() => setActiveTab("overview")}>
@@ -1300,7 +1309,6 @@ export default function ClientDetailPage() {
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "center",
-                          fontFamily: "var(--font-display)",
                           fontSize: 12,
                           fontWeight: 600,
                           color: step.done ? "#fff" : isCurrent ? "var(--accent-deep)" : "var(--muted)",
