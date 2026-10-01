@@ -207,3 +207,42 @@ def test_small_market_client_can_still_have_high_priority_topics():
     summaries = [_summary("Topic A", [90, 40]), _summary("Topic B", [60]), _summary("Topic C", [50])]
     score_summaries(summaries)
     assert any(s["roadmap_priority"] == "High" for s in summaries)
+
+
+def _traffic_slide(sessions_per_day, channels):
+    from pptx import Presentation
+    from app.reporting.pptx_builder import add_traffic_overview_slide
+
+    analytics = {
+        "traffic_overview": {"rows": [
+            {"date": f"2026090{i}", "sessions": s, "total_users": s, "page_views": s, "engagement_rate": "0.1",
+             "engagement_duration": s, "bounce_rate": "0.85"} for i, s in enumerate(sessions_per_day, start=1)
+        ]},
+        "traffic_sources": {"rows": [{"channel": c, "sessions": n, "users": n} for c, n in channels]},
+    }
+    return add_traffic_overview_slide(Presentation(), analytics)
+
+
+def _share_column(slide):
+    for sh in slide.shapes:
+        if sh.has_table and sh.table.cell(0, 2).text == "% Share":
+            return [float(r.cells[2].text.rstrip("%")) for r in list(sh.table.rows)[1:]]
+
+
+def _all_text(slide):
+    return " ".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame)
+
+
+def test_traffic_shares_add_up_to_100_when_the_two_ga4_reports_disagree():
+    # Lumber: card 24,825 vs channels 24,972 used to give 100.6%.
+    slide = _traffic_slide([8000, 8000, 8825], [("Direct", 17347), ("Organic Search", 4972), ("Email", 1071), ("Referral", 1582)])
+    shares = _share_column(slide)
+    assert abs(sum(shares) - 100.0) <= 0.2
+    text = _all_text(slide)
+    assert "Channel total (24,972) differs slightly from the Sessions card (24,825)" in text
+
+
+def test_no_note_when_totals_agree():
+    slide = _traffic_slide([5000, 5000], [("Direct", 6000), ("Organic Search", 4000)])
+    assert "differs slightly" not in _all_text(slide)
+    assert _share_column(slide) == [60.0, 40.0]

@@ -5349,6 +5349,11 @@ _TRAFFIC_SOURCE_PALETTE = [
 ]
 
 
+# A channel total this far (as a share of the Sessions card) from the card gets
+# an explanatory note on the Traffic Overview slide.
+_TRAFFIC_TOTALS_NOTE_THRESHOLD = 0.005
+
+
 def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     """2026-09-25 redesign: one slide answering "how much traffic, how do
     visitors engage, where does it come from, what does the mix mean" —
@@ -5477,6 +5482,21 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
         point.format.line.width = Pt(1.5)
         slice_colors.append(color)
 
+    # % Share is each channel's part of the CHANNEL total, so the column adds
+    # up to 100%. It used to divide by the Sessions card (a separate GA4
+    # report summed by day), and when GA4's two reports disagreed by a few
+    # sessions the shares added up to 100.6% (Lumber, 2026-10-01).
+    share_base = total_source_sessions or grand_total
+    totals_differ = bool(
+        sessions and total_source_sessions
+        and abs(total_source_sessions - sessions) / sessions > _TRAFFIC_TOTALS_NOTE_THRESHOLD
+    )
+    if totals_differ:
+        logger.info(
+            "Traffic Overview: Sessions card %s vs channel total %s (%.2f%% apart) - shown with a note",
+            int(sessions), int(total_source_sessions), abs(total_source_sessions - sessions) / sessions * 100,
+        )
+
     # Compact channel table doubles as the chart's legend — same rows the
     # donut renders (including the "Other" wedge, if any), so the two can
     # never disagree on what's shown.
@@ -5484,7 +5504,7 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
         (
             str(r.get("channel", "")),
             f"{int(float(r.get('sessions', 0) or 0)):,}",
-            f"{(float(r.get('sessions', 0) or 0) / grand_total * 100 if grand_total else 0):.1f}%",
+            f"{(float(r.get('sessions', 0) or 0) / share_base * 100 if share_base else 0):.1f}%",
         )
         for r in chart_rows
     ]
@@ -5519,8 +5539,19 @@ def add_traffic_overview_slide(prs: Presentation, analytics: dict):
     # real channels in chart_rows, excluding the synthetic "Other" wedge)
     # so nothing it references is invisible on this slide.
     shown_for_insights = [r for r in chart_rows if r.get("channel") != "Other"]
-    insights = _traffic_sources_insights(shown_for_insights, grand_total)
+    insights = _traffic_sources_insights(shown_for_insights, share_base)
     _insights_strip(slide, Inches(6.7), y, Inches(6.0), insights, max_items=4)
+
+    if totals_differ:
+        table_bottom = chart_top + row_h * (len(table_rows) + 1)
+        note_top = max(chart_top + chart_h, table_bottom) + Inches(0.08)
+        _textbox(
+            slide, Inches(0.6), note_top, Inches(5.9), Inches(0.42),
+            f"Channel total ({int(total_source_sessions):,}) differs slightly from the Sessions card "
+            f"({int(sessions):,}): GA4's channel report and its daily total count late data and "
+            "attribution a little differently.",
+            size=9, color=TEXT_MUTED,
+        )
 
     return slide
 
