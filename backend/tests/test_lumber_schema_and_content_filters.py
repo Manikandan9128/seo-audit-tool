@@ -52,3 +52,24 @@ def test_competitor_only_adjacent_keyword_is_dropped_but_ranking_one_kept():
 def test_guard_never_empties_the_slide():
     rows = [{"keyword": "a b", "search_volume": 10, "cluster": "X", "source": "Keyword Gap", "relevance_status": "Adjacent / Potential"}]
     assert len(_content_seo_eligible_rows(rows)) == 1
+
+
+def test_client_safe_insight_strips_internal_scaffolding():
+    from app.services.structured_data_insights_service import client_safe_insight
+    raw = ("ISSUE: FAQPage status unconfirmed. EVIDENCE: flagged with ELIGIBILITY_CHECK_STALE, "
+           "so not verified. ACTION: Fix: re-validate.")
+    out = client_safe_insight(raw)
+    for banned in ("ISSUE:", "EVIDENCE:", "ACTION:", "ELIGIBILITY_CHECK_STALE"):
+        assert banned not in out
+    assert "re-validate" in out
+
+
+def test_programmatic_slide_has_no_internal_wording():
+    from pptx import Presentation
+    from app.reporting.pptx_builder import add_programmatic_seo_slide
+    rows = [{"keyword": k, "search_volume": v, "cluster": "Federal Minimum Wage"} for k, v in (
+        ("federal minimum wage", 9000), ("federal minimum wage 2026", 5000),
+        ("minimum wage usa", 4000), ("minimum wage poster", 3000), ("minimum wage history", 2500))]
+    slide = add_programmatic_seo_slide(Presentation(), rows)
+    text = " ".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame) if slide else ""
+    assert "SERP not validated" not in text and "folded in" not in text

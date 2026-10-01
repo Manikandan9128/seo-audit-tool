@@ -110,7 +110,9 @@ def test_near_duplicates_consolidated_not_shown_as_separate_subpages():
     ]
     slide = add_programmatic_seo_slide(_prs(), rows)
     text = _slide_text(slide)
-    assert "near-duplicate variants folded in" in text
+    # Internal wording ("folded in", "SERP not validated") never reaches the slide.
+    assert "folded in" not in text and "SERP not validated" not in text
+    assert "Daimler India Commercial Vehicles Pvt Ltd" not in text
 
 
 def test_ranking_prefers_more_distinct_subintents_over_raw_volume():

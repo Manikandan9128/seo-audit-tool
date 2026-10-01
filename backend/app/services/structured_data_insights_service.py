@@ -41,11 +41,12 @@ or unverified; a type with no note here is assumed eligible):
 
 Write as many Key Insights bullets as the data actually supports (typically 2-4, never padded to hit a count), \
 each covering ONE schema gap \
-or ONE confirmed win. Every bullet must follow ISSUE -> EVIDENCE -> ACTION:
-- ISSUE: name the schema type and whether it's Missing, Invalid, or a confirmed Valid win.
-- EVIDENCE: cite the exact Applicable/Present/Valid/Invalid/Missing numbers (or Yes/No for site-level) behind it.
-- ACTION: for a gap, end with "Fix: ..." naming the concrete implementation step (e.g. "Fix: add Article schema \
-to the blog template."). For a confirmed win (Invalid=0 and Coverage=100%, or a site-level type present and \
+or ONE confirmed win. Write each bullet as two or three plain sentences, in this order, WITHOUT any labels, \
+headings or prefixes (never write the words "ISSUE", "EVIDENCE" or "ACTION" as a label):
+- First say what is missing, invalid or working for that schema type, in plain words.
+- Then give the exact Applicable/Present/Valid/Invalid/Missing numbers (or Yes/No for site-level) behind it.
+- Then, for a gap, end with the concrete implementation step (e.g. "Add Article schema to the blog \
+template."). For a confirmed win (Invalid=0 and Coverage=100%, or a site-level type present and \
 valid), state it as a win — no fix needed, don't invent one.
 - Never write an insight for a row that's simply Applicable=0 or not present in the tables above.
 - Call out any page bucket correctly excluded from the coverage math (e.g. "Other Pages" with no content-\
@@ -60,6 +61,9 @@ efficiency", "increases brand authority", "cannot rank without this". Use eviden
 eligibility notes above; never claim a rich-result or CTR benefit for a type flagged as ineligible or retired \
 there, or for FAQPage (Google retired that SERP dropdown) or a type with no eligibility relationship established.
 
+Never write internal flag names such as ELIGIBILITY_CHECK_STALE; say in plain words that Google's current \
+eligibility for that type hasn't been confirmed.
+
 Never invent traffic numbers or issue types — infer only from the numbers given. Write in plain, confident \
 agency language — this is client-facing content, not an AI-generated draft. Never mention that you are an AI, a \
 language model, or any tool by name. JobPosting only ever appears in the tables above when at least one crawled \
@@ -71,6 +75,20 @@ Return ONLY valid JSON, no markdown fences, no commentary:
   "insights": [string]
 }}
 """
+
+
+_LABEL_RE = re.compile(r"\b(?:ISSUE|EVIDENCE|ACTION)\s*:\s*")
+_STALE_FLAG_RE = re.compile(r"['\"]?ELIGIBILITY_CHECK_STALE['\"]?\s*[—:-]?\s*", re.IGNORECASE)
+
+
+def client_safe_insight(text: str) -> str:
+    """Strips internal scaffolding that must never reach the client: the
+    ISSUE/EVIDENCE/ACTION labels (models sometimes echo them) and the
+    ELIGIBILITY_CHECK_STALE flag name."""
+    cleaned = _LABEL_RE.sub("", text or "")
+    cleaned = _STALE_FLAG_RE.sub("Google's current eligibility is unconfirmed — ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return re.sub(r"\.\s*\.", ".", cleaned)
 
 
 def _eligibility_clause(schema_type: str, eligibility_notes: dict[str, str]) -> str:
@@ -415,6 +433,7 @@ def generate_structured_data_insights(
                 errors.append(f"{provider} returned invalid JSON: {cleaned[:200]}")
                 continue
             if data.get("insights"):
+                data["insights"] = [client_safe_insight(i) for i in data["insights"] if isinstance(i, str)]
                 return data
             empty_from.append(provider)
     except NoAIProviderConfigured:

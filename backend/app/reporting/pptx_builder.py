@@ -9203,8 +9203,7 @@ def add_programmatic_seo_slide(prs: Presentation, keyword_rows: list[dict] | Non
             f"{label}: {len(sub_keywords)} distinct sub-intents varying by {', '.join(modifiers)} "
             f"(pattern: {label} × {dimension.lower()}), "
             f"{int(cluster_volume):,} combined monthly searches; {hub_text}; thin-page risk {risk}; each page needs {needs}"
-            + ("; near-duplicate variants folded in." if consolidated_any else ".")
-            + " SERP not validated — review before building."
+            + "."
         )
         candidates.append({
             "label": label, "volume": cluster_volume,
