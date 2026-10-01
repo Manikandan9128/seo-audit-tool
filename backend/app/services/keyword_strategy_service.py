@@ -142,8 +142,18 @@ def cluster_opportunity(rows: list[dict], max_demand: float, strategic: float | 
     return round(sum(scores) / len(scores)) if scores else 0
 
 
+# "High" also needs real audience. The opportunity score rewards an existing
+# ranking and low difficulty so heavily that a 170-searches-a-month topic with
+# one keyword (Lumber "Handshake") scored High beside 49,500-search topics. A
+# cluster's total monthly demand must reach half the client's own median
+# cluster demand, capped at this many searches so a small-market client's
+# strongest topics can still be High.
+_HIGH_DEMAND_FLOOR_CAP = 300
+
+
 def roadmap_priority(
     opportunity: int, confidence_level: str | None, rows: list[dict], high_cutoff: int = _HIGH_OPPORTUNITY,
+    cluster_demand: float | None = None, demand_floor: float = 0.0,
 ) -> str:
     """§66-K / §62: Human Review when the evidence is weak (Low confidence,
     or most keywords flagged), else High / Medium / Low by opportunity.
@@ -153,7 +163,7 @@ def roadmap_priority(
     flagged = sum(1 for r in rows if r.get("relevance_status") in _EXCLUDED_RELEVANCE_STATUSES)
     if confidence_level == "Low" or (rows and flagged / len(rows) > 0.5):
         return "Human Review"
-    if opportunity >= max(_HIGH_OPPORTUNITY, high_cutoff):
+    if opportunity >= max(_HIGH_OPPORTUNITY, high_cutoff) and (cluster_demand is None or cluster_demand >= demand_floor):
         return "High"
     return "Medium" if opportunity >= _MEDIUM_OPPORTUNITY else "Low"
 
@@ -169,8 +179,15 @@ def score_summaries(summaries: list[dict], site_authority=None) -> None:
     # "High" = above the absolute floor AND in this client's top third.
     ranked = sorted((s["opportunity"] for s in summaries), reverse=True)
     top_third_cutoff = ranked[max(0, math.ceil(len(ranked) / 3) - 1)] if ranked else _HIGH_OPPORTUNITY
+    cluster_demands = {id(s): sum(_demand(r) for r in s["rows"]) for s in summaries}
+    positive = sorted(d for d in cluster_demands.values() if d > 0)
+    median_demand = positive[len(positive) // 2] if positive else 0.0
+    demand_floor = min(_HIGH_DEMAND_FLOOR_CAP, 0.5 * median_demand)
     for s in summaries:
-        s["roadmap_priority"] = roadmap_priority(s["opportunity"], s.get("confidence_level"), s["rows"], top_third_cutoff)
+        s["roadmap_priority"] = roadmap_priority(
+            s["opportunity"], s.get("confidence_level"), s["rows"], top_third_cutoff,
+            cluster_demand=cluster_demands[id(s)], demand_floor=demand_floor,
+        )
         for r in s["rows"]:
             r["cluster_opportunity"] = s["opportunity"]
             r["roadmap_priority"] = s["roadmap_priority"]

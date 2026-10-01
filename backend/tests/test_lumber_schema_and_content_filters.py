@@ -183,3 +183,27 @@ def test_country_fix_carries_full_page_url_and_slide_links_it():
         if run.hyperlink.address
     ]
     assert page in links
+
+
+def _summary(name, volumes, **extra):
+    rows = [{"keyword": f"{name} {i}", "search_volume": v, "detected_intent": "Informational",
+             "relevance_status": "Core Relevant", "keyword_difficulty": 10, "current_position": 5,
+             "domain_positions": {"rival.com": 3}} for i, v in enumerate(volumes)]
+    return {"name": name, "rows": rows, "confidence_level": "High", **extra}
+
+
+def test_tiny_one_keyword_cluster_is_not_high_priority():
+    from app.services.keyword_strategy_service import score_summaries
+    summaries = [_summary("Big A", [40000, 9000]), _summary("Big B", [30000, 5000]), _summary("Big C", [20000]),
+                 _summary("Handshake", [170])]
+    score_summaries(summaries)
+    tiers = {s["name"]: s["roadmap_priority"] for s in summaries}
+    assert tiers["Handshake"] != "High"
+    assert "High" in tiers.values()
+
+
+def test_small_market_client_can_still_have_high_priority_topics():
+    from app.services.keyword_strategy_service import score_summaries
+    summaries = [_summary("Topic A", [90, 40]), _summary("Topic B", [60]), _summary("Topic C", [50])]
+    score_summaries(summaries)
+    assert any(s["roadmap_priority"] == "High" for s in summaries)
