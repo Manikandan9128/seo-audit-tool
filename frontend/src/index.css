@@ -2127,7 +2127,14 @@ button.secondary:hover:not(:disabled) {
   outline-offset: 2px;
 }
 .tab-icon {
-  display: none;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: currentColor;
+}
+.tab-icon svg {
+  width: 15px;
+  height: 15px;
 }
 .tab.active {
   background: transparent;
