@@ -34,6 +34,7 @@ import base64
 import httpx
 
 from app.integrations import ai_usage
+from app.services import ai_response_cache
 from app.integrations.ai_usage import AIStatus, TokenLimitError
 from anthropic import Anthropic
 from google import genai
@@ -772,7 +773,30 @@ def failure_message(section: str, errors: list[str]) -> str:
     return ai_usage.describe_failure(section, errors, provider)
 
 
-def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors: list[str], max_attempts: int):
+def _cache_key_for(provider: str, sent_prompt: str, extra: str) -> str | None:
+    """Cache key for one paid-provider request, or None when this request
+    shouldn't be cached (cache off, free provider, or a Claude call with no
+    key to bill)."""
+    if provider != "claude" or not ai_response_cache.enabled():
+        return None
+    model = _current_claude_model()
+    effort = None if model.startswith("claude-haiku") else (getattr(_effort_override, "value", None) or CLAUDE_EFFORT)
+    return ai_response_cache.make_key(provider, model, effort, ai_usage.current_module(), extra, sent_prompt)
+
+
+def _usage_since(start: tuple[int, int]) -> tuple[int, int]:
+    """(input, output) tokens the ledger recorded since `start` calls/tokens."""
+    ledger = ai_usage.current_ledger()
+    if ledger is None:
+        return 0, 0
+    with ledger._lock:
+        calls = list(ledger.calls)
+    new = calls[start[0]:]
+    return sum(c["input_tokens"] for c in new), sum(c["output_tokens"] for c in new)
+
+
+def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors: list[str], max_attempts: int,
+                      cache_extra: str = ""):
     """The one request layer every AI call goes through (2026-09-29 global
     token & failure spec). Per attempt: report hard-safety check, module
     output budget, provider call, usage recorded by the provider helper.
@@ -788,6 +812,9 @@ def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors:
     ledger = ai_usage.current_ledger()
     budget = ai_usage.output_budget(module, provider, max_tokens)
     last_status, suffix, timeouts, accepted = None, "", 0, False
+    # ("cache"|"fresh", key, text, input_tokens, output_tokens) of the answer
+    # most recently handed to the caller - what gets stored if it's accepted.
+    last_given: tuple | None = None
     try:
         for _attempt in range(max_attempts):
             try:
@@ -798,14 +825,34 @@ def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors:
                 break
             before = len(errors)
             _effort_override.value = "low" if last_status == AIStatus.TOKEN_LIMIT_EXCEEDED else None
+            cache_key = None
             try:
+                cache_key = _cache_key_for(provider, prompt + suffix, cache_extra)
+                hit = ai_response_cache.get(cache_key) if cache_key else None
+                if hit:
+                    if ledger is not None:
+                        ledger.record_cached_call(module, provider, _current_claude_model(),
+                                                  hit["input_tokens"], hit["output_tokens"])
+                    last_given = ("cache", cache_key, hit["response"], 0, 0)
+                    yield hit["response"]
+                    # Still iterating: the caller rejected the saved answer, so
+                    # it is dropped and this attempt asks the provider afresh.
+                    ai_response_cache.delete(cache_key)
+                    last_given = None
+                    if ledger is not None:
+                        ledger.mark_last_call(AIStatus.INVALID_JSON)
+                ledger_start = (len(ledger.calls) if ledger is not None else 0, 0)
                 text = call(prompt + suffix, budget, errors)
             finally:
                 _effort_override.value = None
             for i in range(before, len(errors)):
                 errors[i] = ai_usage.tag_error(errors[i])
             if text:
+                if cache_key:
+                    used_in, used_out = _usage_since(ledger_start)
+                    last_given = ("fresh", cache_key, text, used_in, used_out)
                 yield text
+                last_given = None
                 # Still iterating: the caller rejected this answer.
                 if len(errors) > before:
                     errors[-1] = ai_usage.tag_error(errors[-1])
@@ -823,6 +870,9 @@ def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors:
             suffix = ai_usage.RETRY_SUFFIX.get(last_status, "")
     except GeneratorExit:
         accepted = True
+        if last_given and last_given[0] == "fresh":
+            _kind, key, text, used_in, used_out = last_given
+            ai_response_cache.put(key, module, provider, _current_claude_model(), text, used_in, used_out)
         raise
     finally:
         if ledger is not None:
@@ -1155,6 +1205,16 @@ _VISION_PROVIDER_ATTEMPTS = {
 }
 
 
+def _images_fingerprint(images: list[tuple[bytes, str]]) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    for data, mime in images:
+        h.update(mime.encode())
+        h.update(hashlib.sha256(data).digest())
+    return h.hexdigest()
+
+
 def iter_text_with_images_attempts(
     prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str], start_url: str | None = None,
 ):
@@ -1174,7 +1234,8 @@ def iter_text_with_images_attempts(
         def call(p, mt, errs):
             return _VISION_PROVIDER_ATTEMPTS[provider](p, images, mt, errs)
     attempts = 1 if provider == "browser_use" else 1 + ai_usage.AI_CONFIG["max_retries"]
-    for text in _layered_attempts(provider, call, prompt, max_tokens, errors, attempts):
+    for text in _layered_attempts(provider, call, prompt, max_tokens, errors, attempts,
+                                  cache_extra="images:" + _images_fingerprint(images)):
         yield text, provider
     errors.append(_no_fallback_note(provider))
 

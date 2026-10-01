@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
     claude_api_key: str = ""
+    # Reuse a paid provider's accepted answer when the exact same question is asked again.
+    ai_response_cache_enabled: bool = True
     browser_use_api_key: str = ""
     openrouter_api_key: str = ""
     ahrefs_api_key: str = ""

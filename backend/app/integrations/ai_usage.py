@@ -358,6 +358,19 @@ class UsageLedger:
                 "status": status, "estimated": estimated,
             })
 
+    def record_cached_call(self, module: str, provider: str, model: str | None,
+                           saved_input: int, saved_output: int) -> None:
+        """An answer served from the cache: no tokens billed, the original
+        call's size kept so the report can show what was saved."""
+        with self._lock:
+            self.calls.append({
+                "module": module, "provider": provider, "model": model,
+                "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+                "status": AIStatus.COMPLETED, "estimated": False, "cached": True,
+                "saved_input_tokens": int(saved_input or 0), "saved_output_tokens": int(saved_output or 0),
+                "saved_cost_usd": cost_usd(provider, model, saved_input or 0, saved_output or 0),
+            })
+
     def mark_last_call(self, status: str) -> None:
         with self._lock:
             if self.calls:
@@ -401,6 +414,9 @@ class UsageLedger:
             "total_tokens": sum(c["input_tokens"] + c["output_tokens"] for c in calls),
             "cost_usd": round(sum(known_costs), 4) if len(known_costs) == len(calls) else None,
             "estimated": any(c["estimated"] for c in calls),
+            "cached_calls": sum(1 for c in calls if c.get("cached")),
+            "saved_tokens": sum(c.get("saved_input_tokens", 0) + c.get("saved_output_tokens", 0) for c in calls),
+            "saved_cost_usd": round(sum(c.get("saved_cost_usd") or 0 for c in calls), 4),
             "modules": by_module,
             "warning_tokens": AI_CONFIG["report_warning_tokens"],
             "hard_limit_tokens": AI_CONFIG["report_hard_limit_tokens"],

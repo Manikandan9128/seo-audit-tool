@@ -11,6 +11,7 @@ from app.models.domain_rating import DomainRating
 from app.models.report_generation_job import ReportGenerationJob
 from app.models.report_prep_job import ReportPrepJob
 from app.models.activity_log import ActivityLog
+from app.models.ai_response_cache import AiResponseCache
 
 __all__ = [
     "User",
@@ -26,4 +27,5 @@ __all__ = [
     "ReportGenerationJob",
     "ReportPrepJob",
     "ActivityLog",
+    "AiResponseCache",
 ]
