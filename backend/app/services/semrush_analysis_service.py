@@ -88,30 +88,37 @@ def analyze(records: list[dict], own_domain: str | None = None) -> dict:
     }
 
     # Backlinks / referring domains gap, per competitor upload
-    own_ref_domains = _referring_domains(own_backlinks["parsed_data"]["rows"]) if own_backlinks else None
-    own_backlink_count = own_backlinks["parsed_data"]["row_count"] if own_backlinks else None
+    # Real referring-domain totals come from each site's Domain Overview
+    # export. A backlink-list upload is only a capped sample (500 rows kept
+    # per file, see semrush_parser.py), so counting hostnames in it
+    # understates every site and produced a false "70 more referring
+    # domains" gap (Lumber 2026-10-01: 112 vs 182 from samples, real totals
+    # 781 vs 18,000). Compare totals only; no totals = no gap claim.
+    overview_ref_domains: dict[str, float] = {}
+    for rec in sorted(
+        (r for r in records if r["import_type"] == "domain_overview"), key=lambda r: r["created_at"]
+    ):
+        for row in rec["parsed_data"]["rows"]:
+            if row.get("domain") and row.get("referring_domains") is not None:
+                overview_ref_domains[_normalize_domain(row["domain"])] = _num(row["referring_domains"])
+
+    own_domain_key = _normalize_domain(own_domain or "")
+    if not own_domain_key and own_overview and own_overview["parsed_data"]["rows"]:
+        own_domain_key = _normalize_domain(own_overview["parsed_data"]["rows"][0].get("domain") or "")
+    own_ref_domains = overview_ref_domains.get(own_domain_key)
 
     for comp in competitor_backlinks:
         comp_domain = comp.get("domain_label") or "competitor"
-        comp_rows = comp["parsed_data"]["rows"]
-        comp_ref_domains = _referring_domains(comp_rows)
-        comp_count = comp["parsed_data"]["row_count"]
-
-        if own_ref_domains is not None and comp_ref_domains > own_ref_domains:
-            gap = comp_ref_domains - own_ref_domains
+        comp_ref_domains = overview_ref_domains.get(_normalize_domain(comp_domain))
+        if comp_ref_domains is None or own_ref_domains is None:
+            continue
+        if comp_ref_domains > own_ref_domains:
+            gap = int(comp_ref_domains - own_ref_domains)
             issues.append({
-                "summary": f"{comp_domain} has {gap} more referring domains than you",
-                "detail": f"{comp_domain}: {comp_ref_domains} referring domains vs. yours: {own_ref_domains}.",
+                "summary": f"{comp_domain} has {gap:,} more referring domains than you",
+                "detail": f"{comp_domain}: {int(comp_ref_domains):,} referring domains vs. yours: {int(own_ref_domains):,}.",
                 "recommendation": "Build links from domains that link to this competitor but not to you — check its referring-domain list for guest post, directory, or partnership opportunities.",
                 "severity": "warn",
-                "domain": comp_domain,
-            })
-        elif own_ref_domains is None:
-            issues.append({
-                "summary": f"No backlink data uploaded for your own site — can't compare against {comp_domain}",
-                "detail": f"{comp_domain} has {comp_ref_domains} referring domains and {comp_count} backlinks.",
-                "recommendation": "Upload a Backlinks export under \"Our Website Data\" to see the gap.",
-                "severity": "info",
                 "domain": comp_domain,
             })
 
