@@ -20,6 +20,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const navItems = [
     ...NAV_ITEMS.filter((item) => item.to !== "/settings" || isAdmin),
     ...(isAdmin ? [{ to: "/team", label: "Team" }, { to: "/activity", label: "Activity Log" }] : []),
+    { to: "/account", label: "Account" },
   ];
   const { pathname } = useLocation();
   const { start: startTour } = useGuidedTour();

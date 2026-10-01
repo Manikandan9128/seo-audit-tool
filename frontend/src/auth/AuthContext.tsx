@@ -15,7 +15,6 @@ interface AuthContextValue {
   isAdmin: boolean;
   isSuperAdmin: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, fullName: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -39,11 +38,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsAuthenticated(true);
   }
 
-  async function register(email: string, password: string, fullName: string) {
-    await api.post("/auth/register", { email, password, full_name: fullName });
-    await login(email, password);
-  }
-
   function logout() {
     localStorage.removeItem("access_token");
     setIsAuthenticated(false);
@@ -53,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={{
         isAuthenticated, user, isAdmin: user?.role === "admin" || user?.role === "super_admin",
-        isSuperAdmin: user?.role === "super_admin", login, register, logout,
+        isSuperAdmin: user?.role === "super_admin", login, logout,
       }}>
       {children}
     </AuthContext.Provider>

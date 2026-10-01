@@ -27,10 +27,17 @@ def bootstrap_role_for(email: str) -> str:
 def sync_configured_roles(db: Session) -> None:
     """Promotes (never demotes) accounts whose email is listed in the config."""
     rank = {permissions.MEMBER: 0, permissions.ADMIN: 1, permissions.SUPER_ADMIN: 2}
+    # Only one super admin may exist: a configured super-admin email is promoted
+    # only while nobody holds the role yet.
+    super_exists = db.query(User).filter(User.role == permissions.SUPER_ADMIN).first() is not None
     for user in db.query(User).all():
         wanted = bootstrap_role_for(user.email)
+        if wanted == permissions.SUPER_ADMIN and super_exists and user.role != permissions.SUPER_ADMIN:
+            wanted = permissions.ADMIN
         if rank.get(wanted, 0) > rank.get(user.role, 0):
             user.role = wanted
+            if wanted == permissions.SUPER_ADMIN:
+                super_exists = True
     db.commit()
 
     # Lockout guard: with no super admin at all nobody could change settings

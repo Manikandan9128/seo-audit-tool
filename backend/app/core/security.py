@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -29,3 +30,14 @@ def decode_access_token(token: str) -> str | None:
         return payload.get("sub")
     except JWTError:
         return None
+
+
+MIN_PASSWORD_LENGTH = 8
+# No 0/O/1/l/I: the generated password is read off a screen and typed in.
+_PASSWORD_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def generate_password(length: int = 12) -> str:
+    """Starting password for an account a super admin creates or resets. Shown
+    to the super admin once and stored only as a hash."""
+    return "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(length))

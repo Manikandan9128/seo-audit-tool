@@ -2,11 +2,13 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, require_admin, require_super_admin
 from app.core import permissions
+from app.core.security import generate_password, hash_password
 from app.models.activity_log import ActivityLog
 from app.models.user import User
 from app.services.activity_service import log_activity
@@ -16,6 +18,12 @@ router = APIRouter(tags=["team"])
 
 class RoleUpdate(BaseModel):
     role: str
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    role: str = permissions.MEMBER
 
 
 class ActiveUpdate(BaseModel):
@@ -32,6 +40,43 @@ def list_users(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     ]
 
 
+@router.post("/users", status_code=201)
+def create_user(payload: UserCreate, db: Session = Depends(get_db), current_user: User = Depends(require_super_admin)):
+    """The only way to get an account (internal tool). The tool generates the
+    starting password and returns it once, in this response - it is stored
+    only as a hash, so the super admin must pass it on now."""
+    if payload.role == permissions.SUPER_ADMIN:
+        raise HTTPException(status_code=400, detail="There can only be one super admin.")
+    if payload.role not in (permissions.ADMIN, permissions.MEMBER):
+        raise HTTPException(status_code=400, detail="role must be admin or member")
+    email = payload.email.strip().lower()
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+    if not payload.full_name.strip():
+        raise HTTPException(status_code=400, detail="Name is required.")
+    password = generate_password()
+    user = User(email=email, full_name=payload.full_name.strip(), role=payload.role, hashed_password=hash_password(password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    log_activity(current_user, "user_created", target_user=user.email, target_role=user.role)
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role,
+            "is_active": user.is_active, "temporary_password": password}
+
+
+@router.post("/users/{user_id}/reset-password")
+def reset_user_password(user_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_super_admin)):
+    """New generated password for someone who is locked out - returned once."""
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    password = generate_password()
+    target.hashed_password = hash_password(password)
+    db.commit()
+    log_activity(current_user, "password_reset", target_user=target.email, target_role=target.role)
+    return {"id": target.id, "temporary_password": password}
+
+
 @router.patch("/users/{user_id}/role")
 def set_user_role(
     user_id: uuid.UUID, payload: RoleUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_super_admin),
@@ -41,6 +86,8 @@ def set_user_role(
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if payload.role == permissions.SUPER_ADMIN and target.role != permissions.SUPER_ADMIN:
+        raise HTTPException(status_code=400, detail="There can only be one super admin.")
     if target.role == permissions.SUPER_ADMIN and payload.role != permissions.SUPER_ADMIN:
         remaining = db.query(User).filter(User.role == permissions.SUPER_ADMIN, User.id != target.id).count()
         if remaining == 0:

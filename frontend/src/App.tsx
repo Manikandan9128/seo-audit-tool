@@ -7,6 +7,7 @@ import SettingsPage from "./settings/SettingsPage";
 import DownloadedReportsPage from "./reports/DownloadedReportsPage";
 import TeamPage from "./team/TeamPage";
 import ActivityPage from "./team/ActivityPage";
+import AccountPage from "./auth/AccountPage";
 import Layout from "./components/Layout";
 import ToastProvider from "./components/ToastProvider";
 import ReportReadinessProvider from "./components/ReportReadinessProvider";
@@ -55,6 +56,7 @@ function AppRoutes() {
         }
       />
       <Route path="/team" element={<ProtectedRoute><TeamPage /></ProtectedRoute>} />
+      <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/activity" element={<ProtectedRoute><ActivityPage /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/clients" replace />} />
     </Routes>
