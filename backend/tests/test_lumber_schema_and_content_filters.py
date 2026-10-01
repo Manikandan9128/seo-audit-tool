@@ -115,3 +115,25 @@ def test_deal_is_a_buying_signal_only_in_a_shopping_phrase():
         assert detect_intent(shopping)["intent"] in ("Transactional", "Commercial Investigation")
     for plain in ("handshake deal", "business deal", "deal breaker"):
         assert detect_intent(plain)["intent"] != "Transactional"
+
+
+def test_branded_example_skips_implausible_zero_ctr_query():
+    from app.reporting.pptx_builder import build_branded_dependency_narrative, build_branded_vs_nonbranded_comparison
+    nonbranded = [
+        {"query": "safety officer", "impressions": 10060, "clicks": 0, "ctr": 0.0, "position": 5.7},
+        {"query": "t5018 form", "impressions": 2000, "clicks": 20, "ctr": 0.01, "position": 4.0},
+    ]
+    comparison = build_branded_vs_nonbranded_comparison(
+        [{"query": "lumberfi", "impressions": 900, "clicks": 300, "ctr": 0.33, "position": 1.0}], nonbranded,
+    )
+    example = build_branded_dependency_narrative(comparison, nonbranded)["concrete_example"]
+    assert example and example["query"] == "t5018 form"
+
+
+def test_branded_example_is_omitted_when_only_implausible_rows_exist():
+    from app.reporting.pptx_builder import build_branded_dependency_narrative, build_branded_vs_nonbranded_comparison
+    nonbranded = [{"query": "safety officer", "impressions": 10060, "clicks": 0, "ctr": 0.0, "position": 5.7}]
+    comparison = build_branded_vs_nonbranded_comparison(
+        [{"query": "lumberfi", "impressions": 900, "clicks": 300, "ctr": 0.33, "position": 1.0}], nonbranded,
+    )
+    assert build_branded_dependency_narrative(comparison, nonbranded)["concrete_example"] is None

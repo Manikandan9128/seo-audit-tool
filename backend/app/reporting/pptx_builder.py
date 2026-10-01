@@ -4374,6 +4374,10 @@ def build_branded_vs_nonbranded_comparison(branded_queries: list[dict], nonbrand
 
 _DEMAND_GAP_TARGET_PERIOD_DAYS = 30
 _DEMAND_GAP_MIN_IMPRESSIONS = 50
+# Page-one query with at least this many impressions but under this share of
+# the position's benchmark CTR is treated as implausible, never as an example.
+_IMPLAUSIBLE_CTR_MIN_IMPRESSIONS = 300
+_IMPLAUSIBLE_CTR_SHARE_OF_BENCHMARK = 0.1
 
 
 def build_branded_dependency_narrative(
@@ -4436,11 +4440,25 @@ def build_branded_dependency_narrative(
         position = float(q.get("position", 0) or 0)
         ctr_pct = float(q.get("ctr", 0) or 0) * 100
         q_benchmark = _ctr_decay_pct(round(position))
+        # A query on page one that earns a tiny fraction of the normal click
+        # rate is almost always a data artifact (an average position blended
+        # across countries/devices, or a SERP that answers without a click),
+        # not a fixable CTR gap — modeling "160 extra clicks" from it would
+        # promise the client something the data doesn't support (Lumber
+        # "safety officer": 10,060 impressions, position 5.7, 0.0% CTR).
+        if (
+            position <= 10 and impressions >= _IMPLAUSIBLE_CTR_MIN_IMPRESSIONS
+            and ctr_pct < q_benchmark * _IMPLAUSIBLE_CTR_SHARE_OF_BENCHMARK
+        ):
+            continue
         if q_benchmark > ctr_pct:
-            candidates.append((impressions, q.get("query"), position, ctr_pct, q_benchmark))
+            has_clicks = float(q.get("clicks", 0) or 0) > 0
+            candidates.append((impressions, q.get("query"), position, ctr_pct, q_benchmark, has_clicks))
     if candidates:
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        impressions, query, position, ctr_pct, q_benchmark = candidates[0]
+        # Queries with real clicks first (the estimate then rests on observed
+        # behaviour), biggest audience within each group.
+        candidates.sort(key=lambda c: (c[5], c[0]), reverse=True)
+        impressions, query, position, ctr_pct, q_benchmark, _has_clicks = candidates[0]
         modeled_clicks = round(impressions * (q_benchmark - ctr_pct) / 100 * scale)
         concrete_example = {
             "query": query, "impressions": int(impressions), "ctr_pct": round(ctr_pct, 1), "position": round(position, 1),
