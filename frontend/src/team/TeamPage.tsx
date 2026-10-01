@@ -103,7 +103,7 @@ export default function TeamPage() {
       </p>
       {error && <p style={{ color: "var(--color-danger-text)", fontSize: 13 }}>{error}</p>}
       {isSuperAdmin && (
-        <form onSubmit={createUser} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "12px 0 16px" }}>
+        <form onSubmit={createUser} className="team-form" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "12px 0 16px" }}>
           <input placeholder="Full name" value={newName} onChange={(e) => setNewName(e.target.value)} required />
           <input type="email" placeholder="Email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} required />
           <select value={newRole} onChange={(e) => setNewRole(e.target.value as "admin" | "member")}>
