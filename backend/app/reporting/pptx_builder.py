@@ -9386,10 +9386,24 @@ def build_goals_kpis(
             "Add the applicable schema types flagged in the Structured Data slide"
             if missing_types else "Keep schema valid as pages are added"
         )
+        # "Any schema" is near 100% on most sites because Organization/WebSite
+        # sit on every page (Lumber 2026-10-01: "1,962 of 1,962 carry schema"
+        # beside a validator slide showing 0% Article/Product coverage). The
+        # KPI is the content-specific coverage the Structured Data slide
+        # itself reports — pages whose type qualifies for Article, Product,
+        # etc. that actually carry it.
+        content_buckets = [
+            b for b in (schema_validation.get("by_page_type") or []) if b.get("page_type") != "Other Pages"
+        ]
+        applicable = sum(int(_num(b.get("pages"))) for b in content_buckets)
+        present = sum(int(_num(b.get("present_pages"))) for b in content_buckets)
+        if applicable:
+            current = f"{present:,} of {applicable:,} pages that qualify for Article/Product-type schema have it"
+        else:
+            current = f"Only site-wide schema found ({with_schema:,} of {total:,} crawled pages)"
         kpis.append({
             "metric": "Structured data coverage", "source": "Site Audit crawl (JSON-LD)",
-            "current": f"{with_schema:,} of {total:,} crawled pages carry schema",
-            "target": target, "timeframe": _GOALS_TIMEFRAME,
+            "current": current, "target": target, "timeframe": _GOALS_TIMEFRAME,
         })
 
     # Technical health — the Site Health slide's own figure.
@@ -9661,7 +9675,33 @@ def _content_seo_eligible_rows(keyword_rows: list[dict]) -> list[dict]:
         if status and (status in _CONTENT_SEO_EXCLUDED_RELEVANCE or status.lower().startswith("irrelevant")):
             continue
         eligible.append(r)
-    return eligible
+
+    # A keyword only a competitor ranks for (Keyword Gap row, no ranking,
+    # no Search Console impressions of the client's own) must not be merely
+    # "Adjacent / Potential" to drive a content recommendation. "Adjacent /
+    # Potential" rows survived the filters above and let
+    # huge generic-category terms ("employee benefits" 201,000/mo, "I-9 form",
+    # "exempt meaning" on a construction-payroll site, Lumber 2026-10-01)
+    # outrank everything by raw volume. Falls back to the looser list if the
+    # strict one would empty the slide.
+    strict = [
+        r for r in eligible
+        if r.get("cluster_status") == "Validated (Manual)"
+        or r.get("relevance_status") != "Adjacent / Potential"
+        or _has_own_site_evidence(r)
+    ]
+    return strict or eligible
+
+
+def _has_own_site_evidence(r: dict) -> bool:
+    """The client's own site already ranks or earns impressions for this
+    keyword (Organic Positions / Search Console), as opposed to a keyword
+    that only competitors rank for."""
+    raw_position = r.get("current_position") if r.get("current_position") not in (None, "") else r.get("position")
+    if _num(raw_position) > 0 or _num(r.get("gsc_impressions")) > 0:
+        return True
+    source = str(r.get("source") or "")
+    return "Organic Positions" in source or "GSC" in source
 
 
 def _content_seo_cluster_evidence(rows: list[dict]) -> str | None:

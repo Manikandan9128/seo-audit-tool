@@ -313,6 +313,19 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
                 matched_shape = label
                 break  # first matching shape wins — a URL only gets one page-type bucket
 
+        # A /product/ URL with no price/cart/buy signal and no Product schema
+        # is a software or service feature page, not a shop product — bucketing
+        # it as "Product" told SaaS clients to add shopping-result markup.
+        # `commerce_signals` is absent on crawl jobs saved before this check
+        # existed; those keep the URL-only behaviour rather than silently
+        # changing an old job's numbers.
+        if (
+            matched_shape == "Product"
+            and meta.get("commerce_signals") is False
+            and "Product" not in types_found
+        ):
+            matched_shape = None
+
         page_type = matched_shape or "Other Pages"
         bucket = _bucket(page_type)
         bucket["pages"] += 1
@@ -446,6 +459,21 @@ def aggregate_schema_validation(pages: list[dict], analytics: dict | None = None
     }
 
 
+# A page under a /product/ style URL is only a Product-schema candidate if
+# the page itself sells something. Software companies (Lumber: /product/hr,
+# /ca/product/payroll) put feature pages under /product/ — they carry no
+# price, cart or buy button, and Product rich results don't apply to them.
+_COMMERCE_SIGNAL_RE = re.compile(
+    r"add[\s_-]?to[\s_-]?(?:cart|bag|basket)|itemprop=[\"']price[\"']|\"price\"\s*:|product:price|"
+    r"og:price|(?:buy|order)[\s_-]now|data-product-id|woocommerce|shopify-section|class=[\"'][^\"']*\bprice\b",
+    re.IGNORECASE,
+)
+
+
+def _commerce_signals_present(html_source: str) -> bool:
+    return bool(_COMMERCE_SIGNAL_RE.search(html_source))
+
+
 def _extract_meta(html_source: str, base_url: str | None = None) -> dict:
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html_source, re.IGNORECASE | re.DOTALL)
     title = html.unescape(title_match.group(1).strip()) if title_match else None
@@ -495,6 +523,7 @@ def _extract_meta(html_source: str, base_url: str | None = None) -> dict:
         "schema_types_missing": schema_types_missing,
         "schema_field_issues": schema_field_issues,
         "og_tags_present": og_tags_present,
+        "commerce_signals": _commerce_signals_present(html_source),
     }
 
 
