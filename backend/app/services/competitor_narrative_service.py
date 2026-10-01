@@ -40,6 +40,7 @@ import re
 
 from app.integrations.text_ai_client import GROQ_TPM_BUDGET, NoAIProviderConfigured, iter_text_attempts, pinned_provider
 from app.integrations.ai_usage import parse_json
+from app.services.prompt_json import compact_json
 
 BATCH_PROMPT_TEMPLATE = """You are an SEO/growth consultant writing competitive-analysis sections for \
 {client_name} ({client_domain}), comparing them against {competitor_count} competitors. Write ONE independent \
@@ -263,7 +264,7 @@ def _already_claimed_prompt_parts(already_claimed: dict[str, dict]) -> tuple[str
     json_block = (
         "\nCompetitors already analyzed in an earlier chunk of this same report, with their claimed unique "
         "angles (for overlap-checking only — do not rewrite these, just cite by domain if a genuine shared "
-        f"angle applies to a competitor below):\n{json.dumps(summary, indent=2, default=str)}\n"
+        f"angle applies to a competitor below):\n{compact_json(summary, default=str)}\n"
     )
     return clause, json_block
 
@@ -290,7 +291,7 @@ def _generate_chunk(
         # up per-domain here (capped higher overall) so richer per-domain
         # data — especially homepage_text — isn't starved just because
         # several competitors now share one prompt.
-        data_json=json.dumps(chunk_facts, indent=2, default=str)[:8000 * len(domains)],
+        data_json=compact_json(chunk_facts, default=str)[:8000 * len(domains)],
     )
     max_tokens = min(_CHUNK_OUTPUT_TOKENS_PER_DOMAIN * len(domains), 16000)
 
@@ -383,7 +384,7 @@ def generate_cross_competitor_opportunities(
 
     prompt = CROSS_COMPETITOR_SUMMARY_PROMPT.format(
         client_name=client_name, client_domain=client_domain,
-        narratives_json=json.dumps(usable, indent=2, default=str),
+        narratives_json=compact_json(usable, default=str),
     )
     result = _call_and_parse(prompt, max_tokens=1024)
     if "error" in result:

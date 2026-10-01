@@ -16,6 +16,7 @@ import json
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 from app.integrations.ai_usage import parse_json
+from app.services.prompt_json import compact_json
 
 CATEGORY_TITLES = {
     "local_seo": "Next Steps: Local SEO",
@@ -108,7 +109,7 @@ def generate_next_steps(client_name: str, client_domain: str, findings: dict) ->
     prompt = PROMPT_TEMPLATE.format(
         client_name=client_name,
         client_domain=client_domain,
-        data_json=json.dumps(findings, indent=2, default=str)[:12000],
+        data_json=compact_json(findings, default=str)[:12000],
     )
     result = _call_and_parse(prompt)
     if "error" not in result and result.get("categories"):

@@ -19,6 +19,7 @@ import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 from app.integrations.ai_usage import parse_json
+from app.services.prompt_json import compact_json
 
 CORE_PROBLEM_PROMPT = """You are a senior SEO strategist writing the "Core Problem" slide for a client-facing \
 Web & SEO Audit report — the single diagnostic thesis explaining why the site isn't ranking or converting as well \
@@ -172,7 +173,7 @@ def generate_core_problem(findings: dict) -> dict:
     own cross-provider fallback only triggers on a transport-level
     failure, never on "the provider answered but wasn't parseable JSON" —
     so a stricter provider later in the order never got a chance."""
-    prompt = CORE_PROBLEM_PROMPT.replace("{findings}", json.dumps(findings, indent=2, default=str)[:6000])
+    prompt = CORE_PROBLEM_PROMPT.replace("{findings}", compact_json(findings, default=str)[:6000])
     errors: list[str] = []
     last_raw = ""
     try:

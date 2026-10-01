@@ -9,6 +9,7 @@ import time
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts, resolve_selected_provider
 from app.integrations.ai_usage import parse_json
+from app.services.prompt_json import compact_json
 
 PROMPT_TEMPLATE = """You are an SEO consultant writing a short narrative summary for a client report. \
 Base everything ONLY on the structured findings below — never invent numbers, competitors, or issues \
@@ -62,8 +63,8 @@ def generate_ai_summary(client_name: str, website_url: str, analysis: dict) -> d
     prompt = PROMPT_TEMPLATE.format(
         client_name=client_name,
         website_url=website_url,
-        issues_json=json.dumps(issues, indent=2)[:6000],
-        coverage_json=json.dumps(analysis.get("coverage") or {}, indent=2),
+        issues_json=compact_json(issues)[:6000],
+        coverage_json=compact_json(analysis.get("coverage") or {}),
     )
 
     errors: list[str] = []

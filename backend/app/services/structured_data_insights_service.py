@@ -9,6 +9,7 @@ import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 from app.integrations.ai_usage import parse_json
+from app.services.prompt_json import compact_json
 
 STRUCTURED_DATA_INSIGHTS_PROMPT = """You are an SEO consultant preparing a "Structured data & schema validator" \
 slide for a client audit report. Below are two tables already computed from a real crawl + validation pass — \
@@ -364,7 +365,7 @@ def generate_schema_implementation_impact(part1: list[dict], part2: list[dict]) 
     if not part2:
         return {"error": "No schema data to analyze"}
 
-    prompt = IMPLEMENTATION_IMPACT_PROMPT.format(part1=json.dumps(part1, indent=2), part2=json.dumps(part2, indent=2))
+    prompt = IMPLEMENTATION_IMPACT_PROMPT.format(part1=compact_json(part1), part2=compact_json(part2))
     errors: list[str] = []
     empty_from: list[str] = []
     try:
@@ -417,10 +418,10 @@ def generate_structured_data_insights(
         return {"error": "No schema data to analyze"}
 
     prompt = STRUCTURED_DATA_INSIGHTS_PROMPT.format(
-        part1=json.dumps(part1, indent=2),
-        part2=json.dumps(part2, indent=2),
-        pageviews=json.dumps(pageviews_by_page_type, indent=2) if pageviews_by_page_type else "(no analytics data)",
-        eligibility_notes=json.dumps(eligibility_notes, indent=2) if eligibility_notes else "(all types fully eligible)",
+        part1=compact_json(part1),
+        part2=compact_json(part2),
+        pageviews=compact_json(pageviews_by_page_type) if pageviews_by_page_type else "(no analytics data)",
+        eligibility_notes=compact_json(eligibility_notes) if eligibility_notes else "(all types fully eligible)",
     )
     errors: list[str] = []
     empty_from: list[str] = []

@@ -15,6 +15,7 @@ import re
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 from app.integrations.ai_usage import parse_json
+from app.services.prompt_json import compact_json
 
 BRANDED_SEARCH_INSIGHTS_PROMPT = """You are an SEO consultant writing the Key Insights for a "Branded vs \
 Non-Branded Search Performance" slide, covering a single {date_range} Search Console snapshot — there is no \
@@ -84,15 +85,15 @@ def generate_branded_search_insights(
 
     prompt = BRANDED_SEARCH_INSIGHTS_PROMPT.format(
         date_range=date_range or "recent 30-day",
-        comparison=json.dumps(comparison, indent=2),
+        comparison=compact_json(comparison),
         headline=narrative.get("headline") or "(none computed)",
         demand_gap=demand_gap["text"] if demand_gap else "(no click-through-rate gap found — non-branded already meets its position benchmark)",
         cost_of_inaction=narrative.get("cost_of_inaction") or "(none computed)",
         concrete_example=concrete_example["text"] if concrete_example else "(none found)",
-        high_pages=json.dumps(high_pages[:1], indent=2) if high_pages else "(none met the flagging bar)",
-        high_countries=json.dumps(high_countries[:1], indent=2) if high_countries else "(none met the flagging bar)",
-        top_branded_queries=json.dumps(top_branded_queries[:10], indent=2) if top_branded_queries else "(none)",
-        top_nonbranded_queries=json.dumps(top_nonbranded_queries[:10], indent=2) if top_nonbranded_queries else "(none)",
+        high_pages=compact_json(high_pages[:1]) if high_pages else "(none met the flagging bar)",
+        high_countries=compact_json(high_countries[:1]) if high_countries else "(none met the flagging bar)",
+        top_branded_queries=compact_json(top_branded_queries[:10]) if top_branded_queries else "(none)",
+        top_nonbranded_queries=compact_json(top_nonbranded_queries[:10]) if top_nonbranded_queries else "(none)",
     )
     errors: list[str] = []
     last_raw = ""

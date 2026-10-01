@@ -11,6 +11,7 @@ import json
 
 from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_attempts
 from app.integrations.ai_usage import parse_json
+from app.services.prompt_json import compact_json
 
 SEO_ISSUES_INSIGHTS_PROMPT = """You are an SEO analyst writing insights for a client audit report. I will give \
 you a list of SEO errors and warnings with the number of affected pages, plus the total crawled pages and total \
@@ -81,8 +82,8 @@ def generate_seo_issues_insights(
     prompt = SEO_ISSUES_INSIGHTS_PROMPT.format(
         total_pages=total_pages if total_pages is not None else "unknown",
         pages_with_issues=pages_with_issues if pages_with_issues is not None else "unknown",
-        errors=json.dumps(errors, indent=2) if errors else "(none)",
-        warnings=json.dumps(warnings, indent=2) if warnings else "(none)",
+        errors=compact_json(errors) if errors else "(none)",
+        warnings=compact_json(warnings) if warnings else "(none)",
     )
     errors_seen: list[str] = []
     last_raw = ""

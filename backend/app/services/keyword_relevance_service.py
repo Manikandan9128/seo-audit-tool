@@ -28,6 +28,7 @@ from app.integrations.text_ai_client import NoAIProviderConfigured, iter_text_at
 from app.integrations.ai_usage import parse_json
 from app.services.content_safety import is_adult
 from app.services.keyword_intelligence_service import singularize
+from app.services.prompt_json import compact_json
 
 logger = logging.getLogger(__name__)
 
@@ -497,7 +498,7 @@ def classify_keywords(
         client_domain=client_domain,
         business_context=business_context,
         keyword_count=len(remaining),
-        keywords_json=json.dumps(remaining, indent=2)[:12000],
+        keywords_json=compact_json(remaining)[:12000],
     )
     max_tokens = min(300 + 30 * len(remaining), 8000)
 
