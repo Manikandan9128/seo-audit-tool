@@ -2357,3 +2357,11 @@ button.secondary:hover:not(:disabled) {
   width: 16px;
   height: 16px;
 }
+
+/* "Saved" = a result restored from an earlier run, not fresh data from this
+   visit: neutral outline, never the green of a freshly generated section. */
+.badge.saved {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-strong);
+}

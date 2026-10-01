@@ -122,11 +122,16 @@ export default function ClientDetailPage() {
   // here rather than read from SiteAuditHistory, since that only mounts when
   // the (collapsed-by-default) Site Audit card is expanded.
   const [siteAuditHasData, setSiteAuditHasData] = useState(false);
+  const [siteAuditLatestAt, setSiteAuditLatestAt] = useState<string | null>(null);
   useEffect(() => {
     if (!clientId) return;
     api
       .get(`/clients/${clientId}/site-audit/history`)
-      .then((res) => setSiteAuditHasData(Array.isArray(res.data) && res.data.length > 0))
+      .then((res) => {
+        const runs = Array.isArray(res.data) ? res.data : [];
+        setSiteAuditHasData(runs.length > 0);
+        setSiteAuditLatestAt(runs[0]?.created_at ?? null);
+      })
       .catch(() => setSiteAuditHasData(false));
   }, [clientId, auditHistoryKey]);
 
@@ -691,11 +696,63 @@ export default function ClientDetailPage() {
     setCollapsedSections((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }
 
-  function sectionStatus(key: SectionKey, loading: boolean, hasData: boolean): { label: string; cls: string } {
-    if (!selectedSections.includes(key)) return { label: "Not included", cls: "muted" };
-    if (loading) return { label: "Generating…", cls: "muted" };
-    if (hasData) return { label: "Ready", cls: "success" };
-    return { label: "Pending", cls: "muted" };
+  // Which cards got their result during THIS visit (a run started and
+  // finished while the page was open). Everything else that has data was
+  // restored from an earlier run, so it says "Saved" instead of a green
+  // "Ready" that reads like fresh, up-to-date data.
+  const [freshSections, setFreshSections] = useState<SectionKey[]>([]);
+  const wasLoading = useRef<Record<string, boolean>>({});
+  const loadingBySection: Record<string, boolean> = {
+    overview: overviewLoading,
+    site_audit: auditLoading,
+    pagespeed: psiLoading,
+    tech_stack: techStackLoading,
+    all_pages: pageAuditLoading,
+  };
+  const loadingSignature = Object.values(loadingBySection).join(",");
+  useEffect(() => {
+    for (const [key, isLoading] of Object.entries(loadingBySection)) {
+      if (isLoading) {
+        wasLoading.current[key] = true;
+        setFreshSections((prev) => prev.filter((k) => k !== key));
+      } else if (wasLoading.current[key]) {
+        wasLoading.current[key] = false;
+        setFreshSections((prev) => (prev.includes(key as SectionKey) ? prev : [...prev, key as SectionKey]));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingSignature]);
+
+  const formatShortDate = (iso: string | null | undefined) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  };
+  // PageSpeed has nothing saved when its last quick check failed; say why
+  // instead of an unexplained "Pending".
+  const psiLastRun = reportJob.generate.sections?.pagespeed;
+  const psiFailedNote =
+    psiLastRun?.status === "failed"
+      ? /timed out|timeout/i.test(psiLastRun.error || "") ? "Timed out last run" : "Failed last run"
+      : null;
+  const savedDateFor = (key: SectionKey): string => {
+    if (key === "site_audit") return formatShortDate(siteAuditLatestAt);
+    if (reportJob.generate.sections?.[key]?.status === "done") return formatShortDate(reportJob.generate.jobAt);
+    return "";
+  };
+
+  function sectionStatus(
+    key: SectionKey, loading: boolean, hasData: boolean,
+  ): { label: string; cls: string; saved: boolean } {
+    if (!selectedSections.includes(key)) return { label: "Not included", cls: "muted", saved: false };
+    if (loading) return { label: "Generating…", cls: "muted", saved: false };
+    if (hasData && freshSections.includes(key)) return { label: "Ready", cls: "success", saved: false };
+    if (hasData) {
+      const date = savedDateFor(key);
+      return { label: date ? `Saved · ${date}` : "Saved", cls: "saved", saved: true };
+    }
+    if (key === "pagespeed" && psiFailedNote) return { label: psiFailedNote, cls: "muted", saved: false };
+    return { label: "Pending", cls: "muted", saved: false };
   }
 
   function SectionCard({
@@ -748,7 +805,7 @@ export default function ClientDetailPage() {
               ▾
             </span>
             {SECTION_ICONS[sectionKey] && (
-              <span className={`section-icon${hasData ? " ready" : ""}`}>{SECTION_ICONS[sectionKey]}</span>
+              <span className={`section-icon${hasData && !status.saved ? " ready" : ""}`}>{SECTION_ICONS[sectionKey]}</span>
             )}
             <h3 style={{ margin: 0, fontSize: 19, fontFamily: "var(--font-display)", fontWeight: 600 }}>{title}</h3>
           </div>
@@ -763,6 +820,11 @@ export default function ClientDetailPage() {
             {!loading && !hasData && (
               <p style={{ fontSize: 13, color: "var(--muted)", marginTop: 10, fontStyle: "italic" }}>
                 Not generated yet — check this section and click Generate Report.
+              </p>
+            )}
+            {!loading && status.saved && (
+              <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 10, fontStyle: "italic" }}>
+                Showing a result saved from an earlier run. Generate Report fetches everything fresh.
               </p>
             )}
             {children}

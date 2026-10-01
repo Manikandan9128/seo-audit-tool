@@ -50,6 +50,8 @@ export interface ReportJobState {
     jobId: string | null;
     sections: Record<string, PrepSection>;
     pct: number | null;
+    // When the Generate Report run these sections came from was started.
+    jobAt: string | null;
     error: string | null;
     errorSeq: number;
   };
@@ -76,7 +78,7 @@ export interface ReportJobState {
 const EMPTY: ReportJobState = {
   generating: false,
   hasGenerated: false,
-  generate: { jobId: null, sections: {}, pct: null, error: null, errorSeq: 0 },
+  generate: { jobId: null, sections: {}, pct: null, jobAt: null, error: null, errorSeq: 0 },
   download: {
     status: "idle", jobId: null, stage: "", pct: null, error: null, errorSeq: 0,
     issues: null, aiProvider: null, aiUsage: null, readyJob: null, downloadedSeq: 0,
@@ -131,7 +133,7 @@ function fail(clientId: string, error: string) {
 // quietFail: a run that failed before this page load (e.g. yesterday)
 // restores the idle button without re-raising its old error banner.
 function applyPrepJob(clientId: string, job: any, quietFail = false) {
-  const base = { jobId: job.id, sections: job.sections || {}, pct: job.progress_pct ?? null };
+  const base = { jobId: job.id, sections: job.sections || {}, pct: job.progress_pct ?? null, jobAt: job.created_at ?? null };
   if (job.status === "done") {
     setGen(clientId, { generating: false, hasGenerated: true }, base);
   } else if (job.status === "failed" && quietFail) {
