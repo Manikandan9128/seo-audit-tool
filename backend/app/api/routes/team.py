@@ -18,11 +18,16 @@ class RoleUpdate(BaseModel):
     role: str
 
 
+class ActiveUpdate(BaseModel):
+    active: bool
+
+
 @router.get("/users")
 def list_users(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     users = db.query(User).order_by(User.created_at.asc()).all()
     return [
-        {"id": u.id, "email": u.email, "full_name": u.full_name, "role": u.role, "created_at": u.created_at}
+        {"id": u.id, "email": u.email, "full_name": u.full_name, "role": u.role, "is_active": u.is_active,
+         "created_at": u.created_at}
         for u in users
     ]
 
@@ -45,6 +50,30 @@ def set_user_role(
     db.commit()
     log_activity(current_user, "role_changed", target_user=target.email, from_role=previous, to_role=payload.role)
     return {"id": target.id, "role": target.role}
+
+
+@router.patch("/users/{user_id}/active")
+def set_user_active(
+    user_id: uuid.UUID, payload: ActiveUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_super_admin),
+):
+    """Deactivate (or reactivate) a team member or admin. Super admin only;
+    a super admin account itself can't be deactivated, so the team can never
+    lock itself out."""
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You can't deactivate your own account.")
+    if target.role == permissions.SUPER_ADMIN:
+        raise HTTPException(status_code=400, detail="A super admin account can't be deactivated. Change the role first.")
+    if target.is_active != payload.active:
+        target.is_active = payload.active
+        db.commit()
+        log_activity(
+            current_user, "user_reactivated" if payload.active else "user_deactivated",
+            target_user=target.email, target_role=target.role,
+        )
+    return {"id": target.id, "is_active": target.is_active}
 
 
 @router.get("/activity")

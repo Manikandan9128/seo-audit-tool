@@ -21,11 +21,14 @@ const ACTION_LABEL: Record<string, string> = {
   report_previewed: "Previewed report",
   report_generation_started: "Started report generation",
   role_changed: "Changed a role",
+  user_deactivated: "Deactivated an account",
+  user_reactivated: "Reactivated an account",
 };
 
 function describe(row: ActivityRow): string {
   const d = row.detail || {};
   if (d.filename) return `${d.filename}${d.import_type ? ` (${String(d.import_type).replace(/_/g, " ")})` : ""}`;
+  if (row.action === "user_deactivated" || row.action === "user_reactivated") return `${d.target_user} (${d.target_role})`;
   if (row.action === "role_changed") return `${d.target_user}: ${d.from_role} to ${d.to_role}`;
   if (d.keyword_cluster_mode) return `clusters: ${d.keyword_cluster_mode}${d.ai_provider ? `, AI: ${d.ai_provider}` : ""}`;
   return "";

@@ -37,6 +37,13 @@ def get_current_user(
     user = db.get(User, uuid.UUID(subject))
     if user is None:
         raise credentials_exception
+    if not user.is_active:
+        # 401 so the frontend's existing interceptor signs the person out.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account has been deactivated. Contact a super admin.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 

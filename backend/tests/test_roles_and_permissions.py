@@ -139,3 +139,69 @@ def test_startup_promotes_oldest_account_when_no_super_admin(monkeypatch):
 
     role_service.sync_configured_roles(Db())
     assert users[0].role == "super_admin" and users[1].role == "member"
+
+
+def _member(active=True, role="member"):
+    u = _user(role)
+    u.is_active = active
+    return u
+
+
+def test_super_admin_can_deactivate_and_reactivate_team_and_admin_accounts(monkeypatch):
+    logged = []
+    monkeypatch.setattr(team, "log_activity", lambda *a, **k: logged.append(a[1]))
+    for role in ("member", "admin"):
+        target = _member(role=role)
+        db = _Db(target=target)
+        team.set_user_active(target.id, team.ActiveUpdate(active=False), db, _user("super_admin"))
+        assert target.is_active is False and db.committed
+        team.set_user_active(target.id, team.ActiveUpdate(active=True), _Db(target=target), _user("super_admin"))
+        assert target.is_active is True
+    assert logged == ["user_deactivated", "user_reactivated"] * 2
+
+
+def test_cannot_deactivate_yourself_or_a_super_admin(monkeypatch):
+    monkeypatch.setattr(team, "log_activity", lambda *a, **k: None)
+    me = _member(role="super_admin")
+    with pytest.raises(HTTPException) as e:
+        team.set_user_active(me.id, team.ActiveUpdate(active=False), _Db(target=me), me)
+    assert "own account" in e.value.detail
+    other_super = _member(role="super_admin")
+    with pytest.raises(HTTPException) as e:
+        team.set_user_active(other_super.id, team.ActiveUpdate(active=False), _Db(target=other_super), me)
+    assert "super admin account can't be deactivated" in e.value.detail
+
+
+def test_only_super_admin_reaches_the_deactivate_endpoint():
+    with pytest.raises(HTTPException) as e:
+        deps.require_super_admin(_user("admin"))
+    assert e.value.status_code == 403
+
+
+def test_deactivated_account_is_rejected_even_with_a_valid_token(monkeypatch):
+    user = _member(active=False)
+    db = _Db(target=user)
+    monkeypatch.setattr(deps, "decode_access_token", lambda token: str(user.id))
+    with pytest.raises(HTTPException) as e:
+        deps.get_current_user(token="t", db=db)
+    assert e.value.status_code == 401 and "deactivated" in e.value.detail
+    user.is_active = True
+    assert deps.get_current_user(token="t", db=db) is user
+
+
+def test_deactivated_account_cannot_log_in(monkeypatch):
+    from app.api.routes import auth
+    from app.schemas.auth import UserLogin
+
+    user = _member(active=False)
+    user.hashed_password = "x"
+    monkeypatch.setattr(auth, "verify_password", lambda plain, hashed: True)
+    monkeypatch.setattr(auth, "log_activity", lambda *a, **k: None)
+
+    class _LoginDb:
+        def query(self, model):
+            return _Q(first=user)
+
+    with pytest.raises(HTTPException) as e:
+        auth.login(UserLogin(email="a@b.com", password="pw"), _LoginDb())
+    assert e.value.status_code == 403 and "deactivated" in e.value.detail
