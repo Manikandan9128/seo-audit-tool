@@ -101,3 +101,29 @@ def test_log_report_usage_writes_a_line_per_step_and_a_waste_warning(caplog):
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "step core_problem" in text and "step next_steps" in text
     assert "AI waste job job1" in text and "17000 token" in text
+
+
+def test_attempt_number_and_effort_reach_the_worker_thread_that_calls_claude(monkeypatch):
+    """Every provider call runs in _call_with_timeout's worker thread. The attempt
+    number (for the log) and the 'low effort' retry setting were thread-locals the
+    worker never saw: logs always said attempt 1, and the retry after a cut-off
+    answer silently ran at the same effort and was cut off again."""
+    seen = {}
+
+    def inside_worker():
+        seen["attempt"] = ai_usage.current_attempt()
+        seen["effort"] = text_ai_client._claude_output_options("claude-sonnet-5", 100)["output_config"]["effort"]
+        return "ok"
+
+    ai_usage.set_attempt(3)
+    text_ai_client._effort_override.value = "low"
+    try:
+        assert text_ai_client._call_with_timeout(inside_worker, 5) == "ok"
+    finally:
+        text_ai_client._effort_override.value = None
+        ai_usage.set_attempt(1)
+    assert seen == {"attempt": 3, "effort": "low"}
+    # ...and the worker leaves nothing behind for the next task on the same thread.
+    seen.clear()
+    text_ai_client._call_with_timeout(inside_worker, 5)
+    assert seen["effort"] == text_ai_client.CLAUDE_EFFORT

@@ -550,8 +550,9 @@ def check_report_hard_limit() -> None:
 
 
 def context_snapshot() -> tuple:
-    return getattr(_context, "ledger", None), getattr(_context, "module", None)
+    return getattr(_context, "ledger", None), getattr(_context, "module", None), getattr(_context, "attempt", 1)
 
 
 def restore_context(snapshot: tuple) -> None:
-    _context.ledger, _context.module = snapshot
+    _context.ledger, _context.module = snapshot[0], snapshot[1]
+    _context.attempt = snapshot[2] if len(snapshot) > 2 else 1

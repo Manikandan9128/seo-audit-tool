@@ -502,6 +502,7 @@ class JobContextThreadPoolExecutor(ThreadPoolExecutor):
             getattr(_claude_model_preference, "value", None),
             getattr(_claude_token_usage, "calls", None),
             getattr(_skipped_ai_steps, "value", None),
+            getattr(_effort_override, "value", None),
         )
         usage_context = ai_usage.context_snapshot()
 
@@ -511,16 +512,17 @@ class JobContextThreadPoolExecutor(ThreadPoolExecutor):
                 getattr(_claude_model_preference, "value", None),
                 getattr(_claude_token_usage, "calls", None),
                 getattr(_skipped_ai_steps, "value", None),
+                getattr(_effort_override, "value", None),
             )
             previous_usage = ai_usage.context_snapshot()
             (_provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls,
-             _skipped_ai_steps.value) = context
+             _skipped_ai_steps.value, _effort_override.value) = context
             ai_usage.restore_context(usage_context)
             try:
                 return fn(*args, **kwargs)
             finally:
                 (_provider_preference.value, _claude_model_preference.value, _claude_token_usage.calls,
-                 _skipped_ai_steps.value) = previous
+                 _skipped_ai_steps.value, _effort_override.value) = previous
                 ai_usage.restore_context(previous_usage)
 
         return super().submit(run)
