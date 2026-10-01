@@ -82,11 +82,9 @@ export default function ManualKeywordClusterCard({
     <div className="card">
       <h3 style={{ marginTop: 0 }}>Manual Keyword Clustering</h3>
       <p style={{ color: "#6b7280", fontSize: 13 }}>
-        Upload an SEO strategist's own hand-built keyword clustering (CSV or XLSX with a{" "}
-        <strong>Keyword</strong> column and a <strong>Cluster</strong> column — an optional{" "}
-        <strong>Primary/Secondary</strong> column marks the lead keyword per cluster). When a file
-        is uploaded here, the Target Keywords slides use it as-is instead of the AI clustering
-        pipeline. Remove the file to fall back to AI clustering again.
+        Upload your keyword clusters (CSV or XLSX: <strong>Keyword</strong> + <strong>Cluster</strong>{" "}
+        columns). Target Keywords will use them instead of AI clustering. Remove the file to switch
+        back.
       </p>
 
       <Dropzone accept=".csv,.xlsx,.xls" multiple onFiles={setFiles} hint="Accepted: CSV, XLSX, XLS — needs a Keyword column and a Cluster column" />
