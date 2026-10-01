@@ -3508,6 +3508,10 @@ def _run_generate_report_job(
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
+        try:
+            ai_usage.log_report_usage(logger, job_id, client_id, ledger.summary())
+        except Exception:  # noqa: BLE001 - logging must never fail a job
+            logger.exception("Could not write the AI usage log for job %s", job_id)
         usage = text_ai_client.get_claude_token_usage()
         if usage["calls"]:
             logger.info(

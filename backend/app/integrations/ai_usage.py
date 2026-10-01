@@ -345,18 +345,41 @@ class UsageLedger:
     model: str | None = None
     calls: list[dict] = field(default_factory=list)
     module_status: dict[str, str] = field(default_factory=dict)
+    # Requests we gave up waiting for. The provider may still have finished
+    # (and billed) them, so their tokens are NOT in `calls` - counted here
+    # instead so the report can say how many calls may have been paid twice.
+    timeouts: dict[str, int] = field(default_factory=dict)
     status: str = AIStatus.RUNNING
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record_call(self, module: str, provider: str, model: str | None, input_tokens: int, output_tokens: int,
-                    status: str = AIStatus.COMPLETED, estimated: bool = False) -> None:
+                    status: str = AIStatus.COMPLETED, estimated: bool = False, attempt: int = 1,
+                    stop_reason: str | None = None, duration_s: float | None = None,
+                    cache_read_tokens: int = 0, cache_creation_tokens: int = 0) -> None:
         with self._lock:
             self.calls.append({
                 "module": module, "provider": provider, "model": model,
                 "input_tokens": int(input_tokens or 0), "output_tokens": int(output_tokens or 0),
                 "cost_usd": cost_usd(provider, model, input_tokens or 0, output_tokens or 0),
                 "status": status, "estimated": estimated,
+                "attempt": int(attempt or 1), "stop_reason": stop_reason,
+                "duration_s": round(duration_s, 1) if duration_s is not None else None,
+                "cache_read_tokens": int(cache_read_tokens or 0),
+                "cache_creation_tokens": int(cache_creation_tokens or 0),
             })
+
+    def note_timeout(self, module: str) -> None:
+        with self._lock:
+            self.timeouts[module] = self.timeouts.get(module, 0) + 1
+
+    def mark_calls_since(self, start: int, status: str) -> None:
+        """Marks the calls recorded since index `start` (one attempt's calls)
+        as not-completed - the answer was received and paid for but the step
+        rejected it. A call already marked (truncated, cached) keeps its mark."""
+        with self._lock:
+            for c in self.calls[start:]:
+                if c["status"] == AIStatus.COMPLETED and not c.get("cached"):
+                    c["status"] = status
 
     def record_cached_call(self, module: str, provider: str, model: str | None,
                            saved_input: int, saved_output: int) -> None:
@@ -396,11 +419,22 @@ class UsageLedger:
             modules = dict(self.module_status)
         known_costs = [c["cost_usd"] for c in calls if c["cost_usd"] is not None]
         by_module: dict[str, dict] = {}
+        wasted = [c for c in calls if c["status"] != AIStatus.COMPLETED and not c.get("cached")]
         for c in calls:
             m = by_module.setdefault(c["module"], {"input_tokens": 0, "output_tokens": 0, "calls": 0})
             m["input_tokens"] += c["input_tokens"]
             m["output_tokens"] += c["output_tokens"]
             m["calls"] += 1
+            m["max_attempt"] = max(m.get("max_attempt", 1), c.get("attempt", 1))
+        for c in wasted:
+            m = by_module[c["module"]]
+            m["wasted_tokens"] = m.get("wasted_tokens", 0) + c["input_tokens"] + c["output_tokens"]
+            m["wasted_calls"] = m.get("wasted_calls", 0) + 1
+            m.setdefault("wasted_reasons", {})
+            m["wasted_reasons"][c["status"]] = m["wasted_reasons"].get(c["status"], 0) + 1
+        for name, count in self.timeouts.items():
+            by_module.setdefault(name, {"input_tokens": 0, "output_tokens": 0, "calls": 0})["timeouts"] = count
+        wasted_costs = [c["cost_usd"] for c in wasted if c["cost_usd"] is not None]
         for name, st in modules.items():
             by_module.setdefault(name, {"input_tokens": 0, "output_tokens": 0, "calls": 0})["status"] = st
         return {
@@ -414,6 +448,10 @@ class UsageLedger:
             "total_tokens": sum(c["input_tokens"] + c["output_tokens"] for c in calls),
             "cost_usd": round(sum(known_costs), 4) if len(known_costs) == len(calls) else None,
             "estimated": any(c["estimated"] for c in calls),
+            "wasted_calls": len(wasted),
+            "wasted_tokens": sum(c["input_tokens"] + c["output_tokens"] for c in wasted),
+            "wasted_cost_usd": round(sum(wasted_costs), 4) if len(wasted_costs) == len(wasted) else None,
+            "timeouts": sum(self.timeouts.values()),
             "cached_calls": sum(1 for c in calls if c.get("cached")),
             "saved_tokens": sum(c.get("saved_input_tokens", 0) + c.get("saved_output_tokens", 0) for c in calls),
             "saved_cost_usd": round(sum(c.get("saved_cost_usd") or 0 for c in calls), 4),
@@ -454,11 +492,50 @@ def ai_module(module: str):
         _context.module = previous
 
 
+def set_attempt(n: int) -> None:
+    """Which try (1 = first) of the current request is about to run - stamped
+    on the ledger entry so a retried step shows up as attempt 2, 3..."""
+    _context.attempt = n
+
+
+def current_attempt() -> int:
+    return getattr(_context, "attempt", 1)
+
+
 def record_usage(provider: str, model: str | None, input_tokens: int, output_tokens: int,
-                 estimated: bool = False) -> None:
+                 estimated: bool = False, **detail) -> None:
     ledger = current_ledger()
     if ledger is not None:
-        ledger.record_call(current_module(), provider, model, input_tokens, output_tokens, estimated=estimated)
+        ledger.record_call(current_module(), provider, model, input_tokens, output_tokens, estimated=estimated,
+                           attempt=current_attempt(), **detail)
+
+
+def note_timeout() -> None:
+    ledger = current_ledger()
+    if ledger is not None:
+        ledger.note_timeout(current_module())
+
+
+def log_report_usage(logger, job_id, client_id, summary: dict) -> None:
+    """One INFO line per step and one WARNING when tokens were paid for and
+    thrown away, so a bad report can be traced from the server log alone."""
+    for name, m in sorted(summary.get("modules", {}).items(), key=lambda kv: -(kv[1]["input_tokens"] + kv[1]["output_tokens"])):
+        logger.info(
+            "AI usage job %s (client %s) step %s: %d call(s), max attempt %d, %d in + %d out, wasted %d tokens %s, timeouts %d",
+            job_id, client_id, name, m.get("calls", 0), m.get("max_attempt", 1), m.get("input_tokens", 0),
+            m.get("output_tokens", 0), m.get("wasted_tokens", 0), m.get("wasted_reasons", {}), m.get("timeouts", 0),
+        )
+    if summary.get("wasted_tokens") or summary.get("timeouts"):
+        logger.warning(
+            "AI waste job %s (client %s): %d token(s) in %d call(s) paid for and discarded (cost %s), %d request(s) timed out",
+            job_id, client_id, summary.get("wasted_tokens", 0), summary.get("wasted_calls", 0),
+            summary.get("wasted_cost_usd"), summary.get("timeouts", 0),
+        )
+    if summary.get("cached_calls"):
+        logger.info(
+            "AI cache job %s (client %s): %d call(s) answered from saved answers, ~%d token(s) / $%s saved",
+            job_id, client_id, summary["cached_calls"], summary.get("saved_tokens", 0), summary.get("saved_cost_usd"),
+        )
 
 
 def check_report_hard_limit() -> None:

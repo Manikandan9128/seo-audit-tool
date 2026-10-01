@@ -22,6 +22,7 @@ Groq, OpenRouter, AND Gemini were all simultaneously capped, and
 OpenRouter's own error showed 0/50 remaining. Not worth the added
 complexity for a budget too small to matter."""
 
+import logging
 import threading
 from contextlib import contextmanager
 import time
@@ -42,6 +43,8 @@ from google.genai import types as genai_types
 
 from app.config import settings
 from app.integrations.gemini_errors import friendly_gemini_error
+
+logger = logging.getLogger(__name__)
 
 RATE_LIMIT_RETRY_DELAY_SECONDS = 20
 
@@ -320,11 +323,22 @@ def _claude_output_options(model: str, max_tokens: int) -> dict:
     return options
 
 
-def _claude_result(response, model: str) -> str:
+def _claude_result(response, model: str, duration_s: float | None = None) -> str:
     """Records usage; a cut-off (stop_reason=max_tokens) or empty answer
     raises with the real stop_reason so it's never mistaken for a
     timeout or a refusal."""
-    ai_usage.record_usage("claude", model, response.usage.input_tokens, response.usage.output_tokens)
+    usage = response.usage
+    ai_usage.record_usage(
+        "claude", model, usage.input_tokens, usage.output_tokens,
+        stop_reason=response.stop_reason, duration_s=duration_s,
+        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+    )
+    logger.info(
+        "Claude call step=%s model=%s attempt=%d in=%d out=%d stop=%s %.1fs",
+        ai_usage.current_module(), model, ai_usage.current_attempt(), usage.input_tokens, usage.output_tokens,
+        response.stop_reason, duration_s or 0.0,
+    )
     text = "".join(block.text for block in response.content if block.type == "text").strip()
     if response.stop_reason == "max_tokens":
         ledger = ai_usage.current_ledger()
@@ -339,13 +353,14 @@ def _claude_result(response, model: str) -> str:
 def _try_claude(prompt: str, max_tokens: int) -> str:
     client = Anthropic(api_key=settings.claude_api_key)
     model = _current_claude_model()
+    started = time.monotonic()
     response = client.messages.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         **_claude_output_options(model, max_tokens),
     )
     _record_claude_usage("text", response.usage.input_tokens, response.usage.output_tokens)
-    return _claude_result(response, model)
+    return _claude_result(response, model, time.monotonic() - started)
 
 
 # Lets a caller STRICTLY pin one provider for the lifetime of a single
@@ -605,6 +620,8 @@ def _attempt_claude(prompt: str, max_tokens: int, errors: list[str]) -> str | No
             return text
         errors.append("Claude returned an empty response")
     except Exception as e:
+        if isinstance(e, TimeoutError):
+            ai_usage.note_timeout()
         errors.append(f"Claude request failed: {str(e)[:300]}")
     return None
 
@@ -817,6 +834,7 @@ def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors:
     last_given: tuple | None = None
     try:
         for _attempt in range(max_attempts):
+            ai_usage.set_attempt(_attempt + 1)
             try:
                 ai_usage.check_report_hard_limit()
             except ai_usage.SafetyLimitError as e:
@@ -853,7 +871,10 @@ def _layered_attempts(provider: str, call, prompt: str, max_tokens: int, errors:
                     last_given = ("fresh", cache_key, text, used_in, used_out)
                 yield text
                 last_given = None
-                # Still iterating: the caller rejected this answer.
+                # Still iterating: the caller rejected this answer, which was
+                # paid for - record it as discarded so waste can be reported.
+                if ledger is not None:
+                    ledger.mark_calls_since(ledger_start[0], AIStatus.INVALID_JSON)
                 if len(errors) > before:
                     errors[-1] = ai_usage.tag_error(errors[-1])
                     last_status = ai_usage.classify_error(errors[-1])
@@ -1044,13 +1065,14 @@ def _try_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens:
         for image_bytes, mime_type in images
     ] + [{"type": "text", "text": prompt}]
     model = _current_claude_model()
+    started = time.monotonic()
     response = client.messages.create(
         model=model,
         messages=[{"role": "user", "content": content}],
         **_claude_output_options(model, max_tokens),
     )
     _record_claude_usage("vision", response.usage.input_tokens, response.usage.output_tokens)
-    return _claude_result(response, model)
+    return _claude_result(response, model, time.monotonic() - started)
 
 
 def _attempt_groq_vision(prompt: str, images: list[tuple[bytes, str]], max_tokens: int, errors: list[str]) -> str | None:
@@ -1134,6 +1156,8 @@ def _attempt_claude_vision(prompt: str, images: list[tuple[bytes, str]], max_tok
             return text
         errors.append("Claude returned an empty response")
     except Exception as e:
+        if isinstance(e, TimeoutError):
+            ai_usage.note_timeout()
         errors.append(f"Claude vision request failed: {str(e)[:300]}")
     return None
 
