@@ -73,3 +73,45 @@ def test_programmatic_slide_has_no_internal_wording():
     slide = add_programmatic_seo_slide(Presentation(), rows)
     text = " ".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame) if slide else ""
     assert "SERP not validated" not in text and "folded in" not in text
+
+
+def _handshake_rows(url):
+    from app.services.keyword_intelligence_service import annotate_keyword_rows
+    rows = [
+        {"keyword": "handshake deal", "search_volume": 170, "current_position": 7, "current_url": url},
+        {"keyword": "handshake agreement", "search_volume": 170, "current_position": 12, "current_url": url},
+    ]
+    annotate_keyword_rows(rows)
+    return rows
+
+
+def test_ranking_blog_page_is_kept_when_intent_was_only_a_guess():
+    # "handshake deal" has no intent marker, so detect_intent guesses
+    # Commercial (confidence 55). That guess must not reject the blog post
+    # that already ranks #7 for it.
+    from app.services.keyword_intelligence_service import ranking_page_target
+    from app.services.keyword_relevance_service import classify_page_type
+    url = "https://www.lumberfi.com/blog/the-risks-of-handshake-deals-in-construction"
+    rows = _handshake_rows(url)
+    assert rows[0]["intent_family"] == "Commercial" and rows[0]["intent_confidence"] <= 55
+    found = ranking_page_target(rows, None, None, classify_page_type, "Commercial")
+    assert found and found["url"] == url and found["match_strength"] == "strong"
+
+
+def test_confident_commercial_intent_still_rejects_a_blog_post():
+    from app.services.keyword_intelligence_service import ranking_page_target
+    from app.services.keyword_relevance_service import classify_page_type
+    rows = [{"keyword": "buy payroll software", "search_volume": 900, "current_position": 8,
+             "current_url": "https://x.com/blog/payroll-tips"}]
+    from app.services.keyword_intelligence_service import annotate_keyword_rows
+    annotate_keyword_rows(rows)
+    assert rows[0]["intent_confidence"] >= 80
+    assert ranking_page_target(rows, None, None, classify_page_type, "Commercial") is None
+
+
+def test_deal_is_a_buying_signal_only_in_a_shopping_phrase():
+    from app.services.keyword_intelligence_service import detect_intent
+    for shopping in ("laptop deals", "best deal on laptops", "great deal"):
+        assert detect_intent(shopping)["intent"] in ("Transactional", "Commercial Investigation")
+    for plain in ("handshake deal", "business deal", "deal breaker"):
+        assert detect_intent(plain)["intent"] != "Transactional"

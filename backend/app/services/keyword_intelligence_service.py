@@ -62,9 +62,18 @@ _LOCAL_MARKERS = [
 _TRANSACTIONAL_MARKERS = [
     "buy", "purchase", "price", "prices", "pricing", "cost", "costs", "quote", "quotes", "for sale",
     "on road", "emi", "booking", "hire", "rent", "rental", "lease", "leasing", "how much",
-    "cheap", "cheapest", "discount", "deal", "deals", "free trial", "demo",
+    "cheap", "cheapest", "discount", "deals", "free trial", "demo",
     "subscription", "download",
 ]
+# "deal" is a buying signal only in a shopping phrase ("best deal", "deal on",
+# "deal of the day"). In "handshake deal", "business deal", "deal breaker" or
+# "deal with" it is an ordinary noun/verb — treating every "deal" as
+# Transactional sent Lumber's handshake-contract blog post to "Commercial"
+# and the slide said no page covered the topic (2026-10-01).
+_SHOPPING_DEAL_RE = re.compile(
+    r"\b(?:best|good|great|hot|daily|limited|special|today'?s|exclusive|bundle|combo|holiday)\s+deals?\b"
+    r"|\bdeals?\s+(?:on|of the (?:day|week)|alert|price|prices|offer|offers|code|codes|near|sale)\b",
+)
 _INVESTIGATION_MARKERS = [
     "best", "top", "review", "reviews", "rating", "ratings", "recommended", "provider", "providers",
     "company", "companies", "vendor", "vendors", "software", "platform", "services", "service",
@@ -309,6 +318,8 @@ def detect_intent(keyword: str, source_intent: str | None = None) -> dict:
     ]
     for intent, markers, confidence, need in checks:
         marker = _has_marker(text, markers)
+        if not marker and markers is _TRANSACTIONAL_MARKERS and _SHOPPING_DEAL_RE.search(text):
+            marker = "deal"
         if marker:
             return {"intent": intent, "family": INTENT_FAMILY[intent], "confidence": confidence,
                     "marker": marker, "user_need": need}
@@ -1104,6 +1115,11 @@ _RANKING_INCOMPATIBLE = {
 }
 
 
+# detect_intent's no-marker fallbacks: 55 (short bare keyword -> Commercial)
+# and 50 (5+ words -> Informational). Anything at or below this is a guess.
+_GUESSED_INTENT_MAX_CONFIDENCE = 55
+
+
 def _norm_url(url: str | None) -> str:
     u = re.sub(r"^[a-z][a-z0-9+.-]*://", "", (url or "").strip().lower())
     return u.removeprefix("www.").rstrip("/")
@@ -1135,7 +1151,15 @@ def ranking_page_target(
         # counts as its target when its page type fits the cluster's intent
         # — a blog post ranking for "database administration services"
         # is supporting evidence, not the service page (Geopits, 2026-09-24).
-        if page_type_fn and family and page_type_fn(url) in _RANKING_INCOMPATIBLE.get(family, ()):
+        # ...but only against a CONFIDENT intent verdict. detect_intent falls
+        # back to Commercial at confidence 55 for any short keyword with no
+        # intent marker, and that guess then rejected the very blog post that
+        # already ranks #7 for "handshake deal" (Lumber, 2026-10-01), so the
+        # slide said "create a new page — none covers this topic". A real
+        # top-20 ranking beats a guess.
+        confidence = r.get("intent_confidence")
+        guessed_intent = confidence is not None and _num(confidence) <= _GUESSED_INTENT_MAX_CONFIDENCE
+        if page_type_fn and family and not guessed_intent and page_type_fn(url) in _RANKING_INCOMPATIBLE.get(family, ()):
             continue
         entry = by_url.setdefault(url, {"url": url, "position": p, "weight": 0.0, "keywords": 0})
         entry["weight"] += max(_demand(r), 1.0) * (2.0 if p <= 10 else 1.0)
