@@ -37,7 +37,7 @@ from app.models.site_audit_run import SiteAuditRun
 from app.models.user import User
 from app.services.activity_service import log_activity
 from app.reporting.pptx_builder import (
-    build_report, classify_seo_issues, _canonical_page_totals,
+    build_report, classify_seo_issues, _canonical_page_totals, target_country_codes,
     build_schema_report_parts, schema_eligibility_notes, _COMPETITOR_MEANINGFUL_GAP_MULTIPLE,
     build_branded_vs_nonbranded_comparison, build_branded_dependency_narrative, build_high_potential_pages, build_high_potential_countries,
     build_search_opportunity_pages, build_structured_technical_recommendations,
@@ -2614,8 +2614,16 @@ def _gather_report_data(
             label = relevance_by_query.get((r.get("query") or "").lower())
             if label:
                 r["relevance"] = label
+        # Without target_countries nothing was ever called out-of-market, so a
+        # US/Canada client got "strengthen this page" fixes for Indonesia and
+        # the Philippines (Lumber, 2026-10-01).
         high_potential_countries = build_high_potential_countries(
-            country_rows, country_page_query_rows=country_detail_rows, brand_tokens=brand_tokens,
+            country_rows,
+            target_countries=target_country_codes(
+                (company_overview_result or {}).get("target_country"),
+                [r.get("page_url") for r in site_audit_pages_rows or [] if r.get("page_url")],
+            ),
+            country_page_query_rows=country_detail_rows, brand_tokens=brand_tokens,
         )
 
         ai_usage.set_module("branded")

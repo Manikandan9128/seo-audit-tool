@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import copy
 import re
 import threading
 from collections import Counter
@@ -4924,13 +4925,72 @@ def _country_page_label(url: str) -> str:
     return cut.rstrip("/-") + "…"
 
 
+_TARGET_COUNTRY_ALIASES = {
+    "usa": "USA", "us": "USA", "u.s.": "USA", "u.s.a.": "USA", "america": "USA", "united states": "USA",
+    "uk": "GBR", "u.k.": "GBR", "britain": "GBR", "great britain": "GBR", "united kingdom": "GBR",
+    "uae": "ARE", "emirates": "ARE", "korea": "KOR", "russia": "RUS", "vietnam": "VNM",
+}
+_GLOBAL_TARGET_WORDS = ("global", "worldwide", "international", "multiple", "various", "any country")
+
+
+def target_country_codes(target_country: str | None, page_urls: list[str] | None = None) -> list[str] | None:
+    """Lower-case ISO alpha-3 codes of the markets a client serves, read from
+    the company overview's free-text target_country ("Primary USA", "US and
+    Canada") plus country-coded path prefixes on the client's own site
+    (/ca/..., /uk/... on at least 3 crawled pages — a market the site is
+    deliberately built for, even when the overview text only names one
+    country). None = unknown or global: nothing is then called out-of-market,
+    because guessing a service area would hide real markets."""
+    text = f" {(target_country or '').lower()} "
+    if not text.strip() or any(w in text for w in _GLOBAL_TARGET_WORDS):
+        return None
+    codes: set[str] = set()
+    for alias, code in _TARGET_COUNTRY_ALIASES.items():
+        if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", text):
+            codes.add(code)
+    for country in pycountry.countries:
+        names = {country.name.lower(), getattr(country, "common_name", "").lower()}
+        if any(n and re.search(rf"(?<![a-z]){re.escape(n)}(?![a-z])", text) for n in names):
+            codes.add(country.alpha_3)
+    if not codes:
+        return None
+    prefix_counts = Counter(
+        seg for seg in (
+            (urlparse(u).path.strip("/").split("/", 1)[0] or "").lower() for u in page_urls or []
+        ) if len(seg) == 2
+    )
+    for seg, count in prefix_counts.items():
+        match = pycountry.countries.get(alpha_2=seg.upper()) if count >= 3 else None
+        if match:
+            codes.add(match.alpha_3)
+    return sorted(c.lower() for c in codes)
+
+
 def _country_fix(label: str, out_of_market: bool, avg_position: float | None, detail: list[dict], brand_tokens) -> str:
-    """Fix for one country, chosen from the most specific evidence
+    return _country_fix_with_page(label, out_of_market, avg_position, detail, brand_tokens)[0]
+
+
+def _country_fix_with_page(
+    label: str, out_of_market: bool, avg_position: float | None, detail: list[dict], brand_tokens
+) -> tuple[str, str | None, str | None]:
+    """(fix text, full page URL, the page label as written in the text) — the
+    URL lets the slide make the page name a real clickable link."""
+    if out_of_market:
+        return (
+            f"{label} is outside the client's stated target markets — treat the visibility as incidental and monitor it "
+            "rather than investing in pages or content for it.", None, None,
+        )
+    return _country_fix_text(label, avg_position, detail, brand_tokens)
+
+
+def _country_fix_text(label: str, avg_position: float | None, detail: list[dict], brand_tokens) -> tuple[str, str | None, str | None]:
+    """Fix for one in-market country, chosen from the most specific evidence
     available (2026-09-30 spec): a real relevant (page, query) pair for that
     country first, then a directional monitoring action from country-level
     presence. Never localization, budget, currency or language advice off
     country totals alone, never a metric restatement, and wording follows
-    the evidence so rows don't share one template."""
+    the evidence so rows don't share one template. Returns (text, full page
+    URL, page label used in the text) so the slide can link the page."""
     rows = [d for d in detail if float(d.get("impressions", 0) or 0) >= _COUNTRY_DETAIL_MIN_IMPRESSIONS]
     if rows:
         typed = [(d, _sop_query_type(d.get("query") or "", brand_tokens)) for d in rows]
@@ -4938,32 +4998,34 @@ def _country_fix(label: str, out_of_market: bool, avg_position: float | None, de
         if not relevant:
             if any(t != "brand" for _d, t in typed):
                 return (f"Most {label} visibility comes from searches unrelated to the site's offering — keep those queries out of the "
-                        "optimization plan and watch for relevant demand.")
-            return f"{label} visibility is driven by branded searches — treat it as brand awareness rather than a page-optimization target."
+                        "optimization plan and watch for relevant demand.", None, None)
+            return (f"{label} visibility is driven by branded searches — treat it as brand awareness rather than a page-optimization target.",
+                    None, None)
         reachable = [d for d in relevant if float(d.get("position", 0) or 0) <= 20]
         if reachable:
             best = max(reachable, key=lambda d: float(d.get("impressions", 0) or 0))
-            page = _country_page_label(best.get("page") or "")
+            full_url = best.get("page") or ""
+            page = _country_page_label(full_url)
             q = best["query"] if len(best["query"]) <= 30 else best["query"][:30].rsplit(" ", 1)[0] + "…"
             pos = float(best.get("position", 0) or 0)
             if pos < 4:
-                return (f"{page} already ranks near the top in {label} for \"{q}\" — keep it current and watch whether it earns "
+                text = (f"{page} already ranks near the top in {label} for \"{q}\" — keep it current and watch whether it earns "
                         "the clicks that visibility should bring.")
-            if pos <= 10:
-                return (f"Strengthen {page} around \"{q}\" — it is on page one in {label}, so tightening its content and SERP "
+            elif pos <= 10:
+                text = (f"Strengthen {page} around \"{q}\" — it is on page one in {label}, so tightening its content and SERP "
                         "messaging is the closest gain.")
-            return (f"Deepen {page} for \"{q}\" — it sits on page two in {label}; improve the existing coverage before "
-                    "considering any new page.")
+            else:
+                text = (f"Deepen {page} for \"{q}\" — it sits on page two in {label}; improve the existing coverage before "
+                        "considering any new page.")
+            return text, (full_url or None), page
         return (f"{label} queries related to the site rank beyond page two — monitor them and investigate local demand before "
-                "creating new assets.")
+                "creating new assets.", None, None)
 
-    if out_of_market:
-        return f"{label} is outside the client's stated target markets — monitor whether the visibility persists before investing further."
     if avg_position is not None and avg_position <= 10:
         return (f"Identify which existing pages earn the visibility in {label} and keep them current — the country data alone "
-                "doesn't point to a specific gap.")
+                "doesn't point to a specific gap.", None, None)
     return (f"Monitor search presence in {label} and review the pages and queries behind it before deciding on any "
-            "country-specific action.")
+            "country-specific action.", None, None)
 
 
 def build_high_potential_countries(
@@ -5006,10 +5068,12 @@ def build_high_potential_countries(
         out_of_market = target_set is not None and code not in target_set
         avg_position = float(r["position"]) if r.get("position") not in (None, "") else None
 
-        fix = _country_fix(label, out_of_market, avg_position, detail_by_country.get(code, []), brand_tokens)
+        fix, fix_url, fix_page_label = _country_fix_with_page(
+            label, out_of_market, avg_position, detail_by_country.get(code, []), brand_tokens,
+        )
         material.append({
             "country": label, "impressions": int(impressions), "clicks": int(clicks),
-            "ctr_pct": round(ctr_pct, 1), "fix": fix,
+            "ctr_pct": round(ctr_pct, 1), "fix": fix, "fix_url": fix_url, "fix_page_label": fix_page_label,
         })
     material.sort(key=lambda r: r["impressions"], reverse=True)
 
@@ -5177,6 +5241,31 @@ def add_search_opportunities_pages_slide(prs: Presentation, opportunity_pages: l
     return slide
 
 
+def _link_label_in_cell(cell, label: str, url: str) -> None:
+    """Turns `label` inside the cell's first run into a hyperlink to `url`,
+    keeping the surrounding text and font. No-op when the label isn't there."""
+    paragraph = cell.text_frame.paragraphs[0]
+    if not paragraph.runs:
+        return
+    run = paragraph.runs[0]
+    before, found, after = run.text.partition(label)
+    if not found:
+        return
+    run.text = before
+    link_run = copy.deepcopy(run._r)
+    run._r.addnext(link_run)
+    from pptx.text.text import _Run
+    link = _Run(link_run, paragraph)
+    link.text = label
+    link.hyperlink.address = url
+    link.font.color.rgb = _accent()
+    link.font.underline = True
+    if after:
+        tail_run = copy.deepcopy(run._r)
+        link_run.addnext(tail_run)
+        _Run(tail_run, paragraph).text = after
+
+
 def add_search_opportunities_countries_slide(prs: Presentation, high_countries: dict | None, source: str) -> object | None:
     """High-potential countries, split out to its own slide (2026-09-11
     user spec — was combined with the pages half above). Still renders as
@@ -5205,10 +5294,18 @@ def add_search_opportunities_countries_slide(prs: Presentation, high_countries: 
             (r["country"], f"{r['impressions']:,}", f"{r['clicks']:,}", f"{r['ctr_pct']:.1f}%", r["fix"])
             for r in material_countries
         ]
-        y = _draw_table(
+        y, table = _draw_table(
             slide, ["Country", "Impressions", "Clicks", "CTR", "Fix"], rows, y,
             col_widths=[1.6, 1.5, 1.3, 1.2, 6.5], left=left, width=width, row_cap=9, row_height=0.4, wrap_cols={4},
-        ) + Inches(0.25)
+            return_table=True,
+        )
+        y += Inches(0.25)
+        # The page named in a Fix sentence is shown shortened ("/blog/how-to-
+        # celebrate-national…"); make that name a real link to the full URL
+        # so the reader can open the page.
+        for i, r in enumerate(material_countries[:9], start=1):
+            if i < len(table.rows) and r.get("fix_url") and r.get("fix_page_label"):
+                _link_label_in_cell(table.cell(i, 4), r["fix_page_label"], r["fix_url"])
     else:
         _textbox(slide, left, y, width, Inches(0.3), "No countries met the material-opportunity bar this period.", size=11.5, color=TEXT_MUTED)
         y += Inches(0.4)

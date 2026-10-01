@@ -137,3 +137,49 @@ def test_branded_example_is_omitted_when_only_implausible_rows_exist():
         [{"query": "lumberfi", "impressions": 900, "clicks": 300, "ctr": 0.33, "position": 1.0}], nonbranded,
     )
     assert build_branded_dependency_narrative(comparison, nonbranded)["concrete_example"] is None
+
+
+def test_target_country_codes_reads_overview_text_and_site_prefixes():
+    from app.reporting.pptx_builder import target_country_codes
+    assert target_country_codes("Primary USA") == ["usa"]
+    assert target_country_codes("Global") is None and target_country_codes(None) is None
+    assert target_country_codes("United States and Canada") == ["can", "usa"]
+    urls = [f"https://x.com/ca/page-{i}" for i in range(3)]
+    assert target_country_codes("Primary USA", urls) == ["can", "usa"]
+    assert target_country_codes("Primary USA", urls[:2]) == ["usa"]  # 2 pages is not a market
+
+
+def _countries():
+    return [
+        {"country": "usa", "impressions": 244799, "clicks": 1636, "ctr": 0.007, "position": 6.0},
+        {"country": "idn", "impressions": 3100, "clicks": 20, "ctr": 0.006, "position": 8.0},
+    ]
+
+
+def test_out_of_market_country_gets_no_page_fix_even_with_query_detail():
+    from app.reporting.pptx_builder import build_high_potential_countries
+    detail = [{"country": "idn", "page": "https://x.com/blog/books", "query": "pembukuan", "impressions": 900,
+               "clicks": 10, "position": 5.0}]
+    result = build_high_potential_countries(_countries(), target_countries=["usa"], country_page_query_rows=detail)
+    by_country = {r["country"]: r for r in result["material"]}
+    assert "outside the client's stated target markets" in by_country["Indonesia"]["fix"]
+    assert by_country["Indonesia"]["fix_url"] is None
+    assert "outside the client's stated target markets" not in by_country["United States"]["fix"]
+
+
+def test_country_fix_carries_full_page_url_and_slide_links_it():
+    from pptx import Presentation
+    from app.reporting.pptx_builder import add_search_opportunities_countries_slide, build_high_potential_countries
+    page = "https://www.lumberfi.com/blog/how-to-celebrate-national-construction-appreciation-week-2025-a-guide"
+    detail = [{"country": "usa", "page": page, "query": "construction appreciation week", "impressions": 900,
+               "clicks": 30, "position": 2.0}]
+    result = build_high_potential_countries(_countries()[:1], target_countries=["usa"], country_page_query_rows=detail)
+    row = result["material"][0]
+    assert row["fix_url"] == page and row["fix_page_label"] in row["fix"]
+    slide = add_search_opportunities_countries_slide(Presentation(), result, "Google Search Console")
+    links = [
+        run.hyperlink.address for sh in slide.shapes if sh.has_table
+        for r in sh.table.rows for c in r.cells for p in c.text_frame.paragraphs for run in p.runs
+        if run.hyperlink.address
+    ]
+    assert page in links
