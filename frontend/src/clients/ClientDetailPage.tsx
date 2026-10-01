@@ -1093,7 +1093,7 @@ export default function ClientDetailPage() {
               </>
             )}
           </div>
-          <p id="report-ai-provider-help" className="ai-hint">
+          <p id="report-ai-provider-help" className="sr-only">
             All report analysis will use this provider. No automatic fallback.
           </p>
         </div>
