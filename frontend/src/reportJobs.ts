@@ -30,6 +30,11 @@ export type AiUsageSummary = {
   total_tokens: number;
   cost_usd: number | null;
   estimated: boolean;
+  cached_calls?: number;
+  saved_tokens?: number;
+  saved_cost_usd?: number;
+  wasted_tokens?: number;
+  wasted_cost_usd?: number | null;
   modules: Record<string, { input_tokens: number; output_tokens: number; calls: number; status?: string }>;
   warning_tokens: number;
   hard_limit_tokens: number;

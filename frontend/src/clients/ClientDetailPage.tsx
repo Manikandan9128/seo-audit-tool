@@ -27,7 +27,7 @@ import type { CompetitorAnalysis } from "../components/CompetitorAnalysisEditor"
 import Tip from "../components/Tip";
 import KeywordClusterChoiceModal from "../components/KeywordClusterChoiceModal";
 import AiUsageModal, { type AiUsageEstimate } from "../components/AiUsageModal";
-import { formatCost, formatTokens } from "../aiUsageFormat";
+import { usageSummaryText, usageTooltip } from "../aiUsageFormat";
 import {
   PROVIDER_LABELS, readClaudeModel, readSelectedProvider, writeClaudeModel, writeSelectedProvider,
 } from "../aiProvider";
@@ -184,11 +184,8 @@ export default function ClientDetailPage() {
   // Live AI usage for the running (or last) build — ai_usage.UsageLedger
   // summary saved by the server every few seconds.
   const usage = dl.aiUsage;
-  const usageLine = usage && usage.calls > 0
-    ? `${usage.provider_label ?? ""}${usage.model ? ` (${usage.model})` : ""} · Tokens: ${formatTokens(usage.total_tokens)}`
-      + ` · Estimated cost: ${formatCost(usage.cost_usd, usage.cost_usd === null)}${usage.estimated ? " (approx.)" : ""}`
-      + ` · Status: ${usage.status === "RUNNING" ? "Running" : usage.status === "COMPLETED" ? "Completed" : usage.status}`
-    : null;
+  const usageLine = usage && usage.calls > 0 ? usageSummaryText(usage) : null;
+  const usageHover = usage && usage.calls > 0 ? usageTooltip(usage) : undefined;
   const usageOverWarning = !!usage && usage.total_tokens > usage.warning_tokens;
   const reportProgressPct = dl.pct;
   const contentGenerationIssues = dl.issues;
@@ -1059,7 +1056,7 @@ export default function ClientDetailPage() {
                       </div>
                     )}
                     {usageLine && (
-                      <span style={{ fontSize: 12, color: usageOverWarning ? "#92400e" : undefined }} className={usageOverWarning ? undefined : "muted"}>
+                      <span title={usageHover} style={{ fontSize: 12, color: usageOverWarning ? "#92400e" : undefined }} className={usageOverWarning ? undefined : "muted"}>
                         {usageOverWarning ? "⚠ " : ""}
                         {usageLine}
                       </span>
@@ -1067,8 +1064,8 @@ export default function ClientDetailPage() {
                   </div>
                 )}
                 {!reportLoading && usageLine && usage?.status !== "RUNNING" && (
-                  <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-                    Last report AI usage: {usageLine}
+                  <span className="muted" title={usageHover} style={{ fontSize: 12, alignSelf: "center" }}>
+                    AI usage: {usageLine}
                   </span>
                 )}
                 {!reportLoading && contentGenerationIssues && (
