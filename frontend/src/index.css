@@ -2344,3 +2344,16 @@ button.secondary:hover:not(:disabled) {
 }
 .data-table td { vertical-align: middle; }
 .team-form button { border-radius: 6px; }
+
+/* Sidebar menu icons (2026-10-01): small line icon before each label, in the
+   link's own colour so it brightens with hover/active. */
+.nav-item { gap: 10px; }
+.nav-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.nav-icon svg {
+  width: 16px;
+  height: 16px;
+}

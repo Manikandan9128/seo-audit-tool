@@ -5,6 +5,28 @@ import { useGuidedTour } from "./GuidedTour";
 
 const SIDEBAR_HELP_DISMISSED_KEY = "sidebarHelpDismissed";
 
+// Small line icons shown before each menu label (stroke = the link's text colour).
+const NAV_ICONS: Record<string, ReactNode> = {
+  "/clients": (
+    <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1.5" stroke="currentColor" strokeWidth="2" /><rect x="14" y="3" width="7" height="5" rx="1.5" stroke="currentColor" strokeWidth="2" /><rect x="14" y="12" width="7" height="9" rx="1.5" stroke="currentColor" strokeWidth="2" /><rect x="3" y="16" width="7" height="5" rx="1.5" stroke="currentColor" strokeWidth="2" /></svg>
+  ),
+  "/downloaded-reports": (
+    <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+  ),
+  "/settings": (
+    <svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><circle cx="16" cy="7" r="2" stroke="currentColor" strokeWidth="2" /><circle cx="8" cy="17" r="2" stroke="currentColor" strokeWidth="2" /></svg>
+  ),
+  "/team": (
+    <svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="2" /><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><path d="M16 5.2a3.2 3.2 0 010 5.6M18 14.8c1.9.6 3 2.3 3 5.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+  ),
+  "/activity": (
+    <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" /><path d="M12 7v5l3 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+  ),
+  "/account": (
+    <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3.5" stroke="currentColor" strokeWidth="2" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+  ),
+};
+
 const NAV_ITEMS = [
   { to: "/clients", label: "Dashboard" },
   { to: "/downloaded-reports", label: "Downloaded Reports" },
@@ -68,6 +90,11 @@ export default function Layout({ children }: { children: ReactNode }) {
                 className={`nav-item${active ? " active" : ""}`}
                 aria-current={active ? "page" : undefined}
               >
+                {NAV_ICONS[item.to] && (
+                  <span className="nav-icon" aria-hidden="true">
+                    {NAV_ICONS[item.to]}
+                  </span>
+                )}
                 {item.label}
               </Link>
             );
